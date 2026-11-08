@@ -54,7 +54,12 @@ def test_advertised_input_names_are_honoured():
     assert row["kind"] == "put"
     assert row["quantity"] == 3
     assert row["T"] == pytest.approx(182 / 365.25, abs=0.01)
-    assert row.get("assumptions_used") in (None, [])  # nothing defaulted
+    # Spot, vol, rate and expiry were all supplied. Only the multiplier and the
+    # dividend yield were not, and each is now reported instead of silent.
+    assert all("vol=" not in a and "T=" not in a and "spot" not in a
+               for a in row.get("assumptions_used", []))
+    assert row["contract_size_source"] == "default_100"
+    assert row["q_source"] == "default_0"
     assert row["delta"] < 0  # a put
 
 

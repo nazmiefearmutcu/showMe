@@ -375,8 +375,11 @@ class GREEKSFunction(BaseFunction):
 
 def _methodology() -> str:
     return (
-        "Aggregate contract-level Black-Scholes Greeks across the option book. Each row is scaled by "
-        "quantity and contract size; portfolio delta/gamma/vega/theta/rho are the sums across positions. "
+        "Aggregate contract-level Black-Scholes Greeks across the option book. The model prices European "
+        "exercise in closed form, so American early exercise (common for listed puts and dividend payers) is "
+        "not modelled. Each row is scaled by quantity and contract size; a missing contract size uses 100 and "
+        "a missing dividend yield uses 0, both reported per row (contract_size_source / q) and in "
+        "assumptions_used. Portfolio delta/gamma/vega/theta/rho are the sums across positions. "
         "A missing spot uses the symbol's last daily close and a missing vol its 30-day realized "
         "volatility (log returns, annualized with 252 days), and a missing rate the live 3-month T-bill "
         "yield (FRED DGS3MO); each is labelled per row (spot_source / vol_source / rate_source). A rate "
@@ -395,6 +398,8 @@ def _field_dictionary() -> dict[str, str]:
         "theta": "Time decay per year under the Black-Scholes convention used by the service.",
         "rho": "Change in option value for a 1.00 rate move.",
         "contract_size": "Multiplier applied to per-contract Greeks.",
+        "contract_size_source": "input, or default_100 when contract_size was not supplied.",
+        "q_source": "input, or default_0 when no dividend yield was supplied.",
         "spot_source": "input, or yfinance_last_close when spot was not supplied.",
         "vol_source": "input, or realized_30d when vol was not supplied.",
     }

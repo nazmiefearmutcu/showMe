@@ -193,6 +193,7 @@ def bs_rho_put(S, K, vol, T, r=0.04, q=0.0) -> float:
 
 _DEFAULT_VOL = 0.30
 _DEFAULT_T_DAYS = 30  # ≈ 1 month
+_DEFAULT_CONTRACT_SIZE = 100
 
 
 def position_greeks(pos: dict[str, Any]) -> dict[str, Any]:
@@ -205,10 +206,12 @@ def position_greeks(pos: dict[str, Any]) -> dict[str, Any]:
       theta: per day (USD)
       rho:   per 1 bp rate move (USD)
 
-    Missing vol/T are silently substituted with defaults (vol=0.30,
-    T=30 days). D03-2026-05-24: each substitution is now reported in the
-    returned ``assumptions_used`` list so the UI can flag synthetic greeks
-    and also logged at WARNING level.
+    Missing vol/T are substituted with defaults (vol=0.30, T=30 days), and a
+    missing contract_size (multiplier 100) or dividend yield q (0) is applied
+    the same way. Every default is reported in the returned
+    ``assumptions_used`` list, with ``contract_size_source`` / ``q_source``
+    on the row, and logged at WARNING level for vol/T. The handler in
+    ``engine/functions/portfolio/greeks.py`` never reaches the vol/T defaults.
     """
     kind = (pos.get("kind") or "call").lower()
     S = float(pos["spot"])
@@ -231,9 +234,24 @@ def position_greeks(pos: dict[str, Any]) -> dict[str, Any]:
     else:
         T = float(raw_T)
     r = float(pos.get("r", 0.04))
-    q = float(pos.get("q", 0.0))
+    raw_q = pos.get("q")
+    if raw_q is None or raw_q == "":
+        q = 0.0
+        q_source = "default_0"
+        assumptions_used.append("q=default 0 (no dividend yield supplied)")
+    else:
+        q = float(raw_q)
+        q_source = "input"
+    raw_size = pos.get("contract_size")
+    if raw_size is None or raw_size == "":
+        sz = _DEFAULT_CONTRACT_SIZE
+        size_source = f"default_{_DEFAULT_CONTRACT_SIZE}"
+        assumptions_used.append(
+            f"contract_size=default {_DEFAULT_CONTRACT_SIZE} (standard listed equity option multiplier)")
+    else:
+        sz = int(raw_size)
+        size_source = "input"
     qty = float(pos.get("quantity", 1))
-    sz = int(pos.get("contract_size", 100))
     multi = qty * sz
     if kind == "call":
         out = {
@@ -253,6 +271,10 @@ def position_greeks(pos: dict[str, Any]) -> dict[str, Any]:
             "theta": bs_theta_put(S, K, vol, T, r, q) * multi,
             "rho": bs_rho_put(S, K, vol, T, r, q) * multi,
         }
+    out["contract_size"] = sz
+    out["contract_size_source"] = size_source
+    out["q"] = q
+    out["q_source"] = q_source
     if assumptions_used:
         out["assumptions_used"] = assumptions_used
     return out

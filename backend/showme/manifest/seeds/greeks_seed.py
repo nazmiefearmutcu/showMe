@@ -60,8 +60,11 @@ def greeks() -> FunctionManifest:
                 control=ControlKind.TEXT,
                 required=True,
                 description=(
-                    "JSON array of contracts: {symbol, kind: call|put, spot, strike, T "
-                    "(years), vol, quantity, contract_size, r, q}."
+                    "JSON array of contracts: {symbol, kind: call|put, strike, expiry "
+                    "(ISO date) or T (years), quantity, and optionally spot, vol, r, q, "
+                    "contract_size}. Missing spot/vol come from daily history, a missing "
+                    "rate from FRED DGS3MO, a missing contract_size defaults to 100 and a "
+                    "missing q to 0; each default is reported."
                 ),
             ),
         ],
@@ -124,15 +127,21 @@ def greeks() -> FunctionManifest:
         ),
         methodology=(
             "GREEKS computes contract-level Black-Scholes Greeks internally (no broker "
-            "Greeks feed): each position supplies spot, strike, T in years, vol, kind, "
-            "quantity and contract_size; per-contract values are scaled by quantity × "
-            "contract_size and the portfolio delta/gamma/vega/theta/rho are the sums "
-            "across positions. Trader-readable units: vega per 1% vol move, theta per "
-            "calendar day, rho per 1 bp rate move, delta/gamma per 1.0 underlying move. "
-            "Missing vol/T are substituted with defaults (vol=0.30, T=30d) and every "
-            "substitution is reported in assumptions_used so the UI can flag synthetic "
-            "Greeks. An empty positions list returns status=input_required with an empty "
-            "positions array and zeroed totals — the handler never fabricates a book."
+            "Greeks feed) with European closed-form exercise; American early exercise is "
+            "not modelled. Each position supplies kind, strike and an expiry (ISO date or "
+            "T in years, required: a missing expiry is an input_error). Spot and vol may be "
+            "omitted for symbols with daily history: spot is the last daily close and vol is "
+            "30-day realized volatility (252-day annualized), labelled per row as "
+            "spot_source / vol_source. A missing rate uses the live 3-month T-bill yield "
+            "(FRED DGS3MO), labelled rate_source. A missing contract_size uses 100 and a "
+            "missing dividend yield q uses 0; both are reported per row and in "
+            "assumptions_used. Per-contract values are scaled by quantity × contract_size "
+            "and the portfolio delta/gamma/vega/theta/rho are the sums across positions. "
+            "Trader-readable units: vega per 1% vol move, theta per calendar day, rho per "
+            "1 bp rate move, delta/gamma per 1.0 underlying move. A position that cannot "
+            "be priced fails the whole book with input_error. An empty positions list "
+            "returns status=input_required with an empty positions array and zeroed "
+            "totals; the handler never fabricates a book."
         ),
         formula_dict={
             "Delta": Formula(
@@ -171,7 +180,7 @@ def greeks() -> FunctionManifest:
             "totals.vega": FieldDef(unit="ccy", description="Book vega per 1% vol move.", source="aggregated"),
             "totals.rho": FieldDef(unit="ccy", description="Book rho per 1 bp rate move.", source="aggregated"),
             "units": FieldDef(description="Unit convention strings for every Greek.", source="computed"),
-            "assumptions_used": FieldDef(description="Default substitutions applied (vol=0.30, T=30d) tagged per position.", source="computed"),
+            "assumptions_used": FieldDef(description="Defaults applied per position (contract_size=100 and q=0 when not supplied), tagged with the symbol.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -225,13 +234,23 @@ def greeks() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="greeks_missing_vol_and_T_reported_in_assumptions_used",
-                description="Missing vol/T are defaulted and the substitution is surfaced in assumptions_used, never silent.",
-                inputs={"positions": [{"kind": "put", "spot": 100, "strike": 95, "quantity": 1}]},
+                name="greeks_missing_expiry_is_input_error",
+                description="A position without an expiry is refused with input_error naming the expiry; no T is assumed.",
+                inputs={"positions": [{"kind": "put", "spot": 100, "strike": 95, "quantity": 1, "vol": 0.3, "rate": 0.04}]},
                 assertions=[
-                    "assumptions_used_non_empty",
-                    "assumption_mentions_vol_default",
-                    "assumption_mentions_T_default",
+                    "status_equals_input_error",
+                    "reason_mentions_expiry",
+                    "next_actions_non_empty",
+                ],
+            ),
+            SemanticTest(
+                name="greeks_missing_multiplier_and_dividend_reported",
+                description="A missing contract_size (100) and dividend yield q (0) are applied and reported in assumptions_used and per-row source fields, never silently.",
+                inputs={"positions": [{"kind": "put", "symbol": "AAPL", "spot": 100, "strike": 95, "quantity": 1, "vol": 0.3, "T": 0.25, "rate": 0.04}]},
+                assertions=[
+                    "contract_size_source_is_default_100",
+                    "q_source_is_default_0",
+                    "assumptions_used_mentions_contract_size_and_q",
                 ],
             ),
         ],
