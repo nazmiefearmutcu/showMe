@@ -108,8 +108,8 @@ def pcas() -> FunctionManifest:
                 label="Frequency",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Return sampling cadence for Σ.",
-                options=["1d", "1wk", "1mo"],
+                description="Return sampling cadence for Σ. Only daily returns are implemented.",
+                options=["1d"],
             ),
             InputSpec(
                 name="provider_mode",
