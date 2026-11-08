@@ -353,6 +353,14 @@ class GREEKSFunction(BaseFunction):
                 row["rate"] = pos["r"]
         totals = agg.get("totals") or {}
         warnings: list[str] = []
+        for i, pos in enumerate(normalized):
+            if pos.get("rate_source") == "input_decimal":
+                # A plain rate in (0, 0.2] is a valid decimal, but a user who typed
+                # a percent (0.1 = 0.1%) would get 10% priced: say which one was used.
+                rate = float(pos["r"])
+                warnings.append(
+                    f"position {i + 1} ({pos.get('symbol', '?')}): rate {rate:g} was read as a decimal "
+                    f"and priced at {rate * 100:g}%; if you meant {rate:g}% enter r={rate / 100:g}")
         data = {
             **agg,
             # NOTE: no separate input-echo `rows` key — the payload's `positions`
