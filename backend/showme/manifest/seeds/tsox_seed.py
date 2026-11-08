@@ -156,7 +156,14 @@ def tsox() -> FunctionManifest:
             ),
         },
         field_dict={
-            "status": FieldDef(description="preview / filled / input_required / provider_unavailable.", source="tsox"),
+            "status": FieldDef(
+                description=(
+                    "preview / filled / input_required / input_error (invalid ticket field, see field) / "
+                    "provider_unavailable. Bond analytics are reported under analytics.status "
+                    "(not_computed until the bond terms are sourced)."
+                ),
+                source="tsox",
+            ),
             "broker": FieldDef(description="Broker adapter used; 'paper' on preview.", source="tsox"),
             "side": FieldDef(description="BUY (long duration) / SELL (short duration).", source="tsox"),
             "quantity": FieldDef(unit="contracts_or_face", description="Contracts or face-value units.", source="tsox"),

@@ -177,3 +177,14 @@ def test_tsox_preview_reports_analytics_as_not_computed() -> None:
         assert key in analytics["not_computed"]
         assert key not in res.data
     assert analytics.get("reason")
+
+
+# ── TSOX seed doc: the status field lists every status the pane can receive ─
+
+
+def test_tsox_seed_status_doc_lists_input_error_and_analytics() -> None:
+    from showme.manifest.seeds.tsox_seed import tsox
+
+    desc = tsox.field_dict["status"].description
+    assert "input_error" in desc
+    assert "not_computed" in desc
