@@ -30,7 +30,7 @@ import {
   type FunctionCallResult,
   type FunctionCallError,
 } from "./functions";
-import { recordPaneContract } from "./pane-contract-store";
+import { observationAsOf, recordPaneContract } from "./pane-contract-store";
 import { useAppStore } from "./store";
 import { isInTauri } from "./tauri";
 
@@ -210,11 +210,8 @@ function _recordContractFromResult<T>(
     (typeof metadata.data_mode === "string" && metadata.data_mode) ||
     _legacyDataState(r, data, metadata) ||
     undefined;
-  const asOf =
-    (typeof data.as_of === "string" && data.as_of) ||
-    (typeof r.as_of === "string" && r.as_of) ||
-    (typeof r.fetched_at === "string" && r.fetched_at) ||
-    undefined;
+  // ASOF-2: the observation time only; fetched_at (server answer time) is never a stamp.
+  const asOf = observationAsOf(r, data);
   const latencyMsRaw = r.elapsed_ms ?? r.latency_ms ?? data.latency_ms;
   const latencyMs = typeof latencyMsRaw === "number" ? latencyMsRaw : undefined;
   recordPaneContract(code, symbol, {

@@ -157,6 +157,24 @@ const LIVE_DATA_MODES: ReadonlySet<string> = new Set<string>([
   "live_exchange",
 ]);
 
+/**
+ * The observation time a response declares, for the desk freshness stamp (ASOF-2).
+ *
+ * Order: the function's own `data.as_of`, the top-level `as_of`, then the backend envelope
+ * `asOf` (the observation date, null when the payload declares none). `fetched_at` is the
+ * server's answer time, never an observation time, so it is not read here; with nothing
+ * declared the stamp is left empty and the desk judges the contract by receipt time.
+ */
+export function observationAsOf(
+  r: Record<string, unknown>,
+  data: Record<string, unknown>,
+): string | undefined {
+  for (const value of [data.as_of, r.as_of, r.asOf]) {
+    if (typeof value === "string" && value.trim() !== "") return value;
+  }
+  return undefined;
+}
+
 /** Resolve the timestamp a contract is judged by (asOf, else receivedAt). */
 export function paneStampedAt(snap: PaneContractSnapshot): number {
   if (typeof snap.asOf === "string") {
