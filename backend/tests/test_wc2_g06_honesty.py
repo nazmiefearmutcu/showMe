@@ -35,3 +35,37 @@ def test_ovme_non_numeric_input_is_an_input_error_not_a_crash() -> None:
     res = _run_ovme(spot="abc", strike=100, years_to_expiry=0.5, vol=0.25)
     assert res.data["status"] == "input_error"
     assert any("spot" in w for w in res.warnings)
+
+
+# ---------------------------------------------------------------- TAUC#2
+from datetime import date, timedelta  # noqa: E402
+
+from showme.engine.core.base_function import FunctionDeps  # noqa: E402
+from showme.engine.functions.bond.tauc import TAUCFunction  # noqa: E402
+
+
+def _tauc_reference(**params):
+    return asyncio.run(TAUCFunction(FunctionDeps()).execute(reference=True, **params))
+
+
+def test_tauc_reference_model_honours_the_horizon() -> None:
+    res = _tauc_reference(horizon_days=7)
+    today = date.today()
+    rows = res.data["rows"]
+    assert rows, "the 7-day window still holds the nearest model auctions"
+    for row in rows:
+        day = date.fromisoformat(row["auction_date"][:10])
+        assert today - timedelta(days=1) <= day <= today + timedelta(days=7), row
+
+
+def test_tauc_reference_model_honours_the_limit() -> None:
+    res = _tauc_reference(horizon_days=30, limit=2)
+    assert len(res.data["rows"]) == 2
+
+
+def test_tauc_reference_model_invents_no_offering_sizes() -> None:
+    res = _tauc_reference(horizon_days=30)
+    assert res.data["rows"]
+    for row in res.data["rows"]:
+        assert row["offering_amount"] is None, row
+    assert all(slot["total_offering"] is None for slot in res.data["by_type"])
