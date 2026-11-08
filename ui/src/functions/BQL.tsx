@@ -4,8 +4,9 @@
  * A DSL console over the backend's get()/for()/with()/by() query parser:
  * editable query (persisted as `showme.bql.last`), Run button, dynamic
  * results grid, and the backend's query_plan echoed in a collapsible.
- * The pane always sends live:true — without it the backend returns no rows
- * (its offline branch) — and surfaces the summary.mode pill, provider
+ * The pane always sends live:true explicitly, so the request is live whatever
+ * the backend default is; live:false makes the backend return no rows. It
+ * surfaces the summary.mode pill, provider
  * warnings verbatim, and client-side parse notes when the query omits
  * get(...)/for(...) blocks (the parser silently defaults those).
  */
@@ -68,8 +69,8 @@ export function BQLPane({ code, symbol }: FunctionPaneProps) {
   const [input, setInput] = useState<string>(query);
 
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF", "CRYPTO", "INDEX"]);
-  // live:true is required: the backend's offline branch returns no rows
-  // (BQL has no offline data model), so the pane always asks for provider OHLCV.
+  // live:true is sent explicitly: BQL has no offline data model, so the pane
+  // always asks for provider OHLCV rather than relying on a backend default.
   const { state, data, error, refetch } = useFunction<BQLData>({
     code,
     symbol: effectiveSymbol,
