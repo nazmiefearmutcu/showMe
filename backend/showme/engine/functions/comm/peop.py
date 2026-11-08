@@ -15,10 +15,15 @@ APPLE_LEADERSHIP_SOURCE = (
     "tim-cook-to-become-apple-executive-chairman-john-ternus-to-become-apple-ceo/"
 )
 
+# The bundled reference set is a snapshot of an announcement, not a live lookup.
+# Roles are written as the announcement stated them, so they never claim a
+# current position; the snapshot date is surfaced with every row served from it.
+REFERENCE_AS_OF = "2026-04-20"
+
 PUBLIC_REFERENCE_PEOPLE: list[dict[str, Any]] = [
     {
         "full_name": "Tim Cook",
-        "role": "CEO through summer 2026; Executive Chairman effective 2026-09-01",
+        "role": "Apple CEO; announced to become Executive Chairman effective 2026-09-01 (announcement dated 2026-04-20)",
         "company": "Apple",
         "email": None,
         "linkedin": None,
@@ -33,7 +38,7 @@ PUBLIC_REFERENCE_PEOPLE: list[dict[str, Any]] = [
     },
     {
         "full_name": "John Ternus",
-        "role": "Senior Vice President, Hardware Engineering; incoming CEO effective 2026-09-01",
+        "role": "Senior Vice President, Hardware Engineering; announced as CEO effective 2026-09-01 (announcement dated 2026-04-20)",
         "company": "Apple",
         "email": None,
         "linkedin": None,
@@ -48,7 +53,7 @@ PUBLIC_REFERENCE_PEOPLE: list[dict[str, Any]] = [
     },
     {
         "full_name": "Arthur Levinson",
-        "role": "Non-Executive Chairman; Lead Independent Director effective 2026-09-01",
+        "role": "Chairman of the Board; announced as Lead Independent Director effective 2026-09-01 (announcement dated 2026-04-20)",
         "company": "Apple",
         "email": None,
         "linkedin": None,
@@ -106,7 +111,10 @@ class PEOPFunction(BaseFunction):
         # default: search
         query = params.get("query") or params.get("q") or ""
         limit = int(params.get("limit", 25))
-        items = pd.search(query, limit=limit)
+        # PEOP#4: an empty or one-character query must never reach the local
+        # LIKE search (LIKE '%%' matches every row). Same rule as the live and
+        # reference searches below.
+        items = pd.search(query, limit=limit) if _usable_query(query) else []
         source_mode = "local_directory"
         live_sources: list[str] = []
         provider_error: str | None = None
@@ -142,7 +150,18 @@ class PEOPFunction(BaseFunction):
         else:
             sources = []
 
-        if items:
+        warnings: list[str] = [provider_error] if provider_error else []
+        reference_as_of: str | None = None
+        if source_mode == "public_reference":
+            # PEOP#2: rows from the bundled snapshot are never a live answer.
+            # Report needs_data with the snapshot date instead of status ok.
+            reference_as_of = REFERENCE_AS_OF
+            warnings.append(
+                f"Only the bundled public-reference set matched (snapshot dated "
+                f"{REFERENCE_AS_OF}); it may be out of date and is not a live lookup."
+            )
+            status = "needs_data"
+        elif items:
             status = "ok"
         elif provider_error:
             status = "provider_unavailable"
@@ -151,14 +170,19 @@ class PEOPFunction(BaseFunction):
 
         next_actions: list[str] = []
         if not items:
-            next_actions.append(
-                "Add a person with action=upsert or broaden the search query."
-            )
+            # PEOP#3: on a provider outage the retry hint leads so the pane's
+            # empty state explains the outage rather than "no people exist".
             if provider_error:
                 next_actions.append(
                     "Retry once the Wikipedia/Wikidata public API is reachable."
                 )
+                next_actions.append(
+                    "Add a person with action=upsert to keep a private local record."
+                )
             else:
+                next_actions.append(
+                    "Add a person with action=upsert or broaden the search query."
+                )
                 next_actions.append(
                     "Connect/import a local people directory for private contacts."
                 )
@@ -169,6 +193,7 @@ class PEOPFunction(BaseFunction):
                                   "items": items,
                                   "rows": items,
                                   "source_mode": source_mode,
+                                  "reference_as_of": reference_as_of,
                                   "connection_status": [
                                       {"source": "local_people_directory", "status": "used" if source_mode == "local_directory" else "checked"},
                                       {"source": "wikipedia", "status": "used" if source_mode == "wikipedia_live" else ("failed" if provider_error else "checked")},
@@ -201,7 +226,12 @@ class PEOPFunction(BaseFunction):
                                   **({"next_actions": next_actions} if next_actions else {}),
                               },
                               sources=sources,
-                              warnings=[provider_error] if provider_error else [])
+                              warnings=warnings)
+
+
+def _usable_query(query: Any) -> bool:
+    """A query needs at least two characters to be searched at all."""
+    return len(str(query or "").strip()) >= 2
 
 
 def reference_people_search(query: str, *, limit: int = 25) -> list[dict[str, Any]]:

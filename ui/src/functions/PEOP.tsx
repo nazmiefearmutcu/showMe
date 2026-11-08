@@ -63,6 +63,8 @@ interface PEOPData {
   items?: PEOPItem[];
   rows?: PEOPItem[];
   source_mode?: string;
+  reference_as_of?: string | null;
+  reason?: string | null;
   connection_status?: { source?: string; status?: string }[];
   next_actions?: string[];
   methodology?: string;
@@ -236,6 +238,18 @@ export function PEOPPane({ code }: FunctionPaneProps) {
     [],
   );
 
+  // PEOP#3: a provider outage must say so; "no people matched" would read as
+  // "no people exist", so the failure reason leads the empty state.
+  const providerDown = payload?.status === "provider_unavailable";
+  const emptyBody = providerDown
+    ? `The live Wikipedia/Wikidata people search failed${
+        payload?.reason ? `: ${payload.reason}` : "."
+      } The local directory has no match for "${query}". ${
+        payload?.next_actions?.[0] ?? ""
+      }`.trim()
+    : (payload?.next_actions?.[0] ??
+      `The local directory and the live Wikipedia/Wikidata search returned nothing for "${query}".`);
+
   const body = !hasSearched ? (
     <Empty
       title="Search for a person"
@@ -247,14 +261,17 @@ export function PEOPPane({ code }: FunctionPaneProps) {
       state={state}
       error={error}
       empty={items.length === 0}
-      emptyTitle="No people matched"
-      emptyBody={
-        payload?.next_actions?.[0] ??
-        `The local directory and the live Wikipedia/Wikidata search returned nothing for "${query}".`
-      }
+      emptyTitle={providerDown ? "People search unavailable" : "No people matched"}
+      emptyBody={emptyBody}
       onRetry={refetch}
     >
       <div className="u-grid-gap-14">
+        {payload?.source_mode === "public_reference" && (
+          <div role="note" style={referenceNoteStyle}>
+            Bundled reference snapshot dated {payload.reference_as_of ?? "unknown"}.
+            Live search found no match, so these rows are not a live lookup and may be out of date.
+          </div>
+        )}
         <section style={kpiGridStyle} aria-label="PEOP summary">
           <StatCard
             label="Matches"
@@ -367,6 +384,12 @@ export function PEOPPane({ code }: FunctionPaneProps) {
     </div>
   );
 }
+
+const referenceNoteStyle: CSSProperties = {
+  fontSize: "var(--font-size-xs)",
+  color: "var(--text-mute)",
+  lineHeight: 1.4,
+};
 
 const kpiGridStyle: CSSProperties = {
   display: "grid",
