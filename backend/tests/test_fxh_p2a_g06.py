@@ -125,3 +125,45 @@ def test_fxh6_portfolio_foreign_position_notional_is_native_currency(monkeypatch
     ))
     assert result.data["rows"][0]["currency"] == "EUR"
     assert result.data["rows"][0]["notional_foreign"] == pytest.approx(1500.0)
+
+
+# ── FXH#3: manifest spot_shock_pct (percent) and tenor are honoured ─────
+
+
+def test_fxh3_spot_shock_pct_is_read_as_percent() -> None:
+    """Was: spot_shock_pct=10 was ignored and the 5% default ran silently."""
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03, spot_shock_pct=10.0,
+    ))
+    row = result.data["rows"][0]
+    assert row["scenario_usd_strengthens_pct"] == pytest.approx(10.0)
+    assert row["spot_if_home_strengthens"] == pytest.approx(1.08 * 0.90)
+
+
+def test_fxh3_tenor_maps_to_days() -> None:
+    """Was: tenor=1Y was ignored and 90 days was used."""
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03, tenor="1Y",
+    ))
+    assert result.data["days_to_maturity"] == 365
+    assert result.data["rows"][0]["days_to_maturity"] == 365
+
+
+def test_fxh3_legacy_usd_shock_pct_decimal_still_wins() -> None:
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03, usd_shock_pct=0.02,
+    ))
+    assert result.data["rows"][0]["scenario_usd_strengthens_pct"] == pytest.approx(2.0)
+
+
+def test_fxh3_unknown_tenor_is_an_explicit_input_error() -> None:
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03, tenor="7Y",
+    ))
+    assert result.data["status"] == "input_error"
+    assert "tenor" in result.data["reason"].lower()
+    assert result.data["rows"] == []

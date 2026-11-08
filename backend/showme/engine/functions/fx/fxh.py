@@ -16,6 +16,8 @@ from showme.engine.services.fx_hedge import FXExposure, forward_rate, hedge_book
 DEFAULT_NOTIONAL = 1_000_000.0
 DEFAULT_BASE_RATE = 0.035
 DEFAULT_HOME_RATE = 0.045
+# Manifest tenor options (see fxh_seed.py) mapped to calendar days.
+TENOR_DAYS: dict[str, int] = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
 
 
 @FunctionRegistry.register
@@ -33,9 +35,34 @@ class FXHFunction(BaseFunction):
         )
         pair_base, pair_quote = pair[:3], pair[3:6]
         home = (params.get("home_currency") or pair_quote or "USD").upper()
-        days = int(params.get("days", 90))
         ratio = float(params.get("hedge_ratio", 0.75))
-        shock = float(params.get("usd_shock_pct", 0.05))
+        # Manifest tenor (1W..1Y) maps to days unless an explicit days is given.
+        if _missing(params.get("days")) and not _missing(params.get("tenor")):
+            tenor_key = str(params.get("tenor")).strip().upper()
+            if tenor_key not in TENOR_DAYS:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=None,
+                    data={
+                        "status": "input_error",
+                        "reason": f"Unknown tenor {params.get('tenor')!r}; expected one of {sorted(TENOR_DAYS)}.",
+                        "rows": [],
+                        "source_mode": "manual_exposure",
+                    },
+                    sources=["manual_exposure"],
+                    warnings=[],
+                )
+            days = TENOR_DAYS[tenor_key]
+        else:
+            days = int(params.get("days", 90))
+        # Shock: legacy usd_shock_pct is a decimal; the manifest spot_shock_pct
+        # is a percent. The legacy key wins when both are sent.
+        if not _missing(params.get("usd_shock_pct")):
+            shock = float(params["usd_shock_pct"])
+        elif not _missing(params.get("spot_shock_pct")):
+            shock = float(params["spot_shock_pct"]) / 100.0
+        else:
+            shock = 0.05
         source_mode = "manual_exposure"
         assumed_defaults: list[str] = []
         # explicit exposures override manual defaults; portfolio state is only
