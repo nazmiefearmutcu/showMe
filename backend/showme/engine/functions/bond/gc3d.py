@@ -68,7 +68,9 @@ def _surface_template(tenors: list[str]) -> dict[str, Any]:
         for tenor in tenors:
             surface.append({"date": date, "tenor": tenor, "tenor_years": _TENOR_YEARS.get(tenor, 0),
                             "yield": round(base.get(tenor, 4.5) + i * 0.015, 4)})
-    return _surface_payload(surface, tenors, dates, "yield_curve_model", max(offsets))
+    payload = _surface_payload(surface, tenors, dates, "yield_curve_model", max(offsets))
+    payload["missing_tenors"] = []
+    return payload
 
 
 def _surface_payload(
@@ -202,15 +204,24 @@ class GC3DFunctionLive(BaseFunction):
                 ] + tenor_notes,
             )
         live_tenors = [t for t in tenors if any(p["tenor"] == t for p in surface)]
+        # A selected tenor whose FRED series returned nothing is reported, not
+        # silently dropped from the grid.
+        missing_tenors = [t for t in tenors if t not in live_tenors]
+        if missing_tenors:
+            tenor_notes = [
+                f"FRED returned no observations for requested tenors: {', '.join(missing_tenors)}; they are omitted."
+            ] + tenor_notes
+        payload = _surface_payload(
+            surface,
+            live_tenors,
+            [d.strftime("%Y-%m-%d") for d in frame.index],
+            "fred",
+            days,
+        )
+        payload["missing_tenors"] = missing_tenors
         return FunctionResult(
             code=self.code, instrument=None,
-            data=_surface_payload(
-                surface,
-                live_tenors,
-                [d.strftime("%Y-%m-%d") for d in frame.index],
-                "fred",
-                days,
-            ),
+            data=payload,
             sources=["fred"],
             warnings=tenor_notes,
             metadata={"live": True, "data_mode": "live_official"},

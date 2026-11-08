@@ -173,3 +173,33 @@ def test_gc3d_seed_does_not_advertise_3d_surface() -> None:
     for test in gc3d.semantic_tests:
         assert not re.search(r"\b3d\b", test.name.lower()), test.name
         assert not re.search(r"\b3d\b", test.description.lower()), test.description
+
+
+class _CsvClientSkipping(_CsvClient):
+    """Like _CsvClient, but the listed FRED series ids fail (network error)."""
+
+    def __init__(self, skip_ids: tuple[str, ...]):
+        super().__init__()
+        self._skip = skip_ids
+
+    async def get(self, url, timeout=None):
+        if any(f"id={sid}" in url for sid in self._skip):
+            self.calls.append(url)
+            raise RuntimeError("series unavailable")
+        return await super().get(url, timeout=timeout)
+
+
+def test_gc3d_reports_requested_tenor_that_fred_did_not_return(_fresh_fred_cache) -> None:
+    """A selected tenor whose FRED series fails must not vanish silently."""
+    out = _run(_gc3d(_CsvClientSkipping(("DGS30",))).execute(tenors=["3M", "30Y"], days=90))
+    assert out.sources == ["fred"]
+    assert out.data["tenors"] == ["3M"]
+    assert {p["tenor"] for p in out.data["surface"]} == {"3M"}
+    assert out.data["missing_tenors"] == ["30Y"], out.data
+    assert any("30Y" in w for w in out.warnings), out.warnings
+
+
+def test_gc3d_no_missing_tenors_when_every_requested_series_returns(_fresh_fred_cache) -> None:
+    out = _run(_gc3d(_CsvClient()).execute(tenors=["3M", "30Y"], days=90))
+    assert out.data["missing_tenors"] == []
+    assert not any("no observations" in w for w in out.warnings), out.warnings
