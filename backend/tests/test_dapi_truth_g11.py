@@ -26,3 +26,21 @@ def test_curated_proxy_path_uses_openapi_form() -> None:
     # OpenAPI (and the drift audit) render the catch-all as {path}; the
     # Starlette converter form {path:path} made exact comparisons fail.
     assert all(":path}" not in r["path"] for r in proxy)
+
+
+def test_no_startup_wiring_is_claimed_for_route_provider() -> None:
+    # Nothing under backend assigns deps.dapi_route_provider, so the module and
+    # seed must not say server.py wires it at startup (the pre-fix wording).
+    # Pre-fix dapi.py line 5 read "(set by server.py at startup)"; this fails on it.
+    from pathlib import Path
+
+    from showme.engine.functions.api import dapi as dapi_module
+    from showme.manifest.seeds import dapi_seed
+
+    module_text = Path(dapi_module.__file__).read_text(encoding="utf-8")
+    seed_text = Path(dapi_seed.__file__).read_text(encoding="utf-8")
+    assert "server.py" not in module_text
+    assert "server.py" not in seed_text
+    methodology = _run()["methodology"]
+    assert "server.py" not in methodology
+    assert "nothing assigns it" in methodology
