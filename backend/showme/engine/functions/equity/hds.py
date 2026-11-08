@@ -145,7 +145,7 @@ class HDSFunction(BaseFunction):
             "status": status,
             "rows": rows,
             "holder_type_filter": holder_type,
-            "methodology": "HDS shows holder rows from Yahoo institutional / mutual-fund holder tables and local SEC 13F data, restricted to holder_type. Yahoo major-holder percentages are a summary block, not holder rows.",
+            "methodology": "HDS shows one holder source per table: Yahoo institutional / mutual-fund holder tables when they return rows (pct_outstanding from pctHeld), otherwise the local SEC 13F aggregate (CIK-labelled, no pct). The 13F aggregate is always returned in sec_13f_top when present. Rows are restricted to holder_type. Yahoo major-holder percentages are a summary block, not holder rows.",
             "field_dictionary": FIELD_DICTIONARIES["holders"],
         }
         if reason:
@@ -249,6 +249,15 @@ def _fraction_of_outstanding(value: Any) -> float | None:
 
 
 def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, Any]) -> list[dict[str, Any]]:
+    """Holder rows come from one source only, never a mix.
+
+    Yahoo holder tables win when they return rows, because only they carry
+    pctHeld (the % out basis). The local 13F aggregate is the row source when
+    Yahoo returns nothing; it is always returned separately as sec_13f_top.
+    """
+    yahoo_rows = _yahoo_holder_rows(symbol, yahoo)
+    if yahoo_rows:
+        return yahoo_rows
     if sec_top:
         rows = []
         for item in sec_top:
@@ -268,6 +277,10 @@ def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, An
                 "source_mode": "sec_13f",
             })
         return rows
+    return []
+
+
+def _yahoo_holder_rows(symbol: str, yahoo: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for key, holder_type in [("institutional", "institutional"), ("mutualfund", "mutual_fund")]:
         for item in frame_rows(yahoo.get(key), limit=25):

@@ -129,3 +129,42 @@ def test_manifest_field_dict_describes_emitted_pct_as_fraction():
     assert "pct_institutional" not in fd and "float_shares" not in fd, sorted(fd)
     assert "pct_outstanding" in fd
     assert "fraction" in fd["pct_outstanding"].description.lower()
+
+
+# HDS#2 follow-up: 13F present must not discard yfinance pctHeld -------------
+
+class _SecEdgarApple:
+    async def cik_for(self, ticker: str) -> str | None:
+        return "0000320193"
+
+    async def submissions(self, cik: str) -> dict[str, Any]:
+        return {"name": "Apple Inc."}
+
+
+class _Sec13FFiler:
+    async def query_holdings_by_security(self, **_kwargs: Any) -> pd.DataFrame:
+        return pd.DataFrame({
+            "filer_cik": ["0000102909"],
+            "report_date": ["2026-06-30"],
+            "value_usd": [None],
+            "shares": [2.5e7],
+        })
+
+
+def test_13f_present_keeps_yfinance_pctheld_rows():
+    fn = _fn(yfinance=_Yahoo(_institutional_frame()), sec_13f=_Sec13FFiler(), sec_edgar=_SecEdgarApple())
+    res = _run(fn)
+    rows = res.data["rows"]
+    # RED before fix: _holder_rows returned only the 13F row, so pct_outstanding was absent.
+    assert [r["pct_outstanding"] for r in rows] == [0.08, 0.066], rows
+    assert {r["source_mode"] for r in rows} == {"yfinance_holders"}, rows
+    # The 13F aggregate is still returned, under its own key, not mixed into rows.
+    assert res.data["sec_13f_top"][0]["filer_cik"] == "0000102909", res.data
+    assert set(res.sources) == {"yfinance", "sec_13f"}
+
+
+def test_13f_only_path_still_returns_13f_rows():
+    fn = _fn(yfinance=None, sec_13f=_Sec13FFiler(), sec_edgar=_SecEdgarApple())
+    res = _run(fn)
+    assert [r["source_mode"] for r in res.data["rows"]] == ["sec_13f"], res.data
+    assert res.sources == ["sec_13f"]
