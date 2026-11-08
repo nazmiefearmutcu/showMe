@@ -155,3 +155,68 @@ def test_gp_coarse_interval_is_not_flagged_as_short_span(
 
     assert result.data["bar_count"] >= 1
     assert not any("shorter" in w for w in result.warnings), result.warnings
+
+
+class _YahooHourlyResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+def _yahoo_hourly_client(monkeypatch: pytest.MonkeyPatch, hours: int) -> None:
+    """Yahoo serves 60m bars only; GP 4h must come back as 4-hour candles (GP#3)."""
+    now = int(_now())
+    start = (now // 3600) * 3600 - hours * 3600
+    stamps = [start + 3600 * i for i in range(hours)]
+    closes = [100.0 + (i % 7) * 0.3 for i in range(hours)]
+    payload = {
+        "chart": {
+            "result": [{
+                "meta": {"symbol": "AAPL", "currency": "USD"},
+                "timestamp": stamps,
+                "indicators": {"quote": [{
+                    "open": closes,
+                    "high": [c + 0.5 for c in closes],
+                    "low": [c - 0.5 for c in closes],
+                    "close": closes,
+                    "volume": [1_000.0] * hours,
+                }]},
+            }],
+            "error": None,
+        }
+    }
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+        async def get(self, url: str, params: Any = None) -> _YahooHourlyResponse:
+            assert params is not None and params["interval"] == "60m"
+            return _YahooHourlyResponse(payload)
+
+    import showme.chart_history as chart_history
+
+    monkeypatch.delenv("STOOQ_API_KEY", raising=False)
+    monkeypatch.setattr(chart_history.httpx, "AsyncClient", _Client)
+
+
+def test_gp_4h_request_returns_four_hour_candles(monkeypatch: pytest.MonkeyPatch) -> None:
+    _yahoo_hourly_client(monkeypatch, hours=120)
+    result = _run("GP", {"days": 90, "range": "3M", "interval": "4h", "bars": 1000})
+
+    times = [row["time"] for row in result.data["ohlcv"]]
+    seconds = [t / 1000 if t >= 10_000_000_000 else t for t in times]
+    assert len(seconds) >= 2
+    gaps = {round(b - a) for a, b in zip(seconds, seconds[1:])}
+    assert gaps == {14_400}, gaps
