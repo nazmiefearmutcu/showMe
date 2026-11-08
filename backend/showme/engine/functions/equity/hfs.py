@@ -171,9 +171,9 @@ class HFSFunction(BaseFunction):
         except Exception as e:
             return _unavailable(
                 self.code, instrument, issuer, quarter,
-                reason=f"Local 13F store lookup failed: {e}",
+                reason=f"Local 13F store lookup failed: {str(e) or type(e).__name__}",
                 sources=[],
-                metadata={**base_metadata, "provider_errors": [f"sec_13f: {e}"]},
+                metadata={**base_metadata, "provider_errors": [f"sec_13f: {str(e) or type(e).__name__}"]},
                 next_actions=[_INGEST_ACTION, "Retry the local SEC 13F store once the lookup is available."],
             )
 

@@ -656,7 +656,7 @@ class TSARFunction(BaseFunction):
                     if content:
                         ingest_sources.append("whisper")
                 except Exception as exc:  # noqa: BLE001
-                    ingest_warnings.append(f"transcribe_url: {exc}")
+                    ingest_warnings.append(f"transcribe_url: {str(exc) or type(exc).__name__}")
             if not content and params.get("audio_path"):
                 try:
                     from showme.engine.services.transcription import transcribe
@@ -673,7 +673,7 @@ class TSARFunction(BaseFunction):
                     if content:
                         ingest_sources.append("whisper")
                 except Exception as exc:  # noqa: BLE001
-                    ingest_warnings.append(f"transcribe: {exc}")
+                    ingest_warnings.append(f"transcribe: {str(exc) or type(exc).__name__}")
         sentiment = params.get("sentiment")
         if sentiment is None and content:
             try:

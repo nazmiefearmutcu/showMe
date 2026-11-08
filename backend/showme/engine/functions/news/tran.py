@@ -206,7 +206,7 @@ class TRANFunction(BaseFunction):
                             "event_id": ev.get("event_id"),
                         })
             except Exception as e:  # noqa: BLE001 - archive optional
-                warnings.append(f"transcripts_archive: {e}")
+                warnings.append(f"transcripts_archive: {str(e) or type(e).__name__}")
 
         # 3) DEFAULT keyless live source — SEC EDGAR 8-K earnings exhibit.
         sec_error: str | None = None
@@ -271,7 +271,7 @@ class TRANFunction(BaseFunction):
                         model_name=params.get("model", "base"),
                     )
                 except Exception as e:  # noqa: BLE001 - whisper optional
-                    warnings.append(f"whisper: {e}")
+                    warnings.append(f"whisper: {str(e) or type(e).__name__}")
             if audio_path and not whisper_result:
                 try:
                     from showme.engine.services.transcription import transcribe
@@ -280,7 +280,7 @@ class TRANFunction(BaseFunction):
                         model_name=params.get("model", "base"),
                     )
                 except Exception as e:  # noqa: BLE001 - whisper optional
-                    warnings.append(f"whisper local: {e}")
+                    warnings.append(f"whisper local: {str(e) or type(e).__name__}")
             if whisper_result:
                 text = whisper_result.get("text") if isinstance(whisper_result, dict) else None
                 if text:

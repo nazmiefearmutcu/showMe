@@ -300,7 +300,7 @@ async def _symbol_history(
             timeout=max(timeout + 1.0, 3.0),
         )
     except Exception as exc:  # noqa: BLE001 — history is best-effort
-        return [], [f"{symbol} history: {exc}"]
+        return [], [f"{symbol} history: {str(exc) or type(exc).__name__}"]
     return _history_rows(df, symbol, limit=limit), []
 
 
@@ -1024,7 +1024,7 @@ class BGASFunction(BaseFunction):
             # transport failures so the yfinance fallback ran silently
             # even when EIA was the configured primary. Capture into
             # provider_errors so the source/status panel can show why.
-            provider_errors.append(f"eia: {exc}")
+            provider_errors.append(f"eia: {str(exc) or type(exc).__name__}")
         row = None
         history: list[dict[str, Any]] = []
         if live and self.deps.yfinance:
@@ -1364,7 +1364,7 @@ class CPFFunction(BaseFunction):
         try:
             actual_series = await self._yahoo_history(futures, timeout)
         except Exception as exc:  # noqa: BLE001
-            provider_errors.append(f"{futures} yahoo: {exc}")
+            provider_errors.append(f"{futures} yahoo: {str(exc) or type(exc).__name__}")
         if not actual_series and self.deps.yfinance:
             try:
                 _row, hist, snap_errors = await _contract_snapshot(
@@ -1381,7 +1381,7 @@ class CPFFunction(BaseFunction):
                         continue
                     actual_series.append({"date": h.get("date"), "value": close})
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"{futures} adapter: {exc}")
+                provider_errors.append(f"{futures} adapter: {str(exc) or type(exc).__name__}")
         if actual_series:
             latest_actual = _finite(actual_series[-1].get("value"))
             actual_as_of = actual_series[-1].get("date")
@@ -1399,7 +1399,7 @@ class CPFFunction(BaseFunction):
                     actual_series, horizon_months, now,
                 )
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"forecast: {exc}")
+                provider_errors.append(f"forecast: {str(exc) or type(exc).__name__}")
 
         # Genuine outage on the live source -> honest provider_unavailable. The
         # reason carries the errors that were really raised, never a guess.
@@ -1751,7 +1751,7 @@ class GLCOFunction(BaseFunction):
                     try:
                         history = task.result()
                     except Exception as exc:  # noqa: BLE001 — best-effort history
-                        provider_errors.append(f"{sym} history: {exc}")
+                        provider_errors.append(f"{sym} history: {str(exc) or type(exc).__name__}")
                         continue
                     if history:
                         history_by_symbol[sym] = history
@@ -1963,8 +1963,8 @@ class WETRFunction(BaseFunction):
         except Exception as e:  # noqa: BLE001 — provider outage degrades honestly
             return self._seasonal_model_result(
                 days, lat, lon, location_key, commodity,
-                reason=f"Live weather request failed: {e}",
-                warning=f"{provider_name}: {e}",
+                reason=f"Live weather request failed: {str(e) or type(e).__name__}",
+                warning=f"{provider_name}: {str(e) or type(e).__name__}",
             )
         live_mode = "live_open_meteo" if provider_name == "open_meteo" else "live_openweathermap"
         rows = _normalise_weather_rows(

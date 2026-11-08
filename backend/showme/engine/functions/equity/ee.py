@@ -48,7 +48,7 @@ class EEFunction(BaseFunction):
                     timeout=float(params.get("finnhub_timeout", 8)),
                 )
         except Exception as e:
-            warnings.append(f"finnhub: {e}")
+            warnings.append(f"finnhub: {str(e) or type(e).__name__}")
         yf_data = None
         try:
             if self.deps.yfinance:
@@ -60,7 +60,7 @@ class EEFunction(BaseFunction):
                     timeout=float(params.get("yfinance_timeout", 8)),
                 )
         except Exception as e:
-            warnings.append(f"yfinance: {e}")
+            warnings.append(f"yfinance: {str(e) or type(e).__name__}")
         candidate_rows = _earnings_rows(instrument.symbol, finnhub_data, yf_data, history + 4)
         # Honesty (EE#3/EE#4): the placeholder is decided by whether any real
         # provider row exists. Provider errors are never cleared, and a

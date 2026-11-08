@@ -283,12 +283,12 @@ async def _market_flow_proxy(
             bars = await chart_task
         except Exception as exc:
             bars = []
-            warnings.append(f"yahoo_chart: {exc}")
+            warnings.append(f"yahoo_chart: {str(exc) or type(exc).__name__}")
         try:
             sec_rows = await sec_task if sec_task else []
         except Exception as exc:
             sec_rows = []
-            warnings.append(f"sec_edgar: {exc}")
+            warnings.append(f"sec_edgar: {str(exc) or type(exc).__name__}")
 
     flow_rows, history = _shape_market_bars(
         bars=bars,

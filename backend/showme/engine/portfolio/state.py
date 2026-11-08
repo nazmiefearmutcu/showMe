@@ -101,10 +101,10 @@ class PortfolioState:
                     backup.write_bytes(self.path.read_bytes())
                     backed_up = str(backup)
                 except Exception as copy_exc:
-                    backed_up = f"<backup failed: {copy_exc}>"
+                    backed_up = f"<backup failed: {str(copy_exc) or type(copy_exc).__name__}>"
                 self.degraded = True
                 self.degraded_reason = (
-                    f"portfolio.json failed to load ({exc}); corrupt copy at {backed_up}"
+                    f"portfolio.json failed to load ({str(exc) or type(exc).__name__}); corrupt copy at {backed_up}"
                 )
                 logger.error(
                     "PortfolioState: %s — save() disabled to protect the on-disk book",

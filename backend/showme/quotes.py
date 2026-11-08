@@ -269,7 +269,7 @@ def fetch_crypto_quote_sync(symbol: str) -> dict[str, Any]:
             if snapshot.get("last") is not None:
                 return snapshot
         except Exception as exc:  # noqa: BLE001
-            attempts.append(f"{provider.__name__}: {exc}")
+            attempts.append(f"{provider.__name__}: {str(exc) or type(exc).__name__}")
     raise QuoteFetchError("; ".join(attempts) or f"no crypto quote for {symbol}")
 
 
@@ -364,7 +364,7 @@ def fetch_equity_quote_sync(symbol: str) -> dict[str, Any]:
                         snapshot.update(bbo)
                 return snapshot
         except Exception as exc:  # noqa: BLE001
-            attempts.append(f"{provider.__name__}: {exc}")
+            attempts.append(f"{provider.__name__}: {str(exc) or type(exc).__name__}")
     raise QuoteFetchError("; ".join(attempts) or f"no equity quote for {symbol}")
 
 

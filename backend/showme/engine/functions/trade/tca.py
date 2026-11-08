@@ -403,7 +403,7 @@ class TCAFunction(BaseFunction):
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"TCA execution timed out: {exc}"
+            reason = f"TCA execution timed out: {str(exc) or type(exc).__name__}"
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data={
@@ -450,7 +450,7 @@ class TCAFunction(BaseFunction):
                 tx_rows = _parse_transactions_rows(tx_raw)
             except ValueError as exc:
                 return self._input_error(
-                    instrument, benchmark, as_of, f"Invalid transactions input: {exc}")
+                    instrument, benchmark, as_of, f"Invalid transactions input: {str(exc) or type(exc).__name__}")
             fills = self._fills_from_transactions(
                 tx_rows, symbol=symbol, broker=broker, cutoff=cutoff,
                 excluded=excluded)[:limit]

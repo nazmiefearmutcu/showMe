@@ -452,7 +452,7 @@ class DESFunction(BaseFunction):
                     timeout=budget,
                 )
             except Exception as e:
-                warnings.append(f"{src_name}: {e}")
+                warnings.append(f"{src_name}: {str(e) or type(e).__name__}")
                 continue
             if _has_profile_content(candidate):
                 rd = candidate

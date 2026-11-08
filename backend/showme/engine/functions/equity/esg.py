@@ -196,7 +196,7 @@ class ESGFunction(BaseFunction):
             else:
                 yahoo_note = "yahoo sustainability: yfinance adapter not configured"
         except Exception as exc:  # network / parse failure -> try proxy next
-            yahoo_note = f"yfinance esg: {exc}"
+            yahoo_note = f"yfinance esg: {str(exc) or type(exc).__name__}"
 
         flat = _flatten_sustainability(scores)
         rows = _build_rows_from_sustainability(flat) if flat else None
@@ -255,7 +255,7 @@ class ESGFunction(BaseFunction):
                     "field_dictionary": _FIELD_DICTIONARY,
                 },
                 sources=["yfinance", "sec_edgar"],
-                metadata={"provider_errors": warnings + [f"sec_edgar: {exc}"]},
+                metadata={"provider_errors": warnings + [f"sec_edgar: {str(exc) or type(exc).__name__}"]},
             )
 
         # Total = filings matching any E/S/G term (never the sum of the pillars,

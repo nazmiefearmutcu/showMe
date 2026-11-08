@@ -421,8 +421,8 @@ class AIMFunction(BaseFunction):
             try:
                 open_orders = await broker.get_open_orders()
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"{name}.get_open_orders: {exc}")
-                warnings.append(f"{name} unavailable: {exc}")
+                provider_errors.append(f"{name}.get_open_orders: {str(exc) or type(exc).__name__}")
+                warnings.append(f"{name} unavailable: {str(exc) or type(exc).__name__}")
                 continue
             brokers_online.append(name)
             for raw in (open_orders or []):
@@ -463,8 +463,8 @@ class AIMFunction(BaseFunction):
             for raw in raw_history:
                 history_rows.append(self._normalise_order("history", raw, from_history=True))
         except Exception as exc:  # noqa: BLE001
-            provider_errors.append(f"order_history.list_orders: {exc}")
-            warnings.append(f"order history unavailable: {exc}")
+            provider_errors.append(f"order_history.list_orders: {str(exc) or type(exc).__name__}")
+            warnings.append(f"order history unavailable: {str(exc) or type(exc).__name__}")
         # A history row that a live adapter already lists is the same order:
         # keep the live row only, so it is neither duplicated nor double counted.
         # AIM#3-RQ: one order can be stored under an adapter's .name AND its config

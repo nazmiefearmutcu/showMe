@@ -217,13 +217,13 @@ class ISINFunction(BaseFunction):
                 retry = f" Retry in about {exc.retry_after:.0f} s." if exc.retry_after else ""
                 # The exception text already says whether a request was sent
                 # (local pacing) or OpenFIGI answered HTTP 429.
-                limited_reason = f"{exc}.{retry} Set OPENFIGI_API_KEY for the 250 requests/min budget."
+                limited_reason = f"{str(exc) or type(exc).__name__}.{retry} Set OPENFIGI_API_KEY for the 250 requests/min budget."
                 warnings.append(limited_reason)
                 for i in idxs:
                     failures[i] = limited_reason
                 continue
             except Exception as e:  # noqa: BLE001 — per-batch, the rest still resolve
-                reason = f"lookup failed: {e}"
+                reason = f"lookup failed: {str(e) or type(e).__name__}"
                 warnings.append(reason)
                 for i in idxs:
                     failures[i] = reason

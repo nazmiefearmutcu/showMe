@@ -63,7 +63,7 @@ class DDMFunction(BaseFunction):
                     sources.append("yfinance")
             except Exception as e:
                 provider_failed = True
-                warnings.append(f"yfinance: {e}")
+                warnings.append(f"yfinance: {str(e) or type(e).__name__}")
         d0 = float(d0 or 0)
         if d0 <= 0:
             if provider_failed:
@@ -136,12 +136,12 @@ class DDMFunction(BaseFunction):
                     )
                 r = float(wacc_value)
             except Exception as e:
-                warnings.append(f"wacc: {e}")
+                warnings.append(f"wacc: {str(e) or type(e).__name__}")
                 return FunctionResult(
                     code=self.code, instrument=instrument,
                     data={
                         "status": "provider_unavailable",
-                        "reason": f"WACC provider failed ({e}); required return is unknown.",
+                        "reason": f"WACC provider failed ({str(e) or type(e).__name__}); required return is unknown.",
                         "next_actions": [
                             "Retry once the WACC provider is reachable.",
                             "Or pass required_return explicitly.",
@@ -325,7 +325,7 @@ class DCFFunction(BaseFunction):
                     fcfe_source = "yfinance"
                 sources.append("yfinance")
             except Exception as e:
-                warnings.append(f"yfinance: {e}")
+                warnings.append(f"yfinance: {str(e) or type(e).__name__}")
         if fcfe is None:
             warnings.append(
                 "free_cash_flow: no FCFE from the caller or the provider; pass fcfe to run the model."
@@ -428,7 +428,7 @@ class DCFFunction(BaseFunction):
                     shares = float(provider_shares)
                     shares_source = "yfinance"
             except Exception as e:
-                warnings.append(f"shares_outstanding: {e}")
+                warnings.append(f"shares_outstanding: {str(e) or type(e).__name__}")
         per_share = equity_value / shares if shares else None
         if per_share is None:
             warnings.append("shares_outstanding: no share count from the caller or the provider; fair value per share is not computed.")
