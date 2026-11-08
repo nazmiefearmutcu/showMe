@@ -319,6 +319,12 @@ class BTMMFunction(BaseFunction):
                 f"before the {_RANGE_WINDOW_DAYS}-day window are left out of the average, "
                 "range and largest move; they are shown with freshness=stale"
             )
+        if summary["undated_rows"]:
+            warnings.append(
+                f"undated_rows_excluded: {summary['undated_rows']} policy-rate row(s) have "
+                "no usable as_of date and are left out of the average, range, tilt counts "
+                "and largest move"
+            )
 
         # Bug #24 fix: surface data staleness as a warning so the UI's
         # "live" pill can flip to "warn" when the BIS cache + freshest row
@@ -653,13 +659,13 @@ def _summary(rows: list[dict[str, Any]], *, universe: list[dict[str, Any]]) -> d
         for row in fresh_rows
         if isinstance(row.get("policy_rate"), (int, float))
     ]
-    # Tilt counts skip stale observations (legacy 1998 series, a 2025 move) so
-    # they are not presented as current policy moves. Undated rows are kept.
-    non_stale_rows = [row for row, state in zip(rows, freshness) if state != "stale"]
+    # Tilt counts use the same fresh-only set as the average and the range, so
+    # a stale legacy series (1998) or an undated move is never counted as a
+    # current hike, cut or hold.
     move_counts = {
-        "hikes": sum(1 for row in non_stale_rows if row.get("last_move") == "hike"),
-        "cuts": sum(1 for row in non_stale_rows if row.get("last_move") == "cut"),
-        "holds": sum(1 for row in non_stale_rows if row.get("last_move") == "hold"),
+        "hikes": sum(1 for row in fresh_rows if row.get("last_move") == "hike"),
+        "cuts": sum(1 for row in fresh_rows if row.get("last_move") == "cut"),
+        "holds": sum(1 for row in fresh_rows if row.get("last_move") == "hold"),
     }
     movers = [row for row in fresh_rows if isinstance(row.get("change_bp"), (int, float))]
     hottest = max(movers, key=lambda row: abs(float(row["change_bp"])), default=None)

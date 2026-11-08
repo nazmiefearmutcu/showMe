@@ -70,3 +70,23 @@ def test_bis_failure_returns_explicit_unavailable_state_not_fallback_rows(monkey
 
 def test_no_hard_coded_fallback_table_remains() -> None:
     assert not hasattr(btmm, "_FALLBACK_ROWS")
+
+
+def test_tilt_counts_exclude_undated_rows(monkeypatch) -> None:
+    """BTMM#1 follow-up: a move with no usable as_of date is not counted as a
+    current hike, cut or hold, and the exclusion is reported."""
+    rows = [
+        {"country_code": "US", "policy_rate": 4.0, "change_bp": -25.0,
+         "last_move": "cut", "region": "americas", "as_of": _days_ago(3)},
+        {"country_code": "XX", "policy_rate": 5.0, "change_bp": 25.0,
+         "last_move": "hike", "region": "americas", "as_of": ""},
+        {"country_code": "YY", "policy_rate": 6.0, "change_bp": 0.0,
+         "last_move": "hold", "region": "americas", "as_of": "2999-01-01"},
+    ]
+    result = _run_with(monkeypatch, rows)
+    summary = result.data["summary"]
+    assert summary["hikes"] == 0, summary
+    assert summary["cuts"] == 1, summary
+    assert summary["holds"] == 0, summary
+    assert summary["undated_rows"] == 2, summary
+    assert any("undated_rows_excluded" in w for w in result.warnings), result.warnings
