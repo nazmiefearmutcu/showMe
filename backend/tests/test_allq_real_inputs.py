@@ -331,3 +331,76 @@ def test_allq1_coupon_tenor_reference_still_discloses_4pct_coupon() -> None:
     assert res.data["summary"]["reference_coupon_pct"] == 4.0
     assert "4% coupon" in res.data["summary"]["reference"]
     assert "zero-coupon" not in res.data["summary"]["reference"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ALLQ#3 (edge) — a 404 for the new year falls back to the previous year
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class _StatusResp:
+    """Response whose raise_for_status mirrors httpx's HTTPStatusError on 4xx/5xx."""
+
+    def __init__(self, url: str, text: str = "", status: int = 200):
+        self.url = url
+        self.text = text
+        self.status_code = status
+
+    def raise_for_status(self) -> None:
+        import httpx
+
+        if self.status_code >= 400:
+            request = httpx.Request("GET", self.url)
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=request, response=httpx.Response(self.status_code, request=request)
+            )
+
+
+class _StatusHttp:
+    def __init__(self, responses: dict[str, _StatusResp]):
+        self.responses = responses
+        self.urls: list[str] = []
+
+    async def get(self, url: str, params: dict[str, Any] | None = None) -> _StatusResp:
+        self.urls.append(url)
+        return self.responses.get(url, _StatusResp(url, status=404))
+
+
+def test_allq3_ustreasury_adapter_falls_back_when_new_year_returns_404() -> None:
+    from showme.engine.data_sources.bond.ustreasury_adapter import USTreasuryAdapter
+
+    year = datetime.now(timezone.utc).year
+    root = _CONFIG_URL[: -len("/all")]
+    cur, prev = f"{root}/{year}/all", f"{root}/{year - 1}/all"
+    adapter = USTreasuryAdapter({"base_url": _CONFIG_URL})
+    http = _StatusHttp({cur: _StatusResp(cur, status=404), prev: _StatusResp(prev, _CURVE_CSV)})
+
+    async def _client() -> _StatusHttp:
+        return http
+
+    adapter._client_ = _client  # type: ignore[method-assign]
+    frame = asyncio.run(adapter.yield_curve())
+
+    assert http.urls == [cur, prev]
+    assert float(frame["10 Yr"].iloc[-1]) == 4.86
+
+
+def test_allq3_ustreasury_adapter_does_not_mask_server_errors() -> None:
+    import httpx
+    import pytest
+
+    from showme.engine.data_sources.bond.ustreasury_adapter import USTreasuryAdapter
+
+    year = datetime.now(timezone.utc).year
+    root = _CONFIG_URL[: -len("/all")]
+    cur = f"{root}/{year}/all"
+    adapter = USTreasuryAdapter({"base_url": _CONFIG_URL})
+    http = _StatusHttp({cur: _StatusResp(cur, status=500)})
+
+    async def _client() -> _StatusHttp:
+        return http
+
+    adapter._client_ = _client  # type: ignore[method-assign]
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(adapter.yield_curve())
+    assert http.urls == [cur]

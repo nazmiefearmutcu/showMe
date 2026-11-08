@@ -55,12 +55,24 @@ class USTreasuryAdapter(BaseDataSource):
         r.raise_for_status()
         return pd.read_csv(StringIO(r.text))
 
+    async def _fetch_year_or_none(self, client: Any, year: int) -> pd.DataFrame | None:
+        """Like ``_fetch_year`` but a 404 (year file not published yet) yields ``None``.
+
+        Other HTTP errors still propagate so a real outage is not masked.
+        """
+        try:
+            return await self._fetch_year(client, year)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+
     async def yield_curve(self) -> pd.DataFrame:
         client = await self._client_()
         year = datetime.now(timezone.utc).year
-        df = await self._fetch_year(client, year)
-        if df.empty:
-            # Early January: the new year's file may not have a row yet.
+        df = await self._fetch_year_or_none(client, year)
+        if df is None or df.empty:
+            # Early January: the new year's file may be missing (404) or have no row yet.
             df = await self._fetch_year(client, year - 1)
         if "Date" in df.columns:
             df["Date"] = pd.to_datetime(df["Date"])
