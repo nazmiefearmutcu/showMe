@@ -65,6 +65,8 @@ interface BTMMSummary {
   cuts?: number;
   holds?: number;
   largest_last_move?: BTMMRow | null;
+  range_basis?: string;
+  range_is_stale?: boolean;
 }
 
 interface BTMMPayload {
@@ -525,7 +527,17 @@ function KPIRibbon({
       <StatCard
         label="Range"
         value={`${fmtPct(summary?.min_policy_rate)} – ${fmtPct(summary?.max_policy_rate)}`}
-        caption="MIN – MAX"
+        caption={
+          // BTMM#1 follow-up: when no row is fresh the backend falls back to the
+          // full set and says so; the card must not read as a current range.
+          summary?.range_is_stale ? (
+            <span data-testid="btmm-range-basis" className="u-text-warn">
+              STALE · no fresh rows, full set
+            </span>
+          ) : (
+            "MIN – MAX"
+          )
+        }
         tone="neutral"
         trend={[]}
       />
