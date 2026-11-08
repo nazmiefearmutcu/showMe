@@ -1,5 +1,5 @@
 /**
- * GC3D — Yield Curve 3D (date × tenor surface).
+ * GC3D — Yield Curve Surface (date × tenor grid).
  *
  * The backend returns a flat surface (date, tenor, tenor_years, yield);
  * the native 2D fallback renders it as a heat-tinted grid: tenors as rows,
@@ -7,9 +7,10 @@
  * surface min/max (token-derived accent tints only). Header: look-back
  * days control (persisted `showme.gc3d.days`) + data-mode pill + refresh.
  *
- * Data honesty: without a FRED key the backend serves a labelled
+ * Data honesty: when live FRED is unavailable the backend serves a labelled
  * yield-curve model template (rolling dates, fixed reference levels) —
- * shown with a prominent MODEL FIXTURE pill + inline notice.
+ * shown with a prominent MODEL FIXTURE pill + inline notice that quotes the
+ * backend's own warning (the cause is not asserted here).
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -239,9 +240,11 @@ export function GC3DPane({ code, symbol }: FunctionPaneProps) {
       <div className="u-grid-gap-14">
         {isModelFixture ? (
           <div role="note" style={noticeStyle}>
-            <strong>Curve template.</strong> No FRED key is configured, so the
-            backend served its labelled yield-curve fixture (rolling dates,
-            fixed reference levels) — NOT live Treasury observations.
+            <strong>Curve template.</strong>{" "}
+            {data?.warnings?.[0] ??
+              "The backend served its labelled yield-curve fixture."}{" "}
+            The values are fixed reference levels — NOT live Treasury
+            observations.
           </div>
         ) : null}
         <section style={kpiGridStyle} aria-label="GC3D surface stats">
@@ -365,7 +368,11 @@ export function GC3DPane({ code, symbol }: FunctionPaneProps) {
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
           <StatusDivider />
-          <StatusSection label="days" value={days} tone="accent" />
+          <StatusSection
+            label="days"
+            value={summary?.days ?? days}
+            tone="accent"
+          />
         </PaneFooter>
       </Pane>
     </div>

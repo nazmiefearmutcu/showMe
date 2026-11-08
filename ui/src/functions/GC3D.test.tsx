@@ -269,3 +269,25 @@ describe("GC3D pane — curve-slope derivation (real surface math)", () => {
     expect(screen.queryByLabelText("GC3D curve slope")).toBeNull();
   });
 });
+
+describe("GC3D pane — honest fallback notice and span (P2A-G09)", () => {
+  it("shows the backend warning text, not an asserted missing FRED key", () => {
+    const payload = modelPayload();
+    const warning =
+      "Live FRED curve unavailable (keyed adapter or keyless CSV); showing the labelled reference template with a 45-day span.";
+    setMockFn({ state: "ok", ...payload, data: { ...payload.data, warnings: [warning] } });
+    render(<GC3DPane code="GC3D" symbol="US10Y" />);
+    expect(screen.getByText(/Live FRED curve unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText(/No FRED key is configured/i)).toBeNull();
+  });
+
+  it("reports the template span in the header caption and footer, not the requested window", () => {
+    const payload = modelPayload();
+    payload.data.data.summary.days = 45;
+    setMockFn({ state: "ok", ...payload });
+    render(<GC3DPane code="GC3D" symbol="US10Y" />);
+    expect(screen.getByText("LOOK-BACK 45D")).toBeInTheDocument();
+    expect(screen.queryByText("LOOK-BACK 30D")).toBeNull();
+    expect(screen.getByText("45")).toBeInTheDocument();
+  });
+});
