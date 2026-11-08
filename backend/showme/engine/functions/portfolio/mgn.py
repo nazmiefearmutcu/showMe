@@ -113,7 +113,8 @@ class MGNFunction(BaseFunction):
                 },
                 sources=["margin_engine"],
                 warnings=([f"Marked at average cost (no 'last' price supplied): {', '.join(at_cost)}."]
-                          if at_cost else []),
+                          if at_cost else [])
+                + ([] if "cash" in params else _cash_warnings({"paper": "none"}, 0.0)),
                 metadata={"live": False, "positions_source": "supplied", "marked_at_cost": at_cost},
             )
 
@@ -150,6 +151,9 @@ class MGNFunction(BaseFunction):
         if at_cost:
             why = "no live quote" if refresh else "refresh_prices=false"
             warnings.append(f"Marked at average cost ({why}): {', '.join(at_cost)}.")
+        cash_sources = result.get("cash_sources", {}) if isinstance(result, dict) else {}
+        unallocated = float(result.get("unallocated_cash_usd", 0) or 0) if isinstance(result, dict) else 0.0
+        warnings.extend(_cash_warnings(cash_sources, unallocated))
         sources = ["portfolio_state", "margin_engine"] + (["yfinance"] if prices else [])
         # MGN#1: a book with any position marked at average cost is partial-live, not live.
         # `degraded` makes the pane show a data-quality badge; `live` is deliberately not
@@ -164,7 +168,9 @@ class MGNFunction(BaseFunction):
                               warnings=warnings,
                               metadata={"positions_source": "portfolio",
                                         "marked_at_cost": at_cost,
-                                        "degraded": bool(at_cost)})
+                                        "degraded": bool(at_cost),
+                                        "cash_sources": cash_sources,
+                                        "unallocated_cash_usd": unallocated})
 
     async def _quote_many(self, symbols: list[str]) -> dict[str, float]:
         """Live last prices; symbols without a positive quote are left out."""
@@ -186,6 +192,21 @@ class MGNFunction(BaseFunction):
                 return sym, None
         results = await asyncio.gather(*(_q(s) for s in symbols))
         return {sym: px for sym, px in results if px is not None}
+
+
+def _cash_warnings(cash_sources: dict[str, str], unallocated_usd: float) -> list[str]:
+    """MGN#5: say plainly when equity leaves cash out (cash is not recorded)."""
+    out = [
+        f"Cash not recorded for account '{name}': equity equals market value and buying "
+        "power excludes cash. Pass cash=... or record it with action=upsert."
+        for name, source in sorted(cash_sources.items()) if source == "none"
+    ]
+    if unallocated_usd:
+        out.append(
+            f"USD cash {unallocated_usd:,.2f} in the book is unallocated: it has several accounts "
+            "and cash is not recorded per account, so no account was credited with it."
+        )
+    return out
 
 
 def _positive_number(value: Any) -> bool:

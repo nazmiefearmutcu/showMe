@@ -355,6 +355,25 @@ def calc_all_accounts(
             }
         elif entry.get("inferred"):
             entry["margin_type"] = inferred
+    # MGN#5: cash. An account the user recorded (upsert) keeps its cash. An auto-created
+    # account has none recorded: a single-account book takes the book's recorded USD cash
+    # (PortfolioState.cash, the same figure PORT shows), disclosed as portfolio_state. With
+    # several accounts the book cash is not guessed onto one of them and is reported as
+    # unallocated.
+    book_usd_cash = _as_float((portfolio.cash or {}).get("USD"))
+    cash_sources: dict[str, str] = {}
+    unallocated_cash_usd = 0.0
+    for name in accts:
+        entry = cfg_accts[name]
+        if not entry.get("inferred"):
+            cash_sources[name] = "account_record"
+        elif len(accts) == 1 and book_usd_cash:
+            entry["cash"] = book_usd_cash
+            cash_sources[name] = "portfolio_state"
+        else:
+            cash_sources[name] = "none"
+            if len(accts) > 1:
+                unallocated_cash_usd = book_usd_cash
     out = []
     total = {
         "equity": 0.0, "initial_margin": 0.0, "maintenance_margin": 0.0,
@@ -369,4 +388,12 @@ def calc_all_accounts(
         (total["equity"] - total["maintenance_margin"]) / total["equity"] * 100
         if total["equity"] else 0
     )
-    return {"accounts": out, "total": total}
+    return {"accounts": out, "total": total, "cash_sources": cash_sources,
+            "unallocated_cash_usd": unallocated_cash_usd}
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
