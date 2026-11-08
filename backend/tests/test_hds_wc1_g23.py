@@ -212,3 +212,51 @@ def test_manifest_card_and_table_slots_name_only_emitted_keys():
     assert card_keys <= top, sorted(card_keys - top)
     table_keys = {col.key for col in hds_manifest.table_schema.columns}
     assert table_keys <= row, sorted(table_keys - row)
+
+
+# HDS#5 ---------------------------------------------------------------------
+
+def test_no_provider_aapl_returns_no_hardcoded_reference_holders():
+    # HDS#5: the unsourced AAPL reference holders (Vanguard/BlackRock/Berkshire,
+    # undated) must never be served as holder rows, even when every provider is empty.
+    fn = _fn(yfinance=None, sec_13f=None, sec_edgar=None)
+    res = _run(fn)
+    assert res.data["rows"] == [], res.data["rows"]
+    assert res.data["status"] == "provider_unavailable", res.data
+    assert all(r.get("source_mode") != "reference_13f_public" for r in res.data["rows"])
+    assert "reference" not in " ".join(res.sources)
+
+
+def test_empty_yahoo_and_empty_13f_aapl_returns_no_reference_rows():
+    fn = _fn(yfinance=_Yahoo(pd.DataFrame()), sec_13f=_Sec13F(), sec_edgar=_SecEdgarApple())
+    res = _run(fn)
+    assert res.data["rows"] == [], res.data["rows"]
+    assert res.data["status"] == "empty", res.data
+
+
+# Seed contract (HDS#7 follow-up): must_have and semantic tests name emitted keys --
+
+def test_manifest_must_have_keys_are_emitted_by_handler():
+    from showme.manifest.seeds.hds_seed import hds as hds_manifest
+
+    top, _row = _emitted_keys()
+    missing = [k for k in hds_manifest.output_contract.must_have if k not in top]
+    # RED before fix: must_have promised "symbol" and "holders", which the handler never returns.
+    assert missing == [], missing
+
+
+def test_manifest_semantic_tests_do_not_name_retired_keys():
+    from showme.manifest.seeds.hds_seed import hds as hds_manifest
+
+    for test in hds_manifest.semantic_tests:
+        text = f"{test.description} {' '.join(test.assertions)}".lower()
+        # RED before fix: tests asserted pct_institutional and a holders array.
+        assert "pct_institutional" not in text, test.name
+        assert "holders_non_empty" not in text and "holders_is_empty_array" not in text, test.name
+
+
+def test_manifest_intent_does_not_claim_insider_percentage():
+    from showme.manifest.seeds.hds_seed import hds as hds_manifest
+
+    # RED before fix: intent promised "% held by ... insiders", which no provider supplies.
+    assert "insider" not in hds_manifest.intent.lower(), hds_manifest.intent

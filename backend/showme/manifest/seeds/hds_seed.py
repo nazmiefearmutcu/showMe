@@ -1,9 +1,10 @@
 """HDS — Holders / Institutional Holdings.
 
-Surfaces the issuer's institutional and insider holders. Backed by SEC
-EDGAR (10-Q / 10-K direct holdings tables) with yfinance institutional /
-major holders DataFrames as the fast fallback. Renders KPIs (% institutional,
-% insider, holder counts) plus a ranked holder table.
+Surfaces the issuer's institutional and mutual-fund holders. Rows come from
+the yfinance institutional / mutual-fund holder tables when they return any,
+otherwise from the local SEC 13F per-filer aggregate. Renders KPIs (holder
+counts, total % of shares outstanding) plus a ranked holder table. No insider
+holder rows are supplied by any provider.
 """
 from __future__ import annotations
 
@@ -37,8 +38,8 @@ def hds() -> FunctionManifest:
         name="Holders",
         category=Category.EQUITIES,
         intent=(
-            "Show institutional and insider holders for an issuer: % held by institutions / "
-            "insiders, holder counts, and a ranked list of top holders by shares."
+            "Show institutional and mutual-fund holders for an issuer: Yahoo holder tables "
+            "(pct_outstanding from pctHeld) or the local SEC 13F aggregate, ranked by shares."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
@@ -94,7 +95,7 @@ def hds() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=21600, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["symbol", "status", "holders"],
+            must_have=["status", "rows"],
             rows=True,
             series=False,
             cards=True,
@@ -148,12 +149,12 @@ def hds() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="hds_aapl_returns_top_holders",
-                description="HDS for AAPL returns at least one holder row + non-null % institutional.",
+                description="HDS for AAPL returns at least one holder row; Yahoo rows carry pct_outstanding as a fraction in [0, 1].",
                 inputs={"symbol": "AAPL", "live": True},
                 assertions=[
                     "status_in_ok_set",
-                    "holders_non_empty",
-                    "pct_institutional_between_0_and_100",
+                    "rows_non_empty",
+                    "pct_outstanding_between_0_and_1_when_present",
                 ],
             ),
             SemanticTest(
@@ -168,7 +169,7 @@ def hds() -> FunctionManifest:
                 inputs={"symbol": "ZZZZZZ", "live": True},
                 assertions=[
                     "status_equals_provider_unavailable",
-                    "holders_is_empty_array",
+                    "rows_is_empty_array",
                 ],
             ),
         ],
