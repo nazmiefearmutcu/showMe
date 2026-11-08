@@ -240,10 +240,24 @@ export function WBPane({ code }: FunctionPaneProps) {
           const bp = (r.yield - us.yield) * 100;
           if (!Number.isFinite(bp)) return "—";
           const tone = bp >= 0 ? "var(--negative)" : "var(--positive)";
+          // WB#4: US is a daily print and foreign rows are often monthly, so a
+          // spread can subtract values from different days. Say how far apart.
+          const gap = dayGap(r.as_of, us.as_of);
           return (
-            <span style={{ ...numCell, color: tone, fontWeight: 600 }}>
-              {bp >= 0 ? "+" : ""}
-              {bp.toFixed(0)} bp
+            <span style={{ display: "inline-grid", justifyItems: "end" }}>
+              <span style={{ ...numCell, color: tone, fontWeight: 600 }}>
+                {bp >= 0 ? "+" : ""}
+                {bp.toFixed(0)} bp
+              </span>
+              {gap ? (
+                <span
+                  className="u-text-secondary"
+                  style={gapNote}
+                  title={`US ${us.as_of ?? "?"} vs ${r.as_of ?? "?"}: the spread mixes observations from different dates.`}
+                >
+                  {gap}d apart
+                </span>
+              ) : null}
             </span>
           );
         },
@@ -390,6 +404,15 @@ export function WBPane({ code }: FunctionPaneProps) {
   );
 }
 
+/** Whole days between two ISO dates (0 = same day); null when either is unreadable. */
+function dayGap(a: string | undefined, b: string | undefined): number | null {
+  if (!a || !b) return null;
+  const ta = Date.parse(`${a.slice(0, 10)}T00:00:00Z`);
+  const tb = Date.parse(`${b.slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return null;
+  return Math.round(Math.abs(ta - tb) / 86_400_000);
+}
+
 interface WBStats {
   count: number;
   avg: number;
@@ -434,6 +457,12 @@ const tabBarStyle: CSSProperties = {
   padding: "8px 14px",
   borderBottom: "1px solid var(--border-subtle)",
   background: "var(--surface-2)",
+};
+
+const gapNote: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-xs)",
+  fontVariantNumeric: "tabular-nums",
 };
 
 const numCell: CSSProperties = {
