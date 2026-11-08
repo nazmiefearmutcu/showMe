@@ -54,13 +54,42 @@ def _cash_totals(cash: Any) -> tuple[float | None, dict[str, float]]:
     return stable, per_currency
 
 
-def _cash_fields(cash_usd: float | None, cash_by_currency: dict[str, float]) -> dict[str, Any]:
+def _cash_fields(cash_usd: float | None, cash_by_currency: dict[str, float],
+                 cash_total_base: float | None = None) -> dict[str, Any]:
+    """``cash`` is stable-USD cash in base ccy; ``cash_total_base`` adds every
+    balance converted to base ccy and is ``None`` when any balance has no rate."""
     out: dict[str, Any] = {}
     if cash_usd is not None:
         out["cash"] = cash_usd
+        out["cash_total_base"] = cash_total_base
     if cash_by_currency:
         out["cash_by_currency"] = cash_by_currency
     return out
+
+
+async def _foreign_cash_base(deps: FunctionDeps, cash_by_currency: dict[str, float],
+                             ccy: str) -> tuple[float | None, list[str]]:
+    """Non-stable cash converted to ``ccy``; ``None`` plus a warning when a rate is missing.
+
+    A balance is never dropped silently: an unconvertible one makes the total
+    unknown rather than understated.
+    """
+    total = 0.0
+    missing: list[str] = []
+    for code, amount in cash_by_currency.items():
+        if code in _STABLE_USD_CURRENCIES or amount == 0:
+            continue
+        rate = await _fx_rate(deps, code, ccy)
+        if rate is None:
+            missing.append(code)
+        else:
+            total += amount * rate
+    if missing:
+        return None, [
+            f"cash in {', '.join(missing)} not converted to {ccy}: no FX rate; "
+            "total_equity withheld"
+        ]
+    return total, []
 
 
 def _finite_number(value: Any) -> float | None:
@@ -146,15 +175,22 @@ def _input_error(reason: str, next_actions: list[str]) -> FunctionResult:
     )
 
 
+def _optional_text(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
 async def _supplied_rows_result(deps: FunctionDeps, rows: list[dict[str, Any]], ccy: str,
                                 accounts: set[str] | None, show_zero: bool,
-                                cash_base: float | None, cash_by_currency: dict[str, float],
-                                cash_warnings: list[str]) -> FunctionResult:
+                                cash_base: float | None, cash_total_base: float | None,
+                                cash_by_currency: dict[str, float],
+                                cash_warnings: list[str], group_by: str) -> FunctionResult:
     """Value the positions passed in params when the book itself is empty.
 
     Same rules as the book path: each row is converted to ``ccy`` with its own
-    FX rate, the account and zero-quantity filters apply, and a row without a
-    usable last price is unpriced (it is never marked at its cost basis).
+    FX rate, the account and zero-quantity filters apply, a row without a
+    usable last price is unpriced (it is never marked at its cost basis), and
+    the declared ``group_by`` roll-up is computed exactly as on the book path.
     """
     warnings: list[str] = list(cash_warnings)
     fx_rates: dict[str, float | None] = {}
@@ -163,6 +199,7 @@ async def _supplied_rows_result(deps: FunctionDeps, rows: list[dict[str, Any]], 
     total_cost = 0.0
     total_unrl = 0.0
     n_unpriced = 0
+    by_class: dict[str, float] = {}
     for row in rows:
         qty = float(row["quantity"])
         if not show_zero and qty == 0:
@@ -177,10 +214,13 @@ async def _supplied_rows_result(deps: FunctionDeps, rows: list[dict[str, Any]], 
         rate = fx_rates[currency]
         avg = float(row["avg_cost"])
         last = _finite_positive(row.get("last"))
+        asset_class = (_optional_text(row.get("asset_class")) or "").lower() or None
         out: dict[str, Any] = {
             **row,
             "symbol": sym,
             "account": account,
+            "asset_class": asset_class,
+            "sector": _optional_text(row.get("sector")),
             "currency": currency,
             "quantity": qty,
             "avg_cost": avg,
@@ -208,14 +248,19 @@ async def _supplied_rows_result(deps: FunctionDeps, rows: list[dict[str, Any]], 
         out["unrealized_pnl"] = unrl
         total_mv += mv
         total_unrl += unrl
+        class_key = asset_class or "unclassified"
+        by_class[class_key] = by_class.get(class_key, 0.0) + mv
     for out in out_rows:
         if out["market_value"] is not None and total_mv:
             out["weight_pct"] = out["market_value"] / total_mv * 100
+    groups = _groups(out_rows, group_by, total_mv, warnings) if group_by != "none" else []
     n_rows = len(out_rows)
     if n_rows:
         warnings.append("day P&L unavailable: supplied rows carry no previous close")
     total_equity = (
-        total_mv + cash_base if cash_base is not None and n_unpriced == 0 else None
+        total_mv + cash_total_base
+        if cash_total_base is not None and n_unpriced == 0
+        else None
     )
     used_sources = ["user_positions"]
     if any(rate is not None and rate != 1.0 for rate in fx_rates.values()):
@@ -225,8 +270,9 @@ async def _supplied_rows_result(deps: FunctionDeps, rows: list[dict[str, Any]], 
         data={
             "positions": out_rows,
             "ccy": ccy,
+            "group_by": group_by,
             "fx_rates": dict(fx_rates),
-            "groups": [],
+            "groups": groups,
             "totals": {
                 "market_value": total_mv,
                 "cost_basis": total_cost,
@@ -235,8 +281,9 @@ async def _supplied_rows_result(deps: FunctionDeps, rows: list[dict[str, Any]], 
                 "n_unpriced": n_unpriced,
                 "total_equity": total_equity,
                 "day_pnl": None,
-                **_cash_fields(cash_base, cash_by_currency),
+                **_cash_fields(cash_base, cash_by_currency, cash_total_base),
             },
+            "by_asset_class": by_class,
         },
         metadata={"data_state": "user_supplied" if n_rows else "empty"},
         sources=sorted(used_sources),
@@ -347,6 +394,16 @@ class PORTFunction(BaseFunction):
                 cash_warnings.append(f"cash not converted to {ccy}: no USD{ccy} FX rate")
             else:
                 cash_base = cash_usd * cash_rate
+        # Non-stable balances (e.g. TRY) are converted too, so total_equity never
+        # silently leaves them out; an unconvertible balance withholds the total.
+        foreign_cash_base, foreign_warnings = await _foreign_cash_base(
+            self.deps, cash_by_currency, ccy
+        )
+        cash_warnings.extend(foreign_warnings)
+        cash_total_base: float | None = (
+            None if cash_base is None or foreign_cash_base is None
+            else cash_base + foreign_cash_base
+        )
         if not portfolio.positions:
             rows = params.get("positions") or []
             if not rows:
@@ -364,7 +421,7 @@ class PORTFunction(BaseFunction):
                             "cost_basis": 0.0,
                             "n_positions": 0,
                             "unrealized_pnl": 0.0,
-                            **_cash_fields(cash_base, cash_by_currency),
+                            **_cash_fields(cash_base, cash_by_currency, cash_total_base),
                         },
                         "by_asset_class": {},
                         "next_actions": [
@@ -377,7 +434,8 @@ class PORTFunction(BaseFunction):
                     warnings=cash_warnings,
                 )
             return await _supplied_rows_result(self.deps, rows, ccy, accounts, show_zero,
-                                               cash_base, cash_by_currency, cash_warnings)
+                                               cash_base, cash_total_base, cash_by_currency,
+                                               cash_warnings, group_by)
 
         # The book's own filters: zero-quantity history and the account selection.
         positions = [
@@ -504,11 +562,12 @@ class PORTFunction(BaseFunction):
                 warnings.append(
                     f"day P&L withheld: {n_unpriced} unpriced position(s) are excluded from the day move"
                 )
-        # Total equity = cash + market value; it is withheld while any position
-        # is unpriced or when the book does not track cash.
+        # Total equity = cash (every balance, in base ccy) + market value; it is
+        # withheld while any position is unpriced, when the book does not track
+        # cash, or when a cash balance has no FX rate.
         total_equity = (
-            priced_mv + cash_base
-            if cash_base is not None and n_unpriced == 0
+            priced_mv + cash_total_base
+            if cash_total_base is not None and n_unpriced == 0
             else None
         )
         realized_ytd = _realized_pnl_ytd(portfolio, warnings)
@@ -548,7 +607,7 @@ class PORTFunction(BaseFunction):
                     "total_equity": total_equity,
                     "day_pnl": day_pnl,
                     "realized_pnl_ytd": realized_ytd,
-                    **_cash_fields(cash_base, cash_by_currency),
+                    **_cash_fields(cash_base, cash_by_currency, cash_total_base),
                 },
                 "by_asset_class": by_class,
             },
