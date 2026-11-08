@@ -315,7 +315,9 @@ def write_baseline(counts: dict[str, dict[str, int]], path: Path = BASELINE_PATH
 
 
 def render_markdown(report: dict[str, Any]) -> str:
-    counts = to_counts(report)
+    # The summary counts every finding (amber timing rules included); the
+    # ratchet itself (to_counts default) stays red-only.
+    counts = to_counts(report, severities=("red", "amber"))
     reds = {code for code, cases in report["functions"].items()
             for case in cases for f in case["findings"] if f["severity"] == "red"}
     lines = [

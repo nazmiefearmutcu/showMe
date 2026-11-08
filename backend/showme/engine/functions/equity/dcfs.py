@@ -19,19 +19,27 @@ class DCFSensitivityFunction(BaseFunction):
     name = "DCF Sensitivity"
     asset_classes = (AssetClass.EQUITY,)
     category = "equity"
-    description = "WACC × terminal-growth grid + ±20% input tornado."
+    description = "Discount-rate (cost of equity by default) × terminal-growth grid + ±20% input tornado."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("DCFS requires instrument")
-        wacc_range = params.get("wacc_range") or [0.05, 0.07, 0.08, 0.09, 0.10, 0.12]
-        g_range    = params.get("g_range")    or [0.01, 0.02, 0.025, 0.03, 0.035]
         base = DCFFunction(self.deps)
-        base_params = {
+        # DCFS#3: the manifest inputs drive the run. discount_rate (alias wacc)
+        # and terminal_growth are the grid centres, growth_rate (alias
+        # growth_high) the stage-1 growth, grid_width the cells per axis.
+        explicit_rate = _first_number(params, "discount_rate", "wacc")
+        explicit_g = _first_number(params, "terminal_growth", "growth_terminal")
+        growth_high = _first_number(params, "growth_rate", "growth_high")
+        base_params: dict[str, Any] = {
             "years": int(params.get("years", 5)),
-            "growth_high": float(params.get("growth_high", 0.08)),
+            "growth_high": growth_high if growth_high is not None else 0.08,
         }
-        for key in ("wacc", "fcfe", "shares_outstanding"):
+        if explicit_rate is not None:
+            base_params["wacc"] = explicit_rate
+        if explicit_g is not None:
+            base_params["growth_terminal"] = explicit_g
+        for key in ("fcfe", "shares_outstanding"):
             value = params.get(key)
             if value not in (None, ""):
                 base_params[key] = float(value)
@@ -47,12 +55,29 @@ class DCFSensitivityFunction(BaseFunction):
             base_res = await base.execute(instrument, **base_params)
         base_data = base_res.data or {}
         shared = {
-            "wacc": base_data.get("wacc"),
+            # DCFS#2: the discount rate actually applied to FCFE (cost of equity by default).
+            "wacc": base_data.get("discount_rate"),
             "fcfe": base_data.get("starting_fcfe"),
             "shares_outstanding": base_data.get("shares_outstanding"),
         }
         shared = {k: v for k, v in shared.items() if v is not None}
         base_fv = base_data.get("fair_value_per_share")
+        # DCFS#3/#4: the grid is centred on the effective discount rate and
+        # terminal growth (50 bp / 25 bp steps), grid_width cells per axis
+        # (3/5/7, default 5 -> the manifest's 25 cells). An explicit
+        # wacc_range / g_range from the caller still wins.
+        width = _grid_width(params.get("grid_width"))
+        half = width // 2
+        rate_center = explicit_rate if explicit_rate is not None else _finite(base_data.get("discount_rate"))
+        g_center = explicit_g if explicit_g is not None else _finite(base_data.get("g_terminal"))
+        if g_center is None:
+            g_center = 0.025
+        wacc_range = params.get("wacc_range") or (
+            [round(rate_center + (i - half) * 0.005, 6) for i in range(width)] if rate_center is not None else []
+        )
+        g_range = params.get("g_range") or [
+            round(max(0.0, g_center + (i - half) * 0.0025), 6) for i in range(width)
+        ]
         # DCFS#1: a negative base value is not a valuation, so the grid is
         # withheld rather than published as a sensitivity surface of negatives.
         grid_withheld = base_fv is not None and base_fv < 0
@@ -65,20 +90,18 @@ class DCFSensitivityFunction(BaseFunction):
                         **shared,
                         "wacc": float(w),
                         "growth_terminal": float(g),
-                        "years": int(params.get("years", 5)),
-                        "growth_high": float(params.get("growth_high", 0.08)),
                     }
                     r = await base.execute(instrument, **grid_params)
                     grid.append({
                         "wacc": w, "g_terminal": g,
                         "fair_value_per_share": (r.data or {}).get("fair_value_per_share"),
                         "equity_value": (r.data or {}).get("equity_value"),
-                        "bucket": f"WACC {float(w):.1%} / g {float(g):.1%}",
+                        "bucket": f"discount rate {float(w):.1%} / g {float(g):.1%}",
                     })
                 except Exception:
                     grid.append({"wacc": w, "g_terminal": g,
                                   "fair_value_per_share": None,
-                                  "bucket": f"WACC {float(w):.1%} / g {float(g):.1%}"})
+                                  "bucket": f"discount rate {float(w):.1%} / g {float(g):.1%}"})
         # Tornado: which input has biggest effect at ±20% perturbation
         tornado: list[dict[str, Any]] = []
         if base_fv is not None and base_fv > 0:
@@ -90,7 +113,7 @@ class DCFSensitivityFunction(BaseFunction):
             # (growth_terminal / growth_high), so each entry carries
             # (label, output_key, param_key) separately.
             label_to_keys = [
-                ("wacc",       "wacc",          "wacc"),
+                ("discount_rate", "discount_rate", "wacc"),
                 ("g_terminal", "g_terminal",    "growth_terminal"),
                 ("g_high",     "g_high",        "growth_high"),
                 ("years",      "years",         "years"),
@@ -118,7 +141,7 @@ class DCFSensitivityFunction(BaseFunction):
                             "value": None,
                             "delta": None,
                             "status": "invalid_perturbation",
-                            "reason": "One side of the ±20% perturbation produced no fair value (e.g. WACC fell below terminal growth).",
+                            "reason": "One side of the ±20% perturbation produced no fair value (e.g. the discount rate fell below terminal growth).",
                         })
                         continue
                     tornado.append({
@@ -155,7 +178,11 @@ class DCFSensitivityFunction(BaseFunction):
             status = "ok"
         # DCFS#5: echo the base assumptions the grid and tornado were computed from.
         assumptions = {
-            "wacc": base_data.get("wacc"),
+            "wacc": base_data.get("discount_rate"),
+            "discount_rate": base_data.get("discount_rate"),
+            "discount_rate_data_state": base_data.get("discount_rate_data_state"),
+            "erp_source": base_data.get("erp_source"),
+            "wacc_reference": base_data.get("wacc"),
             "g_terminal": base_data.get("g_terminal"),
             "g_high": base_data.get("g_high"),
             "years": base_data.get("years"),
@@ -171,13 +198,16 @@ class DCFSensitivityFunction(BaseFunction):
                 "assumptions": assumptions,
                 "base_fair_value": base_fv,
                 "wacc_range": wacc_range, "g_range": g_range,
+                "grid_width": width,
+                "grid_center": {"discount_rate": rate_center, "terminal_growth": g_center},
                 "surface": grid,
                 "grid": grid, "tornado": tornado,
                 "rows": tornado or grid,
-                "methodology": "DCFS runs the DCF engine across a WACC x terminal-growth grid, then perturbs key assumptions by +/-20% for a tornado sensitivity. Heatmap cells are fair value per share.",
+                "methodology": "DCFS runs the DCF engine across a discount rate (cost of equity by default, or a caller override) x terminal-growth grid, then perturbs key assumptions by +/-20% for a tornado sensitivity. Heatmap cells are fair value per share.",
                 "field_dictionary": {
-                    "fair_value_per_share": "DCF-implied value per share at the selected WACC and terminal-growth pair.",
-                    "wacc": "Discount rate in the grid.",
+                    "fair_value_per_share": "DCF-implied value per share at the selected discount rate and terminal-growth pair.",
+                    "discount_rate": "Discount rate applied to FCFE in the grid: the cost of equity by default, or a caller override. Grid rows keep the value under the key wacc for compatibility.",
+                    "wacc": "Same value as discount_rate in each grid row (kept for compatibility; not the WACC model's WACC).",
                     "g_terminal": "Terminal growth assumption in the grid.",
                     "delta": "High-case fair value minus low-case fair value for a perturbed input.",
                 },
@@ -185,3 +215,33 @@ class DCFSensitivityFunction(BaseFunction):
             sources=base_res.sources,
             warnings=warnings,
         )
+
+
+def _first_number(params: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = params.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number == number and abs(number) != float("inf"):
+            return number
+    return None
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _grid_width(value: Any) -> int:
+    try:
+        width = int(float(value))
+    except (TypeError, ValueError):
+        return 5
+    return width if width in (3, 5, 7) else 5

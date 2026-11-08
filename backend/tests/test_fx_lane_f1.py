@@ -39,8 +39,10 @@ def test_fxh_default_book_echoes_assumed_defaults() -> None:
 
     data = result.data
     # bid_ask_pips is a hedge-cost assumption (P2A-G06 FXH#2): it is flagged too.
-    assert data["assumed_defaults"] == ["notional", "base_rate", "home_rate", "bid_ask_pips"]
+    # FXH#4: the 90-day maturity nobody chose is an assumption too.
+    assert data["assumed_defaults"] == ["days", "notional", "base_rate", "home_rate", "bid_ask_pips"]
     assert data["assumed_values"] == {
+        "days": 90,
         "notional": 1_000_000.0,
         "base_rate": 0.035,
         "home_rate": 0.045,
@@ -63,6 +65,7 @@ def test_fxh_explicit_inputs_clear_assumed_defaults() -> None:
             base_rate=0.02,
             home_rate=0.03,
             bid_ask_pips=2.0,
+            days=90,
         )
     )
     data = result.data
@@ -91,7 +94,7 @@ def test_fxh_accepts_exposure_notional_alias() -> None:
 def test_fxh_forward_branch_also_echoes_assumptions() -> None:
     fn = FXHFunction(deps=FunctionDeps(yfinance=None))
     result = _run(fn.execute(action="forward", pair="EURUSD", spot_rate=1.08))
-    assert result.data["assumed_defaults"] == ["notional", "base_rate", "home_rate"]
+    assert result.data["assumed_defaults"] == ["days", "notional", "base_rate", "home_rate"]
     assert result.data["assumed_values"]["notional"] == pytest.approx(1_000_000.0)
 
 

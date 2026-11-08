@@ -1,5 +1,5 @@
 /**
- * ALLQ — Dealer Quotes (TRACE proxy).
+ * ALLQ — Dealer Quotes (indicative, modeled; not observed TRACE quotes).
  *
  * Indicative dealer-quote ladder anchored to a real reference price (US
  * Treasury FiscalData avg rate for sovereign aliases, yfinance otherwise).
@@ -323,7 +323,7 @@ export function ALLQPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Dealer Quotes — ${summary?.bond ?? effectiveSymbol ?? ""}`}
-          subtitle={`${effectiveSymbol || "—"} · indicative TRACE proxy`}
+          subtitle={`${effectiveSymbol || "—"} · indicative, modeled`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>

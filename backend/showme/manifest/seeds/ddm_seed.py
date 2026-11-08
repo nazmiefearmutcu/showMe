@@ -95,9 +95,11 @@ def ddm() -> FunctionManifest:
                 ],
             ),
         ],
+        # DDM#4: defaults match the handler. growth_rate is 3% (dcf.py and the
+        # pane); required_return has no default because, when it is not given,
+        # the handler takes the cost of equity from the WACC model.
         defaults={
-            "required_return": 0.09,
-            "growth_rate": 0.04,
+            "growth_rate": 0.03,
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(

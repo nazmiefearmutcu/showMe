@@ -66,7 +66,9 @@ def test_unknown_crypto_symbol_is_not_silently_rerouted_to_btc(monkeypatch) -> N
     result = asyncio.run(WHALFunction(FunctionDeps()).execute(
         symbol="FOOBAR", market="CRYPTO", threshold_usd=1_000))
     assert "BTCUSDT" not in _RecordingBinance.requested, _RecordingBinance.requested
-    assert result.data["status"] == "provider_unavailable"
+    # WHAL#5 follow-up: a typo is an input error with a reason, never a provider outage.
+    assert result.data["status"] == "input_error"
+    assert "FOOBAR" in result.data["reason"]
     assert result.data["provider_symbol"] is None
 
 

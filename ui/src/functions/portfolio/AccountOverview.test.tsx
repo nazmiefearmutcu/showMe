@@ -209,6 +209,21 @@ describe("ACCT G3 — CONN jump + honest cash/margin gating", () => {
     expect(within(table).queryByText("Margin")).toBeNull();
   });
 
+  it("ACCT#2: shows portfolio-wide cash and equity per currency from the summary", () => {
+    ok({
+      ...LIVE_COMPOSITE,
+      summary: {
+        ...LIVE_COMPOSITE.summary,
+        cash_by_currency: { USD: 25000 },
+        equity_by_currency: { USD: 200000, EUR: null },
+        unreadable_cash_currencies: [],
+      },
+    });
+    render(<AccountOverviewPane code="ACCT" />);
+    expect(screen.getByText(/USD .*25,000/)).toBeInTheDocument();
+    expect(screen.getByText(/EUR unknown/)).toBeInTheDocument();
+  });
+
   it("renders cash/margin columns when a payload actually carries them", () => {
     ok({
       ...LIVE_COMPOSITE,

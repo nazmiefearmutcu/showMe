@@ -78,6 +78,19 @@ const TRANSFORM_OPTIONS = [
   },
 ] as const;
 const TRANSFORM_IDS = TRANSFORM_OPTIONS.map((o) => o.value);
+// `frequency` is the backend's exact param (ecst.py _frequency_request). "native" is the
+// default and is not sent; the other values resample the FRED series when the keyed
+// adapter serves it, otherwise the backend reports them as not applied.
+const FREQUENCY_NATIVE = "native";
+const FREQUENCY_OPTIONS = [
+  { value: FREQUENCY_NATIVE, label: "Native", title: "Series at its published frequency" },
+  { value: "daily", label: "Daily", title: "Resample to daily" },
+  { value: "weekly", label: "Weekly", title: "Resample to weekly" },
+  { value: "monthly", label: "Monthly", title: "Resample to monthly" },
+  { value: "quarterly", label: "Quarterly", title: "Resample to quarterly" },
+  { value: "annual", label: "Annual", title: "Resample to annual" },
+] as const;
+const FREQUENCY_IDS = FREQUENCY_OPTIONS.map((o) => o.value);
 
 interface EcstRow {
   date?: string;
@@ -112,6 +125,10 @@ interface EcstPayload {
   status?: string;
   reason?: string;
   unhonoured_params?: string[];
+  // ECST#5: true only when the keyed FRED adapter served the requested frequency / vintage
+  // (or the request was native / latest). false names a request the backend did not apply.
+  frequency_applied?: boolean;
+  vintage_applied?: boolean;
 }
 
 export function ECSTPane({ code }: FunctionPaneProps) {
@@ -137,14 +154,21 @@ export function ECSTPane({ code }: FunctionPaneProps) {
     TRANSFORM_LEVEL,
   );
 
+  const [requestFrequency, setRequestFrequency] = usePersistentOption<string>(
+    "showme.ecst.frequency",
+    FREQUENCY_IDS,
+    FREQUENCY_NATIVE,
+  );
+
   const params = useMemo(
     () => ({
       series_id: seriesId,
       ...(compareWith !== COMPARE_OFF ? { compare_with: compareWith } : {}),
       ...(dateRange !== RANGE_DEFAULT ? { date_range: dateRange } : {}),
       ...(transform !== TRANSFORM_LEVEL ? { transform } : {}),
+      ...(requestFrequency !== FREQUENCY_NATIVE ? { frequency: requestFrequency } : {}),
     }),
-    [seriesId, compareWith, dateRange, transform],
+    [seriesId, compareWith, dateRange, transform, requestFrequency],
   );
 
   const { state, data, error, refetch } = useFunction<EcstPayload>({
@@ -153,6 +177,11 @@ export function ECSTPane({ code }: FunctionPaneProps) {
   });
 
   const payload = data?.data ?? {};
+  // ECST#5: the backend's own reason for a frequency it did not apply, shown verbatim.
+  const notApplied =
+    payload.frequency_applied === false
+      ? (data?.warnings ?? []).filter((w) => w.startsWith("ECST: frequency"))
+      : [];
   const rows = useMemo<EcstRow[]>(
     () => normalizeRows(payload.rows ?? payload.history),
     [payload.rows, payload.history],
@@ -346,6 +375,13 @@ export function ECSTPane({ code }: FunctionPaneProps) {
                 onChange={(next) => setTransform(next)}
                 title="Level or year-over-year percent change"
               />
+              <SegmentedControl
+                label="FREQ"
+                value={requestFrequency}
+                options={FREQUENCY_OPTIONS}
+                onChange={(next) => setRequestFrequency(next)}
+                title="Resampling frequency"
+              />
               <LoadStatePill state={state} />
               <RefreshButton
                 loading={state === "loading"}
@@ -395,6 +431,11 @@ export function ECSTPane({ code }: FunctionPaneProps) {
             />
           ) : (
             <div className="u-grid-gap-14">
+              {notApplied.length > 0 ? (
+                <div role="note" aria-label="ECST frequency not applied" style={{ padding: 8, fontSize: "var(--font-size-sm)" }}>
+                  {notApplied.join(" ")}
+                </div>
+              ) : null}
               {payload.unhonoured_params && payload.unhonoured_params.length > 0 ? (
                 <div role="note" aria-label="ECST request not applied" style={{ padding: 8, fontSize: "var(--font-size-sm)" }}>
                   {payload.unhonoured_params.join(", ")} not applied: the keyless

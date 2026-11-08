@@ -133,30 +133,6 @@ def test_default_asset_class_respects_explicit_request() -> None:
     assert server.default_asset_class_name("BTCUSDT", "equity") == "EQUITY"
 
 
-def test_corr_impactor_template_covers_all_markets() -> None:
-    engine_root = Path(__file__).resolve().parents[2] / "engine"
-    sys.path.insert(0, str(engine_root))
-    from showme.engine.functions.portfolio.corr import _correlation_template
-
-    symbols = ["AAPL", "SPX", "EURUSD", "BTCUSDT", "GC=F", "US10Y", "CDXIG"]
-    payload = _correlation_template(symbols, 365)
-    impact = payload["impactor"]
-
-    assert payload["summary"]["method"] == "correlation_impact_matrix"
-    assert {row["market"] for row in impact["market_coverage"]} == {
-        "Equity",
-        "Index",
-        "FX",
-        "Crypto",
-        "Commodity",
-        "Rates",
-        "Credit",
-    }
-    assert len(impact["matrix"]) == len(symbols) ** 2
-    assert impact["analysis_steps"]
-    assert impact["return_series_summary"]
-    assert impact["top_positive_pairs"]
-    assert impact["bug_analysis"][0]["status"] == "passed"
 
 
 def test_route_params_do_not_inject_symbol_into_standalone_derivative(monkeypatch) -> None:

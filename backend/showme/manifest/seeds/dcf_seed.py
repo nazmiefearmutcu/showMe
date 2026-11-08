@@ -56,7 +56,7 @@ def dcf() -> FunctionManifest:
                 label="Discount rate (WACC)",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=False,
-                description="Cost of capital used to discount each future cash flow. Empty uses the WACC model; a constant is never substituted.",
+                description="Discount rate applied to each future FCFE. Empty uses the cost of equity (CAPM) from the WACC model, since FCFE is levered; a constant is never substituted and WACC is not used to discount FCFE.",
                 min=0.01,
                 max=0.30,
                 step=0.005,

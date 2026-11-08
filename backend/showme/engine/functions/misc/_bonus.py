@@ -518,11 +518,32 @@ class MOSSFunction(BaseFunction):
         histories = {r["row"]["symbol"]: r.get("history", []) for r in good}
         top_symbol = rows[0]["symbol"]
         history = histories.get(top_symbol, [])
+        # MOSS#1: coverage is counted on the full universe before the limit cut,
+        # so a partial board can never pass as a complete ranking.
+        coverage = {
+            "universe_size": len(symbols),
+            "resolved": len(good),
+            "unavailable": len(unavailable_rows),
+            "budget_seconds": screen_timeout,
+            "complete": not unavailable_rows,
+        }
         rows = [*rows, *unavailable_rows][:limit]
+        payload = _moss_payload(rows, history, symbols, days, live=True)
+        payload["scan_coverage"] = coverage
+        if unavailable_rows:
+            payload["status"] = "partial"
+            payload["reason"] = (
+                f"Scan covered {len(good)} of {len(symbols)} symbols inside the "
+                f"{screen_timeout:g}s budget; the other {len(unavailable_rows)} are unavailable "
+                "rows and are not ranked."
+            )
+            payload["next_actions"] = [
+                "Rerun the scan to fill the remaining symbols, or narrow the universe.",
+            ]
         return FunctionResult(
             code=self.code,
             instrument=None,
-            data=_moss_payload(rows, history, symbols, days, live=True),
+            data=payload,
             sources=["yfinance"],
             metadata={
                 "universe_size": len(symbols),
@@ -681,7 +702,7 @@ class APPLFunction(BaseFunction):
                 data=template,
                 sources=_appl_template_sources(template),
                 metadata={"live": False, "fallback": True, "data_mode": "reference",
-                          "provider_errors": [f"yfinance: {exc}"]},
+                          "provider_errors": [f"yfinance: {str(exc) or type(exc).__name__}"]},
             )
         profile = reference_profile(instrument.symbol)
         rows = _taxonomy_rows(instrument, rd.sector, rd.industry, rd.country, rd.currency, rd.exchange, profile)

@@ -41,7 +41,7 @@ class EREVFunction(BaseFunction):
             try:
                 recs = await self.deps.finnhub.recommendations(sym)
             except Exception as exc:
-                provider_error = f"finnhub: {exc}"
+                provider_error = f"finnhub: {str(exc) or type(exc).__name__}"
         if not recs:
             # F6 honesty fix: previously three hard-coded analyst buckets were
             # substituted and still returned status=ok with sources=["finnhub"]

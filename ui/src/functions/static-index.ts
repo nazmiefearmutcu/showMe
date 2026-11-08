@@ -15,7 +15,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "ALLQ",
-    "name": "Dealer Quotes (TRACE proxy)",
+    "name": "Dealer Quotes (indicative, modeled)",
     "category": "bond",
     "description": ""
   },
@@ -209,7 +209,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "code": "DCFS",
     "name": "DCF Sensitivity",
     "category": "equity",
-    "description": "WACC × terminal-growth grid + ±20% input tornado."
+    "description": "Discount-rate (cost of equity by default) × terminal-growth grid + ±20% input tornado."
   },
   {
     "code": "DDIS",

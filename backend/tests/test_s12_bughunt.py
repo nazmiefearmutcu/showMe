@@ -194,7 +194,20 @@ class _FakeWorldBank:
         return [{"page": 1, "total": 1}, [{"value": value, "date": "2024"}]]
 
 
-def test_srsk_no_fred_returns_fallback_with_notes_and_no_uniform_pd() -> None:
+class _FredOutage:
+    async def series(self, series_id: str, *a, **k):  # noqa: ARG002
+        raise RuntimeError("fred outage (test)")
+
+
+def _pin_fred_outage(monkeypatch) -> None:
+    """SRSK#5 added the keyless FRED fallback; these 'no FRED' cases pin it to an
+    outage so they stay offline and keep testing the World Bank paths."""
+    from showme.engine.functions.bond import srsk as srsk_mod
+
+    monkeypatch.setattr(srsk_mod, "fred_with_keyless_fallback", lambda fred, client=None: _FredOutage())
+
+
+def test_srsk_no_fred_returns_fallback_with_notes_and_no_uniform_pd(monkeypatch) -> None:
     """2026-06-01 contract change: SRSK was de-garbaged.
 
     OLD (removed) contract: SRSK was FRED-gated and, without FRED, tagged every
@@ -211,6 +224,7 @@ def test_srsk_no_fred_returns_fallback_with_notes_and_no_uniform_pd() -> None:
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.functions.bond.srsk import SRSKFunction
 
+    _pin_fred_outage(monkeypatch)
     out = asyncio.run(
         SRSKFunction(FunctionDeps(worldbank=_FakeWorldBank())).execute(countries="TR,US,DE")
     )
@@ -224,7 +238,7 @@ def test_srsk_no_fred_returns_fallback_with_notes_and_no_uniform_pd() -> None:
     assert len(set(scores)) > 1, "uniform risk score across countries is the old garbage"
 
 
-def test_srsk_dgs10_missing_returns_provider_unavailable() -> None:
+def test_srsk_dgs10_missing_returns_provider_unavailable(monkeypatch) -> None:
     """2026-06-01 contract change: SRSK was de-garbaged to keyless
     World-Bank-primary; FRED 10Y yields are an OPTIONAL refinement only.
 
@@ -243,6 +257,7 @@ def test_srsk_dgs10_missing_returns_provider_unavailable() -> None:
             raise RuntimeError("fred outage")
 
     fn = SRSKFunction(FunctionDeps(fred=FakeFred()))
+    _pin_fred_outage(monkeypatch)
 
     async def _boom(self, iso3, indicator):  # type: ignore[no-untyped-def]
         raise srsk_mod._WBUnavailable("world bank unreachable")

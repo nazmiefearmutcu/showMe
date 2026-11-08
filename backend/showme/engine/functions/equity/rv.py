@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import statistics
 from typing import Any
 
 
@@ -35,7 +36,30 @@ _FIELD_DICTIONARY = {
     "rank_pe": "Ascending PE rank within peer set.",
     "percentile_pe": "Peer percentile for PE, lower is cheaper.",
     "peer_source": "Where the peer set came from: user_input, finnhub, or reference_sector_map.",
+    "peer_count": "Number of peers (target excluded) that returned multiples. Under three draws a warning.",
+    "peer_median": "Median of each metric across the peers (target excluded); P/E uses positive values only.",
+    "peer_median_pe": "Peer median trailing P/E.",
+    "pe_vs_peer_pct": "Target P/E premium (+) or discount (-) to the peer median P/E, in percent.",
+    "own_pe": "Target trailing P/E (the issuer's own multiple), None when yfinance returned none.",
+    "fcf_yield": "Free cash flow (TTM, yfinance freeCashflow) divided by market cap, as a decimal fraction. Negative when free cash flow is negative.",
+    "pe_ttm": "Table alias of pe: trailing P/E.",
+    "ps_ttm": "Table alias of ps: price/sales (trailing 12 months).",
+    "dividend_yield": "Table alias of div_yield: decimal fraction.",
+    "data_mode": "live_yfinance when multiples came back; provider_unavailable otherwise.",
 }
+
+# Ratio names offered by the seed's ``ratios`` input, mapped to the row key each
+# is computed under. Every row also carries the seed name as a table alias.
+_RATIO_ROW_KEYS = {
+    "pe_ttm": "pe",
+    "ev_ebitda": "ev_ebitda",
+    "ps_ttm": "ps",
+    "pb": "pb",
+    "dividend_yield": "div_yield",
+    "fcf_yield": "fcf_yield",
+}
+# Internal metric keys that a ratios filter removes from the rows.
+_RATIO_INTERNAL_KEYS = ("pe", "fwd_pe", "ev_ebitda", "ps", "pb", "roe", "roa", "debt_equity", "div_yield", "fcf_yield")
 
 
 @FunctionRegistry.register
@@ -55,10 +79,35 @@ class RVFunction(BaseFunction):
         metadata: dict[str, Any] = {"peers": peers, "peer_source": peer_source}
         ranked = [by_symbol[s] for s in [target] + peers if s in by_symbol]
         reason: str | None = None
+        warnings: list[str] = []
+        # ``ratios`` restricts the table (and the peer medians) to a subset.
+        # Unknown names are reported, never silently guessed.
+        selected, unknown_ratios = _selected_ratios(params.get("ratios"))
+        if unknown_ratios:
+            warnings.append(
+                "Unknown ratio(s) ignored: " + ", ".join(unknown_ratios)
+                + ". Valid names: " + ", ".join(_RATIO_ROW_KEYS) + "."
+            )
+        peer_count: int | None = None
+        peer_median: dict[str, float] = {}
+        peer_median_pe: float | None = None
+        pe_vs_peer_pct: float | None = None
         if target in by_symbol and len(ranked) > 1:
             status = "ok"
             rows = _rank_rows(ranked, target)
             sources = _sources(peer_source, live=True)
+            peer_rows = [r for r in rows if not r.get("is_target")]
+            peer_count = len(peer_rows)
+            peer_median = _peer_medians(peer_rows)
+            peer_median_pe = peer_median.get("pe")
+            target_pe = finite(by_symbol[target].get("pe"))
+            if target_pe is not None and target_pe > 0 and peer_median_pe:
+                pe_vs_peer_pct = (target_pe / peer_median_pe - 1.0) * 100.0
+            if peer_count < 3:
+                warnings.append(
+                    f"Only {peer_count} peer(s) returned multiples; the peer median is "
+                    "unreliable with fewer than three peers."
+                )
         else:
             status = "provider_unavailable"
             if not self.deps.yfinance:
@@ -93,11 +142,21 @@ class RVFunction(BaseFunction):
                 "data_mode": "provider_unavailable",
                 "provider_errors": [reason],
             })
+        own_row = by_symbol.get(target) or {}
         data: dict[str, Any] = {
             "status": status,
-            "rows": rows,
+            "rows": [_table_row(row, selected) for row in rows],
             "peers": peers,
             "peer_source": peer_source,
+            # Peer statistics exclude the target. They are None (not zero or a
+            # guess) when no peer set could be priced.
+            "peer_count": peer_count,
+            "peer_median": _restrict_medians(peer_median, selected) or None,
+            "peer_median_pe": peer_median_pe,
+            "pe_vs_peer_pct": pe_vs_peer_pct,
+            "own_pe": finite(own_row.get("pe")),
+            "data_mode": "live_yfinance" if status == "ok" else "provider_unavailable",
+            "ratios": sorted(selected) if selected is not None else None,
             "methodology": _METHODOLOGY,
             "field_dictionary": dict(_FIELD_DICTIONARY),
         }
@@ -111,6 +170,7 @@ class RVFunction(BaseFunction):
             code=self.code, instrument=instrument,
             data=data,
             sources=sources,
+            warnings=warnings,
             metadata=metadata,
         )
 
@@ -169,6 +229,15 @@ class RVFunction(BaseFunction):
                 continue
             div_yield, div_yield_status = _dividend_yield(raw.get("dividendYield"), raw)
             de_pct = finite(raw.get("debtToEquity"))
+            # FCF yield: yfinance freeCashflow (the same info payload DCF reads
+            # through this adapter) over market cap. Missing input means None.
+            free_cash_flow = finite(raw.get("freeCashflow"))
+            mcap = finite(market_cap)
+            fcf_yield = (
+                free_cash_flow / mcap
+                if free_cash_flow is not None and mcap is not None and mcap > 0
+                else None
+            )
             out[sym] = {
                 "symbol": sym,
                 "marketCap": market_cap,
@@ -183,6 +252,7 @@ class RVFunction(BaseFunction):
                 "debt_equity": None if de_pct is None else de_pct / 100.0,
                 "div_yield": div_yield,
                 "div_yield_status": div_yield_status,
+                "fcf_yield": fcf_yield,
                 "source_mode": "live_yfinance",
             }
         return out
@@ -261,3 +331,73 @@ def _rank_rows(rows: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
             row["percentile_pe"] = round(rank[1] * 100, 2)
         row["is_target"] = row.get("symbol") == target
     return rows
+
+
+_PEER_MEDIAN_KEYS = (
+    "pe", "fwd_pe", "pb", "ps", "ev_ebitda", "roe", "roa", "debt_equity", "div_yield", "fcf_yield", "marketCap",
+)
+
+
+def _selected_ratios(raw: Any) -> tuple[set[str] | None, list[str]]:
+    """The internal row keys selected by ``ratios`` plus the unknown names.
+
+    ``None`` means no filter (every ratio is shown). A list or a comma-separated
+    string is accepted; an empty value is no filter.
+    """
+    if isinstance(raw, str):
+        names = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple, set)):
+        names = [str(part).strip() for part in raw]
+    else:
+        return None, []
+    names = [name for name in names if name]
+    if not names:
+        return None, []
+    known = [name for name in names if name in _RATIO_ROW_KEYS]
+    unknown = [name for name in names if name not in _RATIO_ROW_KEYS]
+    if not known:
+        return None, unknown
+    return {_RATIO_ROW_KEYS[name] for name in known}, unknown
+
+
+def _table_row(row: dict[str, Any], selected: set[str] | None) -> dict[str, Any]:
+    """A row with the seed's table keys (pe_ttm, ps_ttm, dividend_yield, fcf_yield...).
+
+    With a ratios filter only the selected ratios stay in the row; the symbol,
+    rank and provenance fields always stay.
+    """
+    out = dict(row)
+    for name, internal in _RATIO_ROW_KEYS.items():
+        out[name] = row.get(internal)
+    if selected is not None:
+        for key in _RATIO_INTERNAL_KEYS:
+            if key not in selected:
+                out.pop(key, None)
+        for name, internal in _RATIO_ROW_KEYS.items():
+            if internal not in selected:
+                out.pop(name, None)
+    return out
+
+
+def _restrict_medians(medians: dict[str, float], selected: set[str] | None) -> dict[str, float]:
+    """Peer medians limited to the selected ratios. ``pe`` always stays (the P/E premium uses it)."""
+    if selected is None:
+        return dict(medians)
+    keep = selected | {"pe"}
+    return {key: value for key, value in medians.items() if key in keep}
+
+
+def _peer_medians(peer_rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Median per metric across the peer rows (target excluded).
+
+    Only finite values take part. P/E uses positive values only, matching the
+    ranking: a negative P/E means loss-making, not cheap. A metric no peer
+    supplies gets no key rather than a zero.
+    """
+    out: dict[str, float] = {}
+    for key in _PEER_MEDIAN_KEYS:
+        values = [finite(r.get(key)) for r in peer_rows]
+        usable = [v for v in values if v is not None and (v > 0 if key == "pe" else True)]
+        if usable:
+            out[key] = float(statistics.median(usable))
+    return out

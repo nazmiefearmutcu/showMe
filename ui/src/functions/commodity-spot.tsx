@@ -74,6 +74,8 @@ interface SpotData {
   /** BOIL: each leg's own closes, keyed by symbol (BOIL#1). */
   history_by_symbol?: Record<string, SpotHistoryPoint[] | null | undefined>;
   spread?: number | null;
+  /** Envelope-level quote date (yfinance tier); rows carry their own as_of. */
+  as_of?: string | null;
   next_actions?: string[];
   methodology?: string;
 }
@@ -172,9 +174,21 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
     (status === "input_error" && payload?.error_kind === "unsupported_contract");
   // Honesty: "live" is earned by the backend's live_* source modes only
   // (live_yfinance, live_eia, …). Model/fallback envelopes never claim it.
-  const isLive = status === "ok" && /^live_/.test(sourceMode);
-
   const primary = rows[0];
+  // BGAS#2: "live quote" is earned only by a yfinance quote stamped with
+  // today's UTC date. A quote from an earlier session (weekend, holiday,
+  // pre-open) is the last quote, labelled with its own AS OF date.
+  const quoteDay = String(primary?.as_of ?? payload?.as_of ?? "").slice(0, 10);
+  const isPriorSessionQuote =
+    sourceMode === "live_yfinance" &&
+    quoteDay !== "" &&
+    quoteDay !== new Date().toISOString().slice(0, 10);
+  // BGAS#2 follow-up: an EIA row is an official daily (or weekly) print
+  // dated by its period, published with a lag, so it is never a "live quote";
+  // it is labelled as the EIA print with its own date.
+  const isEiaPrint = sourceMode === "live_eia";
+  const isLive =
+    status === "ok" && /^live_/.test(sourceMode) && !isPriorSessionQuote && !isEiaPrint;
   const spread =
     typeof payload?.spread === "number" ? (payload.spread as number) : null;
 
@@ -354,7 +368,11 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
                     ? "provider down"
                     : isLive
                       ? "live quote"
-                      : sourceMode}
+                      : isEiaPrint && status === "ok"
+                        ? `EIA print${quoteDay ? ` · ${quoteDay}` : ""}`
+                        : isPriorSessionQuote
+                          ? "last quote"
+                          : sourceMode}
               </Pill>
               {isRangeWindow ? (
                 <SegmentedControl

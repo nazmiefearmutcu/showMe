@@ -321,13 +321,17 @@ def test_corr_live_total_outage_returns_provider_unavailable_envelope() -> None:
     assert any("no usable price series" in w for w in res.warnings)
 
 
-def test_corr_model_mode_still_serves_reference_series() -> None:
+def test_corr_model_mode_serves_no_synthetic_series() -> None:
+    # Data policy: live=false used to generate Gaussian price paths and publish
+    # their correlation matrix. It is now an explicit input_error, no matrix.
     from showme.engine.functions.portfolio.corr import CORRFunction
 
     fn = CORRFunction(FunctionDeps())
     res = _run(fn.execute(symbols=["SPY", "QQQ"], live_correlation=False, days=90))
     assert res.data["symbols"] == ["SPY", "QQQ"]
-    assert res.data["impactor"]["options"]["source_mode"] == "computed_reference"
+    assert res.data["status"] == "input_error"
+    assert res.data["pearson"] == {} and res.data["rows"] == []
+    assert res.sources == []
 
 
 # ── HNT-05: PORT concurrent quotes ────────────────────────────────────────

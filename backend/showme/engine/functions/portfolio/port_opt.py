@@ -274,7 +274,7 @@ class PortOptFunction(BaseFunction):
                 # A zero-variance asset has no defined risk contribution: report
                 # that honestly instead of inventing equal-risk weights.
                 rp = None
-                warnings.append(f"risk_parity unavailable: {exc}")
+                warnings.append(f"risk_parity unavailable: {str(exc) or type(exc).__name__}")
             if rp is not None:
                 out["risk_parity"] = {
                     "weights": rp.weights, "return": rp.expected_return,

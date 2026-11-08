@@ -61,7 +61,9 @@ interface DCFData {
   status?: string;
   error?: string;
   wacc?: number | null;
-  wacc_source?: "input" | "wacc_model" | null;
+  discount_rate?: number | null;
+  cost_of_equity?: number | null;
+  wacc_source?: "input" | "cost_of_equity" | null;
   g_high?: number;
   g_terminal?: number;
   years?: number;
@@ -168,7 +170,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
       },
       {
         key: "pv",
-        header: "PV @ WACC",
+        header: "PV @ discount rate",
         numeric: true,
         width: 124,
         render: (r) => (
@@ -389,7 +391,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`DCF — ${effectiveSymbol ?? ""}`}
-          subtitle={`two-stage FCFE · ${payload?.years ?? years}y @ WACC ${payload?.wacc != null ? fmtPct(payload.wacc) : "—"}${payload?.wacc_source === "wacc_model" ? " (WACC model)" : payload?.wacc_source === "input" ? " (input)" : ""}${manualOverride ? " · manual override" : ""}`}
+          subtitle={`two-stage FCFE · ${payload?.years ?? years}y @ discount rate ${payload?.discount_rate != null ? fmtPct(payload.discount_rate) : "—"}${payload?.wacc_source === "cost_of_equity" ? " (cost of equity)" : payload?.wacc_source === "input" ? " (input)" : ""}${manualOverride ? " · manual override" : ""}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>

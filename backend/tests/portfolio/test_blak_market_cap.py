@@ -84,8 +84,32 @@ def test_resolve_market_caps_overrides_short_circuit() -> None:
         })
     )
     assert lookup == {"BTCUSDT": 1.5e12, "ETHUSDT": 3e11}
-    assert state == "real"
-    assert sources == []  # zero provider hits
+    # BLAK#5-RQ: caller-typed caps are provenance "user_override", not "real".
+    assert state == "user_supplied"
+    assert sources == ["user_override"]  # zero provider hits
+
+
+def test_resolve_market_caps_overrides_match_lower_case_symbols() -> None:
+    """BLAK#5-RQ pre-fix: 'aapl' missed the 'AAPL' override and fell to equal weight."""
+    deps = FunctionDeps()
+    lookup, state, sources = asyncio.run(
+        _resolve_market_caps(deps, ["aapl", "msft"], {"AAPL": 3.0, "MSFT": 1.0})
+    )
+    assert lookup == {"aapl": 3.0, "msft": 1.0}
+    assert state == "user_supplied"
+    assert sources == ["user_override"]
+
+
+def test_blak_api_overrides_with_lower_case_symbols_are_not_dropped() -> None:
+    """Pre-fix: symbols=['aapl','msft'] with market_caps 'AAPL:3, MSFT:1' gave 0.5/0.5 approximate."""
+    func = BLAKFunction(deps=FunctionDeps())
+    result = asyncio.run(
+        func.execute(symbols=["aapl", "msft"], market_caps="AAPL:3, MSFT:1", live=False)
+    )
+    assert result.data["market_cap_data_state"] == "user_supplied"
+    assert pytest.approx(result.data["market_weights"]["aapl"], rel=1e-9) == 0.75
+    assert pytest.approx(result.data["market_weights"]["msft"], rel=1e-9) == 0.25
+    assert any("user-supplied" in w for w in result.warnings), result.warnings
 
 
 def test_resolve_market_caps_no_provider_returns_approximate() -> None:

@@ -1,4 +1,4 @@
-"""ALLQ — Dealer quote ladder (TRACE-proxy).
+"""ALLQ — Dealer quote ladder (indicative, modeled; not observed TRACE quotes).
 
 Bloomberg ``ALLQ<GO>`` analogue: a dealer-quote ladder for a bond with
 per-dealer bid, ask, mid, size, quote time, and the spread in basis

@@ -37,6 +37,9 @@ class DDMFunction(BaseFunction):
         # until the provider returns a usable payload (T10: a failed or empty
         # provider must never read as "pays no dividend, value 0, status ok").
         provider_failed = d0 is None
+        # DDM#3 follow-up: a caller-supplied dividend (even 0) must be credited to the
+        # caller, never to the provider, so the non-payer reason stays honest.
+        caller_supplied_dividend = d0 is not None
         # Try to source D0 from yfinance
         if d0 is None and self.deps.yfinance:
             try:
@@ -66,6 +69,13 @@ class DDMFunction(BaseFunction):
             if provider_failed:
                 status = "provider_unavailable"
                 reason = "Dividend reference data is unavailable, so the trailing dividend is unknown. Pass dividend_ttm explicitly."
+            elif caller_supplied_dividend:
+                status = "not_applicable"
+                reason = f"The dividend_ttm input is {d0:g}, so DDM is not applicable for non-dividend payers."
+                warnings.append(
+                    f"dividend_ttm={d0:g} was supplied by the caller (no provider lookup was made); "
+                    "DDM is not applicable for non-dividend payers."
+                )
             elif forward_indicated is not None and float(forward_indicated) > 0:
                 status = "needs_input"
                 reason = "Provider reports a forward dividend but no trailing 12-month dividend. Pass dividend_ttm explicitly."
@@ -80,7 +90,11 @@ class DDMFunction(BaseFunction):
                 data={
                     "status": status,
                     "reason": reason,
-                    "next_actions": ["Pass dividend_ttm explicitly (trailing annual dividend per share)."],
+                    "next_actions": (
+                        ["Pass a positive dividend_ttm (trailing annual dividend per share) to value this payer."]
+                        if caller_supplied_dividend
+                        else ["Pass dividend_ttm explicitly (trailing annual dividend per share)."]
+                    ),
                     "dividend_ttm": None,
                     "dividend_forward_indicated": forward_indicated,
                     "next_dividend": None,
@@ -88,28 +102,6 @@ class DDMFunction(BaseFunction):
                     "fair_value_per_share": None,
                     "rows": [], "surface": [],
                 },
-                sources=list(set(sources)), warnings=warnings,
-            )
-            # No positive dividend means no Gordon value: report the missing
-            # input explicitly instead of a fake 0.0 fair value with status ok.
-            return FunctionResult(
-                code=self.code, instrument=instrument,
-                data={"status": "needs_input",
-                      "reason": "No positive trailing dividend for this instrument; DDM needs dividend_ttm to value it.",
-                      "next_actions": [
-                          "Pass dividend_ttm explicitly to value the shares on a Gordon basis.",
-                          "Use DCF for non-dividend payers.",
-                      ],
-                      "dividend_ttm": None, "next_dividend": None,
-                      "growth": g, "required_return": None,
-                      "fair_value_per_share": None,
-                      "assumptions": {"required_return": None, "growth": g, "dividend_ttm": None},
-                      "rows": [], "surface": [],
-                      "methodology": "Gordon Growth DDM: P = D1 / (r - g). Not computed without a positive trailing dividend.",
-                      "field_dictionary": {
-                          "dividend_ttm": "Trailing annual dividend per share from provider or user override.",
-                          "fair_value_per_share": "The dividend-implied value per share; null when no dividend is available.",
-                      }},
                 sources=list(set(sources)), warnings=warnings,
             )
         # Required return: WACC if not specified
@@ -225,31 +217,44 @@ class DCFFunction(BaseFunction):
         N = int(params.get("years", 10))
         g_high = float(params.get("growth_high", 0.08))
         g_terminal = float(params.get("growth_terminal", 0.025))
-        wacc = params.get("wacc")
-        # Review of DCF#1: say where WACC came from (caller input vs the WACC model).
-        wacc_source = "input" if wacc is not None else "wacc_model"
+        # DCFS#2: the cash flow is FCFE (levered, after debt), so it is discounted at the
+        # cost of equity (CAPM re_capm), not the enterprise WACC. A caller "wacc" is a
+        # discount-rate override applied as given. The WACC model's WACC is reported for
+        # reference only and never used to discount FCFE.
+        caller_rate = params.get("wacc")
+        wacc_source = "input" if caller_rate is not None else "cost_of_equity"
+        # The "wacc" output is the WACC model's own value. A caller rate is the discount
+        # rate (discount_rate), so the WACC model is not consulted and "wacc" stays null
+        # rather than carrying the caller's number under the WACC key.
+        wacc_reference: float | None = None
+        cost_of_equity: float | None = None
+        wacc: float | None = float(caller_rate) if caller_rate is not None else None
+        # Provenance of the cost of equity (CAPM) inputs, set on the provider path only.
+        erp_source: str | None = None
+        discount_rate_data_state: str | None = None
         fcfe = params.get("fcfe")
         shares = params.get("shares_outstanding")
         warnings: list[str] = []
         sources: list[str] = []
-        if wacc is None:
-            # Data policy: never discount at a silent constant. When WACC is
-            # not applicable or unavailable, report the explicit state (merged
+        if caller_rate is None:
+            # Data policy: never discount at a silent constant. When the cost of equity
+            # is not applicable or unavailable, report the explicit state (merged
             # from the DCF#1 and WACC#1 fixes: their state names, the full
             # payload shape the pane expects).
             def _no_wacc(status: str, reason: str, next_actions: list[str]) -> FunctionResult:
-                warnings.append(f"wacc: {reason}")
+                warnings.append(f"discount_rate: {reason}")
                 return FunctionResult(
                     code=self.code, instrument=instrument,
                     data={"status": status, "reason": reason, "next_actions": next_actions,
-                          "wacc": None, "wacc_source": None, "g_high": g_high, "g_terminal": g_terminal,
+                          "wacc": None, "discount_rate": None, "cost_of_equity": None,
+                          "wacc_source": None, "g_high": g_high, "g_terminal": g_terminal,
                           "years": N, "starting_fcfe": None, "fcfe_source": None, "shares_source": None,
                           "assumptions": {"wacc": None, "wacc_source": None, "growth_high": g_high,
                                   "growth_terminal": g_terminal, "years": N,
                                   "fcfe_source": None, "shares_source": None},
                           "shares_outstanding": None, "equity_value": None, "fair_value_per_share": None,
                           "rows": [], "bridge": [],
-                          "methodology": "Two-stage FCFE DCF; WACC is required and is never substituted with a constant.",
+                          "methodology": "Two-stage FCFE DCF; FCFE is discounted at the cost of equity (CAPM re_capm), which is required and is never substituted with a constant or with WACC.",
                           "field_dictionary": FIELD_DICTIONARIES["valuation"]},
                     sources=list(set(sources)), warnings=warnings,
                 )
@@ -264,20 +269,40 @@ class DCFFunction(BaseFunction):
                     ["Retry once the WACC provider is reachable.", "Or pass wacc explicitly."],
                 )
             sources += list(w.sources or [])
-            wacc_value = (w.data or {}).get("wacc")
-            if wacc_value is None:
+            wacc_reference = (w.data or {}).get("wacc")
+            re_capm = (w.data or {}).get("re_capm")
+            if re_capm is None:
                 wacc_status = str((w.data or {}).get("status") or "")
                 reason = (w.data or {}).get("reason") or (
-                    "WACC is not available for this issuer, so no discount rate can be derived. "
-                    "Pass wacc explicitly to value this DCF."
+                    "The cost of equity (CAPM) is not available for this issuer, so FCFE cannot be "
+                    "discounted. Pass wacc explicitly to value this DCF."
                 )
+                if wacc_status == "not_applicable":
+                    state = "not_applicable"
+                elif wacc_status == "provider_unavailable":
+                    state = "provider_unavailable"
+                else:
+                    state = "needs_input"
                 return _no_wacc(
-                    "not_applicable" if wacc_status == "not_applicable" else "needs_input",
+                    state,
                     reason,
-                    ["Pass wacc explicitly, or use a financials-specific model for this issuer."],
+                    ["Pass wacc explicitly as the discount rate, or retry once the WACC inputs are reachable."],
                 )
-            wacc = float(wacc_value)
+            cost_of_equity = float(re_capm)
+            wacc = cost_of_equity
+            erp_source = (w.data or {}).get("erp_source")
+            discount_rate_data_state = (w.data or {}).get("data_state")
+            if erp_source == "assumption_default_5pct":
+                warnings.append(
+                    "discount_rate: the cost of equity rests on a constant 5.0% equity risk premium "
+                    "(erp_source assumption_default_5pct); pass market_premium to replace it."
+                )
         wacc = float(wacc)
+        if caller_rate is not None:
+            warnings.append(
+                "discount_rate: the caller-supplied rate is applied to FCFE as given; the cost of "
+                "equity (CAPM) is the consistent discount rate for levered FCFE."
+            )
         # Provenance of every model input: a caller value is a manual override,
         # a provider value is labelled with its source, and a missing value is
         # reported as missing. Nothing is substituted with a placeholder.
@@ -311,10 +336,10 @@ class DCFFunction(BaseFunction):
                       "reason": "Provider free cash flow is unavailable for this instrument; pass fcfe to run the model.",
                       "next_actions": ["Enter FCFE (USD) as a manual override.",
                                        "Retry once the yfinance reference data recovers."],
-                      "wacc": wacc, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
+                      "wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
                       "years": N, "starting_fcfe": None,
                       "fcfe_source": "missing",
-                      "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                      "assumptions": {"wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source,
                                       "growth_high": g_high, "growth_terminal": g_terminal,
                                       "years": N, "fcfe_source": "missing",
                                       "shares_source": "user_override" if shares is not None else None},
@@ -347,11 +372,11 @@ class DCFFunction(BaseFunction):
                       "next_actions": ["Raise wacc above terminal growth.",
                                        "Or lower growth_terminal below wacc."],
                       "error": "wacc must exceed terminal growth",
-                      "wacc": wacc, "wacc_source": wacc_source,
+                      "wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source,
                       "g_high": g_high, "g_terminal": g_terminal,
                       "years": N, "starting_fcfe": fcfe,
                       "fcfe_source": fcfe_source,
-                      "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                      "assumptions": {"wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source,
                                       "growth_high": g_high, "growth_terminal": g_terminal,
                                       "years": N, "fcfe_source": fcfe_source,
                                       "shares_source": None},
@@ -420,11 +445,14 @@ class DCFFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={"status": "ok" if fcfe > 0 and per_share is not None else "needs_input",
-                   "wacc": wacc, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
+                   "wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source,
+                   "erp_source": erp_source, "discount_rate_data_state": discount_rate_data_state,
+                   "g_high": g_high, "g_terminal": g_terminal,
                    "years": N, "starting_fcfe": fcfe,
                    "fcfe_source": fcfe_source,
                    "shares_source": shares_source or "missing",
-                   "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                   "assumptions": {"wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source,
+                                   "erp_source": erp_source, "discount_rate_data_state": discount_rate_data_state,
                                    "growth_high": g_high, "growth_terminal": g_terminal,
                                    "years": N, "fcfe_source": fcfe_source,
                                    "shares_source": shares_source or "missing"},
@@ -435,7 +463,7 @@ class DCFFunction(BaseFunction):
                    "shares_outstanding": shares,
                    "rows": cashflows,
                    "bridge": bridge,
-                   "methodology": "Two-stage FCFE DCF: forecast FCFE for N years at high growth, discount each cash flow by WACC, then add terminal value TV = FCFE_N * (1 + g_terminal) / (WACC - g_terminal). Inputs are labelled user_override (caller value) or provider (yfinance).",
+                   "methodology": "Two-stage FCFE DCF: forecast FCFE for N years at high growth, discount each cash flow at discount_rate (the cost of equity by default, or a caller override), then add terminal value TV = FCFE_N * (1 + g_terminal) / (discount_rate - g_terminal). wacc is the WACC model's value (null when the caller supplies the discount rate), reported for reference only; erp_source and discount_rate_data_state label the cost-of-equity inputs. Inputs are labelled user_override (caller value) or provider (yfinance).",
                    "field_dictionary": FIELD_DICTIONARIES["valuation"]},
             sources=list(set(sources)), warnings=warnings,
         )

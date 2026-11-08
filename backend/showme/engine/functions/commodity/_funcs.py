@@ -539,6 +539,24 @@ async def _contract_snapshot(
     }, history, errors
 
 
+class _QuoteStampProbe:
+    """GLCO#2: passes a yfinance-shaped provider through and records, per symbol,
+    whether the quote carried an exchange time. The shared snapshot helper falls
+    back to the fetch time when it does not; GLCO uses this record to refuse
+    that row. The helper itself is left unchanged for BOIL/BGAS/CPF."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.stamped: dict[str, bool] = {}
+
+    async def fetch(self, request: Any) -> Any:
+        quote = await self._inner.fetch(request)
+        symbol = str(getattr(getattr(request, "instrument", None), "symbol", "") or "")
+        stamp = getattr(getattr(quote, "timestamp", None), "isoformat", lambda: None)()
+        self.stamped[symbol] = bool(stamp)
+        return quote
+
+
 def _filter_sector(rows: list[dict[str, Any]], sector: Any) -> list[dict[str, Any]]:
     key = str(sector or "all").strip().lower()
     if key in {"", "all"}:
@@ -816,6 +834,83 @@ def _bgas_decorate_rows(rows: list[dict[str, Any]], *, as_of_day: Any) -> list[d
     return out
 
 
+_BGAS_PREV_TOLERANCE = 1e-4  # relative; a quote prev within 0.01% of the bar is the same print
+
+
+def _bgas_unreconciled(
+    row: dict[str, Any],
+    warnings: list[str],
+    reason: str,
+) -> dict[str, Any]:
+    """BGAS#1: label a quote previousClose that no daily bar could verify.
+
+    The quote's own previousClose is kept (no value is invented), but the row
+    says so and the warning names the reason, so the change is never silently
+    trusted.
+    """
+    row = dict(row)
+    row["prev_source"] = "quote_unreconciled"
+    quote_prev = _finite(row.get("prev"))
+    if quote_prev is not None:
+        warnings.append(
+            f"NG=F quote previousClose {quote_prev} is not reconciled with the daily bars "
+            f"({reason}); the change uses the unverified quote previousClose."
+        )
+    return row
+
+
+def _bgas_reconcile_prev(
+    row: dict[str, Any] | None,
+    history: list[dict[str, Any]],
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    """Cross-check the quote's previous close against the daily bars.
+
+    BGAS#1: the chart meta ``previousClose`` is not verified against the bars
+    fetched in the same call, so a stale prior close produced a false change.
+    The prior session's close is the bar before the quote's session; when the
+    quote disagrees with it, the change is taken from the bars and a warning
+    names both values. When the bars cannot place the quote's session, the
+    quote's own previous close is kept and no reconciliation is claimed.
+    """
+    if row is None:
+        return row
+    if len(history) < 2:
+        return _bgas_unreconciled(row, warnings, "fewer than two daily bars")
+    quote_day = str(row.get("as_of") or "")[:10]
+    dates = [str(h.get("date") or "")[:10] for h in history]
+    bar_prev: float | None = None
+    bar_day: str | None = None
+    if quote_day in dates:
+        idx = dates.index(quote_day)
+        if idx >= 1:
+            bar_prev = _finite(history[idx - 1].get("close"))
+            bar_day = dates[idx - 1]
+    elif quote_day and dates[-1] < quote_day:
+        # The quote's session has no bar yet: the last bar is the prior close.
+        bar_prev = _finite(history[-1].get("close"))
+        bar_day = dates[-1]
+    if bar_prev is None or bar_prev <= 0:
+        return _bgas_unreconciled(row, warnings, "the daily bars cannot place the quote session")
+    quote_prev = _finite(row.get("prev"))
+    row = dict(row)
+    if quote_prev is not None and abs(quote_prev - bar_prev) <= _BGAS_PREV_TOLERANCE * abs(bar_prev):
+        row["prev_source"] = "quote"
+        return row
+    if quote_prev is not None:
+        warnings.append(
+            f"NG=F quote previousClose {quote_prev} disagrees with the daily bar close "
+            f"{bar_prev} for {bar_day}; the change is computed from the daily bars."
+        )
+    last = _finite(row.get("last"))
+    row["prev"] = bar_prev
+    row["prev_source"] = "daily_bars"
+    row["prev_as_of"] = bar_day
+    row["change"] = last - bar_prev if last is not None else None
+    row["change_pct"] = (last / bar_prev - 1) * 100 if last is not None else None
+    return row
+
+
 @FunctionRegistry.register
 class BGASFunction(BaseFunction):
     """BGAS — Henry Hub natural gas spot (NG=F front month, or EIA HENRYHUB)."""
@@ -943,6 +1038,7 @@ class BGASFunction(BaseFunction):
                 include_history=True,
             )
             provider_errors.extend(snapshot_errors)
+            row = _bgas_reconcile_prev(row, history, provider_errors)
         if row:
             rows = _bgas_decorate_rows([row], as_of_day=as_of_day)
             data = {
@@ -1586,13 +1682,21 @@ class GLCOFunction(BaseFunction):
             symbol_errors: dict[str, list[str]] = {}
 
             async def _one(sym: str) -> dict[str, Any] | None:
+                probe = _QuoteStampProbe(self.deps.yfinance)
                 row, _history, errors = await _contract_snapshot(
-                    self.deps.yfinance,
+                    probe,
                     sym,
                     days=30,
                     timeout=quote_timeout,
                     include_history=False,
                 )
+                if row and not probe.stamped.get(sym):
+                    # GLCO#2: a price with no exchange time is never served as
+                    # current (a Friday close read on a Sunday looked live).
+                    errors = [*errors, f"{sym} quote: no exchange time on the quote; price not served"]
+                    row = None
+                if row:
+                    row["as_of_source"] = "quote_exchange_time"
                 provider_errors.extend(errors)
                 symbol_errors[sym] = list(errors)
                 return row

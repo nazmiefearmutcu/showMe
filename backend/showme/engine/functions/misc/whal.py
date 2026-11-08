@@ -143,7 +143,10 @@ async def _crypto_whales(
     if pair is None:
         return (
             {
-                "status": "provider_unavailable",
+                # WHAL#5 follow-up: an unrecognised symbol is an input error. No provider
+                # was called, so it must not read as a provider outage.
+                "status": "input_error",
+                "reason": f"{symbol} is not a recognised Binance spot or USD-M pair; no provider was queried.",
                 "provider": "binance_public",
                 "provider_symbol": None,
                 "rows": [],
@@ -188,7 +191,11 @@ async def _crypto_whales(
             ]
             window = _trade_window(in_window, lookback_hours)
             covered = window["covered_hours"]
-            if covered is None or covered < lookback_hours - 1:
+            # WHAL#2 follow-up: a fixed one-hour allowance made the check dead for a 1h
+            # lookback (covered < 0). The allowance is one hour, capped at half the lookback,
+            # so 6h/24h/72h keep their one-hour tolerance and 1h still reports a shortfall.
+            tolerance_hours = min(1.0, lookback_hours / 2.0)
+            if covered is None or covered < lookback_hours - tolerance_hours:
                 covered_text = f"{covered:.1f}h" if covered is not None else "0h"
                 warnings.append(
                     f"Binance returns the latest {trade_limit} aggregate trades per venue, which "

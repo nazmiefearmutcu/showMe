@@ -224,7 +224,7 @@ describe("DCFS pane — persisted overrides", () => {
     // Fresh localStorage: no overrides -> params carry no wacc/fcfe keys.
     expect(lastCall()?.params?.wacc).toBeUndefined();
     expect(lastCall()?.params?.fcfe).toBeUndefined();
-    const waccInput = screen.getByLabelText("WACC override");
+    const waccInput = screen.getByLabelText("Discount rate (cost of equity) override");
     fireEvent.change(waccInput, { target: { value: "0.09" } });
     fireEvent.blur(waccInput);
     expect(lastCall()?.params?.wacc).toBe(0.09);
@@ -250,7 +250,7 @@ describe("DCFS pane — grid CSV export (audit A3 OPP)", () => {
     expect(filename).toMatch(/^dcfs-AAPL-\d{4}-\d{2}-\d{2}\.csv$/);
     // Header row + RAW payload numbers (not formatted currency strings).
     expect(csv).toContain(
-      "WACC,Terminal growth,Fair value / share,Equity value,Bucket",
+      "Ke,Terminal growth,Fair value / share,Equity value,Bucket",
     );
     expect(csv).toContain("0.08,0.02,300");
     expect(csv).toContain("0.1,0.03,150");

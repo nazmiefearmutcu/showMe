@@ -2065,6 +2065,21 @@ async def _quote_snapshot_rows(
     return rows, [warning for warning in warnings if warning][:4]
 
 
+def _csrc_with_established_baseline(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """CSRC#1: a commodity row's 1D change must come from the prior session or not at all.
+
+    The chart quote reports ``prior_session_established`` False when the bars could not
+    establish the prior session; its previous_close is then Yahoo's range=5d previousClose,
+    a multi-session baseline. Such a snapshot keeps its last price but drops the baseline
+    and the change, so the row shows an honest blank rather than a 5-session move.
+    """
+    raw = snapshot.get("raw") or {}
+    if raw.get("prior_session_established") is not False:
+        return snapshot
+    return {**snapshot, "previous_close": None, "previousClose": None, "change_pct": None,
+            "regularMarketChangePercent": None}
+
+
 async def _csrc_quote_snapshot_rows(
     symbols: list[str],
     *,
@@ -2090,6 +2105,7 @@ async def _csrc_quote_snapshot_rows(
                 except Exception:  # noqa: BLE001 — unresolved symbols are labelled upstream
                     return None
                 quote_cache_set(symbol, snapshot)
+            snapshot = _csrc_with_established_baseline(snapshot)
             row = _snapshot_to_quote_row(symbol, snapshot)
             if row is not None:
                 row["quote_time"] = _most_snapshot_quote_time(snapshot)

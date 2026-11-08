@@ -188,7 +188,9 @@ export function CORRPane({ code }: FunctionPaneProps) {
   const [draftFrequency, setDraftFrequency] = useState<Frequency>("daily");
   const [draftMissingPolicy, setDraftMissingPolicy] =
     useState<MissingPolicy>("pairwise");
-  const [draftLive, setDraftLive] = useState(true);
+  // Correlations run on live close series only: the old Ref mode generated
+  // synthetic price paths and is gone (data policy), so there is no SRC switch.
+  const draftLive = true;
   const [runId, setRunId] = useState(1);
   const [query, setQuery] = useState({
     symbols: DEFAULT_SYMBOLS,
@@ -619,15 +621,6 @@ export function CORRPane({ code }: FunctionPaneProps) {
           </label>
           <div className="corr-grid-end">
             <FunctionControlGroup>
-              <SegmentedControl
-                label="SRC"
-                value={draftLive ? "live" : "ref"}
-                options={[
-                  { value: "live", label: "Live" },
-                  { value: "ref", label: "Ref" },
-                ]}
-                onChange={(value) => setDraftLive(value === "live")}
-              />
               <SegmentedControl
                 label="RET"
                 value={draftReturnMethod}

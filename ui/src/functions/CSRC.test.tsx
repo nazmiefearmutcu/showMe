@@ -52,7 +52,7 @@ function okPayload() {
       elapsed_ms: 421,
       data: {
         status: "ok",
-        query: "volume >= 0",
+        query: 'sector != "NONE"',
         filter: "volume >= 0",
         scanned: 3,
         matched: 3,
@@ -222,7 +222,7 @@ describe("CSRC pane — sector filter", () => {
     render(<CSRCPane code="CSRC" />);
     fireEvent.click(screen.getByTitle("Sector Metals"));
     fireEvent.click(screen.getByTitle("Sector ALL"));
-    expect(screen.getAllByText(/volume >= 0/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/sector != "NONE"/).length).toBeGreaterThan(0);
   });
 
   it("renders the filter-error state for an unsupported predicate payload", () => {

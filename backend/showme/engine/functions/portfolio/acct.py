@@ -7,6 +7,7 @@ Hesaplar: 'main', 'paper', 'ibkr', 'alpaca', 'oanda', 'binance' vb.
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -150,6 +151,11 @@ class ACCTFunction(BaseFunction):
                                             "total_market_value": cross["total_mv"],
                                             "unpriced_positions": unpriced_total,
                                             "total_market_value_complete": unpriced_total == 0,
+                                            # The saved cash book is not read for supplied positions,
+                                            # so cash and equity are explicitly absent here.
+                                            "cash_by_currency": {},
+                                            "equity_by_currency": {},
+                                            "total_equity": None,
                                         },
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()}),
@@ -197,6 +203,7 @@ class ACCTFunction(BaseFunction):
         price_errors: dict[str, str] = {sym: err for sym, _, err in results if err}
         # Group by account
         by_account: dict[str, dict[str, Any]] = {}
+        equity_inputs: list[tuple[str, float | None]] = []
         for p in portfolio.positions:
             acct = p.account or "main"
             slot = by_account.setdefault(acct, {
@@ -209,6 +216,7 @@ class ACCTFunction(BaseFunction):
             px = prices.get(sym)
             priced = px is not None
             mv = p.quantity * px if priced else None
+            equity_inputs.append((str(p.currency or "USD").upper(), mv))
             unrl = (px - p.avg_cost) * p.quantity if priced else None
             ac = p.instrument.asset_class.value
             slot["positions"].append({
@@ -262,6 +270,7 @@ class ACCTFunction(BaseFunction):
                       "total_market_value": cross["total_mv"],
                       "unpriced_positions": unpriced_total,
                       "total_market_value_complete": unpriced_total == 0,
+                      **_equity_block(getattr(portfolio, "cash", None), equity_inputs),
                   },
                   "methodology": _methodology(),
                   "field_dictionary": _field_dictionary()}),
@@ -301,6 +310,7 @@ def _with_card_fields(data: dict[str, Any]) -> dict[str, Any]:
         "accounts_count": summary.get("accounts", 0),
         "positions": summary.get("positions", 0),
         "unpriced_positions": summary.get("unpriced_positions", 0),
+        "total_equity": summary.get("total_equity"),
     }
 
 
@@ -321,10 +331,63 @@ def _top_key(values: dict[str, float]) -> str | None:
     return max(values.items(), key=lambda item: abs(float(item[1] or 0)))[0]
 
 
+def _equity_block(cash: Any, inputs: list[tuple[str, float | None]]) -> dict[str, Any]:
+    """Cash and equity per currency for the saved book.
+
+    The cash book is per currency and portfolio-wide (it carries no account
+    key), so it is reported once here and not split across accounts. Equity in
+    a currency is the priced market value of its positions plus its cash; a
+    currency with any unpriced position has no equity (None), never a partial
+    total. ``total_equity`` is a single number only when one currency is present.
+    """
+    cash_by_currency: dict[str, float] = {}
+    unreadable_cash: set[str] = set()
+    if isinstance(cash, dict):
+        for ccy, amount in cash.items():
+            value = _finite_or_none(amount)
+            if value is not None:
+                cash_by_currency[str(ccy).upper()] = value
+            else:
+                # ACCT#2: an unreadable saved cash value is unknown, not zero.
+                unreadable_cash.add(str(ccy).upper())
+    mv_by_currency: dict[str, float] = {}
+    unpriced_currencies: set[str] = set()
+    seen: set[str] = set()
+    for ccy, mv in inputs:
+        seen.add(ccy)
+        if mv is None:
+            unpriced_currencies.add(ccy)
+        else:
+            mv_by_currency[ccy] = mv_by_currency.get(ccy, 0.0) + mv
+    equity_by_currency: dict[str, float | None] = {}
+    for ccy in sorted(seen | set(cash_by_currency) | unreadable_cash):
+        if ccy in unpriced_currencies or ccy in unreadable_cash:
+            equity_by_currency[ccy] = None
+        else:
+            equity_by_currency[ccy] = mv_by_currency.get(ccy, 0.0) + cash_by_currency.get(ccy, 0.0)
+    total_equity = next(iter(equity_by_currency.values())) if len(equity_by_currency) == 1 else None
+    return {
+        "cash_by_currency": cash_by_currency,
+        "unreadable_cash_currencies": sorted(unreadable_cash),
+        "equity_by_currency": equity_by_currency,
+        "total_equity": total_equity,
+    }
+
+
+def _finite_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _methodology() -> str:
     return (
         "Group saved or supplied positions by account, mark each position with the latest available price, "
-        "then aggregate market value, unrealized P&L, asset-class exposure, and symbol exposure across accounts."
+        "then aggregate market value, unrealized P&L, asset-class exposure, and symbol exposure across accounts. "
+        "Cash is the saved per-currency cash book (portfolio-wide, not per account); equity per currency is "
+        "priced market value plus cash, and is null where a position in that currency is unpriced."
     )
 
 
@@ -337,5 +400,8 @@ def _field_dictionary() -> dict[str, str]:
         "unrealized_pnl": "(live last price - average cost) * quantity. Null when unpriced.",
         "unpriced_positions": "Positions with no live mark, excluded from market value totals.",
         "top_asset_class": "Largest asset-class exposure for the account.",
+        "cash_by_currency": "Saved cash per currency (portfolio-wide). Empty for user-supplied positions, which do not read the saved book.",
+        "equity_by_currency": "Priced market value plus cash, per currency. Null for a currency with an unpriced position.",
+        "total_equity": "Account equity as one number when exactly one currency is present; null otherwise (never summed across currencies).",
         "cross": "Cross-account aggregate exposure by asset class and symbol.",
     }
