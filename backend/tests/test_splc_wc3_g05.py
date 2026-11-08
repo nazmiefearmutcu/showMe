@@ -119,3 +119,21 @@ def test_sec_path_competitor_rows_carry_no_invented_confidence() -> None:
     # Extracted customer rows keep their own extraction confidence.
     customer = next(r for r in rows if r.get("relationship") == "customer")
     assert customer.get("confidence") == 0.6
+
+
+def test_sec_extracted_rows_without_extractor_confidence_carry_none() -> None:
+    # SPLC#2 residual: an extractor row that omits confidence must not be
+    # given a fixed 0.55 score; the extracted path reports the measured value
+    # or nothing.
+    rows = splc_mod._relationship_rows(
+        "AAPL",
+        [{"name": "Carrier X", "pct": 12.0}],
+        [{"name": "Foundry Y", "pct": 9.0}],
+        pd.DataFrame(),
+        peers=[],
+        filing_url=_FILING_URL,
+    )
+    customer = next(r for r in rows if r.get("relationship") == "customer")
+    supplier = next(r for r in rows if r.get("relationship") == "supplier")
+    assert customer.get("confidence") is None, customer
+    assert supplier.get("confidence") is None, supplier

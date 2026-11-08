@@ -409,9 +409,9 @@ def _relationship_rows(
 ) -> list[dict[str, Any]]:
     rows = []
     for item in customers:
-        rows.append({"symbol": symbol, "relationship": "customer", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence", 0.55), "disclosed_pct": item.get("pct"), "fiscal_year": item.get("fiscal_year"), "source_url": filing_url, "source_mode": "sec_10k_customer_extraction"})
+        rows.append({"symbol": symbol, "relationship": "customer", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence"), "disclosed_pct": item.get("pct"), "fiscal_year": item.get("fiscal_year"), "source_url": filing_url, "source_mode": "sec_10k_customer_extraction"})
     for item in suppliers:
-        rows.append({"symbol": symbol, "relationship": "supplier", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence", 0.55), "disclosed_pct": item.get("pct"), "fiscal_year": item.get("fiscal_year"), "source_url": filing_url, "source_mode": "sec_10k_supplier_extraction"})
+        rows.append({"symbol": symbol, "relationship": "supplier", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence"), "disclosed_pct": item.get("pct"), "fiscal_year": item.get("fiscal_year"), "source_url": filing_url, "source_mode": "sec_10k_supplier_extraction"})
     # Competitor rows come from the labelled reference sector peer list (ticker
     # when the peer entry is a ticker); 10-K concentration mining does not
     # extract competitors, so these rows stay explicitly reference-sourced.
