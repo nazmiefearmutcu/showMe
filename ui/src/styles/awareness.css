@@ -343,6 +343,11 @@
 .aw-tier--t5 {
   color: var(--text-mute);
 }
+/* unknown publisher tier: dashed, never styled as a real tier */
+.aw-tier--unknown {
+  color: var(--text-mute);
+  border-style: dashed;
+}
 
 .aw-sent {
   display: inline-flex;
@@ -566,6 +571,10 @@
 }
 .aw-footer > span:first-child {
   margin-right: auto;
+}
+/* backend disclosure (fallback preset, hidden items): must stay noticeable */
+.aw-footer__note {
+  color: var(--warn);
 }
 
 /* drawer */
