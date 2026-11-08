@@ -338,17 +338,6 @@ def _max_drawdown(daily_returns: list[float]) -> float | None:
     return float((index / running_peak - 1.0).min())
 
 
-def _split_factors(split_ratios: pd.Series) -> np.ndarray:
-    """Cumulative split factor S_t: the product of split ratios on bars <= t.
-
-    A bar with no split holds 0 or NaN and counts as 1; 4:1 is 4.0, 1:10 is 0.1.
-    Adjusted price = raw close * S_t, so a split leaves the adjusted series
-    continuous and is never read as a loss (TRA#2).
-    """
-    ratios = pd.to_numeric(split_ratios, errors="coerce").fillna(0.0).to_numpy(dtype=float)
-    return np.cumprod(np.where(ratios > 0, ratios, 1.0))
-
-
 def _unconfirmed_split_dates(close: pd.Series) -> list[Any]:
     """Bars whose one-day raw move matches a whole-number split ratio.
 
@@ -483,30 +472,36 @@ class TRAFunction(BaseFunction):
             )
         div_count = int((divs > 0).sum()) if dividends_known else None
         div_total = float(divs.sum()) if dividends_known else None
-        # TRA#2/#3: splits are removed before any return is measured. A source
-        # that reports split events gives an adjusted series; one that does not
-        # is labelled, and a one-day move that looks like a split is named.
+        # TRA#2/#3: the live sources (Yahoo chart and the yfinance ticker history)
+        # deliver closes and dividends already split-adjusted to the latest share
+        # basis, so they are used as delivered. Multiplying them by the split
+        # ratio again read every split as a large gain. A source with split
+        # events is labelled split_adjusted; one without is labelled too, and a
+        # one-day move that matches a split ratio is named in the warnings.
         splits_known = "splits" in df.columns
+        split_bars: set[Any] = set()
         if splits_known:
-            split_factor = _split_factors(df["splits"])
-            splits_count: int | None = int(
-                (pd.to_numeric(df["splits"], errors="coerce").fillna(0.0) > 0).sum()
-            )
+            split_events = pd.to_numeric(df["splits"], errors="coerce").fillna(0.0) > 0
+            split_bars = set(close.index[split_events.to_numpy()])
+            splits_count: int | None = int(split_events.sum())
         else:
-            # No split column: closes stay unadjusted and split_adjusted says so.
-            split_factor = np.ones(len(close), dtype=float)
             splits_count = None
-            for bar in _unconfirmed_split_dates(close):
+        for bar in _unconfirmed_split_dates(close):
+            stamp = bar.strftime("%Y-%m-%d")
+            if bar in split_bars:
                 warnings.append(
-                    f"TRA: the one-day price move on {bar.strftime('%Y-%m-%d')} matches a stock "
-                    "split ratio, but the source reported no split event. Verify it before "
-                    "reading total return or drawdown."
+                    f"TRA: the one-day price move on {stamp} matches a stock split ratio even "
+                    "though the source reports a split event there. The closes may not be "
+                    "split-adjusted; verify before reading total return or drawdown."
                 )
-        adj_close = pd.Series(close.to_numpy(dtype=float) * split_factor, index=close.index)
-        adj_divs = (
-            pd.Series(divs.to_numpy(dtype=float) * split_factor, index=divs.index)
-            if dividends_known else divs
-        )
+            else:
+                warnings.append(
+                    f"TRA: the one-day price move on {stamp} matches a stock split ratio, but "
+                    "the source reported no split event. Verify it before reading total return "
+                    "or drawdown."
+                )
+        adj_close = close.astype(float)
+        adj_divs = divs.astype(float) if dividends_known else divs
         price_ret = float(adj_close.iloc[-1] / adj_close.iloc[0] - 1)
         # TRA#2: TWR is a total return: each day compounds (close + dividend) over
         # the prior close, so dividends are reinvested at the ex-date close. With
@@ -610,10 +605,10 @@ class TRAFunction(BaseFunction):
                 "price_return_total_pct": _as_percent(price_ret),
                 "max_drawdown_pct": _as_percent(max_dd),
                 "methodology": (
-                    "Compute price return from the first and last split-adjusted closes (dividends "
-                    "excluded). Splits are adjusted by multiplying each close by the cumulative split "
-                    "ratio up to that bar, so a split is not read as a loss. Compound daily total returns "
-                    "(split-adjusted close plus split-adjusted dividend, over the prior close) for "
+                    "Compute price return from the first and last closes as the source delivers them "
+                    "(dividends excluded). The source split-adjusts closes and dividends, so TRA does not "
+                    "adjust them again. Compound daily total returns "
+                    "(close plus dividend, over the prior close) for "
                     "time-weighted return, with dividends reinvested at their ex-date close. Estimate "
                     "IRR from buy, dividend, and sale cash flows. Max drawdown is measured on the full "
                     "daily total-return index. Without a dividend series, TWR and CAGR are price-only "
@@ -621,10 +616,10 @@ class TRAFunction(BaseFunction):
                     "a one-day move that matches a split ratio is named in the warnings."
                 ),
                 "field_dictionary": {
-                    "split_adjusted": "True when the source reported split events and closes were adjusted for them; false when no split events were available.",
+                    "split_adjusted": "True when the source reported split events; its closes and dividends are split-adjusted by the source (TRA does not re-adjust them). False when no split events were available, so the basis is not verified.",
                     "splits_count": "Number of split events inside the window; null when the source reported none.",
-                    "split_adjusted_close": "Close multiplied by the cumulative split ratio; continuous across splits.",
-                    "price_return_total": "Last split-adjusted close divided by first split-adjusted close minus one; excludes dividends.",
+                    "split_adjusted_close": "Close as delivered by the source (split-adjusted); continuous across splits.",
+                    "price_return_total": "Last close divided by first close minus one, on the source's split-adjusted basis; excludes dividends.",
                     "twr_total": "Time-weighted total return from daily returns with dividends reinvested; price-only when total_return_basis says so.",
                     "irr_annualized": "Money-weighted annualized return from cash flows.",
                     "cagr": "Annualized growth of the same basis as twr_total over the observed span.",

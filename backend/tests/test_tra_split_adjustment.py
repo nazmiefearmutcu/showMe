@@ -1,10 +1,15 @@
-"""TRA#2 / TRA#3: a stock split must never read as a loss.
+"""TRA#2 / TRA#3: a stock split must never read as a loss or a gain.
 
-Yahoo reports a split as a jump in the raw close (100 -> 25 after a 4:1 split).
-TRA now split-adjusts closes and dividends before compounding, so the TWR,
-price return, CAGR, IRR and max drawdown describe the share, not the ticket
-count. A window whose split events are unavailable is labelled, not silently
-read as a crash.
+Yahoo's chart and the yfinance ticker history both return closes and dividends
+already split-adjusted to the latest share basis. Verified against the Yahoo
+chart endpoint (read-only, AAPL, 7:1 split on 2014-06-09): the close moves
+23.056 -> 23.425 -> 23.563 across the split, and the 0.1175 dividend is the
+pre-split 0.82 divided by 7. TRA must use those series as delivered. Multiplying
+them again by the split ratio read every split as a large gain (TRA#2 follow-up).
+
+Where the source closes still show a ratio-sized one-day move, TRA names the
+bar in its warnings instead of adjusting it silently. A window whose split
+events are unavailable is labelled, not silently read as a crash.
 
 Offline: the yfinance adapter is a fake that returns a prepared frame, and the
 chart-adapter test replaces the Yahoo HTTP client with a canned payload.
@@ -55,14 +60,19 @@ def _run(frame: pd.DataFrame, **params: Any) -> Any:
 
 def _split_path(ratio: float = 4.0, pre: float = 100.0,
                 post_move: float = 1.0) -> tuple[list[float], list[float]]:
-    """Flat share price; the raw close drops by ``ratio`` at SPLIT_BAR."""
-    closes = [pre] * SPLIT_BAR + [pre / ratio * post_move] * (N - SPLIT_BAR)
+    """Split-adjusted closes for a flat share price (source basis = post-split shares).
+
+    The pre-split bars are already divided by the split ratio, exactly as the
+    source delivers them, so the series is continuous across the split bar.
+    """
+    pre_adj = pre / ratio
+    closes = [pre_adj] * SPLIT_BAR + [pre_adj * post_move] * (N - SPLIT_BAR)
     splits = [0.0] * N
     splits[SPLIT_BAR] = ratio
     return closes, splits
 
 
-def test_4_to_1_split_on_flat_price_is_not_a_loss() -> None:
+def test_4_to_1_split_on_flat_price_is_not_a_loss_or_gain() -> None:
     closes, splits = _split_path(ratio=4.0)
     res = _run(_frame(closes, [0.0] * N, splits))
     assert res.data["price_return_total"] == pytest.approx(0.0, abs=1e-12)
@@ -71,6 +81,7 @@ def test_4_to_1_split_on_flat_price_is_not_a_loss() -> None:
     assert res.data["cagr"] == pytest.approx(0.0, abs=1e-9)
     assert res.data["split_adjusted"] is True
     assert res.data["splits_count"] == 1
+    assert not any("matches a stock split" in w for w in res.warnings)
 
 
 def test_real_drop_after_a_split_still_shows_up() -> None:
@@ -83,7 +94,7 @@ def test_real_drop_after_a_split_still_shows_up() -> None:
 
 
 def test_reverse_split_is_not_a_gain() -> None:
-    # 1:10 reverse split: the raw close rises tenfold on the split bar.
+    # 1:10 reverse split: the source-adjusted pre-split closes are divided by 0.1.
     closes, splits = _split_path(ratio=0.1, pre=10.0)
     res = _run(_frame(closes, [0.0] * N, splits))
     assert res.data["price_return_total"] == pytest.approx(0.0, abs=1e-12)
@@ -92,20 +103,30 @@ def test_reverse_split_is_not_a_gain() -> None:
 
 
 def test_dividend_after_a_split_is_expressed_in_the_same_share() -> None:
-    # After the 4:1 split a share is worth 25; a $0.50 post-split dividend is
-    # 2% of the pre-split holding value of 100, so the total return is 2%.
+    # After the 4:1 split a share is worth 25; a $0.50 post-split dividend on
+    # that share is 2% of the price, so the total return is 2%.
     closes, splits = _split_path(ratio=4.0)
     dividends = [0.0] * N
     dividends[200] = 0.5
     res = _run(_frame(closes, dividends, splits))
     assert res.data["twr_total"] == pytest.approx(0.02, rel=1e-9)
     assert res.data["price_return_total"] == pytest.approx(0.0, abs=1e-12)
-    # Dividends stay as paid, per post-split share.
+    # Dividends stay as delivered, per post-split share.
     assert res.data["dividends_total"] == pytest.approx(0.5)
 
 
+def test_real_aapl_split_window_from_source_basis_is_not_inflated() -> None:
+    # Real Yahoo chart values, read-only, AAPL 2014-06-06, 06-09 (7:1 split), 06-10.
+    # The source delivers them split-adjusted, so the return is the ~2.2% price move.
+    closes = [23.05607032775879, 23.424999237060547, 23.5625]
+    frame = _frame(closes, [0.0, 0.0, 0.0], [0.0, 7.0, 0.0])
+    res = _run(frame)
+    assert res.data["price_return_total"] == pytest.approx(23.5625 / 23.05607032775879 - 1, rel=1e-9)
+    assert res.data["price_return_total"] < 0.05
+    assert res.data["splits_count"] == 1
+
+
 def test_irr_on_a_split_window_is_finite_or_null_and_never_raises() -> None:
-    # Same shape that used to overflow Newton's method on raw closes.
     closes, splits = _split_path(ratio=4.0)
     res_split = _run(_frame(closes, [0.0] * N, splits))
     irr_split = res_split.data["irr_annualized"]
@@ -117,12 +138,23 @@ def test_irr_on_a_split_window_is_finite_or_null_and_never_raises() -> None:
 
 
 def test_missing_split_events_are_labelled_and_suspected_splits_named() -> None:
-    closes, _ = _split_path(ratio=4.0)
+    # Unadjusted closes with no split event: the 4:1-sized one-day drop is named.
+    closes = [100.0] * SPLIT_BAR + [25.0] * (N - SPLIT_BAR)
     res = _run(_frame(closes, [0.0] * N))
     assert res.data["split_adjusted"] is False
     assert res.data["splits_count"] is None
-    # The 4:1-sized one-day drop is named as a possible unconfirmed split.
     assert any("matches a stock split" in w for w in res.warnings)
+
+
+def test_unadjusted_drop_at_a_reported_split_is_named_not_hidden() -> None:
+    # A split event is reported but the closes still show the raw 4:1 drop
+    # (a source that failed to adjust). TRA must name the bar, not hide it.
+    closes = [100.0] * SPLIT_BAR + [25.0] * (N - SPLIT_BAR)
+    splits = [0.0] * N
+    splits[SPLIT_BAR] = 4.0
+    res = _run(_frame(closes, [0.0] * N, splits))
+    assert res.data["split_adjusted"] is True
+    assert any("matches a stock split ratio even though" in w for w in res.warnings)
 
 
 def test_frames_without_split_column_and_no_split_sized_move_stay_quiet() -> None:
@@ -140,11 +172,12 @@ def test_ordinary_daily_moves_are_not_flagged_as_splits() -> None:
     assert not any("matches a stock split" in w for w in res.warnings)
 
 
-def test_chart_split_events_reach_tra_as_adjusted_returns() -> None:
+def test_chart_split_events_reach_tra_as_source_adjusted_returns() -> None:
     base = int(datetime(2024, 1, 2, 14, 30, tzinfo=timezone.utc).timestamp())
     day = 86400
     ts = [base + i * day for i in range(8)]
-    closes = [100.0, 100.0, 100.0, 25.0, 25.0, 25.0, 25.0, 25.0]
+    # Yahoo's chart closes are already on the post-split basis: no step at the split.
+    closes = [25.0] * 8
     payload = {"chart": {"result": [{
         "timestamp": ts,
         "indicators": {"quote": [{
@@ -180,4 +213,5 @@ def test_chart_split_events_reach_tra_as_adjusted_returns() -> None:
     assert res.data["twr_total"] == pytest.approx(0.0, abs=1e-12)
     assert res.data["max_drawdown"] == pytest.approx(0.0, abs=1e-12)
     assert res.data["split_adjusted"] is True
+    assert res.data["splits_count"] == 1
     assert not any("Split events are unavailable" in w for w in res.warnings)
