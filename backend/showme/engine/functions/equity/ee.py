@@ -47,7 +47,6 @@ class EEFunction(BaseFunction):
                     self.deps.finnhub._get("/stock/earnings", symbol=instrument.symbol),
                     timeout=float(params.get("finnhub_timeout", 8)),
                 )
-                sources.append("finnhub")
         except Exception as e:
             warnings.append(f"finnhub: {e}")
         yf_data = None
@@ -60,24 +59,31 @@ class EEFunction(BaseFunction):
                     )),
                     timeout=float(params.get("yfinance_timeout", 8)),
                 )
-                sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance: {e}")
         candidate_rows = _earnings_rows(instrument.symbol, finnhub_data, yf_data, history + 4)
-        reported_rows, next_report = _split_upcoming(candidate_rows, date.today())
+        # Honesty (EE#3/EE#4): the placeholder is decided by whether any real
+        # provider row exists. Provider errors are never cleared, and a
+        # provider is listed in ``sources`` only once it has returned rows.
+        placeholder = all(r.get("source_mode") == _UNAVAILABLE_MODE for r in candidate_rows)
+        if finnhub_data:
+            sources.append("finnhub")
+        if _yf_has_data(yf_data):
+            sources.append("yfinance")
+        reported_rows, table_next = _split_upcoming(candidate_rows, date.today())
         reported_rows = reported_rows[:history]
-        placeholder = not finnhub_data and not yf_data
+        next_report = _reconcile_next_report(
+            instrument.symbol, table_next, yf_data, date.today(), warnings
+        )
         if placeholder:
             sources.append("earnings_calendar_model")
             # Honesty (2026-09-08): never wipe provider errors on the
             # fallback — the placeholder row must be visibly labelled, not
             # passed off as reported figures.
             warnings.append(
-                "No live earnings provider responded; rows are labelled "
+                "No earnings history from any provider; rows are labelled "
                 "unavailable rather than reported figures."
             )
-        elif finnhub_data or yf_data:
-            warnings = []
         metadata = (
             {"live": False, "fallback": True, "data_mode": "modeled"}
             if placeholder
@@ -89,7 +95,7 @@ class EEFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok",
+                "status": "provider_unavailable" if placeholder else "ok",
                 "rows": reported_rows,
                 "next_report": next_report,
                 "earnings": (finnhub_data or [])[:history] if isinstance(finnhub_data, list) else finnhub_data,
@@ -121,6 +127,72 @@ def _parse_period_date(period: Any) -> date | None:
         return None
 
 
+_UNAVAILABLE_MODE = "earnings_calendar_unavailable"
+
+
+def _yf_has_data(yf_data: Any) -> bool:
+    """True only when the yfinance leg returned a calendar or earnings table."""
+    if not isinstance(yf_data, dict):
+        return False
+    calendar = yf_data.get("calendar")
+    if isinstance(calendar, dict) and calendar:
+        return True
+    return bool(frame_rows(yf_data.get("earnings_dates"), limit=1))
+
+
+def _calendar_next_date(yf_data: Any, today: date) -> date | None:
+    """Earliest forward date in the yfinance calendar's ``Earnings Date``."""
+    if not isinstance(yf_data, dict) or not isinstance(yf_data.get("calendar"), dict):
+        return None
+    raw = yf_data["calendar"].get("Earnings Date")
+    if raw is None:
+        return None
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    upcoming = [
+        when for when in (_parse_period_date(date_label(v)) for v in values)
+        if when is not None and when > today
+    ]
+    return min(upcoming) if upcoming else None
+
+
+def _reconcile_next_report(
+    symbol: str,
+    table_next: dict[str, Any] | None,
+    yf_data: Any,
+    today: date,
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    """One next-report date, with its source.
+
+    The yfinance calendar's forward ``Earnings Date`` is the reconciled date
+    when present; the earnings-dates or Finnhub upcoming row supplies the
+    estimate only when both name the same day. A disagreement is a warning,
+    never a silently chosen date.
+    """
+    cal_day = _calendar_next_date(yf_data, today)
+    if cal_day is None:
+        return table_next
+    estimate = None
+    if table_next is not None:
+        if table_next.get("date") == cal_day.isoformat():
+            estimate = table_next.get("estimate")
+        else:
+            warnings.append(
+                f"yfinance calendar next report {cal_day.isoformat()} differs from "
+                f"the {table_next.get('source')} date {table_next.get('date')}; "
+                "showing the calendar date."
+            )
+    return {
+        "symbol": symbol,
+        "date": cal_day.isoformat(),
+        "estimate": estimate,
+        "actual": None,
+        "source_mode": "yfinance_calendar",
+        "source": "yfinance_calendar",
+        "status": "scheduled",
+    }
+
+
 def _split_upcoming(rows: list[dict[str, Any]], today: date) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Separate the not-yet-reported quarter from the reported history.
 
@@ -145,6 +217,7 @@ def _split_upcoming(rows: list[dict[str, Any]], today: date) -> tuple[list[dict[
         "estimate": row.get("estimate"),
         "actual": None,
         "source_mode": row.get("source_mode"),
+        "source": row.get("source_mode"),
         "status": "scheduled",
     }
     return reported, next_report
