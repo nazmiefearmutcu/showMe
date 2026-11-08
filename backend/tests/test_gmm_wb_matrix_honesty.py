@@ -212,3 +212,74 @@ def test_stale_value_never_wins_a_card(monkeypatch) -> None:
     hottest = next(c for c in result.data["cards"] if c["key"] == "hottest_inflation")
     assert hottest["value"] is not None and "United States" in hottest["value"]
     assert "Germany" not in hottest["value"]
+
+
+# ── GMM#6: the seed describes the World Bank matrix the handler serves ──
+
+
+def _gmm_seed():
+    from showme.manifest import REGISTRY
+    from showme.manifest.seeds import load_seeds
+
+    load_seeds()
+    return REGISTRY.get("GMM")
+
+
+def test_seed_inputs_are_only_the_ones_the_handler_reads() -> None:
+    seed = _gmm_seed()
+    names = {i.name for i in seed.inputs}
+    # The handler reads countries and top_n; provider_mode is never read.
+    assert names == {"countries", "top_n"}
+
+
+def test_seed_describes_world_bank_not_fred_surprises() -> None:
+    seed = _gmm_seed()
+    assert seed.provider_chain.primary == "worldbank"
+    text = " ".join([seed.intent, seed.methodology, " ".join(
+        f"{t.name} {' '.join(t.assertions)}" for t in seed.semantic_tests
+    )])
+    assert "FRED" not in text
+    assert "surprise" not in text.lower()
+    assert "movers" not in text.lower()
+
+
+def test_seed_output_contract_names_only_fields_the_handler_serves() -> None:
+    seed = _gmm_seed()
+    assert seed.output_contract.must_have, "must_have must not be empty"
+    for key in ("movers", "window", "data_mode", "as_of"):
+        assert key not in seed.output_contract.must_have, key
+
+
+def test_seed_must_have_keys_present_in_live_payload(monkeypatch) -> None:
+    seed = _gmm_seed()
+    table: dict[tuple[str, str], dict[str, Any]] = {}
+    for ind in INDICATORS:
+        table[("US", ind)] = _obs("US", "USA", ind, 2.0, 2025)
+    _patch_table(monkeypatch, table)
+
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["US"]))
+    assert result.data["status"] == "ok"
+    for key in seed.output_contract.must_have:
+        assert key in result.data, f"must_have {key!r} missing from payload"
+        assert result.data[key], f"must_have {key!r} empty for status=ok"
+
+
+def test_seed_card_and_field_names_match_the_payload(monkeypatch) -> None:
+    seed = _gmm_seed()
+    table: dict[tuple[str, str], dict[str, Any]] = {}
+    for ind in INDICATORS:
+        table[("US", ind)] = _obs("US", "USA", ind, 2.0, 2025)
+    _patch_table(monkeypatch, table)
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["US"]))
+
+    card_keys = {c["key"] for c in result.data["cards"]}
+    for slot in seed.card_schema.slots:
+        assert slot.key in card_keys, f"card slot {slot.key!r} not in payload cards"
+
+    row_keys = set(result.data["rows"][0])
+    for col in seed.table_schema.columns:
+        assert col.key in row_keys, f"table column {col.key!r} not in row payload"
+    for field_name in seed.field_dict:
+        assert field_name.startswith("rows[]."), field_name
+        base = field_name[len("rows[]."):]
+        assert base in row_keys, f"field_dict {field_name!r} not in row payload"
