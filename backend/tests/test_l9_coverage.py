@@ -471,23 +471,20 @@ def test_dpf_degradation_is_labelled_and_ratio_is_null() -> None:
     result = _run(fn.execute(instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)))
     data = result.data
     assert data["status"] == "provider_unavailable"
-    assert result.sources == ["dark_pool_model"]
+    assert result.sources == [], result.sources
     assert result.metadata.get("provider_errors")
-    assert data["rows"], "shape rows keep the table structure"
-    assert all(row.get("dark_pool_pct") is None for row in data["rows"])
-    assert all(row.get("estimated_total_volume") is None for row in data["rows"])
-    assert all(
-        row.get("source_mode") in {"labelled_current_shape_model", "finra_ats_weekly_stale"}
-        for row in data["rows"]
-    )
+    # No synthetic shape-model volumes: the table is empty and says why.
+    assert data["rows"] == []
+    assert data["weekly"] == []
+    assert data["reason"]
+    assert data["next_actions"]
 
 
 def test_dpf_timeout_fallback_is_shape_model_not_finra_stale(monkeypatch) -> None:
-    """Fabricated shape rows must never claim a real (stale) FINRA feed.
+    """A timed-out DPF pull is an honest outage, never a shape-model table.
 
-    The timeout path never touched FINRA, so the honest token is
-    ``shape_model_timeout``; ``finra_ats_weekly_stale`` is reserved for real
-    FINRA rows that aged out.
+    The timeout path never received FINRA rows, so it must not show any
+    volume rows (fabricated or stale); it reports the timeout and next actions.
     """
     from showme.engine.functions.equity import dpf as dpf_mod
     from showme.engine.functions.equity.dpf import DPFFunction
@@ -504,14 +501,9 @@ def test_dpf_timeout_fallback_is_shape_model_not_finra_stale(monkeypatch) -> Non
     data = result.data
     assert data["status"] == "provider_unavailable"
     assert "timed out" in data["reason"]
-    assert data["rows"]
-    assert all(row.get("source_mode") == "shape_model_timeout" for row in data["rows"])
-    assert all(row.get("data_warning") == data["reason"] for row in data["rows"])
-    assert all(row.get("dark_pool_pct") is None for row in data["rows"])
-    assert all(row.get("estimated_total_volume") is None for row in data["rows"])
-    assert not any(
-        row.get("source_mode") == "finra_ats_weekly_stale" for row in data["rows"]
-    )
+    assert data["rows"] == []
+    assert data["weekly"] == []
+    assert data["next_actions"]
 
 
 # ─────────────────────────────────────────────────────────────────────────

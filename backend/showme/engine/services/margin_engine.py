@@ -70,6 +70,74 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
 }
 
 
+# Asset class -> rule a position of that class is margined under. A position uses
+# its own class rule whenever the account's rule does not cover that class, so one
+# account can hold spot crypto and equities without either being priced at the
+# other's rate (MGN#2), and a reg_t account's BTC is not margined at 50% (MGN#3).
+_CLASS_RULE: dict[str, str] = {
+    "CRYPTO": "crypto_spot",
+    "EQUITY": "reg_t",
+    "ETF": "reg_t",
+    "FX": "fx",
+    "BOND": "bond",
+}
+
+
+def _is_crypto_perpetual(symbol: str) -> bool:
+    """True for a crypto perpetual/swap symbol (``BTC-PERP``, ``BTC-SWAP``, ccxt ``BTC/USDT:USDT``)."""
+    s = str(symbol or "").upper()
+    return s.endswith(("-PERP", "-SWAP", "PERP")) or ":" in s
+
+
+def infer_margin_type(positions: list[dict[str, Any]]) -> str:
+    """Account-level margin type implied by the products an account holds.
+
+    Only an account made purely of spot crypto is crypto_spot. A crypto account that
+    also holds derivatives (CRYPTO and DERIVATIVE both present) is crypto_futures. A
+    DERIVATIVE-only book is futures: a DERIVATIVE is non-crypto futures/options, so it
+    must not take the crypto 10% rule. Each position is still priced under its own
+    class rule in calc_account.
+    """
+    classes = {str(p.get("asset_class") or "").upper() for p in positions}
+    if classes and classes <= {"CRYPTO"}:
+        return "crypto_spot"
+    if classes and classes <= {"CRYPTO", "DERIVATIVE"} and {"CRYPTO", "DERIVATIVE"} <= classes:
+        return "crypto_futures"
+    if classes & {"FX"}:
+        return "fx"
+    if classes & {"COMMODITY", "DERIVATIVE"}:
+        return "futures"
+    return "reg_t"
+
+
+def _position_rule(
+    asset_class: str,
+    margin_type: str,
+    account_rule: dict[str, Any],
+    *,
+    explicit: bool = True,
+    symbol: str = "",
+) -> dict[str, Any]:
+    """Rule for one position: the account rule, unless its class has its own rule.
+
+    ``explicit`` is False when the account type was inferred from the book (MGN#2
+    residual): an inferred crypto_futures account must not reprice spot CRYPTO lines.
+    In such an inferred account a non-perpetual DERIVATIVE (ES, options) takes the
+    futures rule; a crypto perpetual keeps the crypto_futures rate.
+    """
+    cls = str(asset_class or "").upper()
+    if (cls == "DERIVATIVE" and margin_type == "crypto_futures" and not explicit
+            and not _is_crypto_perpetual(symbol)):
+        return dict(DEFAULT_RULES["futures"])
+    mapped = _CLASS_RULE.get(cls)
+    if mapped is None or mapped == margin_type:
+        return account_rule
+    # An account the user set to crypto_futures keeps its crypto rule (explicit choice).
+    if cls == "CRYPTO" and margin_type == "crypto_futures" and explicit:
+        return account_rule
+    return dict(DEFAULT_RULES[mapped])
+
+
 def _load_config() -> dict[str, Any]:
     if not _config_path().exists():
         return {}
@@ -174,25 +242,35 @@ def calc_account(
     cfg = cfg or _load_config()
     info = (cfg.get("accounts") or {}).get(account_name) or {}
     margin_type = info.get("margin_type", "reg_t")
+    explicit = not info.get("inferred")
     rule = {**_rule_for(margin_type), **(info.get("overrides") or {})}
+    # Rule that sets buying power: the rule of the largest position by notional.
+    bp_rule = rule
     if margin_type == "portfolio":
         ip, mp = _portfolio_margin(positions, rule)
         per_pos = []
     else:
         ip = mp = 0.0
         per_pos = []
+        biggest = -1.0
         for p in positions:
-            i, m = _position_margin(p, rule)
+            p_rule = _position_rule(p.get("asset_class", ""), margin_type, rule,
+                                    explicit=explicit, symbol=str(p.get("symbol") or ""))
+            i, m = _position_margin(p, p_rule)
             ip += i
             mp += m
             per_pos.append({**p, "initial_margin": i, "maintenance_margin": m})
+            notional = abs(float(p.get("quantity", 0) or 0)
+                           * float(p.get("last", p.get("avg_cost", 0)) or 0))
+            if notional > biggest:
+                biggest, bp_rule = notional, p_rule
     cash = float(info.get("cash", 0) or 0)
     mv = sum(float(p.get("quantity", 0) or 0) * float(p.get("last", p.get("avg_cost", 0)) or 0)
              for p in positions)
     equity = cash + mv
     excess = equity - ip
     cushion = (equity - mp) / equity if equity else 0.0
-    buying_power = max(equity - ip, 0) / max(rule.get("initial_long_pct", 0.5), 0.05) \
+    buying_power = max(equity - ip, 0) / max(bp_rule.get("initial_long_pct", 0.5), 0.05) \
         if margin_type != "portfolio" else max(equity - ip, 0) * 4
     return {
         "account": account_name,
@@ -229,13 +307,19 @@ def calc_all_accounts(
             "quantity": p.quantity, "avg_cost": p.avg_cost, "last": px,
             "currency": p.currency,
         })
-    # Auto-create accounts if missing.
+    # Auto-create accounts if missing. An inferred type is flagged and re-derived from
+    # the current book, so a book that loses its derivative is not stuck as crypto_futures.
     cfg_accts = cfg.setdefault("accounts", {})
-    for name in accts:
-        cfg_accts.setdefault(name, {
-            "margin_type": "reg_t", "cash": 0.0, "currency": "USD",
-            "overrides": {},
-        })
+    for name, positions in accts.items():
+        inferred = infer_margin_type(positions)
+        entry = cfg_accts.get(name)
+        if entry is None:
+            cfg_accts[name] = {
+                "margin_type": inferred, "cash": 0.0,
+                "currency": "USD", "overrides": {}, "inferred": True,
+            }
+        elif entry.get("inferred"):
+            entry["margin_type"] = inferred
     _save_config(cfg)
     out = []
     total = {

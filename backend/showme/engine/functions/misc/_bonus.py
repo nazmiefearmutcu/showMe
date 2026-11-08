@@ -50,16 +50,30 @@ class LITMFunction(BaseFunction):
         from showme.engine.functions.equity.cact import CACTFunction
         cact = CACTFunction(self.deps)
         timeout = max(1.0, min(float(params.get("sec_timeout", 3)), 5.0))
+        # Scan every 8-K row of the EDGAR filing frame, not just the newest one.
+        scan_limit = max(1, min(int(params.get("max_documents") or _LITM_SCAN_LIMIT), _LITM_SCAN_LIMIT))
         res = await cact.execute(instrument=instrument, sec_timeout=timeout,
                                  yfinance_timeout=max(1.0, min(float(params.get("yfinance_timeout", 3)), 5.0)),
-                                 max_documents=params.get("max_documents", 1))
+                                 max_documents=scan_limit)
         events = (res.data or {}).get("events_8k", []) or []
-        # Narrow filter for litigation/governance items.
-        keep = {"1.03", "1.04", "3.03", "5.02", "5.03"}
-        litm = [e for e in events if e.get("code") in keep]
+        frame = (res.data or {}).get("sec_filings")
+        frame_has_items = (
+            frame is not None and hasattr(frame, "columns")
+            and "form" in frame.columns and "items" in frame.columns
+        )
+        scanned = _scan_8k_candidates(events, frame if frame_has_items else None, scan_limit)
+        classifiable = frame_has_items or any(e.get("item_codes") or e.get("code") for e in events)
+        keep = _LITM_KEEP_ITEMS
+        litm = []
+        for e in scanned:
+            matched = [c for c in e["item_codes"] if c in keep]
+            if matched:
+                litm.append({**e, "code": ",".join(matched), "matched_codes": matched})
+        dates = sorted(str(e["filing_date"]) for e in scanned if e.get("filing_date"))
+        scan_window = {"from": dates[0], "to": dates[-1]} if dates else None
         rows = [{
             "symbol": instrument.symbol,
-            "event_type": e.get("category") or "8-K item",
+            "event_type": "litigation_or_governance_item",
             "item_code": e.get("code"),
             "filing_date": e.get("filing_date") or e.get("report_date"),
             "severity": "review",
@@ -67,7 +81,37 @@ class LITMFunction(BaseFunction):
             "accession": e.get("accession"),
             "document": e.get("document"),
         } for e in litm]
-        if not rows:
+        if not classifiable:
+            status = "provider_unavailable"
+            rows = [{
+                "symbol": instrument.symbol,
+                "event_type": "item_codes_unavailable",
+                "item_code": None,
+                "filing_date": None,
+                "severity": "unknown",
+                "source_mode": "sec_edgar_items_missing",
+                "all_8k_events": len(scanned),
+            }]
+            reason = ("SEC EDGAR filing rows carry no 8-K item codes, so litigation items cannot be "
+                      "classified; this is not a verified absence of events.")
+        elif not rows and not scanned:
+            status = "empty"
+            reason = ("The SEC filing feed has no 8-K filings in the scanned window, so there were no 8-K "
+                      "items to classify; this is not a verified absence of litigation events.")
+            rows = [{
+                "symbol": instrument.symbol,
+                "event_type": "no_8k_filings_in_window",
+                "item_code": None,
+                "filing_date": None,
+                "severity": "none",
+                "source_mode": "sec_edgar_no_8k_rows",
+                "all_8k_events": 0,
+                "scanned_8k": 0,
+                "scan_window": None,
+            }]
+        elif not rows:
+            status = "empty"
+            reason = None
             rows = [{
                 "symbol": instrument.symbol,
                 "event_type": "no_litigation_event_found",
@@ -75,23 +119,93 @@ class LITMFunction(BaseFunction):
                 "filing_date": None,
                 "severity": "none",
                 "source_mode": "sec_edgar_no_matching_8k_item",
-                "all_8k_events": len(events),
+                "all_8k_events": len(scanned),
+                "scanned_8k": len(scanned),
+                "scan_window": scan_window,
             }]
+        else:
+            status = "ok"
+            reason = None
+        payload = {
+            "status": status,
+            "rows": rows,
+            "litigation_filings": litm,
+            "kept_item_codes": sorted(keep),
+            "all_8k_events": len(scanned),
+            "scanned_8k": len(scanned),
+            "scan_window": scan_window,
+            "item_codes_available": bool(frame_has_items),
+            "methodology": "LITM reads the 8-K item codes of every 8-K row in the SEC EDGAR filing feed and keeps items 1.03, 1.04, 3.03, 5.02, and 5.03. An empty result is reported only after the full scan (scanned_8k rows); without item codes the status is provider_unavailable.",
+            "field_dictionary": {
+                "item_code": "SEC 8-K item code(s) matched by the filter.",
+                "event_type": "Normalized litigation/governance category.",
+                "severity": "ShowMe review flag, not legal advice.",
+                "source_mode": "SEC evidence state for the row.",
+                "scanned_8k": "Number of 8-K filing rows examined.",
+            },
+        }
+        if reason:
+            payload["reason"] = reason
+            payload["next_actions"] = ["Retry once the SEC EDGAR filing feed returns item codes."]
         return FunctionResult(code=self.code, instrument=instrument,
-                              data={"status": "ok" if litm else "empty",
-                                     "rows": rows,
-                                     "litigation_filings": litm,
-                                     "kept_item_codes": sorted(keep),
-                                     "all_8k_events": len(events),
-                                     "methodology": "LITM filters recent SEC 8-K event rows for litigation/governance-relevant items 1.03, 1.04, 3.03, 5.02, and 5.03. No-event rows are labelled rather than presented as a legal case.",
-                                     "field_dictionary": {
-                                         "item_code": "SEC 8-K item code.",
-                                         "event_type": "Normalized litigation/governance category.",
-                                         "severity": "ShowMe review flag, not legal advice.",
-                                         "source_mode": "SEC evidence state for the row.",
-                                     }},
+                              data=payload,
                               sources=res.sources or ["litigation_monitor_model"],
                               metadata={"provider_errors": (res.metadata or {}).get("provider_errors", [])})
+
+
+_LITM_SCAN_LIMIT = 1000
+# Narrow filter: only these 8-K item codes count as litigation/governance events.
+keep = {"1.03", "1.04", "3.03", "5.02", "5.03"}
+_LITM_KEEP_ITEMS = frozenset(keep)
+
+
+def _split_item_codes(raw: Any) -> list[str]:
+    if not isinstance(raw, str):
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _scan_8k_candidates(events: list[dict[str, Any]], frame: Any, scan_limit: int) -> list[dict[str, Any]]:
+    """Every 8-K candidate with its item codes; frame rows win over CACT event rows
+    for the same accession. Rows without a code list contribute no codes."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if frame is not None and hasattr(frame, "iterrows"):
+        eight_k = frame[frame["form"].astype(str).str.startswith("8-K")].head(scan_limit)
+        for _, r in eight_k.iterrows():
+            acc = str(r.get("accessionNumber") or "")
+            seen.add(acc)
+            out.append({
+                "accession": acc or None,
+                "filing_date": r.get("filingDate"),
+                "report_date": r.get("reportDate"),
+                "document": r.get("primaryDocument"),
+                "item_codes": _split_item_codes(r.get("items")),
+            })
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        # CACT puts a placeholder ({category, status: provider_unavailable})
+        # into events_8k when the feed has no 8-K rows: that is not a filing
+        # and must never count as a scanned 8-K (review of LITM#1).
+        if str(e.get("status") or "").lower() in {"provider_unavailable", "unavailable", "empty"} or not (
+            e.get("accession") or e.get("filing_date") or e.get("document")
+        ):
+            continue
+        acc = str(e.get("accession") or "")
+        if acc and acc in seen:
+            continue
+        if acc:
+            seen.add(acc)
+        codes = _split_item_codes(e.get("items")) or _split_item_codes(e.get("code"))
+        out.append({
+            "accession": e.get("accession"),
+            "filing_date": e.get("filing_date"),
+            "report_date": e.get("report_date"),
+            "document": e.get("document"),
+            "item_codes": codes,
+        })
+    return out
 
 
 def _fallback_litm(instrument: Instrument) -> dict[str, Any]:

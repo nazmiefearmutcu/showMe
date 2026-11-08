@@ -17,7 +17,7 @@ from showme.engine.functions.derivative.ovme import _bs_price
 
 _HVT_FIELDS = {
     "window_days": "Trailing close-to-close return window used for the realized-volatility estimate.",
-    "realized_vol": "Annualized realized volatility as a decimal: stdev(daily returns) * sqrt(252).",
+    "realized_vol": "Annualized realized volatility as a decimal: stdev(daily returns) * sqrt(N), N = 252 trading days for equities/ETFs or 365 calendar days for crypto.",
     "realized_vol_pct": "Annualized realized volatility in percent.",
     "samples": "Number of daily returns used for the window.",
     "history.vol": "Rolling annualized realized volatility for the selected chart window.",
@@ -160,19 +160,59 @@ def _finite(value: Any) -> float | None:
     return num
 
 
-def _surface_rows(calls: list[dict[str, Any]], puts: list[dict[str, Any]], *, spot: float) -> list[dict[str, Any]]:
+# A solver-failure IV is reported as ~0 (or 1e-5). Anything below this floor is
+# not a usable implied vol and must not reach the surface.
+_IV_FLOOR = 0.01
+
+
+def _first_present(row: dict[str, Any], *keys: str) -> Any:
+    """First non-null value among ``keys`` (keeps a legitimate 0.0)."""
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _surface_rows(
+    calls: list[dict[str, Any]],
+    puts: list[dict[str, Any]],
+    *,
+    spot: float,
+    dropped: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build surface cells from option-chain rows.
+
+    A cell is dropped (and recorded in ``dropped`` when supplied) when its
+    implied vol is missing or below ``_IV_FLOOR`` (solver failure), or when its
+    quoted mid is below intrinsic value at spot. SPY options are American, so
+    the price must be at least intrinsic (``max(S-K,0)`` / ``max(K-S,0)``); a
+    mid below that has no real implied vol.
+    """
     rows: list[dict[str, Any]] = []
     for option_type, source_rows in (("CALL", calls), ("PUT", puts)):
         for row in source_rows:
             strike = _finite(row.get("strike"))
-            vol = _finite(row.get("impliedVolatility") or row.get("iv"))
-            if strike is None or vol is None:
+            vol = _finite(_first_present(row, "impliedVolatility", "iv"))
+            if strike is None:
                 continue
             expiry = str(row.get("expiry") or row.get("expiration") or row.get("expiration_date") or "-")
             bid = _finite(row.get("bid"))
             ask = _finite(row.get("ask"))
             last = _finite(row.get("lastPrice") or row.get("last"))
             mid = (bid + ask) / 2 if bid is not None and ask is not None and ask >= bid else last
+            if vol is None or vol < _IV_FLOOR:
+                if dropped is not None:
+                    dropped.append({"label": f"{expiry} {option_type[0]} {strike:g}",
+                                    "reason": "iv_missing_or_below_floor"})
+                continue
+            if spot > 0 and mid is not None:
+                intrinsic = max(spot - strike, 0.0) if option_type == "CALL" else max(strike - spot, 0.0)
+                if mid < intrinsic:
+                    if dropped is not None:
+                        dropped.append({"label": f"{expiry} {option_type[0]} {strike:g}",
+                                        "reason": "mid_below_intrinsic"})
+                    continue
             volume = _finite(row.get("volume"))
             open_interest = _finite(row.get("openInterest") or row.get("open_interest"))
             rows.append({
@@ -255,28 +295,47 @@ def _ivol_atm_term_and_skew(
     return stats, series
 
 
-def _vol_rows_from_returns(rets: Any, windows: list[int]) -> list[dict[str, Any]]:
+TRADING_DAYS_PER_YEAR = 252
+CALENDAR_DAYS_PER_YEAR = 365
+
+
+def _annualization_days(instrument: Instrument | None) -> int:
+    """Days per year used to annualize daily returns for this instrument.
+
+    Crypto trades every calendar day, so its daily returns are annualized on
+    365 days; equities and ETFs use the 252-trading-day convention.
+    """
+    if instrument is not None and instrument.asset_class == AssetClass.CRYPTO:
+        return CALENDAR_DAYS_PER_YEAR
+    return TRADING_DAYS_PER_YEAR
+
+
+def _vol_rows_from_returns(
+    rets: Any, windows: list[int], annualization: int = TRADING_DAYS_PER_YEAR,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for window in windows:
         sample = rets.tail(window)
         if len(sample) < max(5, min(window, 20)):
             continue
-        vol = float(sample.std() * np.sqrt(252))
+        vol = float(sample.std() * np.sqrt(annualization))
         rows.append({
             "metric": f"{window}D realized vol",
             "window_days": window,
             "realized_vol": vol,
             "realized_vol_pct": vol * 100,
             "samples": int(len(sample)),
-            "formula": "stdev(daily close returns) * sqrt(252)",
+            "formula": f"stdev(daily close returns) * sqrt({annualization})",
         })
     return rows
 
 
-def _rolling_vol_history(rets: Any, window: int) -> list[dict[str, Any]]:
+def _rolling_vol_history(
+    rets: Any, window: int, annualization: int = TRADING_DAYS_PER_YEAR,
+) -> list[dict[str, Any]]:
     if len(rets) < max(6, window):
         window = max(5, min(window, max(5, len(rets) // 2)))
-    rolling = rets.rolling(window).std().dropna() * np.sqrt(252)
+    rolling = rets.rolling(window).std().dropna() * np.sqrt(annualization)
     history: list[dict[str, Any]] = []
     for idx, value in rolling.tail(180).items():
         date = idx.date().isoformat() if hasattr(idx, "date") else str(idx)[:10]
@@ -302,7 +361,7 @@ def _reference_hvt(symbol: str, spot: float, *, reason: str) -> dict[str, Any]:
         "symbol": symbol,
         "rows": [],
         "summary": {"source_mode": "provider_unavailable", "windows": 0},
-        "methodology": "Live daily close history is required for HVT. The realized-vol formula is stdev(daily close returns) * sqrt(252).",
+        "methodology": "Live daily close history is required for HVT. The realized-vol formula is stdev(daily close returns) * sqrt(N), N = 252 for equities/ETFs and 365 for crypto.",
         "field_dictionary": _HVT_FIELDS,
         "next_actions": ["Retry with a supported symbol or configure the yfinance data adapter."],
     }
@@ -386,17 +445,33 @@ class OSAFunction(BaseFunction):
         # debit must carry the financing cost net_debit * exp(+r * max_T).
         # The old PV discount (exp(-rT)) understated the cost and inflated
         # every pnl point by roughly r*T*net_debit.
-        max_T = max((float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25)
-                     for leg in legs), default=0.25)
-        fv_debit = net_debit * math.exp(r * max_T)
+        # OSA-1: legs with different expiries must share one valuation date.
+        # The position is marked at the FIRST expiry: legs that expire there
+        # pay intrinsic value, longer legs are marked at Black-Scholes with
+        # their remaining time and the same per-leg vol. Valuing every leg at
+        # intrinsic on the longest horizon zeroed out a calendar's time value.
+        leg_expiries = [float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25) for leg in legs]
+        t_eval = min(leg_expiries, default=0.25)
+        fv_debit = net_debit * math.exp(r * t_eval)
+        leg_terms: list[tuple[float, float, float, str, float, float]] = []
+        for leg, t_leg, prem in zip(legs, leg_expiries, initial_premiums):
+            leg_terms.append((
+                float(leg["strike"]),
+                float(leg.get("qty") or 0),
+                t_leg,
+                str(leg.get("type") or "CALL").upper(),
+                float(prem["vol"]),
+                float(q),
+            ))
         for s in spots:
             expiry_payoff = 0.0
-            for leg in legs:
-                strike = float(leg["strike"])
-                qty = float(leg.get("qty") or 0)
-                opt_type = str(leg.get("type") or "CALL").upper()
-                payoff = max(s - strike, 0.0) if opt_type == "CALL" else max(strike - s, 0.0)
-                expiry_payoff += qty * payoff
+            for strike, qty, t_leg, opt_type, vol_leg, q_leg in leg_terms:
+                if t_leg <= t_eval + 1e-12:
+                    value = max(s - strike, 0.0) if opt_type == "CALL" else max(strike - s, 0.0)
+                else:
+                    value = _bs_price(s, strike, t_leg - t_eval, r, vol_leg, q_leg,
+                                      opt_type == "CALL")["price"]
+                expiry_payoff += qty * value
             pnl_curve.append({
                 "spot": s,
                 "pnl": expiry_payoff - fv_debit,
@@ -418,6 +493,8 @@ class OSAFunction(BaseFunction):
                                   "pnl_curve": pnl_curve,
                                   "summary": {
                                       "net_debit": net_debit,
+                                      "evaluation_horizon_years": t_eval,
+                                      "multi_expiry": len(set(leg_expiries)) > 1,
                                       "max_gain_visible": max(pnls),
                                       "max_loss_visible": min(pnls),
                                       "breakeven_count_visible": sum(
@@ -426,7 +503,7 @@ class OSAFunction(BaseFunction):
                                           if (prev <= 0 <= cur) or (prev >= 0 >= cur)
                                       ),
                                   },
-                                  "methodology": "Expiration P&L = sum(qty * intrinsic payoff at spot) - fv_debit; fv_debit = net_debit * exp(+r * max_T) carries the initial debit forward to the expiry horizon so payoff and cost share the same time basis. Premiums use Black-Scholes-Merton with per-leg IV (solved from market_price if supplied, else input vol, else default 0.25).",
+                                  "methodology": "Horizon P&L at the first expiry = sum(qty * value at spot) - fv_debit. Legs expiring at the horizon are valued at intrinsic payoff; longer legs are valued with Black-Scholes-Merton at their remaining time and per-leg IV. fv_debit = net_debit * exp(+r * horizon) carries the initial debit to the same horizon. Premiums use Black-Scholes-Merton with per-leg IV (solved from market_price if supplied, else input vol, else default 0.25).",
                                   "field_dictionary": {
                                       "net_debit": "Positive value means the strategy costs premium up front; negative means a credit.",
                                       "curve.pnl": "Estimated expiration profit/loss at each underlying spot.",
@@ -505,16 +582,23 @@ class HVTFunction(BaseFunction):
             )
         closes = df["close"].dropna()
         rets = closes.pct_change().dropna()
+        annualization = _annualization_days(instrument)
         windows = [30, 60, 90, min(252, max(30, days))]
-        rows = _vol_rows_from_returns(rets, sorted(set(windows)))
+        rows = _vol_rows_from_returns(rets, sorted(set(windows)), annualization)
         history_window = min(30, max(10, days // 3))
-        history = _rolling_vol_history(rets, history_window)
+        history = _rolling_vol_history(rets, history_window, annualization)
         current_spot = float(closes.iloc[-1]) if len(closes) else float(params.get("spot", 100))
+        calendar_note = (
+            "crypto trades every calendar day, so N = 365 calendar days"
+            if annualization == CALENDAR_DAYS_PER_YEAR
+            else "equities/ETFs use N = 252 trading days"
+        )
         out = {
             "status": "ok",
             "symbol": symbol,
             "spot": current_spot,
             "lookback_days": days,
+            "annualization_days": annualization,
             "rows": rows,
             "history": history,
             "summary": {
@@ -522,8 +606,12 @@ class HVTFunction(BaseFunction):
                 "current_realized_vol_pct": rows[0]["realized_vol_pct"] if rows else None,
                 "observations": int(len(rets)),
                 "history_window_days": history_window,
+                "annualization_days": annualization,
             },
-            "methodology": "Annualized realized volatility = stdev(daily close-to-close returns) * sqrt(252). Rolling history uses the selected chart window.",
+            "methodology": (
+                f"Annualized realized volatility = stdev(daily close-to-close returns) * sqrt({annualization}); "
+                f"{calendar_note}. Rolling history uses the selected chart window."
+            ),
             "field_dictionary": _HVT_FIELDS,
         }
         return FunctionResult(code=self.code, instrument=instrument, data=out,
@@ -694,17 +782,73 @@ class IVOLFunction(BaseFunction):
             if puts is not None and hasattr(puts, "iterrows"):
                 for _, r in puts.iterrows():
                     raw_puts.append({"expiry": exp, **r.to_dict()})
-        surface_rows = _surface_rows(raw_calls, raw_puts, spot=spot)
+        dropped_cells: list[dict[str, Any]] = []
+        surface_rows = _surface_rows(raw_calls, raw_puts, spot=spot, dropped=dropped_cells)
+        if not surface_rows and dropped_cells:
+            # Every chain cell was a solver failure or below intrinsic. There is
+            # no live IV to show, and the reference template would substitute
+            # invented constant IVs, so report the empty state explicitly.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "Every option-chain cell lacked a usable implied volatility (solver failure or mid below intrinsic).",
+                    "symbol": instrument.symbol,
+                    "spot": spot,
+                    "data_state": spot_state,
+                    "expiries": targets,
+                    "rows": [],
+                    "surface": [],
+                    "series": [],
+                    "dropped_cells": dropped_cells,
+                    "summary": {
+                        "contracts": 0,
+                        "expiries": 0,
+                        "source_mode": "provider_unavailable",
+                        "dropped_invalid_iv": len(dropped_cells),
+                    },
+                    "methodology": "Live implied volatility surface from option-chain impliedVolatility. Cells with IV below 1 percent or a quoted mid below intrinsic value are dropped.",
+                    "field_dictionary": _IVOL_FIELDS,
+                    "next_actions": ["Retry during market hours or with a different expiry set; no usable implied vol was quoted."],
+                },
+                sources=["yfinance"],
+                metadata={"live": False, "fallback": True,
+                          "spot_source": spot_state,
+                          "provider_errors": ["yfinance implied volatility cells all dropped"]},
+            )
         if not surface_rows:
-            # Chains came back but carried no usable implied-vol rows. yfinance
-            # is present, so fall back to the spot-anchored reference surface
-            # (with ``calls_grid``) rather than an empty payload, labeled via
-            # ``data_state`` so the UI never mistakes it for a live surface.
-            return self._reference_result(
-                instrument, spot, spot_state,
-                provider_errors=["yfinance implied volatility rows empty"],
-                available_expiry_count=len(targets),
-                available_expiry_preview=", ".join(map(str, targets[:6])),
+            # Chains came back with no call or put rows at all. The reference
+            # template would substitute invented constant IVs, so report the
+            # empty state explicitly instead (DATA POLICY: never template data).
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "The option chain returned no call or put rows for the requested expiries.",
+                    "symbol": instrument.symbol,
+                    "spot": spot,
+                    "data_state": spot_state,
+                    "expiries": targets,
+                    "rows": [],
+                    "surface": [],
+                    "series": [],
+                    "dropped_cells": dropped_cells,
+                    "summary": {
+                        "contracts": 0,
+                        "expiries": 0,
+                        "source_mode": "provider_unavailable",
+                        "dropped_invalid_iv": len(dropped_cells),
+                    },
+                    "methodology": "Live implied volatility surface from option-chain impliedVolatility. No rows were returned, so no surface is shown.",
+                    "field_dictionary": _IVOL_FIELDS,
+                    "next_actions": ["Retry during market hours or with a different expiry set; the provider returned empty chains."],
+                },
+                sources=["yfinance"],
+                metadata={"live": False, "fallback": True,
+                          "spot_source": spot_state,
+                          "provider_errors": ["yfinance implied volatility rows empty"]},
             )
         stats, series = _ivol_atm_term_and_skew(surface_rows)
         return FunctionResult(code=self.code, instrument=instrument,
@@ -722,9 +866,15 @@ class IVOLFunction(BaseFunction):
                                         "calls": sum(1 for row in surface_rows if row["option_type"] == "CALL"),
                                         "puts": sum(1 for row in surface_rows if row["option_type"] == "PUT"),
                                         "source_mode": "live_yfinance",
+                                        "dropped_invalid_iv": len(dropped_cells),
                                         **stats,
                                     },
-                                    "methodology": "Live implied volatility surface from option-chain impliedVolatility by expiry, strike, and option type.",
+                                    "dropped_cells": dropped_cells,
+                                    "methodology": (
+                                        "Live implied volatility surface from option-chain impliedVolatility by expiry, "
+                                        "strike, and option type. Cells with IV below 1 percent (solver failure) or a "
+                                        "quoted mid below intrinsic value are dropped and counted in summary.dropped_invalid_iv."
+                                    ),
                                     "field_dictionary": _IVOL_FIELDS},
                               sources=["yfinance"],
                               metadata={"live": True, "data_mode": "live_yfinance",

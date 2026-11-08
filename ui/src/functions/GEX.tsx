@@ -188,6 +188,25 @@ function GexLadder({
     return bestDist < 0.01 ? best : -1;
   }, [rows, spot]);
 
+  // The flip is an interpolated spot level (e.g. 758.08), not a strike, so it
+  // never equals a row strike. Tag the displayed strike nearest to it, and
+  // only when the level lies inside the displayed range.
+  const flipRowStrike = useMemo(() => {
+    if (flipStrike == null || !rows.length) return null;
+    const strikes = rows
+      .map((row) => row.strike)
+      .filter((k): k is number => typeof k === "number" && Number.isFinite(k));
+    if (!strikes.length) return null;
+    const lo = Math.min(...strikes);
+    const hi = Math.max(...strikes);
+    if (flipStrike < lo || flipStrike > hi) return null;
+    let nearest = strikes[0];
+    for (const k of strikes) {
+      if (Math.abs(k - flipStrike) < Math.abs(nearest - flipStrike)) nearest = k;
+    }
+    return nearest;
+  }, [rows, flipStrike]);
+
   // Roving selection: explicit user choice wins; until then the strike that
   // matches spot (or the middle of the ladder) is active so the readout is
   // never empty and Tab lands somewhere meaningful.
@@ -281,7 +300,7 @@ function GexLadder({
     if (putWallStrike != null && activeRow.strike === putWallStrike) {
       activeTags.push("PUT WALL");
     }
-    if (flipStrike != null && activeRow.strike === flipStrike) {
+    if (flipRowStrike != null && activeRow.strike === flipRowStrike) {
       activeTags.push("FLIP");
     }
     if (activeIdx === spotIdx) activeTags.push("SPOT");
@@ -350,7 +369,7 @@ function GexLadder({
               if (putWallStrike != null && row.strike === putWallStrike) {
                 tags.push("PUT WALL");
               }
-              if (flipStrike != null && row.strike === flipStrike) {
+              if (flipRowStrike != null && row.strike === flipRowStrike) {
                 tags.push("FLIP");
               }
               if (index === spotIdx) tags.push("SPOT");
@@ -521,7 +540,7 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
       ? `${(flipStrike - spot).toFixed(2)} vs spot`
       : flipStrike != null
         ? "first sign change"
-        : "no sign change in range";
+        : "no crossing within ±10% of spot";
   const callWallGex = gexOf(payload?.call_wall);
   const putWallGex = gexOf(payload?.put_wall);
 

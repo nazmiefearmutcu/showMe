@@ -662,47 +662,200 @@ class BOILFunction(BaseFunction):
         )
 
 
+# BGAS identity: the Henry Hub natural-gas spot monitor. The only contract it
+# serves is NG=F; any other contract is refused with an explicit input_error
+# instead of being served (or swapped for NG=F) under the natural-gas title.
+BGAS_CONTRACT = "NG=F"
+_BGAS_UNIT = "USD/MMBtu"
+_BGAS_RANGE_DAYS: dict[str, int] = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365}
+_BGAS_INTERVALS: tuple[str, ...] = ("1d",)
+# Sanctioned data_mode values (tests/test_data_mode_vocabulary.py): EIA is an
+# official live publisher, the model row is a computed state.
+_BGAS_DATA_MODE: dict[str, str] = {
+    "live_yfinance": "live_yfinance",
+    "live_eia": "live_official",
+    "model": "modeled",
+}
+
+
+def _ng_front_month(today: Any) -> tuple[str, str]:
+    """Front NYMEX natural-gas delivery month and its last trade date.
+
+    Computed from the published contract rule: trading ends three business
+    days before the first calendar day of the delivery month. Weekends are
+    skipped; exchange holidays are not modelled, so the last-trade date can be
+    one business day late around a holiday. Returns ("YYYY-MM", "YYYY-MM-DD").
+    """
+    from datetime import date, timedelta
+
+    if isinstance(today, datetime):
+        today = today.date()
+    year, month = today.year, today.month
+    for _ in range(24):
+        first = date(year, month, 1)
+        last_trade = first
+        business_days = 0
+        while business_days < 3:
+            last_trade -= timedelta(days=1)
+            if last_trade.weekday() < 5:
+                business_days += 1
+        if last_trade >= today:
+            return f"{year:04d}-{month:02d}", last_trade.isoformat()
+        month += 1
+        if month == 13:
+            month, year = 1, year + 1
+    raise RuntimeError("no NG delivery month found within 24 months")
+
+
+def _bgas_model_vintage_day(as_of: Any) -> Any:
+    """Day the reference model price was quoted, from its ``YYYY-MM`` vintage.
+
+    Returns None when the vintage cannot be parsed, so no expiry is invented.
+    """
+    from datetime import date
+
+    text = str(as_of or "").strip()
+    try:
+        year_text, month_text = text[:7].split("-")
+        return date(int(year_text), int(month_text), 1)
+    except (ValueError, TypeError):
+        return None
+
+
+def _bgas_decorate_rows(rows: list[dict[str, Any]], *, as_of_day: Any) -> list[dict[str, Any]]:
+    """Add contract_unit, expiry and data_mode to every BGAS row.
+
+    Futures rows get the front-month delivery as of the day the price was
+    quoted: today for live rows, the reference vintage for the model row (so a
+    2024 price is never paired with a 2026 contract). The EIA spot series has no
+    delivery month, so its expiry is explicitly null.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["contract_unit"] = _BGAS_UNIT
+        item["data_mode"] = _BGAS_DATA_MODE.get(str(item.get("source_mode")), "explicit_unavailable")
+        if item.get("source") == "eia":
+            item["expiry_month"] = None
+            item["expiry_last_trade"] = None
+            item["expiry_basis"] = "spot_no_delivery_month"
+        elif item.get("source_mode") == "model":
+            vintage_day = _bgas_model_vintage_day(item.get("reference_vintage") or item.get("as_of"))
+            if vintage_day is None:
+                item["expiry_month"] = None
+                item["expiry_last_trade"] = None
+                item["expiry_basis"] = "unknown_price_vintage"
+            else:
+                expiry_month, last_trade = _ng_front_month(vintage_day)
+                item["expiry_month"] = expiry_month
+                item["expiry_last_trade"] = last_trade
+                item["expiry_basis"] = "nymex_ng_rule_weekends_only_at_price_vintage"
+        else:
+            expiry_month, last_trade = _ng_front_month(as_of_day)
+            item["expiry_month"] = expiry_month
+            item["expiry_last_trade"] = last_trade
+            item["expiry_basis"] = "nymex_ng_rule_weekends_only"
+        out.append(item)
+    return out
+
+
 @FunctionRegistry.register
 class BGASFunction(BaseFunction):
-    """BGAS — Henry Hub natural gas."""
+    """BGAS — Henry Hub natural gas spot (NG=F front month, or EIA HENRYHUB)."""
     code = "BGAS"
     name = "Natural Gas Spot"
+    description = (
+        "Henry Hub natural gas spot: live NG=F front-month quote with daily OHLCV "
+        "history, or the EIA Henry Hub spot series when configured. Serves NG=F "
+        "only; other contracts are refused with an explicit input_error."
+    )
     asset_classes = (AssetClass.COMMODITY,)
     category = "commodity"
 
+    def _input_error(self, contract: str, reason: str) -> FunctionResult:
+        return FunctionResult(
+            code=self.code,
+            instrument=None,
+            data={
+                "status": "input_error",
+                "reason": reason,
+                "symbol": contract,
+                "contract": BGAS_CONTRACT,
+                "contract_unit": _BGAS_UNIT,
+                "data_mode": "explicit_unavailable",
+                "rows": [],
+                "history": [],
+                "candles": [],
+                "next_actions": [f"Request contract={BGAS_CONTRACT} (Henry Hub natural gas)."],
+                "methodology": "BGAS serves the Henry Hub natural gas contract only; no other instrument is substituted.",
+                "field_dictionary": _commodity_field_dictionary(),
+            },
+            sources=[],
+            warnings=[reason],
+        )
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         live = _truthy(params.get("live", True) or params.get("live_screen"))
-        days = _int_param(params, "days", 365, 20, 1095)
-        quote_timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
-        contract = str(params.get("contract") or (instrument.symbol if instrument else "") or "NG=F").strip().upper()
-        # BUG-HUNT S01: previously a non-NG=F contract was silently
-        # reverted to NG=F. Track the override so the user knows.
-        original_contract = contract
-        symbol = contract if contract in COMMODITY_CONTRACTS else "NG=F"
-        provider_errors: list[str] = []
-        if original_contract != symbol:
-            provider_errors.append(
-                f"contract={original_contract!r} not in COMMODITY_CONTRACTS; using NG=F"
+        contract = str(params.get("contract") or (instrument.symbol if instrument else "") or BGAS_CONTRACT).strip().upper()
+        if contract != BGAS_CONTRACT:
+            return self._input_error(
+                contract,
+                f"BGAS is the Henry Hub natural gas spot monitor and serves {BGAS_CONTRACT} only; "
+                f"contract {contract!r} is not a natural gas contract and is not served here.",
             )
+        interval = str(params.get("interval") or _BGAS_INTERVALS[0]).strip().lower()
+        if interval not in _BGAS_INTERVALS:
+            return self._input_error(
+                contract,
+                f"BGAS serves daily bars only (interval=1d); got interval={interval!r}.",
+            )
+        # range is the advertised window and wins whenever it is sent. The
+        # agent router always injects a days default next to the caller's
+        # range, so reading days first silently ignored range. days is honoured
+        # only for callers that send no range at all.
+        if params.get("range") not in (None, ""):
+            range_key = str(params.get("range")).strip().upper()
+            if range_key not in _BGAS_RANGE_DAYS:
+                return self._input_error(
+                    contract,
+                    f"BGAS range {range_key!r} is not supported; use one of {', '.join(_BGAS_RANGE_DAYS)}.",
+                )
+            days = _BGAS_RANGE_DAYS[range_key]
+        elif params.get("days") not in (None, ""):
+            days = _int_param(params, "days", 365, 20, 1095)
+        else:
+            days = _BGAS_RANGE_DAYS["1Y"]
+        quote_timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
+        as_of_day = datetime.now(timezone.utc).date()
+        symbol = BGAS_CONTRACT
+        provider_errors: list[str] = []
         try:
             if self.deps.eia:
                 df = await self.deps.eia.fetch(DataRequest(
                     kind=DataKind.ECON_SERIES, symbols=["HENRYHUB"]))
                 eia_rows, eia_history = _eia_spot_rows(df, "HENRYHUB")
                 if eia_rows:
+                    rows = _bgas_decorate_rows(eia_rows, as_of_day=as_of_day)
                     return FunctionResult(
                         code=self.code,
                         instrument=None,
                         data={
                             "status": "ok",
+                            "contract": BGAS_CONTRACT,
                             "symbol": "HENRYHUB",
+                            "contract_unit": _BGAS_UNIT,
+                            "data_mode": _BGAS_DATA_MODE["live_eia"],
                             "source_mode": "live_eia",
-                            "rows": eia_rows,
+                            "as_of": rows[0].get("as_of"),
+                            "expiry_month": None,
+                            "rows": rows,
                             "history": eia_history,
+                            "candles": eia_history,
                             "methodology": (
                                 "BGAS reads Henry Hub natural gas spot data from EIA "
                                 "when configured. Change % is (last / previous period "
-                                "- 1) * 100; history is the daily EIA spot series."
+                                "- 1) * 100; history is the daily EIA spot series. "
+                                "Spot prints carry no delivery month."
                             ),
                             "field_dictionary": _commodity_field_dictionary(),
                         },
@@ -723,9 +876,8 @@ class BGASFunction(BaseFunction):
         row = None
         history: list[dict[str, Any]] = []
         if live and self.deps.yfinance:
-            # BUG-HUNT S01: preserve the EIA + contract-override errors
-            # we already accumulated; don't let _contract_snapshot's own
-            # error list overwrite them.
+            # BUG-HUNT S01: preserve the EIA errors we already accumulated;
+            # don't let _contract_snapshot's own error list overwrite them.
             row, history, snapshot_errors = await _contract_snapshot(
                 self.deps.yfinance,
                 symbol,
@@ -735,13 +887,20 @@ class BGASFunction(BaseFunction):
             )
             provider_errors.extend(snapshot_errors)
         if row:
+            rows = _bgas_decorate_rows([row], as_of_day=as_of_day)
             data = {
                 "status": "ok",
+                "contract": BGAS_CONTRACT,
                 "symbol": symbol,
+                "contract_unit": _BGAS_UNIT,
+                "data_mode": _BGAS_DATA_MODE["live_yfinance"],
                 "source_mode": "live_yfinance",
-                "rows": [row],
+                "as_of": rows[0].get("as_of"),
+                "expiry_month": rows[0].get("expiry_month"),
+                "rows": rows,
                 "history": history,
-                "methodology": "BGAS/NGAS uses the selected natural-gas futures contract, default NG=F. Change % is (last / previous close - 1) * 100; history is daily OHLCV.",
+                "candles": history,
+                "methodology": "BGAS reports the NG=F front-month natural-gas futures contract. Change % is (last / previous close - 1) * 100; history is daily OHLCV. Expiry is computed from the NYMEX natural-gas last-trade rule (holidays not modelled).",
                 "field_dictionary": _commodity_field_dictionary(),
             }
             return FunctionResult(
@@ -752,15 +911,24 @@ class BGASFunction(BaseFunction):
                 warnings=provider_errors,
             )
         if not live:
-            model = _model_row("NG=F")
+            # The model row is the NG=F reference, which is the only contract
+            # this function serves, so the requested contract is preserved.
+            rows = _bgas_decorate_rows([_model_row(BGAS_CONTRACT)], as_of_day=as_of_day)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data={
                     "status": "reference_model",
-                    "symbol": "NG=F",
+                    "contract": BGAS_CONTRACT,
+                    "symbol": BGAS_CONTRACT,
+                    "contract_unit": _BGAS_UNIT,
+                    "data_mode": _BGAS_DATA_MODE["model"],
                     "source_mode": "model",
-                    "rows": [model],
+                    "as_of": rows[0].get("as_of"),
+                    "expiry_month": rows[0].get("expiry_month"),
+                    "rows": rows,
+                    "history": [],
+                    "candles": [],
                     "methodology": "Deterministic reference row used only when live=false.",
                     "field_dictionary": _commodity_field_dictionary(),
                 },
@@ -774,12 +942,17 @@ class BGASFunction(BaseFunction):
                 data={
                     "status": "provider_unavailable",
                     "reason": "Natural gas quote provider returned no usable live quote.",
+                    "contract": BGAS_CONTRACT,
+                    "contract_unit": _BGAS_UNIT,
+                    "data_mode": "unavailable",
                     "rows": [],
+                    "history": [],
+                    "candles": [],
                     "next_actions": [
                         "Retry BGAS/NGAS after the public quote provider recovers.",
                         "Run without live=true for the deterministic local market model.",
                     ],
-                    "methodology": "BGAS/NGAS only reports OK when NG=F or the selected gas contract returns a usable last price or chart close.",
+                    "methodology": "BGAS/NGAS only reports OK when NG=F returns a usable last price or chart close.",
                     "field_dictionary": _commodity_field_dictionary(),
                 },
                 sources=["yfinance_futures"],
@@ -802,14 +975,49 @@ class NGASFunction(BGASFunction):
 # (see CPFFunction._trend_forecast), so CPF needs no key and no second
 # provider — the values move with the live market, never constants.
 CPF_SERIES_MAP: dict[str, dict[str, Any]] = {
-    "WTISPLC": {"name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl"},
-    "DCOILWTICO": {"name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl"},
-    "DHHNGSP": {"name": "Henry Hub natural gas", "futures": "NG=F", "unit": "USD/MMBtu"},
+    # CPF#4/#9: each entry is a futures PROXY served under the series id label.
+    # ``contract``/``unit`` describe the proxy actually served; ``fred_unit`` and
+    # ``fred_basis`` describe the FRED series the id names, so the response can
+    # say where they differ. PGOLD has no FRED series (fredgraph.csv?id=PGOLD
+    # returns HTTP 404), so it carries no FRED fields.
+    "WTISPLC": {
+        "name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl",
+        "contract": "NYMEX WTI crude front-month futures",
+        "fred_unit": "USD/bbl", "fred_basis": "monthly spot average",
+    },
+    "DCOILWTICO": {
+        "name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl",
+        "contract": "NYMEX WTI crude front-month futures",
+        "fred_unit": "USD/bbl", "fred_basis": "daily spot price",
+    },
+    "DHHNGSP": {
+        "name": "Henry Hub natural gas", "futures": "NG=F", "unit": "USD/MMBtu",
+        "contract": "NYMEX Henry Hub natural gas front-month futures",
+        "fred_unit": "USD/MMBtu", "fred_basis": "daily spot price",
+    },
     # PNGASEUUSDM (European gas) is deliberately NOT mapped: NG=F is the Henry
     # Hub contract, so routing it there served US prices under a European label.
-    "PCOPPUSDM": {"name": "Copper", "futures": "HG=F", "unit": "USD/lb"},
-    "PGOLD": {"name": "Gold", "futures": "GC=F", "unit": "USD/oz"},
+    "PCOPPUSDM": {
+        "name": "Copper", "futures": "HG=F", "unit": "USD/lb",
+        "contract": "COMEX copper front-month futures",
+        "fred_unit": "USD/metric ton", "fred_basis": "monthly world price",
+    },
+    "PGOLD": {"name": "Gold", "futures": "GC=F", "unit": "USD/oz", "contract": "COMEX gold front-month futures"},
 }
+
+
+def _add_calendar_months(anchor: datetime, months: int) -> datetime:
+    """``anchor`` shifted by whole calendar months, day clamped to month end.
+
+    CPF#8: the forecast steps are calendar months (2026-01-31 + 1M is
+    2026-02-28), not fixed 30-day offsets that drift across the year.
+    """
+    total = anchor.year * 12 + (anchor.month - 1) + months
+    year, month_index = divmod(total, 12)
+    month = month_index + 1
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    last_day = (datetime(next_year, next_month, 1) - timedelta(days=1)).day
+    return anchor.replace(year=year, month=month, day=min(anchor.day, last_day))
 
 
 @FunctionRegistry.register
@@ -843,7 +1051,7 @@ class CPFFunction(BaseFunction):
                     "forecast": [],
                     "forecast_vintage": None,
                     "as_of": now.isoformat(),
-                    "data_mode": "unsupported_series",
+                    "data_mode": "explicit_unavailable",
                     "rows": [],
                     "series": [],
                     "cards": {},
@@ -872,31 +1080,32 @@ class CPFFunction(BaseFunction):
         latest_actual: float | None = None
         actual_as_of: str | None = None
         futures = meta["futures"]
-        if show_actual:
+        # CPF#5: the actual leg is always fetched because the forecast is built
+        # from it. show_actual_history only decides whether it is displayed.
+        try:
+            actual_series = await self._yahoo_history(futures, timeout)
+        except Exception as exc:  # noqa: BLE001
+            provider_errors.append(f"{futures} yahoo: {exc}")
+        if not actual_series and self.deps.yfinance:
             try:
-                actual_series = await self._yahoo_history(futures, timeout)
+                _row, hist, snap_errors = await _contract_snapshot(
+                    self.deps.yfinance,
+                    futures,
+                    days=370,
+                    timeout=timeout,
+                    include_history=True,
+                )
+                provider_errors.extend(snap_errors)
+                for h in hist:
+                    close = _finite(h.get("close"))
+                    if close is None:
+                        continue
+                    actual_series.append({"date": h.get("date"), "value": close})
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"{futures} yahoo: {exc}")
-            if not actual_series and self.deps.yfinance:
-                try:
-                    _row, hist, snap_errors = await _contract_snapshot(
-                        self.deps.yfinance,
-                        futures,
-                        days=370,
-                        timeout=timeout,
-                        include_history=True,
-                    )
-                    provider_errors.extend(snap_errors)
-                    for h in hist:
-                        close = _finite(h.get("close"))
-                        if close is None:
-                            continue
-                        actual_series.append({"date": h.get("date"), "value": close})
-                except Exception as exc:  # noqa: BLE001
-                    provider_errors.append(f"{futures} adapter: {exc}")
-            if actual_series:
-                latest_actual = _finite(actual_series[-1].get("value"))
-                actual_as_of = actual_series[-1].get("date")
+                provider_errors.append(f"{futures} adapter: {exc}")
+        if actual_series:
+            latest_actual = _finite(actual_series[-1].get("value"))
+            actual_as_of = actual_series[-1].get("date")
 
         # --- FORECAST leg: forward projection from the live actual series ---
         # Built by extrapolating the trailing trend (log-linear CAGR over the
@@ -913,8 +1122,15 @@ class CPFFunction(BaseFunction):
             except Exception as exc:  # noqa: BLE001
                 provider_errors.append(f"forecast: {exc}")
 
-        # Genuine outage on the live source -> honest provider_unavailable.
+        # Genuine outage on the live source -> honest provider_unavailable. The
+        # reason carries the errors that were really raised, never a guess.
         if not actual_series and not forecast_series:
+            outage_reason = (
+                f"No live price points were returned for {futures}, "
+                "the actual leg the forecast is built from."
+            )
+            if provider_errors:
+                outage_reason += " Errors: " + "; ".join(provider_errors)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -929,7 +1145,7 @@ class CPFFunction(BaseFunction):
                     "rows": [],
                     "series": [],
                     "cards": {},
-                    "reason": "The live Yahoo futures feed for the actual price leg was unreachable.",
+                    "reason": outage_reason,
                     "methodology": _cpf_methodology(),
                     "field_dictionary": _cpf_field_dictionary(),
                     "next_actions": [
@@ -946,14 +1162,33 @@ class CPFFunction(BaseFunction):
         # HNT-06 fix: the old ``min(1, ...)`` picked the 2ND monthly point;
         # the documented ~12-month target lives at index 11. Shorter
         # horizons clamp to the last available point.
+        # CPF#6: forecast_1y is the ~12-month point only. A shorter horizon has
+        # no 1Y value, so it is None rather than the horizon endpoint under a
+        # 1Y key. forecast_at_horizon carries the endpoint for any horizon.
         forecast_1y: float | None = None
-        if forecast_series:
-            forecast_1y = _finite(forecast_series[min(11, len(forecast_series) - 1)].get("value"))
+        if forecast_series and horizon_months >= 12:
+            forecast_1y = _finite(forecast_series[11].get("value"))
+        forecast_at_horizon: float | None = (
+            _finite(forecast_series[-1].get("value")) if forecast_series else None
+        )
 
         # Build the flat table rows the manifest table_schema expects:
         # {date, kind, value, vintage}.
+        series_note = (
+            f"{series_id} is served from the {meta['contract']} ({futures}), not from FRED."
+        )
+        if meta.get("fred_basis"):
+            series_note += f" The FRED {series_id} series is a {meta['fred_basis']}."
+        if meta.get("fred_unit") and meta["fred_unit"] != meta["unit"]:
+            series_note += (
+                f" Units differ: FRED reports {meta['fred_unit']}, "
+                f"the served proxy is in {meta['unit']}."
+            )
+        # The actual series is shown only when show_actual_history is on; it is
+        # always returned under ``actual`` because the forecast is built from it.
+        displayed_actual = actual_series if show_actual else []
         rows: list[dict[str, Any]] = []
-        for pt in actual_series:
+        for pt in displayed_actual:
             rows.append({
                 "date": pt.get("date"),
                 "kind": "actual",
@@ -968,7 +1203,10 @@ class CPFFunction(BaseFunction):
                 "vintage": forecast_vintage,
             })
 
-        data_mode = "live_official" if (actual_series and forecast_series) else "delayed_reference"
+        # CPF#2: the actual leg is a Yahoo futures proxy and the forecast is a
+        # trend extrapolation, so neither is an official series. live_official
+        # is reserved for official sources.
+        data_mode = "futures_proxy_trend" if (actual_series and forecast_series) else "delayed_reference"
         status = "ok" if rows else "empty"
 
         return FunctionResult(
@@ -979,6 +1217,15 @@ class CPFFunction(BaseFunction):
                 "series_id": series_id,
                 "commodity": meta["name"],
                 "unit": meta["unit"],
+                # CPF#4/#9: the served series is a futures proxy, not the FRED
+                # series named by series_id. Say so, and say where they differ.
+                "proxy_symbol": futures,
+                "proxy_contract": meta["contract"],
+                "proxy_unit": meta["unit"],
+                "fred_series_id": series_id,
+                "fred_unit": meta.get("fred_unit"),
+                "fred_series_fetched": False,
+                "series_note": series_note,
                 "horizon": horizon,
                 "actual": actual_series,
                 "forecast": forecast_series,
@@ -988,12 +1235,13 @@ class CPFFunction(BaseFunction):
                 "data_mode": data_mode,
                 "rows": rows,
                 "series": [
-                    {"name": "actual", "kind": "line", "points": actual_series},
+                    {"name": "actual", "kind": "line", "points": displayed_actual},
                     {"name": "forecast", "kind": "line", "points": forecast_series},
                 ],
                 "cards": {
                     "latest_actual": latest_actual,
                     "forecast_1y": forecast_1y,
+                    "forecast_at_horizon": forecast_at_horizon,
                     "forecast_vintage": forecast_vintage,
                     "forecast_horizon": horizon,
                     "data_mode": data_mode,
@@ -1005,7 +1253,9 @@ class CPFFunction(BaseFunction):
             },
             sources=["yfinance"],
             warnings=provider_errors,
-            metadata={"degraded": data_mode != "live_official"} if data_mode != "live_official" else {},
+            # CPF#2: a Yahoo futures proxy with a trend extrapolation is never
+            # an official series, so the quality flag is set on every path.
+            metadata={"degraded": True, "data_mode": data_mode},
         )
 
     async def _yahoo_history(self, symbol: str, timeout: float) -> list[dict[str, Any]]:
@@ -1067,7 +1317,7 @@ class CPFFunction(BaseFunction):
         cur = last_val
         for m in range(1, months + 1):
             cur = cur * monthly_growth
-            dt = last_dt + timedelta(days=30 * m)
+            dt = _add_calendar_months(last_dt, m)
             points.append({"date": dt.date().isoformat(), "value": round(cur, 6)})
         forecast_vintage = str(last_date_str)[:10] if last_date_str else None
         return points, forecast_vintage
@@ -1092,13 +1342,14 @@ def _cpf_methodology() -> str:
 def _cpf_field_dictionary() -> dict[str, str]:
     return {
         "series_id": "Benchmark commodity series identifier.",
-        "actual": "Array of {date, value} live historical futures observations from Yahoo.",
+        "actual": "Array of {date, value} live historical futures observations from Yahoo. Always returned, since the forecast is built from it; rows and series show it only when show_actual_history is true.",
         "forecast": "Array of {date, value} forward trend-extrapolated projections.",
         "forecast_vintage": "Last realized actual date the forecast is anchored to (iso8601).",
         "forecast_horizon": "User-selected forward window (6M/1Y/2Y/5Y).",
         "latest_actual": "Most recent realized futures value.",
-        "forecast_1y": "Forecast value at the ~12-month horizon.",
-        "data_mode": "live_official when both legs are live; delayed_reference when one leg is delayed.",
+        "forecast_1y": "Forecast value at the ~12-month point; null when the horizon is shorter than 12 months.",
+        "forecast_at_horizon": "Forecast value at the end of the selected horizon.",
+        "data_mode": "futures_proxy_trend when the actual futures proxy and the trend forecast are both present; delayed_reference when one leg is missing. live_official is reserved for official sources.",
     }
 
 

@@ -7,8 +7,10 @@
  *    the persisted window control;
  *  - the rolling-beta sparkline renders an inline SVG when history exists
  *    and an honest empty note when it does not;
- *  - the backend `computed_market_model` SEEDED baseline renders a prominent
- *    "baseline" warning (never shown as a live regression);
+ *  - a betas-only payload (no rows, the retired seeded baseline shape) is an
+ *    honest empty state, never a regression;
+ *  - the benchmark control re-issues the call with `benchmark` and the
+ *    caption shows the benchmark the payload reports (no hard-coded SPY);
  *  - the rolling-window control re-issues the call with `rolling_window`.
  *
  * `useFunction` is mocked with a mutable shared state + an args recorder.
@@ -110,7 +112,9 @@ function okPayload() {
   };
 }
 
-function baselinePayload() {
+function betasOnlyPayload() {
+  // Retired seeded-baseline shape: a `betas` map and no `rows`. The pane must
+  // not render it as a regression.
   return {
     data: {
       status: "computed_market_model",
@@ -210,17 +214,14 @@ describe("BETA pane — ok payload", () => {
 });
 
 describe("BETA pane — honesty", () => {
-  it("labels the seeded market-model baseline and still renders its beta", () => {
+  it("does not render a betas-only seeded baseline as a regression", () => {
     mockFn.state = "ok";
-    mockFn.data = baselinePayload();
+    mockFn.data = betasOnlyPayload();
     const { container } = render(<BetaPane code="BETA" symbol="AAPL" />);
-    expect(screen.getByText(/seeded market-model baseline/i)).toBeInTheDocument();
-    // "baseline" appears on both the header status pill and the note pill.
-    expect(screen.getAllByText("baseline").length).toBeGreaterThanOrEqual(2);
-    // The baseline's 1Y beta still renders (from the betas map fallback).
-    expect(container.textContent).toContain("0.90");
-    // Baselines carry no rolling history — the sparkline says so honestly.
-    expect(screen.getByText(/no rolling beta history returned/i)).toBeInTheDocument();
+    expect(screen.getByText("No beta computed")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("0.90");
+    expect(screen.queryByText(/seeded market-model baseline/i)).toBeNull();
+    expect(screen.queryByText("baseline")).toBeNull();
   });
 
   it("shows an honest empty state when no beta rows exist", () => {
@@ -228,6 +229,36 @@ describe("BETA pane — honesty", () => {
     mockFn.data = { data: { status: "ok", rows: [], history: [] }, warnings: [] };
     render(<BetaPane code="BETA" symbol="AAPL" />);
     expect(screen.getByText("No beta computed")).toBeInTheDocument();
+  });
+});
+
+describe("BETA pane — benchmark control", () => {
+  it("requests the manifest default benchmark ^GSPC", () => {
+    mockFn.state = "ok";
+    mockFn.data = okPayload();
+    render(<BetaPane code="BETA" symbol="AAPL" />);
+    expect(lastCall()?.params?.benchmark).toBe("^GSPC");
+  });
+
+  it("re-issues the call with the chosen benchmark and shows it in the caption", () => {
+    mockFn.state = "ok";
+    const base = okPayload();
+    mockFn.data = { ...base, data: { ...base.data, benchmark: "QQQ" } };
+    const { container } = render(<BetaPane code="BETA" symbol="AAPL" />);
+    fireEvent.click(screen.getByTitle("BENCH QQQ"));
+    expect(lastCall()?.params?.benchmark).toBe("QQQ");
+    expect(container.textContent).toContain("vs QQQ");
+    expect(container.textContent).not.toContain("vs SPY");
+  });
+
+  it("never falls back to a hard-coded SPY caption when the payload omits the benchmark", () => {
+    mockFn.state = "ok";
+    const payload = okPayload();
+    delete (payload.data as Record<string, unknown>).benchmark;
+    mockFn.data = payload;
+    const { container } = render(<BetaPane code="BETA" symbol="AAPL" />);
+    expect(container.textContent).toContain("vs ^GSPC");
+    expect(container.textContent).not.toContain("vs SPY");
   });
 });
 

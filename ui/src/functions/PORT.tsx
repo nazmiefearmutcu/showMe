@@ -115,7 +115,17 @@ interface PortData {
     cost_basis?: number;
     unrealized_pnl?: number;
     cash?: number;
+    /** Every cash balance in base ccy (foreign balances converted); null when one has no FX rate. */
+    cash_total_base?: number | null;
     n_positions?: number;
+    /** Cash + market value; null/absent when cash is untracked or a row is unpriced. */
+    total_equity?: number | null;
+    /** Previous-close based day move; null when a previous close is missing. */
+    day_pnl?: number | null;
+    /** Realized P&L from closes dated this year. */
+    realized_pnl_ytd?: number | null;
+    /** Positions with no valued market value (no quote, no rate). */
+    n_unpriced?: number;
   };
   by_asset_class?: Record<string, number>;
   by_currency?: Record<string, number>;
@@ -538,6 +548,91 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
   );
 }
 
+/**
+ * Apply live ticks to the snapshot positions and compute each weight.
+ *
+ * PORT#4: the weight denominator must be the same total the rows are valued
+ * against. With a live overlay that is the live-adjusted sum, so weights keep
+ * summing to 100% next to live marks. The guard matches `liveTotals`: a live
+ * sum more than 3x away from the snapshot is treated as bad data and the
+ * snapshot total is used for both the totals and the weights.
+ */
+export function overlayLivePositions(
+  positions: Position[],
+  live: Record<string, { price: number; ts: number }>,
+  totals: PortData["totals"] | undefined,
+): Position[] {
+  const overlaid = positions.map((p) => {
+    const tick = live[p.symbol];
+    if (!tick) return p;
+    const last = tick.price;
+    const qty = Number(p.quantity) || 0;
+    const cost = positionEntryPrice(p) ?? 0;
+    const market_value = qty * last;
+    const unrealized_pnl = market_value - qty * cost;
+    return {
+      ...p,
+      last,
+      market_value,
+      unrealized_pnl,
+      _live_ts: tick.ts,
+    };
+  });
+  const liveSum = overlaid.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
+  const snapshotMv = totals?.market_value;
+  const hasOverlay = Object.keys(live).length > 0;
+  const guarded =
+    typeof snapshotMv === "number" &&
+    snapshotMv > 0 &&
+    (liveSum > snapshotMv * 3 || liveSum < snapshotMv / 3);
+  const total = hasOverlay && !guarded ? liveSum : (snapshotMv ?? liveSum);
+  return overlaid.map((p) => ({
+    ...p,
+    weight: total > 0 ? (Number(p.market_value) || 0) / total : undefined,
+  }));
+}
+
+/**
+ * PORT#2: snapshot totals re-derived from the live overlay. `total_equity` is
+ * recomputed as live market value + cash, with the backend's rule: it is
+ * withheld while cash is untracked or any position is unpriced. Without this
+ * the headline kept the snapshot equity while the marks moved. A live sum more
+ * than 3x away from the snapshot is treated as bad data, and the snapshot
+ * totals object is returned unchanged (same reference).
+ */
+export function overlayLiveTotals(
+  totals: PortData["totals"] | undefined,
+  enriched: Position[],
+  hasOverlay: boolean,
+): PortData["totals"] | undefined {
+  if (!hasOverlay) return totals;
+  const mv = enriched.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
+  const cost = enriched.reduce(
+    (s, p) => s + (Number(p.quantity) || 0) * (positionEntryPrice(p) ?? 0),
+    0,
+  );
+  const snapshotMv = totals?.market_value ?? 0;
+  if (snapshotMv > 0 && (mv > snapshotMv * 3 || mv < snapshotMv / 3)) {
+    return totals;
+  }
+  // Same cash basis as the backend: every balance in base ccy. A null
+  // cash_total_base means a balance has no FX rate, so equity is withheld
+  // rather than falling back to stable cash alone.
+  const cashBase =
+    totals && "cash_total_base" in totals ? totals.cash_total_base : totals?.cash;
+  const cash = typeof cashBase === "number" && Number.isFinite(cashBase) ? cashBase : null;
+  const unpriced = enriched.filter(
+    (p) => typeof p.market_value !== "number" || !Number.isFinite(p.market_value),
+  ).length;
+  return {
+    ...totals,
+    market_value: mv,
+    cost_basis: cost,
+    unrealized_pnl: mv - cost,
+    total_equity: cash != null && unpriced === 0 ? mv + cash : null,
+  };
+}
+
 export function PORTPane({ code }: FunctionPaneProps) {
   const portfolioGroups = usePortfolioStore((s) => s.groups);
   const credentialsCount = useExchangeStore((s) => s.credentials.length);
@@ -604,50 +699,15 @@ export function PORTPane({ code }: FunctionPaneProps) {
     };
   }, [symbolsKey]);
 
-  const enriched = useMemo<Position[]>(() => {
-    const overlaid = positions.map((p) => {
-      const tick = live[p.symbol];
-      if (!tick) return p;
-      const last = tick.price;
-      const qty = Number(p.quantity) || 0;
-      const cost = positionEntryPrice(p) ?? 0;
-      const market_value = qty * last;
-      const unrealized_pnl = market_value - qty * cost;
-      return {
-        ...p,
-        last,
-        market_value,
-        unrealized_pnl,
-        _live_ts: tick.ts,
-      };
-    });
-    const total = totals?.market_value ?? overlaid.reduce(
-      (s, p) => s + (Number(p.market_value) || 0), 0,
-    );
-    return overlaid.map((p) => ({
-      ...p,
-      weight: total > 0 ? (Number(p.market_value) || 0) / total : undefined,
-    }));
-  }, [positions, totals, live]);
+  const enriched = useMemo<Position[]>(
+    () => overlayLivePositions(positions, live, totals),
+    [positions, totals, live],
+  );
 
-  const liveTotals = useMemo(() => {
-    if (Object.keys(live).length === 0) return totals;
-    const mv = enriched.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
-    const cost = enriched.reduce(
-      (s, p) => s + (Number(p.quantity) || 0) * (positionEntryPrice(p) ?? 0),
-      0,
-    );
-    const snapshotMv = totals?.market_value ?? 0;
-    if (snapshotMv > 0 && (mv > snapshotMv * 3 || mv < snapshotMv / 3)) {
-      return totals;
-    }
-    return {
-      ...totals,
-      market_value: mv,
-      cost_basis: cost,
-      unrealized_pnl: mv - cost,
-    };
-  }, [enriched, totals, live]);
+  const liveTotals = useMemo(
+    () => overlayLiveTotals(totals, enriched, Object.keys(live).length > 0),
+    [enriched, totals, live],
+  );
 
   const liveCount = Object.values(streamStatus).filter((s) => s === "live").length;
   const hasLiveOverlay = Object.keys(live).length > 0;
@@ -998,18 +1058,28 @@ function PORTView({
   // Live adoption (campaign 2026-09-11): the hero equity + unrealized P&L
   // pulse with the shared themed flash when a poll/broker tick moves them.
   // First render never flashes (nothing to compare against).
-  const equityFlash = useTickFlash(totalMV);
+  // PORT#2: the headline is total equity (cash + market value) when the backend
+  // provides it. Otherwise it is market value and the label says it excludes
+  // cash, so the number never claims to be equity.
+  const reportedEquity =
+    typeof totals?.total_equity === "number" && Number.isFinite(totals.total_equity)
+      ? totals.total_equity
+      : null;
+  const headlineValue = reportedEquity ?? totalMV;
+  const equityFlash = useTickFlash(headlineValue);
   const pnlFlash = useTickFlash(totals?.unrealized_pnl ?? null);
 
   return (
     <div className="showme-port__view showme-card-reveal port-view">
       <section className="port-terminal-summary" aria-label="Portfolio summary">
         <div className="port-terminal-summary__primary">
-          <span className="port-label">Local analytics equity</span>
+          <span className="port-label">
+            {reportedEquity != null ? "Total equity" : "Market value (excl. cash)"}
+          </span>
           <strong
             className={`terminal-grid-numeric${tickFlashClass(equityFlash) ? ` ${tickFlashClass(equityFlash)}` : ""}`}
           >
-            {fmt$(totalMV)}
+            {fmt$(headlineValue)}
           </strong>
           <span
             className={`port-terminal-summary__pnl port-terminal-summary__pnl--${pnlTone}${tickFlashClass(pnlFlash) ? ` ${tickFlashClass(pnlFlash)}` : ""}`}

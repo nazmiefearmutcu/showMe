@@ -1,11 +1,10 @@
-"""GC3D — Yield Curve 3D (tenor × time → yield surface).
+"""GC3D — Yield Curve Surface (tenor × time → yield grid).
 
-A date-by-tenor sovereign yield surface so the user can read curve drift
-over a look-back window. Chart grammar is ``SURFACE`` (renderer can fall
-back to a heatmap); the engine always returns a ``surface`` array of
-{date, tenor, tenor_years, yield} points. Live mode fans out 10 FRED DGS*
-series; the template fallback ships rolling-anchored dates so it never
-advertises stale timestamps.
+A date-by-tenor US Treasury yield grid so the user can read curve drift
+over a look-back window. The engine returns a ``surface`` array of
+{date, tenor, tenor_years, yield} points. Live mode fans out the selected
+FRED DGS* series; the reference template ships rolling-anchored dates so it
+never advertises stale timestamps.
 """
 from __future__ import annotations
 
@@ -40,7 +39,7 @@ from ..spec import (
 def gc3d() -> FunctionManifest:
     return FunctionManifest(
         code="GC3D",
-        name="Yield Curve 3D",
+        name="Yield Curve Surface",
         category=Category.BONDS_RATES,
         intent=(
             "Render a tenor × time yield surface so the analyst can read curve"
@@ -77,11 +76,11 @@ def gc3d() -> FunctionManifest:
                 options=["3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"],
             ),
             InputSpec(
-                name="live_curve",
-                label="Live FRED",
+                name="reference",
+                label="Reference template",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="When true, pull DGS* daily series from FRED for every tenor.",
+                description="When true, serve the labelled reference template (fixed levels, 45-day span) instead of live FRED.",
             ),
             InputSpec(
                 name="provider_mode",
@@ -100,7 +99,7 @@ def gc3d() -> FunctionManifest:
             "country": "US",
             "days": 365,
             "tenors": ["3M", "6M", "1Y", "2Y", "5Y", "10Y", "30Y"],
-            "live_curve": False,
+            "reference": False,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
@@ -156,14 +155,13 @@ def gc3d() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "GC3D builds a date-by-tenor yield surface for the chosen country. With ``live_curve=true``"
-            " the engine fans out a curated list of FRED DGS* series (DGS3MO/DGS6MO/DGS1/DGS2/DGS3/"
-            "DGS5/DGS7/DGS10/DGS20/DGS30) over the look-back window, normalizes to business-day dates,"
-            " and emits a flat list of {date, tenor, tenor_years, yield} points. With live off the"
-            " response carries a labelled template with rolling-anchored dates so it never advertises"
-            " stale 2026-04 timestamps weeks after the file was written. ``days`` is clamped to"
-            " [7, 3650] to keep the FRED fan-out bounded — a request for ``days=999999`` previously"
-            " ballooned the query."
+            "GC3D builds a date-by-tenor yield grid for the US Treasury curve. By default the engine fans out"
+            " the selected tenors (FRED DGS3MO/DGS6MO/DGS1/DGS2/DGS3/DGS5/DGS7/DGS10/DGS20/DGS30) over the"
+            " look-back window and emits a flat list of {date, tenor, tenor_years, yield} points with FRED"
+            " observation dates passed through unchanged (no calendar normalisation). Other countries return"
+            " input_error. With reference=true, or when FRED is unavailable, the response carries a labelled"
+            " template with rolling-anchored dates over a fixed 45-day span; summary.days reports that span and"
+            " a warning says the requested look-back is not applied. ``days`` is clamped to [7, 3650]."
         ),
         formula_dict={},
         field_dict={
@@ -180,10 +178,10 @@ def gc3d() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="gc3d_surface_is_three_dimensional",
+                name="gc3d_surface_spans_dates_and_tenors",
                 description=(
                     "Surface array contains points across at least 3 distinct dates × all selected tenors"
-                    " so the renderer has real 3D structure to draw."
+                    " so the date x tenor grid has real extent to draw."
                 ),
                 inputs={"days": 90},
                 assertions=[
@@ -204,13 +202,13 @@ def gc3d() -> FunctionManifest:
                     "Template (live off) mode emits rolling-anchored dates relative to today, never"
                     " hard-coded 2026-04 strings from the source file."
                 ),
-                inputs={"live_curve": False},
+                inputs={"reference": True},
                 assertions=["template_dates_anchored_to_today_minus_offsets"],
             ),
             SemanticTest(
                 name="gc3d_live_routes_to_fred",
-                description="Live mode lists FRED in the provenance source list.",
-                inputs={"live_curve": True},
+                description="Live mode (reference off) lists FRED in the provenance source list.",
+                inputs={"reference": False},
                 assertions=["provider_chain_used_fred"],
             ),
         ],

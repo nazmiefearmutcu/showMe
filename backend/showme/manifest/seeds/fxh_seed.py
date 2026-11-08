@@ -195,10 +195,11 @@ def fxh() -> FunctionManifest:
             "exposure. Hedge notional = exposure_notional × hedge_ratio "
             "(opposite-sign of the exposure side). Residual = exposure × "
             "(1 - hedge_ratio). Under the user's spot shock the unhedged "
-            "P/L (in base currency) is exposure × spot × shock_pct/100; the "
+            "P/L (in home/quote currency) is exposure × spot × shock_pct/100; the "
             "hedged P/L applies the same shock only to the residual notional. "
-            "Hedge cost = hedge_notional × (bid_ask_pips / 10000), reported "
-            "in base currency. The handler refuses to invent a spot value: "
+            "Hedge cost = hedge_notional × bid_ask_pips × pip_size, reported "
+            "in home (quote) currency; pip_size is 0.0001, or 0.01 when the home "
+            "(quote) currency is JPY (e.g. USDJPY). The handler refuses to invent a spot value: "
             "if the live quote is unavailable, the calculation halts with a "
             "warning rather than silently using zero."
         ),
@@ -221,8 +222,11 @@ def fxh() -> FunctionManifest:
                 variables={"cost": "Hedge cost"},
             ),
             "hedge_cost": Formula(
-                expression=r"cost = N_{hedge} \cdot \frac{pips}{10^{4}}",
-                variables={"pips": "Bid-ask in pips"},
+                expression=r"cost = N_{hedge} \cdot pips \cdot p",
+                variables={
+                    "pips": "Bid-ask in pips",
+                    "p": "Pip size: 0.0001, or 0.01 when the home (quote) currency is JPY",
+                },
             ),
         },
         field_dict={
@@ -231,9 +235,9 @@ def fxh() -> FunctionManifest:
             "exposure_notional": FieldDef(unit="foreign_ccy", description="Echoed exposure notional.", source="input"),
             "hedge_notional": FieldDef(unit="foreign_ccy", description="Notional locked in the hedge forward.", source="computed"),
             "residual_notional": FieldDef(unit="foreign_ccy", description="Unhedged residual exposure.", source="computed"),
-            "pnl_unhedged": FieldDef(unit="base_ccy", description="P/L under the shock with no hedge.", source="computed"),
-            "pnl_hedged": FieldDef(unit="base_ccy", description="P/L under the shock with the hedge.", source="computed"),
-            "hedge_cost": FieldDef(unit="base_ccy", description="Estimated transaction cost.", source="computed"),
+            "pnl_unhedged": FieldDef(unit="quote_ccy", description="P/L under the shock with no hedge, in home (quote) currency.", source="computed"),
+            "pnl_hedged": FieldDef(unit="quote_ccy", description="P/L under the shock with the hedge, in home (quote) currency.", source="computed"),
+            "hedge_cost": FieldDef(unit="quote_ccy", description="Estimated transaction cost in home (quote) currency.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

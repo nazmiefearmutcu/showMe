@@ -94,7 +94,7 @@ def beta() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=3600, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["symbol", "benchmark", "beta", "window", "n_observations", "assumptions"],
+            must_have=["symbol", "benchmark", "betas", "selected_window", "n_observations", "assumptions"],
             rows=True,
             series=False,
             cards=True,
@@ -106,8 +106,8 @@ def beta() -> FunctionManifest:
                 ColumnSpec(key="window", label="Window", kind="text"),
                 ColumnSpec(key="beta", label="β", kind="number", format="%.4f"),
                 ColumnSpec(key="alpha", label="α (daily)", kind="number", format="%.4f"),
-                ColumnSpec(key="r_squared", label="R²", kind="percent", format="%.2f"),
-                ColumnSpec(key="n", label="N", kind="number"),
+                ColumnSpec(key="r_squared", label="R²", kind="number", format="%.3f"),
+                ColumnSpec(key="samples", label="N", kind="number"),
             ],
             sortable=True,
             filterable=False,
@@ -116,19 +116,21 @@ def beta() -> FunctionManifest:
             slots=[
                 CardSlot(key="beta", label="β", kind="big_number"),
                 CardSlot(key="benchmark", label="Benchmark", kind="badge"),
-                CardSlot(key="r_squared", label="R²", kind="kpi", unit="%"),
+                CardSlot(key="r_squared", label="R²", kind="kpi"),
                 CardSlot(key="n_observations", label="N", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "BETA pulls aligned daily-close series for target + benchmark from yfinance over the "
-            "requested window, drops NaN rows, computes log returns, and runs OLS R_i = α + β R_m "
-            "+ ε. β = Cov(R_i, R_m) / Var(R_m); alpha is the daily intercept and R² the regression "
-            "fit. The handler runs the regression independently for each requested window so the "
-            "frame shows beta term structure. Assumptions (benchmark, window) are echoed in the "
-            "payload so the consumer can audit which β it is reading."
+            "BETA pulls aligned daily-close series for target + benchmark from yfinance, keeps the "
+            "dates both series share, and computes simple close-to-close daily returns "
+            "(P_t / P_{t-1} - 1). β = Cov(R_i, R_m) / Var(R_m) with sample (ddof=1) moments, "
+            "alpha is the daily intercept mean(R_i) - β mean(R_m), and R² is the single-factor fit "
+            "(correlation squared). The handler runs this independently for each 1Y/2Y/5Y window "
+            "and for the requested beta_window, so the frame shows beta term structure. The "
+            "benchmark, beta_window and return method are echoed in the payload's assumptions so "
+            "the consumer can audit which β it is reading."
         ),
         formula_dict={
             "Beta": Formula(
@@ -137,7 +139,7 @@ def beta() -> FunctionManifest:
                     "R_i": "Target asset daily returns",
                     "R_m": "Benchmark daily returns",
                 },
-                notes="CAPM textbook beta from daily log returns.",
+                notes="CAPM textbook beta from daily simple (close-to-close) returns.",
             ),
             "RSquared": Formula(
                 expression=r"R^2 = 1 - \frac{SS_{res}}{SS_{tot}}",

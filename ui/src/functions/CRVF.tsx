@@ -6,11 +6,14 @@
  * headline cards (2s10s slope, long-short slope, 10Y reference) + tenor
  * table with spread-vs-reference in bps.
  *
- * Data honesty: without a FRED key the backend returns its labelled
- * computed-model curve — the pane shows a prominent MODEL FIXTURE pill and
- * an inline notice, never presenting fixture levels as live market yields.
+ * Data honesty: when the live FRED curve is not used, the backend returns its
+ * labelled computed-model curve and the pane shows a MODEL FIXTURE pill plus
+ * an inline notice with the backend's reason. A non-US country returns an
+ * explicit unavailable state, never the US levels under another label.
+ * The tenor chips send the `tenors` filter; with none picked the full curve
+ * comes back.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -43,6 +46,8 @@ interface CRVFRow {
 }
 
 interface CRVFData {
+  status?: string;
+  reason?: string;
   rows?: CRVFRow[];
   curve?: CRVFRow[];
   summary?: {
@@ -59,12 +64,29 @@ const CHART_W = 620;
 const CHART_H = 190;
 const PAD = { top: 12, right: 14, bottom: 26, left: 38 };
 
+// Mirrors the CRVF manifest `tenors` options (backend crvf_seed.py).
+const TENOR_OPTIONS = ["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"];
+
 export function CRVFPane({ code, symbol }: FunctionPaneProps) {
   const effectiveSymbol =
     symbol || defaultSymbolForFunction(code, ["EQUITY", "BOND"]);
+  const [tenorPick, setTenorPick] = useState<string[]>([]);
+  const requestParams = useMemo(
+    () => (tenorPick.length ? { tenors: tenorPick } : undefined),
+    [tenorPick],
+  );
+  const toggleTenor = (tenor: string) => {
+    setTenorPick((prev) => {
+      const next = new Set(prev);
+      if (next.has(tenor)) next.delete(tenor);
+      else next.add(tenor);
+      return TENOR_OPTIONS.filter((t) => next.has(t));
+    });
+  };
   const { state, data, error, refetch } = useFunction<CRVFData>({
     code,
     symbol: effectiveSymbol,
+    params: requestParams,
     enabled: !!effectiveSymbol,
   });
 
@@ -78,7 +100,11 @@ export function CRVFPane({ code, symbol }: FunctionPaneProps) {
 
   const summary = payload?.summary;
   const sourceMode = summary?.source_mode ?? "computed_model";
+  const isUnavailable = payload?.status === "provider_unavailable";
   const isModelFixture = sourceMode !== "fred";
+  // The backend reason for the fallback (a FRED failure, or reference mode
+  // requested). Never a guessed cause such as a missing key.
+  const fixtureCause = data?.warnings?.[0] ?? "reference curve requested";
 
   const ref = useMemo(() => deriveReference(rows, summary?.latest_10y), [rows, summary?.latest_10y]);
   const stats = useMemo(() => deriveCurveStats(rows), [rows]);
@@ -159,6 +185,28 @@ export function CRVFPane({ code, symbol }: FunctionPaneProps) {
           </button>
         }
       />
+    ) : payload?.status === "provider_unavailable" ? (
+      <Empty
+        title={`Curve unavailable — ${summary?.country ?? "country"}`}
+        body={payload.reason ?? "The backend has no curve for this country."}
+        icon="!"
+        action={
+          <button onClick={refetch} className="btn">
+            Retry
+          </button>
+        }
+      />
+    ) : payload?.status === "empty" ? (
+      <Empty
+        title="No curve points for this selection"
+        body={payload.reason ?? "The tenor filter matches no curve point."}
+        icon="∅"
+        action={
+          <button type="button" onClick={() => setTenorPick([])} className="btn">
+            Clear tenor filter
+          </button>
+        }
+      />
     ) : rows.length === 0 ? (
       <Empty
         title="No curve returned"
@@ -174,9 +222,9 @@ export function CRVFPane({ code, symbol }: FunctionPaneProps) {
       <div className="u-grid-gap-14">
         {isModelFixture ? (
           <div role="note" style={noticeStyle}>
-            <strong>Computed-model curve.</strong> No FRED key is configured,
-            so the backend served its labelled reference fixture — these are
-            static levels, NOT live market yields.
+            <strong>Computed-model curve.</strong> The live FRED curve was not
+            used ({fixtureCause}), so the backend served its labelled reference
+            fixture — these are static levels, NOT live market yields.
           </div>
         ) : null}
         <section style={kpiGridStyle} aria-label="CRVF curve stats">
@@ -237,11 +285,15 @@ export function CRVFPane({ code, symbol }: FunctionPaneProps) {
                 {rows.length} tenors
               </Pill>
               <Pill
-                tone={isModelFixture ? "warn" : "positive"}
+                tone={isUnavailable ? "warn" : isModelFixture ? "warn" : "positive"}
                 variant="soft"
-                withDot={!isModelFixture}
+                withDot={!isModelFixture && !isUnavailable}
               >
-                {isModelFixture ? "model fixture" : "FRED live"}
+                {isUnavailable
+                  ? "unavailable"
+                  : isModelFixture
+                    ? "model fixture"
+                    : "FRED live"}
               </Pill>
               <LoadStatePill state={state} status={sourceMode} />
               <RefreshButton
@@ -252,6 +304,31 @@ export function CRVFPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <div role="group" aria-label="Tenor filter" style={tenorBarStyle}>
+          {TENOR_OPTIONS.map((t) => {
+            const on = tenorPick.includes(t);
+            return (
+              <button
+                key={t}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggleTenor(t)}
+                style={on ? tenorChipOnStyle : tenorChipStyle}
+              >
+                {t}
+              </button>
+            );
+          })}
+          {tenorPick.length ? (
+            <button
+              type="button"
+              onClick={() => setTenorPick([])}
+              style={tenorChipStyle}
+            >
+              All
+            </button>
+          ) : null}
+        </div>
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
           <StatusSection
@@ -433,6 +510,30 @@ function bpsColor(v: number | null): string {
 }
 
 /* ── styles ────────────────────────────────────────────────────────── */
+
+const tenorBarStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+  padding: "6px 10px",
+};
+
+const tenorChipStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  padding: "2px 7px",
+  border: "1px solid var(--text-mute)",
+  borderRadius: 4,
+  background: "transparent",
+  color: "var(--text-mute)",
+  cursor: "pointer",
+};
+
+const tenorChipOnStyle: CSSProperties = {
+  ...tenorChipStyle,
+  borderColor: "var(--accent)",
+  color: "var(--accent)",
+};
 
 const kpiGridStyle: CSSProperties = {
   display: "grid",

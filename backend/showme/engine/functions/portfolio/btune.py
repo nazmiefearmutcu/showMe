@@ -1,17 +1,23 @@
-"""BTUNE — Strategy hyperparameter sweep.
+"""BTUNE — Strategy hyperparameter sweep with an out-of-sample ranking.
 
-Mevcut Backtest framework'unu (sma_crossover gibi) ızgara üzerinde
-çalıştırır, en iyi (Sharpe / total_return / Calmar) parametre setini bulur.
+Each parameter set is backtested twice on the same daily OHLCV history: on
+the in-sample (train) slice and on the out-of-sample (test) slice. The test
+slice keeps the train history as indicator warm-up, but only test-slice bars
+are scored. Configurations are ranked by the in-sample (train) value of the
+chosen metric, so the test slice never influences which parameter set is
+chosen. The reported best_metric_oos is that chosen set's own test-slice value;
+overfit_gap = in-sample − OOS.
 """
 
 from __future__ import annotations
 
 import asyncio
 import itertools
+import random
+import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -33,16 +39,14 @@ GRIDS = {
     },
 }
 
-
-def _template_history(days: int) -> pd.DataFrame:
-    periods = max(240, min(days, 756))
-    index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
-    periods = len(index)
-    t = np.arange(periods, dtype=float)
-    close = 100 + t * 0.07 + np.sin(t / 10) * 2.0
-    return pd.DataFrame({"close": close, "open": close * 0.998,
-                         "high": close * 1.01, "low": close * 0.99,
-                         "volume": 1_000_000}, index=index)
+SUPPORTED_METRICS = ("sharpe", "cagr", "calmar", "sortino")
+SUPPORTED_FREQUENCIES = ("1d",)
+OVERFIT_GAP_THRESHOLD = 1.0  # in metric units (e.g. Sharpe points)
+MIN_TRAIN_BARS = 60  # backtest warm-up is 30 bars; leave room to trade
+MIN_TEST_BARS = 60
+DEFAULT_FEE_BPS = 5.0
+RANDOM_SEED = 0
+INITIAL_CASH = 10_000
 
 
 def _build_strategy(name: str, params: dict[str, Any]):
@@ -66,145 +70,298 @@ class BTUNEFunction(BaseFunction):
     name = "Backtest Auto-Tuner"
     asset_classes = (AssetClass.EQUITY, AssetClass.CRYPTO, AssetClass.ETF)
     category = "portfolio"
-    description = "Hyperparameter sweep over a strategy grid; rank by Sharpe / total return / Calmar."
+    description = "Hyperparameter sweep over a strategy grid; rank by the train-slice Sharpe / total return / Calmar and report the out-of-sample value."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("BTUNE requires an instrument symbol")
-        strategy = params.get("strategy") or "sma_crossover"
-        grid = params.get("grid") or GRIDS.get(strategy)
-        if not grid:
-            return FunctionResult(code=self.code, instrument=instrument, data={},
-                                  warnings=[f"no grid for {strategy}"])
-        days = int(params.get("days", 365 * 3))
+        spec, error = _resolve_spec(params)
+        if error is not None:
+            return _error_result(self.code, instrument, reason=error)
+        live = _truthy(params.get("live_backtest") or params.get("live"))
         try:
             return await asyncio.wait_for(
-                self._execute_inner(instrument, **params),
+                self._execute_inner(instrument, spec, live),
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"BTUNE execution timed out: {exc}"
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data=_tune_template(strategy, grid),
-                sources=["local_backtest_model"],
-                warnings=[reason],
-                metadata={"days": days, "live": False, "provider_errors": [reason]},
+            reason = f"BTUNE execution timed out: {exc}; no backtest metrics are reported"
+            return _unavailable_result(
+                self.code, instrument, spec,
+                status="provider_unavailable", reason=reason,
+                warnings=[reason], sources=[], live=False,
             )
 
-    async def _execute_inner(self, instrument: Instrument, **params: Any) -> FunctionResult:
-        strategy = params.get("strategy") or "sma_crossover"
-        grid = params.get("grid") or GRIDS.get(strategy)
-        if not grid:
-            return FunctionResult(code=self.code, instrument=instrument, data={},
-                                  warnings=[f"no grid for {strategy}"])
-        days = int(params.get("days", 365 * 3))
-        warnings: list[str] = []
-        if not _truthy(params.get("live_backtest") or params.get("live")):
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data=_tune_template(strategy, grid),
-                sources=["local_backtest_model"],
-                metadata={"days": days, "live": False},
+    async def _execute_inner(self, instrument: Instrument, spec: dict[str, Any], live: bool) -> FunctionResult:
+        if not live:
+            reason = (
+                "Live backtest not requested: set live_backtest=true to run the sweep on "
+                "OHLCV history. No metrics are estimated without it."
             )
-        sources = ["yfinance"]
+            return _unavailable_result(
+                self.code, instrument, spec,
+                status="needs_input", reason=reason,
+                warnings=[reason], sources=[], live=False,
+            )
+        warnings: list[str] = []
         df: pd.DataFrame = pd.DataFrame()
         try:
             if not self.deps.yfinance:
                 raise RuntimeError("no yfinance dependency")
             df = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=instrument,
-                    start=datetime.now(timezone.utc) - timedelta(days=days),
+                    start=datetime.now(timezone.utc) - timedelta(days=spec["days"]),
                     interval="1d",
                     extra={"timeout": 3.0},
                 ))
         except Exception as exc:
             warnings.append(f"yfinance: {exc or type(exc).__name__}")
-        if df.empty:
-            df = _template_history(days)
-            sources = ["local_backtest_model"]
-            if not warnings:
-                warnings.append("live OHLCV unavailable; using local backtest reference history")
-        keys = list(grid.keys())
-        combos = list(itertools.product(*[grid[k] for k in keys]))
-        # Run backtests in process (cheap)
-        results = []
-        for vals in combos:
-            cfg = dict(zip(keys, vals))
+        if df is None or df.empty or "close" not in df.columns:
+            reason = "live OHLCV unavailable; no backtest was run and no metrics are reported"
+            warnings.append(reason)
+            return _unavailable_result(
+                self.code, instrument, spec,
+                status="provider_unavailable", reason=reason,
+                warnings=warnings, sources=[], live=False,
+            )
+
+        split_idx = int(len(df) * spec["train_pct"])
+        test_bars = len(df) - split_idx
+        if split_idx < MIN_TRAIN_BARS or test_bars < MIN_TEST_BARS:
+            reason = (
+                f"insufficient OHLCV history: {len(df)} bars split {split_idx}/{test_bars}; "
+                f"need at least {MIN_TRAIN_BARS} train and {MIN_TEST_BARS} test bars"
+            )
+            warnings.append(reason)
+            return _unavailable_result(
+                self.code, instrument, spec,
+                status="provider_unavailable", reason=reason,
+                warnings=warnings, sources=["yfinance"], live=False,
+            )
+
+        keys = list(spec["grid"].keys())
+        full_grid = [dict(zip(keys, vals)) for vals in itertools.product(*[spec["grid"][k] for k in keys])]
+        planned = full_grid
+        if spec["search_mode"] == "random":
+            planned = random.Random(RANDOM_SEED).sample(full_grid, min(spec["n_samples"], len(full_grid)))
+
+        train_df = df.iloc[:split_idx]
+        rows: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for cfg in planned:
             try:
-                strat_fn = _build_strategy(strategy, cfg)
-                bt = Backtest(df, strat_fn, initial_cash=10_000, fee_bps=5)
-                r = bt.run()
-                results.append({
-                    "label": _label_cfg(cfg),
-                    "params": cfg,
-                    "sharpe": r.metrics["sharpe"],
-                    "total_return": r.metrics["total_return"],
-                    "max_drawdown": r.metrics["max_drawdown"],
-                    "calmar": r.metrics["calmar"],
-                    "trades": r.metrics["trades"],
-                })
-            except Exception:
+                is_metrics = Backtest(
+                    train_df, _build_strategy(spec["strategy"], cfg),
+                    initial_cash=INITIAL_CASH, fee_bps=spec["fee_bps"],
+                ).run().metrics
+                oos_metrics = Backtest(
+                    df, _build_strategy(spec["strategy"], cfg),
+                    initial_cash=INITIAL_CASH, fee_bps=spec["fee_bps"], eval_start=split_idx,
+                ).run().metrics
+            except Exception as exc:
+                skipped.append(f"{_label_cfg(cfg)}: {type(exc).__name__}: {exc}")
                 continue
-        if not results:
-            return FunctionResult(code=self.code, instrument=instrument, data={},
-                                  warnings=["no successful runs"])
-        results.sort(key=lambda x: -x["sharpe"])
-        live_ok = sources == ["yfinance"]
-        # Audit Q3 #10: backtest_framework returns calmar=None when the
-        # equity history is too short (<0.25 years). Filter those out
-        # before picking a Calmar "best"; None is not orderable against
-        # floats.
-        calmar_results = [r for r in results if r.get("calmar") is not None]
-        best_by_calmar = (
-            max(calmar_results, key=lambda x: x["calmar"]) if calmar_results else None
-        )
-        best_calmar_value = best_by_calmar["calmar"] if best_by_calmar else None
+            rows.append(_row(cfg, is_metrics, oos_metrics, spec["metric"]))
+
+        if skipped:
+            warnings.append(
+                f"{len(skipped)} of {len(planned)} parameter combinations failed and were skipped; "
+                f"first: {skipped[0]}"
+            )
+        if not rows:
+            return _unavailable_result(
+                self.code, instrument, spec,
+                status="input_error", reason="no parameter combination produced a backtest",
+                warnings=warnings, sources=["yfinance"], live=True,
+            )
+
+        ranked = sorted(rows, key=_is_sort_key)
+        top = ranked[: spec["top_n"]]
+        best = ranked[0] if ranked[0]["metric_in_sample"] is not None else None
+        if best is None:
+            warnings.append(f"metric '{spec['metric']}' is not defined for any tested parameter set")
+        overfit = _overfit_summary(top)
+        if overfit["warning"]:
+            warnings.append(
+                f"in-sample metric exceeds out-of-sample by a median {overfit['median_gap']:.2f} "
+                f"across the top {spec['top_n']}; treat the ranking as overfit-prone"
+            )
+        train_index = df.index[:split_idx]
+        test_index = df.index[split_idx:]
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok" if live_ok else "computed_fallback",
+                "status": "ok",
+                "as_of": datetime.now(timezone.utc).isoformat(),
                 "symbol": instrument.symbol,
-                "strategy": strategy,
-                "best_by_sharpe": results[0],
-                "best_by_return": max(results, key=lambda x: x["total_return"]),
-                "best_by_calmar": best_by_calmar,
-                "rows": results,
-                "surface": results,
-                "all_results": results,
-                "param_grid": grid,
-                "combos_tested": len(results),
+                "strategy": spec["strategy"],
+                "strategy_id": spec["strategy"],
+                "metric": spec["metric"],
+                "search_mode": spec["search_mode"],
+                "n_samples": spec["n_samples"] if spec["search_mode"] == "random" else None,
+                "fee_bps": spec["fee_bps"],
+                "frequency": spec["frequency"],
+                "split": {
+                    "train_pct": spec["train_pct"],
+                    "train_bars": split_idx,
+                    "test_bars": test_bars,
+                    "train_start": str(train_index[0])[:10],
+                    "train_end": str(train_index[-1])[:10],
+                    "test_start": str(test_index[0])[:10],
+                    "test_end": str(test_index[-1])[:10],
+                },
+                "best_params": best["params"] if best else None,
+                "best_metric_in_sample": best["metric_in_sample"] if best else None,
+                "best_metric_oos": best["metric_oos"] if best else None,
+                "rows": top,
+                "top_n_results": top,
+                "full_results": ranked,
+                "surface": ranked,
+                "all_results": ranked,
+                "param_grid": spec["grid"],
+                "combos_planned": len(full_grid),
+                "combos_tested": len(rows),
+                "combos_skipped": len(skipped),
+                "overfit_warning": overfit["warning"],
+                "overfit_gap_median": overfit["median_gap"],
+                "overfit_score": overfit["score"],
+                "overfit_threshold": OVERFIT_GAP_THRESHOLD,
                 "summary": {
-                    "strategy": strategy,
-                    "combos_tested": len(results),
-                    "best_sharpe": results[0]["sharpe"],
-                    "best_return": max(results, key=lambda x: x["total_return"])["total_return"],
-                    "best_calmar": best_calmar_value,
-                    "source_mode": "live_yfinance" if live_ok else "local_backtest_model",
+                    "strategy": spec["strategy"],
+                    "metric": spec["metric"],
+                    "combos_tested": len(rows),
+                    "combos_skipped": len(skipped),
+                    "best_params": best["params"] if best else None,
+                    "best_metric_in_sample": best["metric_in_sample"] if best else None,
+                    "best_metric_oos": best["metric_oos"] if best else None,
+                    "overfit_warning": overfit["warning"],
+                    "source_mode": "live_yfinance",
                 },
                 "methodology": (
-                    "Hyperparameter sweep: build each strategy configuration, run the "
-                    "same daily-OHLCV backtest, then rank all configurations by Sharpe, "
-                    "total return, and Calmar. IN-SAMPLE — every configuration is scored "
-                    "on the same history it is selected from, so the winning Sharpe is "
-                    "optimistically biased by the search itself and is not an estimate "
-                    "of future performance. Use BTFW to evaluate a chosen configuration "
-                    "out-of-sample."
+                    "Hyperparameter sweep with an out-of-sample split. Each parameter set is "
+                    f"backtested on the first {spec['train_pct']:.0%} of the daily OHLCV history "
+                    "(in-sample) and on the remainder (out-of-sample, with the train history kept "
+                    "as indicator warm-up). Configurations are ranked by the out-of-sample value of "
+                    f"'{spec['metric']}' on the train slice; the test slice is not used to choose "
+                    "parameters. best_metric_oos is the chosen set's own test-slice value. overfit_gap = "
+                    f"in-sample minus out-of-sample; overfit_warning is set when the median gap across "
+                    f"the top-N exceeds {OVERFIT_GAP_THRESHOLD}. The out-of-sample figure is still a "
+                    "single post-selection check over one split: confirm it on new data before relying on it."
                 ),
                 "field_dictionary": {
-                    "sharpe": "Annualized return/risk score from the backtest equity curve.",
-                    "calmar": "Total return divided by absolute max drawdown.",
-                    "total_return": "Final equity divided by initial equity minus one.",
-                    "max_drawdown": "Worst peak-to-trough equity decline.",
-                    "label": "Readable parameter combination used by the chart.",
+                    "metric_in_sample": "Selected metric on the train slice; the ranking key.",
+                    "metric_oos": "Selected metric on the test slice for the same parameter set; not used for ranking.",
+                    "best_metric_in_sample": "Train-slice metric of best_params.",
+                    "best_metric_oos": "Test-slice metric of best_params (the chosen set's own out-of-sample value).",
+                    "overfit_gap": "metric_in_sample minus metric_oos.",
+                    "sharpe": "Out-of-sample annualized return/risk score (sqrt(252) scaling).",
+                    "cagr": "Out-of-sample compound annual growth rate as a fraction (not percent); null for windows under 0.25 years.",
+                    "calmar": "Out-of-sample CAGR divided by absolute max drawdown; null when undefined.",
+                    "total_return": "Out-of-sample final equity divided by starting equity minus one (fraction).",
+                    "max_drawdown": "Out-of-sample worst peak-to-trough decline (fraction).",
+                    "label": "Readable parameter combination.",
                 },
             },
-            sources=sources,
+            sources=["yfinance"],
             warnings=warnings,
-            metadata={"days": days, "live": live_ok},
+            metadata={"days": spec["days"], "live": True},
         )
+
+
+def _resolve_spec(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Read the declared inputs (seed names first, legacy names as aliases)."""
+    strategy = str(params.get("strategy_id") or params.get("strategy") or "sma_crossover")
+    if strategy not in GRIDS:
+        return None, f"unsupported strategy '{strategy}'; choose one of {sorted(GRIDS)}"
+    grid = params.get("param_grid") or params.get("grid") or GRIDS[strategy]
+    if not isinstance(grid, dict) or not grid:
+        return None, "param_grid must map each parameter name to a non-empty list of values"
+    for key, values in grid.items():
+        if not isinstance(values, (list, tuple)) or not values:
+            return None, f"param_grid['{key}'] must be a non-empty list"
+    metric = str(params.get("metric") or "sharpe")
+    if metric not in SUPPORTED_METRICS:
+        return None, f"unsupported metric '{metric}'; choose one of {list(SUPPORTED_METRICS)}"
+    search_mode = str(params.get("search_mode") or "grid")
+    if search_mode not in ("grid", "random"):
+        return None, "search_mode must be 'grid' or 'random'"
+    try:
+        n_samples = int(params.get("n_samples") or 200)
+        top_n = int(params.get("top_n") or 10)
+        train_pct = float(params.get("train_pct") if params.get("train_pct") is not None else 0.7)
+        fee_bps = float(params.get("fee_bps") if params.get("fee_bps") is not None else DEFAULT_FEE_BPS)
+        days = int(params.get("days", 365 * 3))
+    except (TypeError, ValueError):
+        return None, "n_samples, top_n, train_pct, fee_bps and days must be numbers"
+    if n_samples < 1 or top_n < 1:
+        return None, "n_samples and top_n must be at least 1"
+    if not 0.3 <= train_pct <= 0.9:
+        return None, "train_pct must be between 0.3 and 0.9"
+    if fee_bps < 0:
+        return None, "fee_bps must be zero or positive"
+    frequency = str(params.get("frequency") or "1d")
+    if frequency not in SUPPORTED_FREQUENCIES:
+        return None, f"frequency '{frequency}' is not implemented; only {list(SUPPORTED_FREQUENCIES)} bars are supported"
+    return {
+        "strategy": strategy,
+        "grid": grid,
+        "metric": metric,
+        "search_mode": search_mode,
+        "n_samples": n_samples,
+        "top_n": top_n,
+        "train_pct": train_pct,
+        "fee_bps": fee_bps,
+        "days": days,
+        "frequency": frequency,
+    }, None
+
+
+def _f(value: Any) -> float | None:
+    if value is None:
+        return None
+    number = float(value)
+    return None if number != number else number  # NaN -> None
+
+
+def _row(cfg: dict[str, Any], is_m: dict[str, Any], oos_m: dict[str, Any], metric: str) -> dict[str, Any]:
+    m_is = _f(is_m.get(metric))
+    m_oos = _f(oos_m.get(metric))
+    gap = (m_is - m_oos) if (m_is is not None and m_oos is not None) else None
+    return {
+        "label": _label_cfg(cfg),
+        "params": cfg,
+        "metric_in_sample": m_is,
+        "metric_oos": m_oos,
+        "overfit_gap": _f(gap),
+        "sharpe": _f(oos_m.get("sharpe")),
+        "sharpe_in_sample": _f(is_m.get("sharpe")),
+        "cagr": _f(oos_m.get("cagr")),
+        "calmar": _f(oos_m.get("calmar")),
+        "sortino": _f(oos_m.get("sortino")),
+        "total_return": _f(oos_m.get("total_return")),
+        "total_return_in_sample": _f(is_m.get("total_return")),
+        "max_drawdown": _f(oos_m.get("max_drawdown")),
+        "trades": int(oos_m.get("trades") or 0),
+        "status": "computed",
+    }
+
+
+def _is_sort_key(row: dict[str, Any]) -> tuple[bool, float]:
+    """Rank by the train-slice metric only; the test slice never selects."""
+    value = row["metric_in_sample"]
+    return (value is None, -value if value is not None else 0.0)
+
+
+def _overfit_summary(top: list[dict[str, Any]]) -> dict[str, Any]:
+    gaps = [r["overfit_gap"] for r in top if r["overfit_gap"] is not None]
+    oos = [r["metric_oos"] for r in top if r["metric_oos"] is not None]
+    median_gap = float(statistics.median(gaps)) if gaps else None
+    score = None
+    if median_gap is not None and len(oos) >= 2:
+        spread = statistics.stdev(oos)
+        score = median_gap / spread if spread > 0 else None
+    warning = bool(median_gap is not None and median_gap > OVERFIT_GAP_THRESHOLD)
+    return {"median_gap": median_gap, "score": score, "warning": warning}
 
 
 def _truthy(value: Any) -> bool:
@@ -217,44 +374,91 @@ def _label_cfg(cfg: dict[str, Any]) -> str:
     return ", ".join(f"{key}={value}" for key, value in cfg.items())
 
 
-def _tune_template(strategy: str, grid: dict[str, Any]) -> dict[str, Any]:
+def _error_result(code: str, instrument: Instrument, *, reason: str) -> FunctionResult:
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": reason,
+            "best_params": None,
+            "rows": [],
+            "top_n_results": [],
+            "full_results": [],
+            "combos_tested": 0,
+            "next_actions": ["Correct the highlighted input and run the sweep again."],
+        },
+        warnings=[reason],
+    )
+
+
+def _unavailable_result(
+    code: str,
+    instrument: Instrument,
+    spec: dict[str, Any] | None,
+    *,
+    status: str,
+    reason: str,
+    warnings: list[str],
+    sources: list[str],
+    live: bool,
+) -> FunctionResult:
+    """Honest non-result: the planned grid is listed, but no metric is computed."""
+    grid = spec["grid"] if spec else {}
+    strategy = spec["strategy"] if spec else None
     keys = list(grid.keys())
-    combos = list(itertools.product(*[grid[k] for k in keys]))
-    results: list[dict[str, Any]] = []
-    for idx, vals in enumerate(combos[:24]):
+    rows: list[dict[str, Any]] = []
+    for vals in itertools.product(*[grid[k] for k in keys]):
         cfg = dict(zip(keys, vals))
-        results.append({
+        rows.append({
             "label": _label_cfg(cfg),
             "params": cfg,
-            "sharpe": round(1.25 - idx * 0.018, 3),
-            "total_return": round(0.18 - idx * 0.004, 4),
-            "max_drawdown": round(-0.07 - idx * 0.001, 4),
-            "calmar": round(1.9 - idx * 0.03, 3),
-            "trades": 10 + idx,
+            "metric_in_sample": None,
+            "metric_oos": None,
+            "overfit_gap": None,
+            "sharpe": None,
+            "total_return": None,
+            "max_drawdown": None,
+            "calmar": None,
+            "trades": None,
+            "status": "not_computed",
         })
-    return {
-        "status": "reference",
-        "strategy": strategy,
-        "best_by_sharpe": results[0],
-        "best_by_return": max(results, key=lambda x: x["total_return"]),
-        "best_by_calmar": max(results, key=lambda x: x["calmar"]),
-        "rows": results,
-        "surface": results,
-        "all_results": results,
-        "param_grid": grid,
-        "combos_tested": len(results),
-        "summary": {
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": status,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "reason": reason,
             "strategy": strategy,
-            "combos_tested": len(results),
-            "best_sharpe": results[0]["sharpe"],
-            "source_mode": "reference_model",
+            "best_params": None,
+            "best_metric_oos": None,
+            "rows": rows,
+            "top_n_results": [],
+            "full_results": rows,
+            "surface": rows,
+            "all_results": rows,
+            "param_grid": grid,
+            "combos_tested": 0,
+            "combos_planned": len(rows),
+            "overfit_warning": None,
+            "summary": {
+                "strategy": strategy,
+                "combos_tested": 0,
+                "combos_planned": len(rows),
+                "best_metric_oos": None,
+                "source_mode": "not_computed",
+            },
+            "methodology": (
+                "No backtest was run. The planned parameter grid is listed for reference only; "
+                "metrics are reported only from a live OHLCV sweep with an out-of-sample split."
+            ),
+            "next_actions": [
+                "Set live_backtest=true to run the sweep on OHLCV history.",
+                "Retry when the market-data provider is reachable.",
+            ],
         },
-        "methodology": "Reference hyperparameter sweep used when live backtest data is not requested or unavailable.",
-        "field_dictionary": {
-            "sharpe": "Annualized return/risk score from the backtest equity curve.",
-            "calmar": "Total return divided by absolute max drawdown.",
-            "total_return": "Final equity divided by initial equity minus one.",
-            "max_drawdown": "Worst peak-to-trough equity decline.",
-            "label": "Readable parameter combination used by the chart.",
-        },
-    }
+        sources=sources,
+        warnings=warnings,
+        metadata={"days": spec["days"] if spec else None, "live": live},
+    )

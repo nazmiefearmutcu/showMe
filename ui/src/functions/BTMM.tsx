@@ -45,6 +45,7 @@ interface BTMMRow {
   region?: string;
   policy_rate?: number;
   as_of?: string;
+  freshness?: "fresh" | "stale" | "undated" | string;
   previous_rate?: number | null;
   previous_date?: string | null;
   change_bp?: number | null;
@@ -64,6 +65,8 @@ interface BTMMSummary {
   cuts?: number;
   holds?: number;
   largest_last_move?: BTMMRow | null;
+  range_basis?: string;
+  range_is_stale?: boolean;
 }
 
 interface BTMMPayload {
@@ -248,6 +251,11 @@ const COLS: DataGridColumn<BTMMRow>[] = [
     render: (row) => (
       <span className="terminal-grid-numeric" style={mutedNumStyle}>
         {row.as_of ?? formatMissing}
+        {row.freshness === "stale" ? (
+          <span className="u-text-warn" data-testid="btmm-stale-flag">
+            {" "}stale
+          </span>
+        ) : null}
       </span>
     ),
   },
@@ -519,7 +527,17 @@ function KPIRibbon({
       <StatCard
         label="Range"
         value={`${fmtPct(summary?.min_policy_rate)} – ${fmtPct(summary?.max_policy_rate)}`}
-        caption="MIN – MAX"
+        caption={
+          // BTMM#1 follow-up: when no row is fresh the backend falls back to the
+          // full set and says so; the card must not read as a current range.
+          summary?.range_is_stale ? (
+            <span data-testid="btmm-range-basis" className="u-text-warn">
+              STALE · no fresh rows, full set
+            </span>
+          ) : (
+            "MIN – MAX"
+          )
+        }
         tone="neutral"
         trend={[]}
       />
@@ -548,7 +566,16 @@ function KPIRibbon({
             ? `${largestMove.country_code ?? "—"} ${fmtBp(largestMove.change_bp)}`
             : "—"
         }
-        caption={largestMove?.central_bank ? truncate(largestMove.central_bank, 22) : "—"}
+        caption={
+          // BTMM#1: the card names the observation date, since the move is
+          // drawn from fresh rows only and must not read as undated.
+          [
+            largestMove?.central_bank ? truncate(largestMove.central_bank, 22) : null,
+            largestMove?.as_of ?? null,
+          ]
+            .filter(Boolean)
+            .join(" · ") || "—"
+        }
         tone={
           largestMove?.change_bp == null
             ? "neutral"

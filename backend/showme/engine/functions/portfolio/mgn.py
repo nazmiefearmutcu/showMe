@@ -83,6 +83,8 @@ class MGNFunction(BaseFunction):
                         "cash": float(params.get("cash", 0) or 0),
                         "currency": params.get("currency", "USD"),
                         "overrides": params.get("overrides") or {},
+                        # Only a caller-chosen type is explicit; otherwise it is inferred.
+                        "inferred": not params.get("margin_type"),
                     }
                 }
             }
@@ -188,14 +190,9 @@ def _positive_number(value: Any) -> bool:
 
 
 def _margin_type_for_positions(positions: list[dict[str, Any]]) -> str:
-    classes = {str(p.get("asset_class") or "").upper() for p in positions}
-    if classes & {"FX"}:
-        return "fx"
-    if classes & {"COMMODITY", "DERIVATIVE"}:
-        return "futures"
-    if classes & {"CRYPTO"}:
-        return "crypto_futures"
-    return "reg_t"
+    # Account type only; each position is still margined under its own class rule
+    # inside margin_engine.calc_account (a CRYPTO line no longer reprices equities).
+    return margin_engine.infer_margin_type(positions)
 
 
 def _account_row(account: dict[str, Any]) -> dict[str, Any]:

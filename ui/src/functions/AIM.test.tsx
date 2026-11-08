@@ -295,6 +295,57 @@ describe("AIM pane — symbol scoping + tabs", () => {
   });
 });
 
+describe("AIM pane — submitted orders are working orders (AIM#1)", () => {
+  it("lists a broker-accepted 'submitted' order under Open, not History", () => {
+    const submitted = {
+      created_at: "2026-06-09T07:00:00.000Z",
+      broker: "alpaca_broker",
+      order_id: "o-msft-1",
+      symbol: "MSFT",
+      side: "buy",
+      quantity: 3,
+      price: 400,
+      type: "limit",
+      tif: "gtc",
+      status: "submitted",
+    };
+    setMockFn({
+      state: "ok",
+      ...okPayload({ orders: [submitted], rows: [submitted] }),
+    });
+    render(<AIMPane code="AIM" />);
+    expect(screen.getByRole("button", { name: "Open DES for MSFT" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Open \(1\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /History \(0\)/ })).toBeInTheDocument();
+  });
+});
+
+describe("AIM pane — indicative notional (AIM#3)", () => {
+  it("labels the notional indicative, shows unpriced rows, and never prints a $ sign", () => {
+    setMockFn({
+      state: "ok",
+      ...okPayload({
+        cards: {
+          open_count: 2,
+          filled_today: 1,
+          brokers_online: 2,
+          total_notional: 1_234_567,
+          priced_count: 3,
+          unpriced_count: 2,
+          notional_basis: "indicative_unconverted",
+          data_mode: "live_exchange",
+          as_of: AS_OF,
+        },
+      }),
+    });
+    render(<AIMPane code="AIM" />);
+    expect(screen.getByText("Notional (indicative)")).toBeInTheDocument();
+    expect(screen.getByText(/2 unpriced/)).toBeInTheDocument();
+    const card = screen.getByText("Notional (indicative)").closest(".stat-card");
+    expect(card?.textContent ?? "").not.toContain("$");
+  });
+});
+
 describe("AIM pane — honesty fixes", () => {
   it("labels the fills KPI 'Filled' (NOT 'Filled Today')", () => {
     setMockFn({ state: "ok", ...okPayload() });

@@ -57,8 +57,8 @@ def bquant() -> FunctionManifest:
                 control=ControlKind.TEXT,
                 required=False,
                 description=(
-                    "Where the launcher exposes the Jupyter server (default /notebook). "
-                    "BQUANT does not connect; it surfaces the route for the user to open."
+                    "Notebook route path (default /notebook). BQUANT probes it on the loopback "
+                    "Jupyter server named by SHOWME_JUPYTER_URL; non-loopback targets are refused."
                 ),
             ),
             InputSpec(
@@ -67,8 +67,8 @@ def bquant() -> FunctionManifest:
                 control=ControlKind.BOOLEAN,
                 required=False,
                 description=(
-                    "Hint that a Jupyter runtime is mounted by the launcher. When True, "
-                    "BQUANT reports configured even if no local example notebooks exist."
+                    "Informational caller hint only. It is recorded in the summary but does not "
+                    "change readiness; ok requires a successful loopback probe of the notebook route."
                 ),
             ),
             InputSpec(
@@ -124,13 +124,13 @@ def bquant() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "BQUANT is a local-only readiness pointer for the JupyterLab bridge. It scans the "
-            "examples_dir for .ipynb files, checks the jupyter_running hint, and concatenates "
-            "those into a status summary (configured / not_configured). It never claims notebook "
-            "execution succeeded — that responsibility belongs to the launcher process which "
-            "owns the Jupyter runtime. Preloaded modules (showme.data, showme.functions, "
-            "showme.portfolio) are surfaced as a static list because they ship with the sidecar "
-            "regardless of whether a kernel is mounted."
+            "BQUANT is a local-only readiness check for the JupyterLab bridge. Status ok requires "
+            "that the notebook route answers a short HTTP probe on a loopback address (the Jupyter "
+            "base URL comes from SHOWME_JUPYTER_URL). The jupyter_running hint is recorded but never "
+            "sets readiness. Kernel modules (showme.data, showme.functions, showme.portfolio) are "
+            "reported available only when they import, and example notebooks are the .ipynb files in "
+            "examples_dir. It never claims notebook execution succeeded; running notebooks belongs to "
+            "the launcher process that owns the Jupyter runtime."
         ),
         field_dict={
             "status": FieldDef(description="ok when a notebook runtime is reachable; not_configured otherwise.", source="bquant"),
@@ -140,7 +140,7 @@ def bquant() -> FunctionManifest:
             "rows[].action": FieldDef(description="Next concrete action for the user.", source="bquant"),
             "summary.notebook_ready": FieldDef(description="True iff configured.", source="bquant"),
             "summary.examples_found": FieldDef(unit="count", description="How many example notebooks exist.", source="bquant"),
-            "summary.preloaded_modules": FieldDef(unit="count", description="Count of static preloaded modules.", source="bquant"),
+            "summary.preloaded_modules": FieldDef(unit="count", description="Count of kernel modules that import successfully.", source="bquant"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -159,19 +159,19 @@ def bquant() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="bquant_jupyter_hint_marks_ready",
-                description="jupyter_running=True flips status to ok / summary.notebook_ready=True even without examples.",
+                name="bquant_jupyter_hint_alone_does_not_mark_ready",
+                description="jupyter_running=True without a successful loopback probe keeps status=not_configured.",
                 inputs={"jupyter_running": True},
                 assertions=[
-                    "status == 'ok'",
-                    "summary.notebook_ready == True",
+                    "status == 'not_configured'",
+                    "summary.notebook_ready == False",
                 ],
             ),
             SemanticTest(
-                name="bquant_reports_preloaded_modules",
-                description="BQUANT always reports the static list of preloaded modules (>=3 entries).",
+                name="bquant_reports_importable_kernel_modules",
+                description="summary.preloaded_modules counts only the kernel modules that import (0..3).",
                 inputs={},
-                assertions=["summary.preloaded_modules >= 3"],
+                assertions=["0 <= summary.preloaded_modules <= 3"],
             ),
             SemanticTest(
                 name="bquant_no_silent_notebook_execution",

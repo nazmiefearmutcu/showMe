@@ -39,7 +39,7 @@ def frd() -> FunctionManifest:
         category=Category.FX,
         intent=(
             "Compute the no-arbitrage FX forward via covered interest "
-            "parity: F = S × (1 + r_dom × T) / (1 + r_for × T). Returns "
+            "parity: F = S × (1 + r_quote × T) / (1 + r_base × T). Returns "
             "forward rate, forward points, and the implied carry — with "
             "the CIP formula visible in the formula dictionary."
         ),
@@ -50,7 +50,7 @@ def frd() -> FunctionManifest:
                 label="Base currency",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Base (domestic) currency of the pair.",
+                description="Base currency of the pair (priced as quote currency per one unit of base).",
                 options=["USD", "EUR", "GBP", "JPY", "TRY", "CHF", "AUD", "CAD"],
             ),
             InputSpec(
@@ -58,7 +58,7 @@ def frd() -> FunctionManifest:
                 label="Quote currency",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Quote (foreign) currency of the pair.",
+                description="Quote (pricing) currency of the pair.",
                 options=["USD", "EUR", "GBP", "JPY", "TRY", "CHF", "AUD", "CAD"],
             ),
             InputSpec(
@@ -70,33 +70,39 @@ def frd() -> FunctionManifest:
                 options=["1W", "1M", "3M", "6M", "1Y"],
             ),
             InputSpec(
-                name="r_dom",
-                label="Rate (domestic)",
+                name="r_quote",
+                label="Rate (quote currency)",
                 control=ControlKind.NUMBER,
-                required=True,
-                description="Domestic interest rate (annualized decimal).",
+                required=False,
+                description=(
+                    "Annualized decimal rate for the quote (pricing) currency. "
+                    "Blank uses the labelled reference rate for that currency."
+                ),
                 min=-0.05,
                 max=0.50,
                 step=0.0001,
                 unit="decimal",
             ),
             InputSpec(
-                name="r_for",
-                label="Rate (foreign)",
+                name="r_base",
+                label="Rate (base currency)",
                 control=ControlKind.NUMBER,
-                required=True,
-                description="Foreign interest rate (annualized decimal).",
+                required=False,
+                description=(
+                    "Annualized decimal rate for the base currency. "
+                    "Blank uses the labelled reference rate for that currency."
+                ),
                 min=-0.05,
                 max=0.50,
                 step=0.0001,
                 unit="decimal",
             ),
             InputSpec(
-                name="spot_override",
+                name="spot",
                 label="Spot override",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Optional manual spot override; otherwise live from yfinance.",
+                description="Optional manual spot (quote per base); otherwise live from yfinance.",
                 min=0.0,
                 step=0.0001,
             ),
@@ -116,8 +122,6 @@ def frd() -> FunctionManifest:
             "base": "EUR",
             "quote": "USD",
             "tenor": "3M",
-            "r_dom": 0.035,
-            "r_for": 0.045,
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
@@ -164,39 +168,42 @@ def frd() -> FunctionManifest:
                 CardSlot(key="forward_points", label="Forward pts", kind="kpi"),
                 CardSlot(key="implied_carry", label="Implied carry", kind="trend_pill", unit="%"),
                 CardSlot(key="tenor", label="Tenor", kind="badge"),
-                CardSlot(key="r_dom", label="r dom", kind="badge", unit="decimal"),
-                CardSlot(key="r_for", label="r for", kind="badge", unit="decimal"),
+                CardSlot(key="r_quote", label="r quote", kind="badge", unit="decimal"),
+                CardSlot(key="r_base", label="r base", kind="badge", unit="decimal"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
             "FRD prices the FX forward via covered interest parity. Spot is "
-            "fetched from yfinance for the BASE/QUOTE pair (or overridden "
-            "manually). Tenor is mapped to a year fraction T (1W=7/365, "
-            "1M=30/365, etc.). The forward rate is "
-            "F = S × (1 + r_dom × T) / (1 + r_for × T) where r_dom is the "
-            "base-currency rate and r_for is the quote-currency rate (both "
-            "actual/365 simple interest). Forward points are quoted as "
-            "(F - S) in pips. Implied carry is annualized (F/S - 1) / T × "
-            "100. The card row exposes r_dom, r_for, tenor, and spot source "
-            "so users can audit the price."
+            "fetched from yfinance for the BASE/QUOTE pair, or taken from the "
+            "spot input when supplied. Tenor labels map to a year fraction T "
+            "(xD = x/365, xW = 7x/365, xM = x/12, xY = x). The forward rate is "
+            "F = S × (1 + r_quote × T') / (1 + r_base × T') where r_quote is the "
+            "quote-currency (pricing currency) annualized rate and r_base is the "
+            "base-currency annualized rate. Rates are decimals; a rate left blank "
+            "uses the labelled reference rate for that currency. Both are "
+            "simple-interest ACT/360 rates, so T' = T × 365/360 (calendar days / "
+            "360). Forward points are the price difference (F - S) in quote "
+            "currency per base currency. Implied carry is annualized "
+            "(F/S - 1) / T × 100. The card row exposes r_quote, r_base, tenor, "
+            "and spot source so users can audit the price."
         ),
         formula_dict={
             "covered_interest_parity": Formula(
-                expression=r"F = S \cdot \frac{1 + r_{dom} \cdot T}{1 + r_{for} \cdot T}",
+                expression=r"F = S \cdot \frac{1 + r_{quote} \cdot T'}{1 + r_{base} \cdot T'}",
                 variables={
-                    "S": "Spot",
-                    "r_dom": "Domestic (base) annualized rate",
-                    "r_for": "Foreign (quote) annualized rate",
-                    "T": "Year fraction (actual/365)",
+                    "S": "Spot, quote currency per one base currency",
+                    "r_quote": "Quote (pricing) currency annualized rate",
+                    "r_base": "Base currency annualized rate",
+                    "T'": "Tenor year fraction on the rate basis: T' = T × 365/360 (ACT/360)",
                 },
-                notes="Simple-interest CIP; the continuous-comp form is F = S × exp((r_dom - r_for) × T).",
+                notes="Simple-interest CIP; the continuous-comp form is F = S × exp((r_quote - r_base) × T).",
             ),
             "forward_points": Formula(
-                expression=r"pts = (F - S) \times 10^{4}",
+                expression=r"pts = F - S",
                 variables={"F": "Forward rate", "S": "Spot"},
-                notes="Quoted in pips for major pairs.",
+                notes="Price difference in quote currency per base currency (not pips).",
             ),
             "implied_carry": Formula(
                 expression=r"carry = \frac{F/S - 1}{T} \times 100",
@@ -209,10 +216,10 @@ def frd() -> FunctionManifest:
             "spot": FieldDef(description="Spot rate used in the CIP equation.", source="provider"),
             "tenor": FieldDef(description="Forward tenor label.", source="input"),
             "forward_rate": FieldDef(description="No-arbitrage forward from CIP.", source="computed"),
-            "forward_points": FieldDef(unit="pips", description="(F - S) × 10000.", source="computed"),
+            "forward_points": FieldDef(unit="price", description="F - S, quote currency per base currency.", source="computed"),
             "implied_carry": FieldDef(unit="%", description="(F/S - 1) / T × 100.", source="computed"),
-            "r_dom": FieldDef(unit="decimal", description="Domestic rate (echoed).", source="input"),
-            "r_for": FieldDef(unit="decimal", description="Foreign rate (echoed).", source="input"),
+            "r_quote": FieldDef(unit="decimal", description="Quote (pricing) currency rate used (echoed; reference rate when not supplied).", source="input"),
+            "r_base": FieldDef(unit="decimal", description="Base currency rate used (echoed; reference rate when not supplied).", source="input"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -230,16 +237,17 @@ def frd() -> FunctionManifest:
             SemanticTest(
                 name="frd_eurusd_3m_matches_cip_within_tolerance",
                 description=(
-                    "For known spot/r_dom/r_for, the returned forward rate "
-                    "matches S × (1 + r_dom T) / (1 + r_for T) within 1e-9."
+                    "For known spot/r_quote/r_base, the returned forward rate "
+                    "matches S × (1 + r_quote T') / (1 + r_base T') with T' = T × 365/360 "
+                    "(ACT/360) within 1e-9."
                 ),
                 inputs={
                     "base": "EUR",
                     "quote": "USD",
                     "tenor": "3M",
-                    "r_dom": 0.035,
-                    "r_for": 0.045,
-                    "spot_override": 1.0800,
+                    "r_quote": 0.035,
+                    "r_base": 0.045,
+                    "spot": 1.0800,
                 },
                 assertions=[
                     "forward_rate_matches_cip_within_1e-9",

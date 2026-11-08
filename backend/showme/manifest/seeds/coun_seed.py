@@ -53,7 +53,7 @@ def coun() -> FunctionManifest:
                 label="Country",
                 control=ControlKind.SELECT,
                 required=True,
-                description="ISO 3166-1 alpha-2 country code. Unknown codes fall back to a generic reference profile with a warning.",
+                description="ISO 3166-1 alpha-2 country code. Unknown codes get no reference values and an explicit needs_input state.",
                 options=["US", "EU", "GB", "TR", "JP", "CN", "BR", "IN"],
             ),
             InputSpec(
@@ -143,11 +143,11 @@ def coun() -> FunctionManifest:
         methodology=(
             "COUN composes the workbook from three layers. (1) A curated country reference "
             "profile in showme.engine.functions.macro.coun ships baseline values for US, EU, GB, "
-            "and TR; unknown countries get a generic fallback plus a warning that the profile is "
-            "non-curated. (2) When live=true, BTMM's policy row is fetched for the country's "
+            "and TR; unknown countries get no reference values, only an explicit needs_input state "
+            "with a reason. (2) When live=true, BTMM's policy row is fetched for the country's "
             "central bank and overlays the reference policy_rate. (3) FRED series mapped per "
             "country (US: GDPC1/CPIAUCSL/UNRATE/DGS10; EU: LRHUTTTTEZQ156S; GB: GBRCPIALLMINMEI; "
-            "TR: TURGDPRQDSMEI) are normalized via ECST and overlay the matching rows. Each row "
+            "TR: NGDPRSAXDCTRQ) are normalized via ECST and overlay the matching rows. Each row "
             "carries its actual source_mode so the analyst can see which numbers came from live "
             "FRED, which from BTMM, and which from the reference profile. Provider errors are "
             "captured in warnings and do not silently downgrade a row to the reference value."

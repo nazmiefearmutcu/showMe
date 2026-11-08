@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -53,7 +54,7 @@ class STRSFunction(BaseFunction):
                     "methodology": _methodology(),
                     "field_dictionary": _field_dictionary(),
                     "next_actions": [
-                        "Add positions in PORT or run the legacy-crypto import.",
+                        "Add positions in PORT.",
                         "Use action=list to inspect the predefined scenario catalog without a portfolio.",
                     ],
                 },
@@ -80,19 +81,55 @@ class STRSFunction(BaseFunction):
                 "market_value": mv,
                 "sector": sector_lookup.get(p.instrument.symbol),
             })
-        scale = float(params.get("scale", 1.0))
+        # The manifest's `scenario_magnitudes` input is the scale factor; `scale` is kept
+        # as the older spelling.
+        scale_raw = params.get("scale")
+        if scale_raw is None:
+            scale_raw = params.get("scenario_magnitudes", 1.0)
+        scale = float(scale_raw)
         sources = ["stress_scenarios", "portfolio_state"]
         if refresh_prices or include_sectors:
             sources.insert(0, "yfinance")
+        # Bond funds in the GFC/COVID windows take their own measured window return.
+        # Fetch it only for the windows this request runs; custom shocks use none.
+        bond_symbols = sorted({
+            p["symbol"] for p in positions_payload
+            if stress.resolve_shock_bucket(p["symbol"], p["asset_class"]) == "BOND"
+        })
         if action == "compare":
-            keys = params.get("scenarios") or list(stress.SCENARIOS)
+            window_keys = list(stress.MEASURED_WINDOWS)
+        elif action == "custom":
+            window_keys = []
+        else:
+            named = (params.get("scenario") or params.get("key") or "GFC_2008").upper()
+            window_keys = [named] if named in stress.MEASURED_WINDOWS else []
+        measured_by_key: dict[str, dict[str, float | None]] = {}
+        if bond_symbols and window_keys:
+            history_timeout = float(params.get("history_timeout", 8))
+            measured_by_key = await self._measured_window_returns(
+                bond_symbols, window_keys, timeout=history_timeout,
+            )
+            if any(v is not None for win in measured_by_key.values() for v in win.values()):
+                sources.insert(0, "yfinance_history")
+        if action == "compare":
+            requested = _requested_scenarios(params.get("scenarios"))
+            keys = requested or list(stress.SCENARIOS)
+            # A key the engine does not run is reported, never silently dropped.
+            unknown_warnings = [
+                f"unknown scenario {k}: not run" for k in keys if k.upper() not in stress.SCENARIOS
+            ]
             data = stress.compare_scenarios(
                 positions_payload,
                 keys,
                 sector_lookup=sector_lookup,
                 scale=scale,
+                measured_by_key=measured_by_key,
+            )
+            compare_warnings = _unique_warnings(
+                [unknown_warnings, *(row.get("warnings", []) for row in data)],
             )
             return FunctionResult(code=self.code, instrument=None,
+                                  warnings=compare_warnings,
                                   data={"comparisons": data,
                                         "rows": data,
                                         "summary": {
@@ -100,6 +137,9 @@ class STRSFunction(BaseFunction):
                                             "positions": len(positions_payload),
                                             "worst_total_pnl": data[0]["total_pnl"] if data else 0,
                                             "price_source": "live_quote" if refresh_prices else "portfolio_state_cost",
+                                            "unpriced_positions": max(
+                                                (row["unpriced_positions"] for row in data), default=0,
+                                            ),
                                         },
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()},
@@ -115,6 +155,7 @@ class STRSFunction(BaseFunction):
             )
             data = stress.apply_scenario(positions_payload, sc, sector_lookup=sector_lookup, scale=scale)
             return FunctionResult(code=self.code, instrument=None,
+                                  warnings=list(data.get("warnings", [])),
                                   data={**data, "rows": data.get("positions", []),
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()},
@@ -123,10 +164,30 @@ class STRSFunction(BaseFunction):
         key = (params.get("scenario") or params.get("key") or "GFC_2008").upper()
         sc = stress.get_scenario(key)
         if not sc:
-            return FunctionResult(code=self.code, instrument=None, data={},
-                                  warnings=[f"unknown scenario {key}"])
-        data = stress.apply_scenario(positions_payload, sc, sector_lookup=sector_lookup, scale=scale)
+            # Explicit input error with the runnable keys, not an empty payload.
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"{key} is not a scenario the engine runs.",
+                    "rows": [],
+                    "scenarios": list(stress.SCENARIOS),
+                    "methodology": _methodology(),
+                    "field_dictionary": _field_dictionary(),
+                    "next_actions": [
+                        "Pass one of the listed scenario keys in `scenario`.",
+                        "Use action=compare to run every listed scenario at once.",
+                    ],
+                },
+                warnings=[f"unknown scenario {key}"],
+                sources=["stress_scenarios"],
+            )
+        data = stress.apply_scenario(
+            positions_payload, sc, sector_lookup=sector_lookup, scale=scale,
+            measured=measured_by_key.get(key) if key in stress.MEASURED_WINDOWS else None,
+        )
         return FunctionResult(code=self.code, instrument=None,
+                              warnings=list(data.get("warnings", [])),
                               data={**data, "rows": data.get("positions", []),
                                     "methodology": _methodology(),
                                     "field_dictionary": _field_dictionary()},
@@ -152,6 +213,41 @@ class STRSFunction(BaseFunction):
                 return sym, 0.0
         results = await asyncio.gather(*(_q(s) for s in symbols))
         return dict(results)
+
+    async def _measured_window_returns(
+        self, symbols: list[str], keys: list[str], timeout: float = 8.0,
+    ) -> dict[str, dict[str, float | None]]:
+        """Measured price return of each bond fund over each named window.
+
+        A failed or thin history yields ``None`` for that fund and window, which the
+        scenario reports as unavailable. Nothing is estimated or substituted.
+        """
+        out: dict[str, dict[str, float | None]] = {k: {s: None for s in symbols} for k in keys}
+        if not self.deps.yfinance:
+            return out
+
+        async def _one(sym: str, key: str) -> None:
+            start, end = stress.MEASURED_WINDOWS[key]
+            request = DataRequest(
+                kind=DataKind.OHLCV,
+                instrument=Instrument(symbol=sym, asset_class=AssetClass.ETF),
+                start=datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
+                end=datetime(end.year, end.month, end.day, tzinfo=timezone.utc) + timedelta(days=1),
+                interval="1d",
+                extra={"timeout": max(0.5, timeout)},
+            )
+            try:
+                df = await asyncio.wait_for(
+                    self.deps.yfinance.fetch(request),
+                    timeout=max(0.75, timeout + 0.25),
+                )
+                closes = [(_as_date(idx), close) for idx, close in zip(df.index, df["close"])]
+                out[key][sym] = stress.measured_window_return(closes, start, end)
+            except Exception:
+                out[key][sym] = None
+
+        await asyncio.gather(*(_one(s, k) for s in symbols for k in keys))
+        return out
 
     async def _sectors(self, symbols: list[str], lookup: dict[str, str], timeout: float = 2.0) -> None:
         async def _s(sym: str) -> None:
@@ -184,6 +280,34 @@ def _asset_class_for_quote(symbol: str) -> AssetClass:
     return AssetClass.EQUITY
 
 
+def _as_date(value: Any) -> Any:
+    """Calendar date of a history index entry (pandas Timestamp or datetime)."""
+    day = getattr(value, "date", None)
+    return day() if callable(day) else value
+
+
+def _unique_warnings(groups: Any) -> list[str]:
+    seen: list[str] = []
+    for group in groups:
+        for warning in group or []:
+            if warning not in seen:
+                seen.append(warning)
+    return seen
+
+
+def _requested_scenarios(value: Any) -> list[str]:
+    """Scenario keys from a list or a comma-separated string (iterating a str would split characters)."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items: list[Any] = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = [value]
+    return [str(v).strip() for v in items if str(v).strip()]
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -206,4 +330,6 @@ def _field_dictionary() -> dict[str, str]:
         "horizon_days": "Historical or assumed scenario horizon.",
         "shock": "Applied return shock for a position.",
         "market_value_post": "Position market value after the shock.",
+        "shock_source": "How the shock was set: hand_set, measured_window, or unavailable (not estimated).",
+        "unpriced_positions": "Positions left unshocked because their measured window return was unavailable.",
     }

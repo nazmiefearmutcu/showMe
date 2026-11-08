@@ -23,7 +23,13 @@ class FTSFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sec = getattr(self.deps, "sec_efts", None)
         base_query = params.get("query") or params.get("search") or "risk factors"
-        query = f"{instrument.symbol} {base_query}".strip() if instrument and instrument.symbol.upper() not in str(base_query).upper() else str(base_query)
+        # The router injects a default symbol with __explicit_symbol=False when
+        # the caller chose none; that symbol must not scope the search. Only a
+        # user-selected symbol (__explicit_symbol=True) is prepended.
+        user_scoped = params.get("__explicit_symbol") is True
+        query = str(base_query).strip()
+        if user_scoped and instrument and instrument.symbol.upper() not in query.upper():
+            query = f"{instrument.symbol} {query}".strip()
         if not query:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=["empty query"])
@@ -46,7 +52,7 @@ class FTSFunction(BaseFunction):
                           "Configure the sec_efts adapter to enable live EDGAR full-text search.",
                           "Verify the symbol is an EQUITY before requesting full-text search.",
                       ],
-                      "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Query is symbol-scoped when a symbol is open.",
+                      "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Query is symbol-scoped only when the user selected a symbol.",
                       "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                 sources=["no_live_source"],
                 metadata={"query": query, "live": False, "fallback": True,
@@ -91,7 +97,7 @@ class FTSFunction(BaseFunction):
 def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, Any]]:
     raw_rows = hits if isinstance(hits, list) else []
     rows: list[dict[str, Any]] = []
-    symbol = instrument.symbol.upper() if instrument else None
+    instrument_symbol = instrument.symbol.upper() if instrument else None
     for item in raw_rows:
         if not isinstance(item, dict):
             continue
@@ -99,8 +105,11 @@ def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, 
         snippet = item.get("snippet") or item.get("snippets") or item.get("description")
         if isinstance(snippet, list):
             snippet = " | ".join(str(s) for s in snippet[:2])
+        # Each row carries the issuer of THAT filing, never the instrument's symbol.
+        hit_symbol = str(item.get("ticker") or item.get("symbol") or "").strip().upper() or None
         row = {
-            "symbol": symbol,
+            "symbol": hit_symbol,
+            "cik": item.get("cik"),
             "company": company,
             "form": item.get("form") or item.get("formType"),
             "filing_date": item.get("filing_date") or item.get("filedAt") or item.get("filingDate"),
@@ -110,8 +119,9 @@ def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, 
             "snippet": snippet,
             "source_mode": "sec_efts",
         }
-        if symbol and (symbol not in str(company or "").upper()) and (symbol not in str(snippet or "").upper()):
-            row["symbol_match"] = "query_scoped_not_direct_snippet"
+        # True/False when both the filing issuer ticker and the instrument are
+        # known; None when the hit does not name a ticker (no guess is made).
+        row["issuer_match"] = (hit_symbol == instrument_symbol) if (hit_symbol and instrument_symbol) else None
         rows.append(row)
     return rows
 

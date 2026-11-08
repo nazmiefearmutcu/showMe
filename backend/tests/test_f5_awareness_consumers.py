@@ -305,8 +305,8 @@ def test_tldr_unavailable_sources_are_reported_not_counted_as_zero(monkeypatch) 
     assert result.data["news"] == [] and result.data["events"] == []
     assert any("awareness service is not running" in w for w in result.metadata["provider_errors"])
     if result.data.get("summary_model", "local").startswith("local"):
-        assert "unavailable (Awareness news service)" in result.data["markdown"]
-        assert "unavailable (Awareness calendar)" in result.data["markdown"]
+        assert "**News themes:** unavailable (awareness service is not running)" in result.data["markdown"]
+        assert "**Calendar items:** unavailable (awareness service is not running)" in result.data["markdown"]
         assert "0 scheduled" not in result.data["markdown"]
 
 

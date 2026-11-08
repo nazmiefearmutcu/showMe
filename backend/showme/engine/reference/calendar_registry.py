@@ -23,6 +23,11 @@ _EC_ALIASES = {
 }
 
 
+def _as_utc(when: datetime) -> datetime:
+    """Treat a naive datetime as UTC, never as the machine's local time."""
+    return when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
+
+
 class CalendarRegistry:
     """Minimal calendar surface: is_open, next_open/close, sessions(list[date])."""
 
@@ -60,11 +65,31 @@ class CalendarRegistry:
         except Exception:
             return True
 
+    def _session_bounds_utc(self, exchange_code: str, day: date) -> tuple[datetime, datetime] | None:
+        """Actual (open, close) in UTC for the session on ``day``.
+
+        Comes from the exchange calendar, so half-day early closes are
+        honoured. None when no calendar or no session data is available; the
+        caller then keeps the fixed regular-hours window.
+        """
+        cal = self._session_calendar(exchange_code)
+        if cal is None:
+            return None
+        try:
+            import pandas as pd  # exchange_calendars depends on pandas
+
+            label = pd.Timestamp(day)
+            open_ts = _as_utc(cal.session_open(label).to_pydatetime())
+            close_ts = _as_utc(cal.session_close(label).to_pydatetime())
+            return open_ts.astimezone(timezone.utc), close_ts.astimezone(timezone.utc)
+        except Exception:
+            return None
+
     def is_open(self, exchange_code: str, when: datetime | None = None) -> bool:
         ex = EXCHANGES.get(exchange_code.upper())
         if ex is None:
             return False
-        when = when or datetime.now(tz=timezone.utc)
+        when = _as_utc(when or datetime.now(tz=timezone.utc))
         if ex.code in {"BINANCE", "BYBIT", "OKX", "DERIBIT", "COINBASE"}:
             return True  # crypto = 24/7
         local = when.astimezone(ZoneInfo(ex.timezone))
@@ -75,6 +100,11 @@ class CalendarRegistry:
         # session calendar when the package provides one.
         if not self._is_session(ex.code, local.date()):
             return False
+        bounds = self._session_bounds_utc(ex.code, local.date())
+        if bounds is not None:
+            # ASOF-12: the fixed close_local ignored half-day early closes.
+            open_utc, close_utc = bounds
+            return open_utc <= when <= close_utc
         h_o, m_o = (int(x) for x in ex.open_local.split(":"))
         h_c, m_c = (int(x) for x in ex.close_local.split(":"))
         return time(h_o, m_o) <= local.time() <= time(h_c, m_c)
@@ -83,7 +113,7 @@ class CalendarRegistry:
         ex = EXCHANGES.get(exchange_code.upper())
         if ex is None:
             return None
-        after = after or datetime.now(tz=timezone.utc)
+        after = _as_utc(after or datetime.now(tz=timezone.utc))
         if ex.code in {"BINANCE", "BYBIT", "OKX", "DERIBIT", "COINBASE"}:
             return after
         local = after.astimezone(ZoneInfo(ex.timezone))
@@ -112,23 +142,30 @@ class CalendarRegistry:
         ex = EXCHANGES.get(exchange_code.upper())
         if ex is None:
             return None
-        after = after or datetime.now(tz=timezone.utc)
+        after = _as_utc(after or datetime.now(tz=timezone.utc))
         if ex.code in {"BINANCE", "BYBIT", "OKX", "DERIBIT", "COINBASE"}:
             return None
         local = after.astimezone(ZoneInfo(ex.timezone))
         h_c, m_c = (int(x) for x in ex.close_local.split(":"))
-        cand = local.replace(hour=h_c, minute=m_c, second=0, microsecond=0)
-        if cand <= local:
-            cand = cand + timedelta(days=1)
+        # ASOF-12: the session's actual close (half-day early closes included)
+        # comes from the same calendar source is_open uses; the fixed close_local
+        # is only the fallback when no calendar data exists for the session.
         # HNT-14: skip weekends AND non-session (holiday) dates; bounded so a
         # calendar with no future sessions can never spin forever.
+        day = local.date()
         for _ in range(60):
-            if cand.weekday() < 5 and self._is_session(ex.code, cand.date()):
-                break
-            cand = cand + timedelta(days=1)
-        else:
-            return None
-        return cand.astimezone(timezone.utc)
+            if day.weekday() < 5 and self._is_session(ex.code, day):
+                bounds = self._session_bounds_utc(ex.code, day)
+                if bounds is not None:
+                    close_utc = bounds[1]
+                else:
+                    close_utc = datetime.combine(
+                        day, time(h_c, m_c), tzinfo=ZoneInfo(ex.timezone)
+                    ).astimezone(timezone.utc)
+                if close_utc > after:
+                    return close_utc
+            day = day + timedelta(days=1)
+        return None
 
     def session_dates(self, exchange_code: str, start: date, end: date) -> list[date]:
         out: list[date] = []

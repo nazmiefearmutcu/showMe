@@ -86,6 +86,8 @@ interface EcstPayload {
   compare_series_id?: string;
   compare_series_name?: string;
   compare_source_mode?: string;
+  status?: string;
+  reason?: string;
 }
 
 export function ECSTPane({ code }: FunctionPaneProps) {
@@ -175,6 +177,11 @@ export function ECSTPane({ code }: FunctionPaneProps) {
   // the muted source pill next to it. Only real providers are live.
   const LIVE_SOURCE_MODES = new Set(["fred", "worldbank"]);
   const isLive = state === "ok" && LIVE_SOURCE_MODES.has(sourceMode);
+  // Backend status `provider_unavailable`: no provider returned observations.
+  // Shown as an explicit outage with the reason, never as a reference series.
+  const unavailable =
+    payload.status === "provider_unavailable" ||
+    sourceMode === "provider_unavailable";
 
   const COLS: DataGridColumn<EcstRow>[] = useMemo(
     () => [
@@ -244,14 +251,23 @@ export function ECSTPane({ code }: FunctionPaneProps) {
               </Pill>
               <span data-testid="ecst-mode-pill">
                 <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                  {isLive ? "live" : state === "ok" ? "reference" : state}
+                  {isLive
+                    ? "live"
+                    : unavailable
+                      ? "unavailable"
+                      : state === "ok"
+                        ? "reference"
+                        : state}
                 </Pill>
               </span>
               {compareActive ? (
                 <span data-testid="ecst-compare-pill">
                   <Pill
                     tone={
-                      compareMode === "macro_series_baseline" ? "warn" : "muted"
+                      compareMode === "macro_series_baseline" ||
+                      compareMode === "provider_unavailable"
+                        ? "warn"
+                        : "muted"
                     }
                     variant="soft"
                     withDot={false}
@@ -259,7 +275,9 @@ export function ECSTPane({ code }: FunctionPaneProps) {
                     {`vs ${compareName ?? compareWith}${
                       compareMode === "macro_series_baseline"
                         ? " · baseline"
-                        : ""
+                        : compareMode === "provider_unavailable"
+                          ? " · unavailable"
+                          : ""
                     }`}
                   </Pill>
                 </span>
@@ -306,8 +324,12 @@ export function ECSTPane({ code }: FunctionPaneProps) {
             />
           ) : sortedRows.length === 0 ? (
             <Empty
-              title="No observations"
-              body={`${seriesId} returned no rows.`}
+              title={unavailable ? "Series unavailable" : "No observations"}
+              body={
+                unavailable
+                  ? (payload.reason ?? `${seriesId} has no live source right now.`)
+                  : `${seriesId} returned no rows.`
+              }
               action={
                 <button onClick={refetch} className="btn">
                   Refresh

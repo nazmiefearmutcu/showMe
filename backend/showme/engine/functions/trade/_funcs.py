@@ -21,6 +21,11 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _fx_now_utc() -> datetime:
+    """Current UTC time for FX quote-age checks (a seam tests can pin)."""
+    return datetime.now(timezone.utc)
+
+
 def _select_broker(deps: Any, asset_class: AssetClass) -> Any:
     """Map asset class → broker adapter from deps."""
     pref = {
@@ -244,6 +249,15 @@ class AIMFunction(BaseFunction):
 
     _BROKERS = ("binance_broker", "alpaca_broker", "ibkr_broker", "oanda_broker")
 
+    # Lifecycle states that count as working when a live adapter lists the
+    # order. "submitted" is included: a broker that reports it (IBKR "Submitted")
+    # is working the order. History rows never reach this check; EMSX/BBGT write
+    # "submitted" to history at placement and that row is never broker-confirmed.
+    _OPEN_STATUSES = frozenset({
+        "open", "new", "accepted", "pending", "pending_new", "working",
+        "partially_filled", "submitted",
+    })
+
     _FIELD_DICTIONARY = {
         "created_at": "Order creation timestamp.",
         "broker": "Adapter name (binance_broker, alpaca_broker, ...).",
@@ -260,13 +274,23 @@ class AIMFunction(BaseFunction):
     }
 
     _METHODOLOGY = (
-        "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda), calling "
-        "get_open_orders() and collecting per-broker results. Provider failures are recorded as "
+        "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda) one at a time "
+        "(sequential, not parallel), calling get_open_orders() and collecting per-broker results. "
+        "provider_mode=cached_snapshot skips live polling. Provider failures are recorded as "
         "warnings without dropping rows from working brokers. The persisted local order_history "
         "store contributes a configurable tail of recent orders so the user sees a cross-broker "
         "chronological ledger even when individual brokers are momentarily down. AIM never mutates "
         "state — it is the read-only counterpart to EMSX/BBGT/FXGO/TSOX."
     )
+
+    @staticmethod
+    def _broker_identities(key: str, broker: Any) -> set[str]:
+        """Names one adapter's orders are stored under: its config key and its ``.name``."""
+        ids = {key}
+        nm = getattr(broker, "name", None)
+        if isinstance(nm, str) and nm:
+            ids.add(nm)
+        return ids
 
     @staticmethod
     def _normalise_order(broker_name: str, raw: Any, *, from_history: bool = False) -> dict[str, Any]:
@@ -303,16 +327,29 @@ class AIMFunction(BaseFunction):
         warnings: list[str] = []
         rows: list[dict[str, Any]] = []
         brokers_online: list[str] = []
+        # (broker identity, order_id) pairs that a live adapter currently lists.
+        live_keys: set[tuple[str, str]] = set()
 
         broker_filter = params.get("broker_filter") or []
         if isinstance(broker_filter, str):
             broker_filter = [broker_filter]
         targets = [b for b in self._BROKERS if (not broker_filter or b in broker_filter)]
 
-        for name in targets:
+        # provider_mode=cached_snapshot skips live adapter polling entirely and
+        # serves only the local history tail; any other value polls live.
+        provider_mode = str(params.get("provider_mode") or "").strip().lower()
+        skip_live = provider_mode == "cached_snapshot"
+        if provider_mode and provider_mode not in {"live_exchange", "cached_snapshot"}:
+            warnings.append(f"AIM: unsupported provider_mode={provider_mode!r}; live broker polling was used.")
+        # brokers_checked: configured adapters AIM actually attempted a poll on
+        # (failed polls included, unconfigured adapters and cached_snapshot excluded).
+        polled: list[str] = []
+
+        for name in ([] if skip_live else targets):
             broker = getattr(self.deps, name, None)
             if broker is None:
                 continue
+            polled.append(name)
             try:
                 open_orders = await broker.get_open_orders()
             except Exception as exc:  # noqa: BLE001
@@ -321,7 +358,15 @@ class AIMFunction(BaseFunction):
                 continue
             brokers_online.append(name)
             for raw in (open_orders or []):
-                rows.append(self._normalise_order(name, raw, from_history=False))
+                live_row = self._normalise_order(name, raw, from_history=False)
+                # Only a live broker listing proves an order is working now.
+                live_row["confirmed_open"] = (
+                    str(live_row.get("status") or "").lower() in self._OPEN_STATUSES
+                )
+                rows.append(live_row)
+                if live_row.get("order_id") is not None:
+                    for ident in self._broker_identities(name, broker):
+                        live_keys.add((ident, str(live_row["order_id"])))
 
         # Persisted order history (cross-broker tail)
         raw_limit = params.get("limit", 200)
@@ -334,11 +379,42 @@ class AIMFunction(BaseFunction):
         history_rows: list[dict[str, Any]] = []
         try:
             from showme.engine.services.order_history import list_orders
-            for raw in (list_orders(limit=limit_int) or []):
+            if broker_filter:
+                # History rows are stored under the adapter's .name (not its
+                # config key), so query every name the filtered adapters use.
+                identities: set[str] = set()
+                for name in targets:
+                    identities |= self._broker_identities(name, getattr(self.deps, name, None))
+                raw_history: list[dict[str, Any]] = []
+                for ident in sorted(identities):
+                    raw_history.extend(list_orders(broker=ident, limit=limit_int) or [])
+                raw_history.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+                raw_history = raw_history[:limit_int]
+            else:
+                raw_history = list_orders(limit=limit_int) or []
+            for raw in raw_history:
                 history_rows.append(self._normalise_order("history", raw, from_history=True))
         except Exception as exc:  # noqa: BLE001
             provider_errors.append(f"order_history.list_orders: {exc}")
             warnings.append(f"order history unavailable: {exc}")
+        # A history row that a live adapter already lists is the same order:
+        # keep the live row only, so it is neither duplicated nor double counted.
+        history_rows = [
+            r for r in history_rows
+            if (str(r.get("broker")), str(r.get("order_id"))) not in live_keys
+        ]
+        # The history store is written once at placement and never updated on
+        # fills or closes, so no history row can prove a working order: it is
+        # shown for the audit trail but never counted as open.
+        for r in history_rows:
+            r["confirmed_open"] = False
+        # A 'submitted' row no live broker confirms may be stale (filled, closed).
+        unconfirmed = [r for r in history_rows if str(r.get("status") or "").lower() == "submitted"]
+        if unconfirmed:
+            warnings.append(
+                f"{len(unconfirmed)} order(s) recorded as 'submitted' in local history could not be "
+                "confirmed open by a live broker; their current status may have changed since placement."
+            )
         rows.extend(history_rows)
 
         # Optional status filter (manifest input).
@@ -349,23 +425,37 @@ class AIMFunction(BaseFunction):
             wanted = {str(s).lower() for s in status_filter}
             rows = [r for r in rows if str(r.get("status") or "").lower() in wanted]
 
-        open_count = sum(1 for r in rows if str(r.get("status") or "").lower() == "open")
+        open_count = sum(1 for r in rows if r.get("confirmed_open") is True)
         filled_count = sum(
             1 for r in rows if str(r.get("status") or "").lower() in {"filled", "partially_filled"}
         )
 
-        def _notional(r: dict[str, Any]) -> float:
+        def _notional(r: dict[str, Any]) -> float | None:
+            # None = not computable (market order with no price or fill price).
             try:
                 qty = float(r.get("quantity") or 0.0)
-                px = float(r.get("price") or r.get("avg_fill_px") or 0.0)
-                return qty * px
+                px_raw = r.get("price")
+                if px_raw in (None, ""):
+                    px_raw = r.get("avg_fill_px")
+                if px_raw in (None, ""):
+                    return None
+                return qty * float(px_raw)
             except (TypeError, ValueError):
-                return 0.0
+                return None
 
-        total_notional = round(sum(_notional(r) for r in rows), 2)
+        notionals = [_notional(r) for r in rows]
+        priced_count = sum(1 for n in notionals if n is not None)
+        unpriced_count = len(rows) - priced_count
+        # Quantities are base units and prices are quote units, and rows span
+        # several symbols, so the total is an indicative sum, not a USD figure.
+        total_notional = round(sum(n for n in notionals if n is not None), 2)
+        if unpriced_count:
+            warnings.append(
+                f"{unpriced_count} unpriced order(s) (no price or fill price) are excluded from the indicative notional total."
+            )
 
         data_mode = "live_exchange" if brokers_online else "not_configured"
-        if not brokers_online and history_rows:
+        if (not brokers_online and history_rows) or skip_live:
             data_mode = "cached_snapshot"
 
         cards = {
@@ -373,6 +463,10 @@ class AIMFunction(BaseFunction):
             "filled_today": filled_count,
             "brokers_online": len(brokers_online),
             "total_notional": total_notional,
+            "notional_basis": "indicative_unconverted",
+            "priced_count": priced_count,
+            "unpriced_count": unpriced_count,
+            "unconfirmed_submitted_count": len(unconfirmed),
             "data_mode": data_mode,
             "as_of": _utc_now_iso(),
         }
@@ -387,7 +481,8 @@ class AIMFunction(BaseFunction):
                     "rows": [],
                     "orders": [],
                     "cards": cards,
-                    "brokers_checked": list(targets),
+                    "brokers_checked": list(polled),
+                    "provider_mode": provider_mode or None,
                     "data_mode": data_mode,
                     "as_of": cards["as_of"],
                     "methodology": self._METHODOLOGY,
@@ -413,8 +508,9 @@ class AIMFunction(BaseFunction):
                 "rows": rows,
                 "orders": rows,
                 "cards": cards,
-                "brokers_checked": list(targets),
+                "brokers_checked": list(polled),
                 "brokers_online": brokers_online,
+                "provider_mode": provider_mode or None,
                 "data_mode": data_mode,
                 "as_of": cards["as_of"],
                 "methodology": self._METHODOLOGY,
@@ -450,6 +546,10 @@ class FXGOFunction(EMSXFunction):
         "EURJPY", "GBPJPY",
     )
 
+    # A spot quote older than this is shown as a stale reference, never as a
+    # live price (e.g. a Friday-close quote read on the weekend).
+    _QUOTE_STALE_AFTER_SECONDS = 3600
+
     _BOARD_FIELD_DICTIONARY = {
         "pair": "FX pair (base/quote).",
         "bid": "Indicative bid (quote per base) — mid minus half a synthetic spread; not a quoted venue bid.",
@@ -458,15 +558,21 @@ class FXGOFunction(EMSXFunction):
         "mid": "Mid price (last traded spot).",
         "spread": "Ask minus bid, in quote units.",
         "spread_pips": "Spread expressed in pips.",
-        "change": "Absolute change vs previous close.",
-        "change_pct": "Percent change vs previous close.",
-        "previous_close": "Prior session close.",
+        "change": "Absolute change vs the prior daily session close (one-day bar).",
+        "change_pct": "Percent change vs the prior daily session close (one-day bar).",
+        "previous_close": "Prior daily session close (the bar before the latest one), not the start of the 5-day window.",
+        "previous_close_date": "UTC date of the prior daily session bar that previous_close comes from.",
+        "quote_time": "UTC time the provider printed the mid (regularMarketTime). Unknown when the provider omits it.",
+        "quote_age_seconds": "Seconds between the quote time and the request. Above the stale threshold the board is reference, not live.",
+        "as_of": "Quote time of the oldest quote on the board (null when the provider gave no quote time).",
+        "fetched_at": "When ShowMe fetched the board (not a market time).",
     }
 
     _BOARD_METHODOLOGY = (
-        "FXGO surfaces a live keyless FX dealing board: spot mid for each major/cross is pulled "
-        "from yfinance (EURUSD=X style tickers); a synthetic dealing spread (1 pip JPY-quoted, "
-        "0.0001 otherwise, scaled to liquidity) is applied around the mid to derive indicative "
+        "FXGO surfaces a keyless FX dealing board: spot mid for each major/cross is pulled "
+        "from yfinance (EURUSD=X style tickers); a fixed synthetic 1-pip dealing spread "
+        "(0.0001 quote units, or 0.01 for JPY-quoted pairs; not scaled to liquidity) is applied "
+        "around the mid to derive indicative "
         "bid/ask so the board reads like a venue ladder without any keyed broker feed. When a "
         "ticket (quantity/side/submit) is supplied, FXGO falls back to the EMSX two-mode "
         "safe-by-default trade-ticket contract (paper preview unless explicitly armed)."
@@ -520,21 +626,63 @@ class FXGOFunction(EMSXFunction):
         result = (((payload.get("chart") or {}).get("result") or [None])[0]) or {}
         meta = result.get("meta") or {}
         quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
-        closes = [c for c in (quote.get("close") or []) if c is not None]
+        # Pair each daily bar's close with its timestamp; bars without a close
+        # (e.g. an unfinished bar) are skipped.
+        raw_closes = list(quote.get("close") or [])
+        raw_ts = list(result.get("timestamp") or [])
+        bars = [
+            (raw_ts[i] if i < len(raw_ts) else None, c)
+            for i, c in enumerate(raw_closes)
+            if c is not None
+        ]
+        closes = [c for _, c in bars]
         last_close = closes[-1] if closes else None
         mid = meta.get("regularMarketPrice") or last_close
-        prev = (
-            meta.get("previousClose")
-            or meta.get("chartPreviousClose")
-            or (closes[-2] if len(closes) >= 2 else None)
-        )
+        # Prior session = the daily bar before the latest one. Yahoo's
+        # chartPreviousClose / previousClose for range=5d is the close BEFORE
+        # the whole 5-session window, so it must never stand in for the
+        # one-day previous close.
+        # regularMarketTime is when the quoted price printed; it is the honest
+        # as-of for the mid, not the moment we fetched it.
+        quote_time = None
+        try:
+            if meta.get("regularMarketTime") is not None:
+                quote_time = datetime.fromtimestamp(int(meta["regularMarketTime"]), tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            quote_time = None
+        # FXGO#2: the base is the last daily bar dated BEFORE the quote's UTC
+        # session date. Taking "the second-to-last close" was wrong when the
+        # newest bar has no close yet (null bars are dropped), which moved the
+        # base two sessions back and presented a two-session move as one day.
+        prev = None
+        prev_date = None
+        if quote_time is not None:
+            quote_day = quote_time.date()
+            prior = [
+                (ts, c) for ts, c in bars
+                if ts is not None
+                and datetime.fromtimestamp(int(ts), tz=timezone.utc).date() < quote_day
+            ]
+            if prior:
+                prior_ts, prev = prior[-1]
+                prev_date = datetime.fromtimestamp(int(prior_ts), tz=timezone.utc).date().isoformat()
+        elif len(bars) >= 2:
+            # No quote time, so the session cannot be pinned. The row is already
+            # flagged as unknown freshness; its previous_close_date states the
+            # bar actually used.
+            prev_ts, prev = bars[-2]
+            if prev_ts is not None:
+                prev_date = datetime.fromtimestamp(int(prev_ts), tz=timezone.utc).date().isoformat()
         return (
             float(mid) if mid is not None else None,
             float(prev) if prev is not None else None,
+            {"previous_close_date": prev_date, "quote_time": quote_time},
         )
 
     def _board_row(self, pair: str) -> dict[str, Any] | None:
-        mid, prev = self._fetch_fx_spot(pair)
+        spot = self._fetch_fx_spot(pair)
+        mid, prev = spot[0], spot[1]
+        spot_meta = spot[2] if len(spot) > 2 and isinstance(spot[2], dict) else {}
         if mid is None or mid <= 0:
             return None
         pip = self._pip_size(pair)
@@ -551,6 +699,10 @@ class FXGOFunction(EMSXFunction):
         except (TypeError, ValueError):
             change = None
             change_pct = None
+        quote_time = spot_meta.get("quote_time")
+        quote_age = None
+        if isinstance(quote_time, datetime):
+            quote_age = max(0, int((_fx_now_utc() - quote_time).total_seconds()))
         return {
             "pair": pair.upper(),
             "symbol": pair.upper(),
@@ -563,6 +715,9 @@ class FXGOFunction(EMSXFunction):
             "change": change,
             "change_pct": change_pct,
             "previous_close": (round(float(prev), 6) if prev is not None else None),
+            "previous_close_date": spot_meta.get("previous_close_date"),
+            "quote_time": quote_time.isoformat() if isinstance(quote_time, datetime) else None,
+            "quote_age_seconds": quote_age,
         }
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
@@ -577,12 +732,36 @@ class FXGOFunction(EMSXFunction):
             return await super().execute(instrument=instrument, **params)
 
         # Default path: live FX dealing board (keyless spot grid w/ bid/ask/spread).
-        pairs = params.get("pairs") or params.get("symbols")
+        # ``pairs`` is the board's own input. ``symbols`` is read only when the
+        # caller supplied it: the router drops the injected FX agent peer group
+        # (EURUSD/GBPUSD/USDJPY) for FXGO (_agent_runtime._route_function_params),
+        # so a surviving ``symbols`` list is a caller's board request (FXGO#5).
+        pairs = params.get("pairs")
+        board_source = "explicit_pairs"
         if isinstance(pairs, str):
             pairs = [p.strip() for p in pairs.split(",") if p.strip()]
         if not pairs:
-            single = params.get("symbol") or (instrument.symbol if instrument else None)
-            pairs = [single] if single else list(self._BOARD_PAIRS)
+            symbols = params.get("symbols")
+            if isinstance(symbols, str):
+                symbols = symbols.split(",")
+            if isinstance(symbols, (list, tuple)):
+                cleaned = [str(s).strip() for s in symbols if str(s).strip()]
+                if cleaned:
+                    pairs = cleaned
+                    board_source = "explicit_symbols"
+        if not pairs:
+            # A symbol is only a board request when the caller supplied it;
+            # the router sets __explicit_symbol=False when it injected one.
+            explicit_symbol = params.get("__explicit_symbol", True) is not False
+            single = None
+            if explicit_symbol:
+                single = params.get("symbol") or (instrument.symbol if instrument else None)
+            if single:
+                pairs = [single]
+                board_source = "explicit_symbol"
+            else:
+                pairs = list(self._BOARD_PAIRS)
+                board_source = "default"
 
         # ``pairs`` is user-supplied — cap it to a sane board size so a caller
         # cannot fan out hundreds of blocking ``requests.get`` threads at once.
@@ -613,7 +792,16 @@ class FXGOFunction(EMSXFunction):
             if result is not None:
                 rows.append(result)
 
-        as_of = _utc_now_iso()
+        fetched_at = _utc_now_iso()
+        # as_of is the OLDEST quote on the board (the honest freshness bound);
+        # None when the provider gave no quote time.
+        aged_rows = [r for r in rows if r.get("quote_age_seconds") is not None]
+        oldest = max(aged_rows, key=lambda r: r["quote_age_seconds"]) if aged_rows else None
+        as_of = oldest["quote_time"] if oldest else None
+        stale_rows = [
+            r for r in aged_rows
+            if r["quote_age_seconds"] > self._QUOTE_STALE_AFTER_SECONDS
+        ]
         if not rows:
             return FunctionResult(
                 code=self.code,
@@ -627,9 +815,10 @@ class FXGOFunction(EMSXFunction):
                     "order_type": "MARKET",
                     "tif": "GTC",
                     "rows": [],
-                    "cards": {"data_mode": "provider_unavailable", "as_of": as_of},
+                    "cards": {"data_mode": "provider_unavailable", "as_of": None},
                     "data_mode": "provider_unavailable",
-                    "as_of": as_of,
+                    "as_of": None,
+                    "fetched_at": fetched_at,
                     "methodology": self._BOARD_METHODOLOGY,
                     "field_dictionary": self._BOARD_FIELD_DICTIONARY,
                     "warning": "FX spot board unavailable from yfinance.",
@@ -650,22 +839,43 @@ class FXGOFunction(EMSXFunction):
         # while most pairs 404'd is exactly the false-labelling defect the
         # FN-WAVE survey caught.
         total_requested = len(rows) + len(provider_errors)
+        # FXGO#1: a row without a provider quote time has unverifiable age, so
+        # it can never be presented as a live price (data policy: explicit state).
+        unknown_time = [r["pair"] for r in rows if r.get("quote_time") is None]
         if provider_errors and len(rows) < total_requested:
             board_mode = "delayed_reference"
             board_warnings.append(
                 f"Board degraded: {len(rows)}/{total_requested} pairs returned "
                 "quotes; the rest failed upstream and are NOT shown."
             )
+        elif stale_rows or unknown_time:
+            # The feed answered, but the newest quote is old (e.g. the FX
+            # market is closed) or its age is unknown: a reference price, not a live one.
+            board_mode = "delayed_reference"
+            if stale_rows:
+                board_warnings.append(
+                    f"Stale quotes: {len(stale_rows)}/{len(rows)} pair(s) were last "
+                    f"quoted more than {self._QUOTE_STALE_AFTER_SECONDS // 60} minutes "
+                    f"before the request (oldest quote {as_of}). Shown as reference, "
+                    "not a live price."
+                )
         else:
             # Yahoo spot quotes with an indicative spread - not a venue's
             # two-way board, so never "live_exchange".
             board_mode = "live_yfinance_quote"
+        if unknown_time:
+            board_warnings.append(
+                "Quote time not reported by the provider for: "
+                + ", ".join(unknown_time)
+                + "; freshness of these rows is unknown, so they are shown as "
+                "reference, not a live price."
+            )
 
         # Card summary mirrors the EMSX/manifest card slots while reflecting the
         # live board: show the top pair's indicative two-way quote.
         top = rows[0]
         cards = {
-            "status": "live",
+            "status": "stale" if (stale_rows or unknown_time) else "ok",
             "broker": "indicative",
             "symbol": top["pair"],
             "side": "TWO_WAY",
@@ -693,8 +903,11 @@ class FXGOFunction(EMSXFunction):
                 "rows": rows,
                 "cards": cards,
                 "data_mode": board_mode,
+                "requested_pairs": [str(p).upper() for p in pairs],
+                "board_source": board_source,
                 "bid_ask_basis": "synthetic_indicative",
                 "as_of": as_of,
+                "fetched_at": fetched_at,
                 "methodology": self._BOARD_METHODOLOGY,
                 "field_dictionary": self._BOARD_FIELD_DICTIONARY,
                 "next_actions": [

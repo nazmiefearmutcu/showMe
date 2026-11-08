@@ -1,4 +1,8 @@
-"""OpenSky — flight tracking. 4000/day public, more with auth."""
+"""OpenSky — flight tracking (state vectors, keyless or basic auth).
+
+The public quota is not stated here: it was not verifiable against current
+OpenSky documentation. fetch() requests /states/all without a bounding box.
+"""
 
 from __future__ import annotations
 

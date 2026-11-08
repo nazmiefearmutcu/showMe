@@ -96,6 +96,8 @@ interface SATPayload {
   layer?: string;
   bbox_label?: string;
   capture_date?: string;
+  requested_date?: string;
+  capture_lag_days?: number;
   tile_url?: string;
   true_color_tile?: SATTrueColorTile;
   conditions?: SATConditions;
@@ -289,7 +291,16 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
   const isLive = dataMode.toLowerCase() === "live";
   const isNotConfigured = dataMode.toLowerCase() === "not_configured";
   const degraded = isNotConfigured || payload.status === "partial";
-  const degradeReason = payload.degraded_reason ?? payload.reason ?? null;
+  // GIBS had no processed imagery for the requested day: the card shows the
+  // newest real tile and says how far back it is.
+  const captureLag = typeof payload.capture_lag_days === "number" ? payload.capture_lag_days : 0;
+  const lagNote =
+    captureLag > 0 && payload.capture_date && payload.requested_date
+      ? `No GIBS imagery for ${payload.requested_date}; newest processed tile is ${payload.capture_date} (${captureLag} day(s) earlier).`
+      : null;
+  const degradeReason = payload.degraded_reason ?? payload.reason ?? lagNote;
+  // status "empty": every candidate tile was blank. No tile and no date are shown.
+  const isEmpty = payload.status === "empty";
   const warningsList = Array.isArray(data?.warnings) ? data?.warnings : [];
 
   const rows = useMemo<SATRow[]>(
@@ -329,7 +340,7 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
   }, [choiceIds, aoi, setAoi]);
 
   const locationName = payload.aoi_label ?? payload.aoi ?? effectiveAoi;
-  const captureDateLabel = payload.capture_date ?? payload.as_of;
+  const captureDateLabel = isEmpty ? undefined : (payload.capture_date ?? payload.as_of);
   // Conditions: every rendered value maps to a real `conditions.*` key.
   const tempC = num(conditions.current_temp_c);
   const tempMax = num(conditions.daily_temp_max_c);
@@ -545,7 +556,12 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
                 </section>
               </div>
 
-              {rows.length ? (
+              {isEmpty ? (
+                <Empty
+                  title="No processed imagery"
+                  body={payload.reason ?? "GIBS has no processed imagery for this window."}
+                />
+              ) : rows.length ? (
                 <DataGrid
                   columns={cols}
                   rows={rows}

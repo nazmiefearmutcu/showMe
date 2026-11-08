@@ -1,11 +1,11 @@
-"""ALRT — Alert center (price / change / volume / news conditions).
+"""ALRT — Alert center (rule store for price / change / volume / news conditions).
 
-ALRT is an internal consumer pane: it does not call any external data
-provider directly. Instead, it composes signals already surfaced by
-WATCH (quotes), TOP (news), and the per-symbol QUOTE service, and fans
-out OS-level notifications on threshold breaches. Persistence is the
-Round 16 preset filesystem on Tauri (localStorage fallback in the
-browser).
+ALRT is an internal function: it calls no external data provider. The
+backend keeps alert rule definitions in its own alerts.json store (add /
+remove / toggle / list). No background evaluator runs those rules in this
+build, so a stored rule does not fire and nothing is delivered. The ALRT
+pane keeps its own local rule list (lib/alerts.ts) that the backend does
+not read or evaluate.
 """
 from __future__ import annotations
 
@@ -40,9 +40,9 @@ def alrt() -> FunctionManifest:
         name="Alert Center",
         category=Category.MISC,
         intent=(
-            "Operator alert center that composes price / change / volume / news "
-            "conditions from existing panes (WATCH, QUOTE, TOP) and fires native "
-            "OS notifications when thresholds trip — no external provider of its own."
+            "Operator alert rule store for price / change / volume / news conditions. "
+            "It stores and lists rules; no evaluator runs them in this build, so a "
+            "stored rule does not fire — no external provider of its own."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -76,7 +76,7 @@ def alrt() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Trigger relationship.",
-                options=["above", "below", "cross_up", "cross_down"],
+                options=["above", "below"],
             ),
             InputSpec(
                 name="threshold",
@@ -116,13 +116,9 @@ def alrt() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="symbol", label="Symbol", kind="text"),
-                ColumnSpec(key="field", label="Field", kind="tag"),
-                ColumnSpec(key="direction", label="Dir", kind="tag"),
-                ColumnSpec(key="threshold", label="Level", kind="number", format="%.4f"),
-                ColumnSpec(key="active", label="On", kind="tag"),
-                ColumnSpec(key="fired_count", label="Fired", kind="number", format="%d"),
-                ColumnSpec(key="last_fired_at", label="Last fire", kind="datetime", format="rel"),
+                ColumnSpec(key="condition", label="Condition", kind="text"),
+                ColumnSpec(key="enabled", label="Enabled", kind="tag"),
+                ColumnSpec(key="cooldown_seconds", label="Cooldown", kind="number", format="%d", unit="s"),
                 ColumnSpec(key="note", label="Note", kind="text"),
                 ColumnSpec(key="actions", label="", kind="action"),
             ],
@@ -131,48 +127,43 @@ def alrt() -> FunctionManifest:
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="active_count", label="Active", kind="kpi"),
-                CardSlot(key="fired_today", label="Fired Today", kind="kpi"),
-                CardSlot(key="storage_mode", label="Storage", kind="badge"),
-                CardSlot(key="native_notify", label="Notify", kind="badge"),
+                CardSlot(key="count", label="Rules", kind="kpi"),
+                CardSlot(key="evaluator_status", label="Evaluator", kind="badge"),
             ],
         ),
         methodology=(
-            "ALRT is a security gate for paper→live transitions and a routing center for "
-            "user-defined market conditions. It declares primary='internal' because it owns "
-            "no provider: it subscribes to WATCH quotes, the per-symbol QUOTE service, and "
-            "TOP news rows. A local poller compares each active rule against the latest "
-            "snapshot and, on threshold breach, dispatches the Tauri `notify` command (or "
-            "the browser fallback). Persistence rides the Round 16 preset filesystem on "
-            "macOS, with localStorage as the cross-platform fallback."
+            "ALRT declares primary='internal' because it owns no provider. The backend "
+            "stores each rule as a condition string (for example AAPL.price > 200, or "
+            "NEWS(AAPL).importance >= 70) in its alerts.json store, with a cooldown and an "
+            "optional note; add, remove, toggle and list manage that store. Conditions are "
+            "validated before they are stored. No background evaluator is wired in this "
+            "build, so no stored rule fires and no notification is sent; list reports "
+            "evaluator_status not_running. The ALRT pane's own local rule list is separate "
+            "from this store."
         ),
         field_dict={
-            "rows[].symbol": FieldDef(description="Canonical symbol the rule attaches to.", source="store"),
-            "rows[].field": FieldDef(description="Quote field watched (price/change_pct/volume).", source="store"),
-            "rows[].direction": FieldDef(description="above / below / cross_up / cross_down.", source="store"),
-            "rows[].threshold": FieldDef(description="Trigger level in the field's native units.", source="store"),
-            "rows[].active": FieldDef(description="True when the rule is armed.", source="store"),
-            "rows[].fired_count": FieldDef(unit="count", description="Total times the rule has fired.", source="store"),
-            "rows[].last_fired_at": FieldDef(unit="iso8601", description="Last fire timestamp; null if never.", source="store"),
+            "alerts[].condition": FieldDef(description="Validated rule condition string.", source="store"),
+            "alerts[].enabled": FieldDef(description="Operator on/off flag; does not imply the rule is armed.", source="store"),
+            "alerts[].cooldown_seconds": FieldDef(unit="s", description="Minimum seconds between fires once an evaluator exists.", source="store"),
+            "alerts[].note": FieldDef(description="Optional operator rationale.", source="store"),
+            "alerts[].last_fired": FieldDef(unit="iso8601", description="Always null in this build: nothing fires rules.", source="store"),
         },
         provenance=ProvenanceSpec(
             require_source_list=False,
             require_as_of=True,
             require_latency_ms=False,
         ),
-        alerting=AlertingSpec(
-            conditions=["price_above", "price_below", "change_pct_above", "change_pct_below", "volume_above"],
-            delivery=["tray", "notification", "log"],
-        ),
+        # No alerting spec: the backend dispatches no notifications in this build.
+        alerting=None,
         semantic_tests=[
             SemanticTest(
                 name="alrt_add_then_list_round_trip",
-                description="Adding an alert persists the row; reload returns it intact with active=True.",
+                description="Adding an alert persists the row; reload returns it with enabled=True and armed=False (no evaluator in this build).",
                 inputs={"symbol": "AAPL", "field": "price", "direction": "above", "threshold": 200.0},
                 assertions=[
                     "row_present_after_reload",
-                    "active_is_true",
-                    "fired_count_equals_zero",
+                    "enabled_is_true",
+                    "armed_is_false",
                 ],
             ),
             SemanticTest(
@@ -183,7 +174,7 @@ def alrt() -> FunctionManifest:
             ),
             SemanticTest(
                 name="alrt_internal_only_no_external_provider_calls",
-                description="ALRT consumes WATCH/QUOTE/TOP outputs; it never opens a fresh upstream HTTP call.",
+                description="ALRT reads only its own alerts.json store; it consumes no WATCH/QUOTE/TOP output and never opens an upstream HTTP call.",
                 inputs={},
                 assertions=["no_outbound_http_during_evaluate"],
             ),

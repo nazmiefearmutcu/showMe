@@ -5,6 +5,7 @@ import csv
 import io
 import sys
 import zipfile
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +70,7 @@ def test_execute_filters_country_and_returns_summary(monkeypatch) -> None:
                 "change_bp": -25.0,
                 "last_move": "cut",
                 "region": "europe",
+                "as_of": date.today().isoformat(),
                 "source": "BIS CBPOL",
             },
         ]

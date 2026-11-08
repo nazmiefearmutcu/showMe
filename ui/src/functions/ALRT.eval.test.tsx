@@ -30,6 +30,34 @@ vi.mock("@/lib/toast", () => ({
   toast: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 vi.mock("@/lib/confirm", () => ({ confirmAction: vi.fn(async () => true) }));
+// ALRT#5: the pane now mounts a live feed per active alert symbol. Keep these
+// specs REST-only so the live hook never consumes the mocked fetchQuote
+// sequence; live-tick evaluation is pinned in ALRT.live-eval.test.tsx.
+vi.mock("@/lib/market-data", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/market-data")>();
+  return {
+    ...actual,
+    useLiveQuote: (symbol: string) =>
+      ({
+        symbol,
+        snapshot: null,
+        lastTick: null,
+        price: null,
+        changePct: null,
+        source: null,
+        sourceKind: "none",
+        fetchedAt: null,
+        freshnessMs: null,
+        stale: false,
+        loading: false,
+        refreshing: false,
+        error: null,
+        transportState: "idle",
+        lastTickAt: null,
+        refetch: () => undefined,
+      }) as unknown as import("@/lib/market-data").QuoteView,
+  };
+});
 
 import { ALRTPane } from "./ALRT";
 import { fetchQuote } from "@/lib/quotes";

@@ -72,12 +72,15 @@ def test_crpr_corporate_is_model_implied_or_offline():
         assert "leverage_x" in res.data["summary"]
 
 
-def test_crpr_sovereign_is_labelled_reference():
+def test_crpr_sovereign_is_honest_not_applicable():
     fn = CRPRFunction()
     res = _run(fn.execute(issuer="US Treasury"))
-    assert res.data["status"] == "ok"
-    assert res.data["summary"]["source_mode"] == "sovereign_reference"
-    assert res.sources == ["reference"]
+    # CRPR#2: no constant AA+ row for a sovereign; honest empty state instead.
+    assert res.data["status"] == "empty"
+    assert res.data["rows"] == []
+    assert res.data["summary"]["source_mode"] == "sovereign_not_applicable"
+    assert res.data.get("reason")
+    assert res.sources == ["no_live_source"]
 
 
 # ---- DDIS -----------------------------------------------------------------

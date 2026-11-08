@@ -1,16 +1,15 @@
 """Provider-response cache backed by ``cache.provider_responses``.
 
 The cache is keyed by ``(provider, op, input_hash)`` where ``input_hash`` is a
-SHA-1 of the JSON-canonical input. Payloads are arbitrary Python objects
-serialized via ``pickle`` (per the spec) but every read/write goes through
-the ``dumps``/``loads`` helpers so the wire format can be swapped to msgpack
-without churning call sites.
+SHA-1 of the JSON-canonical input. Payloads are JSON documents encoded as
+UTF-8 bytes; every read/write goes through the ``dumps``/``loads`` helpers so
+call sites never depend on the wire format.
 
-SECURITY NOTE on pickle: this cache is strictly an in-process write-then-read
-store for *our own* provider responses (TTL-bounded, on the local DuckDB file
-that only the user's process can open). It must NOT be used as an interop
-format with anything we don't fully control — pickle deserialization is
-arbitrary-code execution if a hostile blob ever lands in the table.
+SECURITY NOTE: the payload is never unpickled. ``pickle.loads`` executes code
+for any blob that lands in the DuckDB table (anyone who can write the user's
+local file), so the codec is JSON only. Callers must pass JSON-compatible
+objects; anything else raises ``TypeError`` at write time rather than being
+stored in a form that cannot be read back safely.
 
 TTL is enforced at read time — expired rows return ``None`` and are eligible
 for sweep via :func:`evict_expired`. ``ttl_seconds=None`` means "never expire".
@@ -19,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import pickle  # noqa: S403 - local-only cache of our own writes; see module docstring.
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -27,13 +25,24 @@ from .duck import connection
 
 
 def dumps(obj: Any) -> bytes:
-    """Serialize an arbitrary Python object for cache storage."""
-    return pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+    """Serialize a JSON-compatible object for cache storage (UTF-8 JSON).
+
+    Raises ``TypeError`` for non-JSON types and ``ValueError`` for NaN/inf,
+    so an unreadable payload is never written.
+    """
+    return json.dumps(obj, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def loads(blob: bytes) -> Any:
-    """Inverse of :func:`dumps`. Only call on bytes this module produced."""
-    return pickle.loads(blob)  # noqa: S301 - see module docstring.
+    """Inverse of :func:`dumps`. Never executes code.
+
+    Blobs that are not UTF-8 JSON (including any legacy pickle payload) raise
+    ``ValueError`` instead of being deserialized.
+    """
+    try:
+        return json.loads(bytes(blob).decode("utf-8"))
+    except ValueError as exc:  # UnicodeDecodeError and JSONDecodeError subclass ValueError
+        raise ValueError("cache payload is not a JSON document") from exc
 
 
 def cache_key(provider: str, op: str, **kwargs: Any) -> str:

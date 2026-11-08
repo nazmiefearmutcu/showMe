@@ -90,8 +90,7 @@ function livePayload() {
           current_target_mid: 3.625,
           current_target_upper: 3.75,
           current_target_lower: 3.5,
-          implied_near_term_rate: 3.5,
-          implied_near_term_source: "^IRX 13-week T-bill",
+          tbill_13w_pct: 3.5,
           effr: 3.63,
           as_of: "2026-09-12",
         },
@@ -145,12 +144,12 @@ afterEach(() => {
 });
 
 describe("WIRP pane — source-mode honesty", () => {
-  it("labels a live_fed_funds_futures payload as live, never reference", () => {
+  it("never labels the retired live_fed_funds_futures label as live", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<WIRPPane code="WIRP" />);
     const pill = screen.getByTestId("wirp-mode-pill");
-    expect(within(pill).getByText("live")).toBeInTheDocument();
-    expect(screen.queryByText(/Reference probability table/i)).toBeNull();
+    expect(within(pill).getByText("reference table")).toBeInTheDocument();
+    expect(screen.getByText(/Reference probability table/i)).toBeInTheDocument();
     expect(screen.getByText("2026-09-16")).toBeInTheDocument();
   });
 
@@ -255,17 +254,16 @@ describe("WIRP pane — implied-path derivation (real fields only)", () => {
         current_target_mid: 3.625,
         current_target_upper: 3.75,
         current_target_lower: 3.5,
-        implied_near_term_rate: 3.5,
-        implied_near_term_source: "^IRX 13-week T-bill",
+        tbill_13w_pct: 3.5,
       }),
     ).toEqual([
       { key: "target", label: "Target", value: "3.50–3.75%" },
       { key: "mid", label: "Mid", value: "3.625%" },
       {
-        key: "near",
-        label: "Near-term",
+        key: "tbill",
+        label: "13w T-bill",
         value: "3.500%",
-        title: "^IRX 13-week T-bill",
+        title: "13-week T-bill yield: a bill basis, not a policy-rate expectation",
       },
     ]);
     // Absent anchor → no fabricated labels.
@@ -308,5 +306,45 @@ describe("WIRP pane — implied-path derivation (real fields only)", () => {
     setMockFn({ state: "ok", ...payload });
     render(<WIRPPane code="WIRP" />);
     expect(screen.queryByLabelText("WIRP implied path")).toBeNull();
+  });
+});
+
+describe("WIRP pane — keyless basis is an anchor, never odds", () => {
+  it("shows the FRED target and T-bill basis as reference anchors with no hike/cut rows", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "provider_unavailable",
+          source_mode: "provider_unavailable",
+          data_mode: "provider_unavailable",
+          rows: [],
+          anchor: {
+            current_target_mid: 4.375,
+            current_target_upper: 4.5,
+            current_target_lower: 4.25,
+            tbill_13w_pct: 4.3,
+          },
+          cards: [],
+          field_dictionary: {},
+        },
+        warnings: [
+          "Hike/cut probabilities unavailable: no keyless market-implied policy-rate source.",
+        ],
+        sources: ["fred", "yfinance"],
+      },
+    });
+    render(<WIRPPane code="WIRP" />);
+    expect(
+      within(screen.getByTestId("wirp-mode-pill")).getByText("unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No meetings — probabilities unavailable/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Hike\/cut probabilities unavailable/),
+    ).toBeInTheDocument();
+    const panel = screen.getByLabelText("WIRP reference anchors");
+    expect(within(panel).getByText("4.300%")).toBeInTheDocument();
+    expect(within(panel).getByText("13w T-bill")).toBeInTheDocument();
+    expect(within(panel).getByText("4.375%")).toBeInTheDocument();
   });
 });

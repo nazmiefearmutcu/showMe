@@ -150,11 +150,11 @@ export function BQUANTPane({ code }: FunctionPaneProps) {
           </div>
         ) : null}
         <div role="note" style={noteStyle} aria-label="BQUANT would-render note">
-          Once a Jupyter server is mounted by the ShowMe launcher, this pane
-          would render a notebook launcher for{" "}
-          {payload?.summary?.notebook_url ?? "/notebook"} with the preloaded
-          kernel modules (showme.data, showme.functions, showme.portfolio) and
-          the example notebooks listed below.
+          Once a Jupyter server is mounted by the ShowMe launcher and the
+          notebook route answers its probe, this pane would render a notebook
+          launcher for {payload?.summary?.notebook_url ?? "/notebook"} with
+          the kernel modules and example notebooks listed below. Readiness
+          comes from the probe result, not from a flag.
         </div>
         {(payload?.next_actions ?? []).length > 0 && !configured ? (
           <div style={actionsBoxStyle} aria-label="BQUANT next actions">

@@ -1,9 +1,10 @@
-"""DPF — Delisted / Private Firms reference data.
+"""DPF — Dark Pool / ATS Volume.
 
-Surface delisted, private, or otherwise unlisted-but-once-listed companies.
-Backed by yfinance (delisting flag + last-traded date) with SEC EDGAR
-fallback for the final 10-K / Form 25 filing that documented the delisting.
-The pane is a profile + chronological table; no time-series chart.
+FINRA OTC Transparency (ATS / off-exchange weekly share volume) is the
+primary source. Dark-pool % is ATS volume divided by the REAL consolidated
+weekly volume from yfinance for the same week; when that denominator is
+missing the ratio is left null, never estimated. Matches the handler in
+``engine/functions/equity/dpf.py`` (name "Dark Pool / ATS Volume").
 """
 from __future__ import annotations
 
@@ -34,20 +35,31 @@ from ..spec import (
 def dpf() -> FunctionManifest:
     return FunctionManifest(
         code="DPF",
-        name="Delisted / Private Firms",
+        name="Dark Pool / ATS Volume",
         category=Category.EQUITIES,
         intent=(
-            "Surface delisted or private-firm reference data: last-traded date, delisting reason, "
-            "post-delisting status, and the Form 25 / final 10-K pointer when available."
+            "Show weekly FINRA-reported off-exchange (ATS) share volume for one equity and the "
+            "dark-pool percentage of its real consolidated weekly volume."
         ),
-        asset_classes=[AssetClass.EQUITY],
+        asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
             InputSpec(
                 name="symbol",
                 label="Symbol",
                 control=ControlKind.SYMBOL_PICKER,
                 required=True,
-                description="Historical or current equity ticker.",
+                description="Equity or ETF ticker.",
+            ),
+            InputSpec(
+                name="weeks",
+                label="Weeks of history",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="How many weekly ATS aggregates to surface.",
+                min=2,
+                max=26,
+                step=1,
+                unit="weeks",
             ),
             InputSpec(
                 name="provider_mode",
@@ -61,19 +73,19 @@ def dpf() -> FunctionManifest:
                 ],
             ),
         ],
-        defaults={"provider_mode": DataMode.DELAYED_REFERENCE.value},
+        defaults={"weeks": 12, "provider_mode": DataMode.DELAYED_REFERENCE.value},
         provider_chain=ProviderChain(
-            primary="yfinance",
-            fallbacks=["sec_edgar", "cached_snapshot"],
+            primary="finra",
+            fallbacks=["yfinance", "cached_snapshot"],
             acceptable_modes=[
                 DataMode.DELAYED_REFERENCE,
                 DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=86400, scope="per_input", persist=True),
+        caching=CachingPolicy(ttl_seconds=14400, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["symbol", "status", "is_delisted", "rows"],
+            must_have=["symbol", "status", "rows"],
             rows=True,
             series=False,
             cards=True,
@@ -82,39 +94,42 @@ def dpf() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="event_date", label="Date", kind="date"),
-                ColumnSpec(key="event", label="Event", kind="tag"),
-                ColumnSpec(key="description", label="Description", kind="text"),
-                ColumnSpec(key="filing_url", label="Filing", kind="action"),
+                ColumnSpec(key="weekStartDate", label="Week", kind="date"),
+                ColumnSpec(key="venue", label="Venue", kind="text"),
+                ColumnSpec(key="ats_share_volume", label="ATS shares", kind="number", format="%.0f"),
+                ColumnSpec(key="estimated_total_volume", label="Total shares (yfinance)", kind="number", format="%.0f"),
+                ColumnSpec(key="dark_pool_pct", label="Dark pool (%)", kind="number", format="%.2f"),
+                ColumnSpec(key="source_mode", label="Source", kind="tag"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="is_delisted", label="Delisted", kind="badge"),
-                CardSlot(key="delisting_date", label="Delisting date", kind="timestamp"),
-                CardSlot(key="delisting_reason", label="Reason", kind="badge"),
-                CardSlot(key="successor", label="Successor", kind="badge"),
+                CardSlot(key="latest_dark_pool_pct", label="Dark pool (%)", kind="big_number", unit="%"),
+                CardSlot(key="latest_ats_volume", label="ATS shares", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "DPF queries yfinance for the symbol's status (delisted / private / current) and "
-            "joins it with SEC EDGAR for the Form 25 (delisting), final 10-K, and any "
-            "post-delisting filings. The event table is chronological. For tickers that are "
-            "still actively trading, status=ok with is_delisted=false and a single row stating "
-            "the listing is current. For symbols neither EDGAR nor yfinance recognise, the "
-            "response is provider_unavailable rather than a fake delisting record."
+            "DPF reads FINRA OTC Transparency weekly ATS / off-exchange share volume for the "
+            "symbol. dark_pool_pct = 100 x ATS share volume / real consolidated weekly volume "
+            "from yfinance for the same week. When the real total volume is unavailable for a "
+            "week, dark_pool_pct and estimated_total_volume are null rather than estimated. Every "
+            "returned row is a FINRA weekly aggregate. When FINRA returns no rows (or fails), the "
+            "result is provider_unavailable with a reason and an empty row set; no shape-model or "
+            "synthetic rows are generated. A stale FINRA snapshot is labelled provider_unavailable."
         ),
         field_dict={
-            "symbol": FieldDef(description="Historical or current equity ticker.", source="instrument"),
-            "is_delisted": FieldDef(description="True when the equity is no longer trading.", source="provider"),
-            "delisting_date": FieldDef(description="ISO date of delisting.", source="sec_edgar"),
-            "delisting_reason": FieldDef(description="Merger / bankruptcy / privatization / regulatory.", source="sec_edgar"),
-            "successor": FieldDef(description="Successor entity ticker, when applicable.", source="provider"),
-            "rows": FieldDef(description="Chronological event list (delisting, 10-K, Form 25 ...).", source="provider"),
+            "symbol": FieldDef(description="Equity or ETF ticker.", source="instrument"),
+            "weekStartDate": FieldDef(description="ISO date of the Monday starting the reporting week.", source="provider"),
+            "venue": FieldDef(description="ATS / MPID venue reported by FINRA.", source="provider"),
+            "ats_share_volume": FieldDef(description="Off-exchange (ATS) shares FINRA reported for the symbol that week; empty rows (not estimates) when FINRA returns nothing.", source="provider"),
+            "estimated_total_volume": FieldDef(description="Real consolidated weekly share volume (yfinance); null when unavailable.", source="provider"),
+            "dark_pool_pct": FieldDef(description="ATS share of the real weekly total volume, in percent (0-100).", source="computed"),
+            "source_mode": FieldDef(description="Live FINRA weekly row (finra_ats_weekly) or a stale FINRA row (finra_ats_weekly_stale); no fallback rows exist.", source="provider"),
+            "rows": FieldDef(description="Weekly ATS rows, most recent first.", source="provider"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -124,30 +139,21 @@ def dpf() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="dpf_known_delisted_returns_delisting_date",
-                description="DPF for a known delisted ticker exposes delisting_date + reason.",
-                inputs={"symbol": "LEH"},
+                name="dpf_dark_pool_pct_null_without_real_total_volume",
+                description="When the yfinance weekly denominator is unavailable, dark_pool_pct is null, not estimated.",
+                inputs={"symbol": "ZZZZZZ", "weeks": 4},
                 assertions=[
-                    "is_delisted_is_true",
-                    "delisting_date_non_empty",
+                    "dark_pool_pct_null_without_real_total_volume",
+                    "no_estimated_total_volume_without_denominator",
                 ],
             ),
             SemanticTest(
-                name="dpf_active_ticker_returns_is_delisted_false",
-                description="DPF for AAPL (still active) returns is_delisted=False with a single 'listing current' row.",
-                inputs={"symbol": "AAPL"},
+                name="dpf_no_rows_without_finra",
+                description="Without FINRA rows, DPF returns provider_unavailable with an empty row set; no generated rows carry a dark-pool ratio.",
+                inputs={"symbol": "AAPL", "weeks": 8},
                 assertions=[
-                    "status_in_ok_set",
-                    "is_delisted_is_false",
-                ],
-            ),
-            SemanticTest(
-                name="dpf_unknown_ticker_does_not_fabricate_delisting",
-                description="When neither EDGAR nor yfinance recognise the symbol, status=provider_unavailable.",
-                inputs={"symbol": "ZZZZZZ"},
-                assertions=[
-                    "status_equals_provider_unavailable",
-                    "no_synthetic_delisting_date",
+                    "status_in_ok_or_provider_unavailable",
+                    "rows_empty_without_finra",
                 ],
             ),
         ],

@@ -13,7 +13,6 @@ import pandas as pd
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.functions.equity._common import recent_week_rows
 
 
 async def _weekly_total_volume(symbol: str) -> dict[str, float]:
@@ -55,24 +54,48 @@ async def _weekly_total_volume(symbol: str) -> dict[str, float]:
         return {}
 
 
-def _fallback_rows(symbol: str, weeks: int, reason: str | None) -> list[dict[str, Any]]:
-    """Labelled shape-model rows for the provider-unavailable path.
+_METHODOLOGY = (
+    "DPF reports weekly FINRA ATS/off-exchange share volume and computes dark-pool "
+    "percent as ATS volume divided by the REAL consolidated weekly volume from yfinance "
+    "for the same week. When the real total volume is unavailable for a week, "
+    "dark_pool_pct and estimated_total_volume are left null rather than fabricated. "
+    "When FINRA cannot be read or returns no weeks, the weekly table is empty and the "
+    "status is provider_unavailable or empty: no placeholder volumes are shown. Stale "
+    "FINRA snapshots are labelled provider_unavailable instead of being presented as "
+    "current data."
+)
 
-    The shape model has no real total-volume denominator, so the ratio
-    (``dark_pool_pct``) and its estimate are nulled instead of fabricated;
-    only the labelled volume shape survives. When ``reason`` marks a
-    timeout/degraded fetch, the row keeps an explicit shape-model token
-    (``shape_model_timeout``) — NEVER ``finra_ats_weekly_stale``, which
-    would imply real FINRA rows were received and are merely old.
-    """
-    rows = recent_week_rows(symbol, weeks, source_mode="labelled_current_shape_model")
-    for row in rows:
-        row["dark_pool_pct"] = None
-        row["estimated_total_volume"] = None
-        if reason:
-            row["source_mode"] = "shape_model_timeout"
-            row["data_warning"] = reason
-    return rows
+_NEXT_ACTIONS = ["Connect or refresh FINRA ATS feed for current venue-level volume."]
+
+
+def _unavailable_data(symbol: str, reason: str, status: str = "provider_unavailable") -> dict[str, Any]:
+    """Honest empty payload: no weekly rows, a reason and next actions."""
+    return {
+        "status": status,
+        "reason": reason,
+        "symbol": symbol,
+        "weekly": [],
+        "rows": [],
+        "history": [],
+        "raw_rows": 0,
+        "latest_dark_pool_pct": None,
+        "latest_ats_volume": None,
+        "data_mode": "provider_unavailable",
+        "as_of": None,
+        "methodology": _METHODOLOGY,
+        "field_dictionary": _field_dictionary(),
+        "next_actions": list(_NEXT_ACTIONS),
+    }
+
+
+def _field_dictionary() -> dict[str, str]:
+    return {
+        "weekStartDate": "FINRA reporting week start date.",
+        "ats_share_volume": "ATS/off-exchange shares reported for the symbol.",
+        "estimated_total_volume": "Real consolidated weekly volume (yfinance) for that week; null when unavailable.",
+        "dark_pool_pct": "ATS share of the real total weekly volume (%); null when the real denominator is unavailable.",
+        "source_mode": "Live FINRA row (finra_ats_weekly), or finra_ats_weekly_stale when the newest week is too old.",
+    }
 
 
 @FunctionRegistry.register
@@ -93,27 +116,11 @@ class DPFFunction(BaseFunction):
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
             reason = f"DPF execution timed out: {exc}"
-            weekly = _fallback_rows(instrument.symbol, int(params.get("weeks", 12)), reason)
             return FunctionResult(
                 code=self.code, instrument=instrument,
-                data={
-                    "status": "provider_unavailable",
-                    "reason": reason,
-                    "weekly": weekly,
-                    "rows": weekly,
-                    "history": weekly,
-                    "raw_rows": 0,
-                    "methodology": "DPF reports weekly FINRA ATS/off-exchange share volume and computes dark-pool percent as ATS volume divided by the REAL consolidated weekly volume from yfinance for the same week. When the real total volume is unavailable for a week, dark_pool_pct and estimated_total_volume are left null rather than fabricated. Stale FINRA snapshots are labelled provider_unavailable instead of being presented as current data.",
-                    "field_dictionary": {
-                        "weekStartDate": "FINRA reporting week start date.",
-                        "ats_share_volume": "ATS/off-exchange shares reported for the symbol.",
-                        "estimated_total_volume": "Real consolidated weekly volume (yfinance) for that week; null when unavailable.",
-                        "dark_pool_pct": "ATS share of the real total weekly volume (%); null when the real denominator is unavailable.",
-                        "source_mode": "Live FINRA row or labelled fallback shape.",
-                    },
-                    "next_actions": ["Connect or refresh FINRA ATS feed for current venue-level volume."],
-                },
-                sources=["dark_pool_model"],
+                data=_unavailable_data(instrument.symbol, reason),
+                sources=[],
+                warnings=[reason],
                 metadata={
                     "note": "Anonymous FINRA endpoint may rate-limit; OAuth recommended.",
                     "provider_errors": [reason],
@@ -121,14 +128,18 @@ class DPFFunction(BaseFunction):
             )
 
     async def _execute_inner(self, instrument: Instrument, **params: Any) -> FunctionResult:
-        weeks = int(params.get("weeks", 12))
+        weeks = max(1, int(params.get("weeks", 12)))
         warnings: list[str] = []
         sources: list[str] = []
         df = pd.DataFrame()
         if getattr(self.deps, "finra", None):
             try:
-                df = await self.deps.finra.ats_weekly(instrument.symbol, limit=weeks * 4)
-                sources.append("finra")
+                # The adapter's limit counts published WEEKS and returns the newest
+                # ones with every row of each week (see FINRAAdapter.ats_weekly).
+                df = await self.deps.finra.ats_weekly(instrument.symbol, limit=weeks)
+                # Only a provider that actually returned rows is a source.
+                if not df.empty:
+                    sources.append("finra")
             except Exception as e:
                 warnings.append(f"finra: {e}")
         # Aggregate by week & ATS code
@@ -169,14 +180,32 @@ class DPFFunction(BaseFunction):
                 agg = agg.sort_values("weekStartDate", ascending=False).head(weeks)
                 if week_total:
                     sources.append("yfinance")
-        weekly = agg.to_dict(orient="records") if hasattr(agg, "to_dict") and not agg.empty else _fallback_rows(instrument.symbol, weeks, None)
-        status = "ok" if hasattr(agg, "empty") and not agg.empty else "provider_unavailable"
-        stale_reason = _stale_reason((weekly[0] or {}).get("weekStartDate") if weekly else None)
+
+        if agg.empty:
+            reason = (
+                f"FINRA ATS weekly data unavailable for {instrument.symbol}: "
+                + ("; ".join(warnings) if warnings else "no weeks returned by FINRA.")
+            )
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data=_unavailable_data(instrument.symbol, reason),
+                sources=sources,
+                warnings=[reason],
+                metadata={
+                    "note": "Anonymous FINRA endpoint may rate-limit; OAuth recommended.",
+                    "provider_errors": warnings,
+                },
+            )
+
+        weekly = agg.to_dict(orient="records")
+        stale_reason = _stale_reason(weekly[0].get("weekStartDate") if weekly else None)
+        status = "ok"
         if stale_reason:
             status = "provider_unavailable"
             for row in weekly:
                 row["source_mode"] = "finra_ats_weekly_stale"
                 row["data_warning"] = stale_reason
+        latest = weekly[0] if status == "ok" and weekly else None
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -186,17 +215,17 @@ class DPFFunction(BaseFunction):
                 "rows": weekly,
                 "history": weekly,
                 "raw_rows": int(len(df)),
-                "methodology": "DPF reports weekly FINRA ATS/off-exchange share volume and computes dark-pool percent as ATS volume divided by the REAL consolidated weekly volume from yfinance for the same week. When the real total volume is unavailable for a week, dark_pool_pct and estimated_total_volume are left null rather than fabricated. Stale FINRA snapshots are labelled provider_unavailable instead of being presented as current data.",
-                "field_dictionary": {
-                    "weekStartDate": "FINRA reporting week start date.",
-                    "ats_share_volume": "ATS/off-exchange shares reported for the symbol.",
-                    "estimated_total_volume": "Real consolidated weekly volume (yfinance) for that week; null when unavailable.",
-                    "dark_pool_pct": "ATS share of the real total weekly volume (%); null when the real denominator is unavailable.",
-                    "source_mode": "Live FINRA row or labelled fallback shape.",
-                },
-                "next_actions": [] if status == "ok" else ["Connect or refresh FINRA ATS feed for current venue-level volume."],
+                # Card slots (manifest card_schema) read these top-level keys; they
+                # are filled only from a live, non-stale latest week (DPF card fix).
+                "latest_dark_pool_pct": latest.get("dark_pool_pct") if latest else None,
+                "latest_ats_volume": latest.get("ats_share_volume") if latest else None,
+                "data_mode": "delayed_reference" if status == "ok" else "provider_unavailable",
+                "as_of": latest.get("weekStartDate") if latest else None,
+                "methodology": _METHODOLOGY,
+                "field_dictionary": _field_dictionary(),
+                "next_actions": [] if status == "ok" else list(_NEXT_ACTIONS),
             },
-            sources=sources or ["dark_pool_model"],
+            sources=sources,
             metadata={
                 "note": "Anonymous FINRA endpoint may rate-limit; OAuth recommended.",
                 "provider_errors": warnings,
@@ -210,5 +239,6 @@ def _stale_reason(value: Any) -> str | None:
         if dt < (datetime.now(timezone.utc).date() - timedelta(days=180)):
             return f"FINRA latest week {dt.isoformat()} is stale for a current market cockpit."
     except Exception:
-        return None
+        # A malformed FINRA date must not be treated as fresh.
+        return f"FINRA latest week {value!r} could not be parsed; treating as stale until reprocessed."
     return None

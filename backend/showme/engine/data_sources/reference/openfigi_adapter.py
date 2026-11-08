@@ -8,12 +8,36 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import Any
 
 import httpx
 
 from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRequest
 from showme.engine.utils.throttle import throttle
+
+
+class OpenFIGIRateLimited(Exception):
+    """OpenFIGI refused or would not wait for a request (HTTP 429 or pacing budget).
+
+    Raised instead of returning an empty match list, so a caller can report the
+    identifiers as unresolved rather than as "no match".
+    """
+
+    def __init__(self, message: str, retry_after: float | None = None, *, local_pacing: bool = False) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+        # True when the refusal came from this process's pacing budget, so no
+        # request was sent. False when OpenFIGI itself answered HTTP 429.
+        self.local_pacing = local_pacing
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    raw = response.headers.get("retry-after")
+    try:
+        return float(raw) if raw is not None else None
+    except ValueError:
+        return None
 
 
 class OpenFIGIAdapter(BaseDataSource):
@@ -33,6 +57,8 @@ class OpenFIGIAdapter(BaseDataSource):
         if self.api_key:
             self.rate_limit_rps = 4.0
         self._client: httpx.AsyncClient | None = None
+        # Monotonic time of the next free request slot (per-instance pacing).
+        self._next_slot = 0.0
 
     async def _client_(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -44,6 +70,64 @@ class OpenFIGIAdapter(BaseDataSource):
                 timeout=self.timeout_seconds,
             )
         return self._client
+
+    @property
+    def max_jobs_per_request(self) -> int:
+        """Documented /mapping job limit per request: 10 anonymous, 100 with a key."""
+        return 100 if self.api_key else 10
+
+    async def lookup_batch(
+        self, jobs: list[tuple[str, str]], *, max_wait_seconds: float,
+    ) -> list[dict[str, Any]]:
+        """Resolve ``(id_type, id_value)`` jobs in ONE /mapping request.
+
+        Returns one entry per job, in order: ``{"data": [...], "warning": str|None}``.
+        Pacing uses ``rate_limit_rps`` (anonymous 0.41 = 25 per minute). When the
+        wait needed to stay inside the budget exceeds ``max_wait_seconds``, the
+        call is refused before anything is sent. HTTP 429 raises
+        ``OpenFIGIRateLimited`` with the retry-after value and never returns [].
+        """
+        if not jobs:
+            return []
+        if len(jobs) > self.max_jobs_per_request:
+            raise ValueError(f"OpenFIGI accepts at most {self.max_jobs_per_request} jobs per request")
+        now = time.monotonic()
+        start = max(now, self._next_slot)
+        wait = start - now
+        if wait > max_wait_seconds:
+            raise OpenFIGIRateLimited(
+                "OpenFIGI rate limit pacing held the request back locally: "
+                f"a {wait:.1f} s wait exceeds the {max_wait_seconds:.1f} s budget; no request was sent",
+                retry_after=wait,
+                local_pacing=True,
+            )
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._next_slot = start + 1.0 / self.rate_limit_rps
+        client = await self._client_()
+        body = [{"idType": t, "idValue": v} for t, v in jobs]
+        try:
+            r = await client.post("/mapping", json=body)
+            r.raise_for_status()
+            results = r.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                self._record_failure(exc)
+                raise OpenFIGIRateLimited(
+                    "OpenFIGI rate limit reached (HTTP 429)",
+                    retry_after=_retry_after(exc.response),
+                ) from exc
+            raise
+        out: list[dict[str, Any]] = []
+        for idx in range(len(jobs)):
+            item = results[idx] if isinstance(results, list) and idx < len(results) else {}
+            if not isinstance(item, dict):
+                item = {}
+            # Per-job errors (e.g. invalid identifier) are passed through, never
+            # folded into "no match".
+            out.append({"data": item.get("data") or [], "warning": item.get("warning"),
+                        "error": item.get("error")})
+        return out
 
     @throttle(rps=4.0)
     async def lookup_by(
@@ -62,8 +146,10 @@ class OpenFIGIAdapter(BaseDataSource):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
                 self._record_failure(exc)
-                await asyncio.sleep(1)
-                return []
+                raise OpenFIGIRateLimited(
+                    "OpenFIGI rate limit reached (HTTP 429)",
+                    retry_after=_retry_after(exc.response),
+                ) from exc
             raise
         if not results:
             return []
@@ -84,8 +170,10 @@ class OpenFIGIAdapter(BaseDataSource):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
                 self._record_failure(exc)
-                await asyncio.sleep(1)
-                return None
+                raise OpenFIGIRateLimited(
+                    "OpenFIGI rate limit reached (HTTP 429)",
+                    retry_after=_retry_after(exc.response),
+                ) from exc
             raise
         if not results:
             return None

@@ -69,6 +69,9 @@ interface ToolConfig {
   defaultSymbol?: string;
   usesUniverse?: boolean;
   usesSymbol?: boolean;
+  /** false: never forward the dock/linked symbol (portfolio-wide tools whose
+   *  backend treats a symbol as a filter, e.g. LOTS list). */
+  sendsDockSymbol?: boolean;
   supportsLive?: boolean;
   modes?: readonly string[];
 }
@@ -133,6 +136,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     supportsLive: true,
   },
   LOTS: {
+    sendsDockSymbol: false,
     title: "Tax Lots",
     subtitle: "Lot-level basis and harvest candidates",
   },
@@ -236,18 +240,25 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   // REBA capital: the rebalance order deltas are computed against this
   // notional, so it must be an explicit user input (was hardcoded 100000).
   const [capital, setCapital] = useState("100000");
-  // PORT_WHATIF relabels `account` as Quantity (a plain 100-share ticket).
+  // PORT_WHATIF relabels `account` as Quantity. It starts blank: the backend
+  // prices a what-if only from a quantity and a cost the user typed (a 100
+  // placeholder used to show as a real P&L gain).
   // PSC starts EMPTY (2026-11-07, strict truth audit): it used to size a
   // demo trade (account 10,000 / entry 100 / stop 95 / target 115). Blank
   // fields are not sent — the backend uses the live price for entry and
   // the portfolio value for account, and requires the stop.
   const isPsc = upper === "PSC";
-  const [account, setAccount] = useState(() => (isPsc ? "" : "100"));
-  const [entry, setEntry] = useState(() => (isPsc ? "" : "100"));
+  const isWhatIf = upper === "PORT_WHATIF";
+  const [account, setAccount] = useState(() => (isPsc || isWhatIf ? "" : "100"));
+  const [entry, setEntry] = useState(() => (isPsc || isWhatIf ? "" : "100"));
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
 
-  const effectiveSymbol = config.usesSymbol ? (symbol || symbolInput || config.defaultSymbol) : symbol;
+  const effectiveSymbol = config.usesSymbol
+    ? (symbol || symbolInput || config.defaultSymbol)
+    : config.sendsDockSymbol === false
+      ? undefined
+      : symbol;
   const params = useMemo(
     () =>
       buildParams(upper, {
@@ -519,7 +530,9 @@ function PortfolioControls({
               value={entry}
               onChange={(e) => setEntry(e.target.value)}
               inputMode="decimal"
-              placeholder={code === "PSC" ? "live price" : undefined}
+              placeholder={
+                code === "PSC" ? "live price" : code === "PORT_WHATIF" ? "cost per share (required)" : undefined
+              }
             />
           </label>
           {code === "PSC" ? (
@@ -1034,8 +1047,16 @@ function buildParams(
       }
       return out;
     }
-    case "PORT_WHATIF":
-      return { quantity: num(state.account, 100), cost: num(state.entry, 100) };
+    case "PORT_WHATIF": {
+      // Quantity and cost are sent only when typed; a blank value is never
+      // replaced by a placeholder (the backend answers needs_input instead).
+      const out: Record<string, unknown> = {};
+      const quantity = optionalNumber(state.account);
+      if (quantity !== undefined) out.quantity = quantity;
+      const cost = optionalNumber(state.entry);
+      if (cost !== undefined) out.cost = cost;
+      return out;
+    }
     case "TRA":
       return { years: 5, live_return: state.live };
     case "BTFW":

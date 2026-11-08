@@ -41,6 +41,10 @@ class PortfolioResult:
     volatility: float             # annualized
     sharpe: float
     samples: int
+    # Solver diagnostics. Only the risk-parity solver sets these; other modes
+    # leave them None.
+    converged: bool | None = None
+    max_rc_error: float | None = None   # max_i |RC_i - 1/n| (share of total risk)
 
 
 def _annualize(mu: np.ndarray, cov: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -138,7 +142,8 @@ def _solve_unconstrained(mu: np.ndarray, cov: np.ndarray,
     return w
 
 
-def min_volatility(returns: pd.DataFrame, *, allow_short: bool = False) -> PortfolioResult:
+def min_volatility(returns: pd.DataFrame, *, allow_short: bool = False,
+                   risk_free: float = 0.0) -> PortfolioResult:
     mu = returns.mean().values
     cov = returns.cov().values
     mu_a, cov_a = _annualize(mu, cov)
@@ -148,7 +153,7 @@ def min_volatility(returns: pd.DataFrame, *, allow_short: bool = False) -> Portf
         w = inv @ ones / float(ones @ inv @ ones)
     else:
         w = _solve_long_only(np.zeros_like(mu_a), cov_a)
-    ret, vol, sh = _stats(w, mu_a, cov_a, 0.0)
+    ret, vol, sh = _stats(w, mu_a, cov_a, risk_free)
     return PortfolioResult(
         weights={c: float(wi) for c, wi in zip(returns.columns, w)},
         expected_return=ret, volatility=vol, sharpe=sh, samples=int(len(returns)),
@@ -234,24 +239,70 @@ def efficient_frontier(returns: pd.DataFrame, *, points: int = 40,
     return out
 
 
-def risk_parity(returns: pd.DataFrame, iters: int = 1000) -> PortfolioResult:
-    """Equal Risk Contribution portfolio (simple PGD)."""
+_ERC_TOL = 1e-9   # max_i |RC_i - 1/n| below this counts as converged
+
+
+def _erc_weights(cov: np.ndarray, *, max_sweeps: int) -> tuple[np.ndarray, bool, float]:
+    """Equal-risk-contribution weights via cyclical coordinate descent.
+
+    ERC is the first-order condition of the convex problem
+        min_y  0.5 * y' Σ y  -  Σ_i b_i ln y_i ,     y > 0,  b_i = 1/n
+    whose stationarity reads y_i (Σy)_i = b_i. Normalising w = y / sum(y)
+    therefore gives RC_i(w) = b_i exactly. Each coordinate has a closed-form
+    minimiser: with a_i = Σ_ii and c_i = Σ_{j≠i} Σ_ij y_j,
+        a_i y_i^2 + c_i y_i - b_i = 0   =>   y_i = (-c_i + sqrt(c_i^2 + 4 a_i b_i)) / (2 a_i)
+    (Spinu 2013). Convergence is verified on the risk contributions
+    themselves instead of assumed from an iteration count.
+
+    Returns (weights, converged, max_rc_error) where max_rc_error is
+    max_i |RC_i - 1/n| on the normalised weights.
+    """
+    n = cov.shape[0]
+    b = np.full(n, 1.0 / n)
+    diag = np.diag(cov).astype(float)
+    y = 1.0 / np.sqrt(diag)
+    err = float("inf")
+    for _ in range(max_sweeps):
+        for i in range(n):
+            c = float(cov[i] @ y) - diag[i] * y[i]
+            y[i] = (-c + np.sqrt(c * c + 4.0 * diag[i] * b[i])) / (2.0 * diag[i])
+        w = y / y.sum()
+        sw = cov @ w
+        var = float(w @ sw)
+        rc = w * sw / var
+        err = float(np.max(np.abs(rc - b)))
+        if err < _ERC_TOL:
+            return w, True, err
+    return w, False, err
+
+
+def risk_parity(returns: pd.DataFrame, iters: int = 5000, *,
+                risk_free: float = 0.0) -> PortfolioResult:
+    """Equal Risk Contribution (ERC) long-only portfolio.
+
+    ``iters`` caps the number of coordinate-descent sweeps. The result reports
+    ``converged`` and ``max_rc_error``; callers must surface a non-converged
+    result rather than present it as equal-risk.
+
+    Raises ValueError when an asset has no variance (its risk contribution is
+    undefined).
+    """
     cov = returns.cov().values
     mu = returns.mean().values
     mu_a, cov_a = _annualize(mu, cov)
     n = cov_a.shape[0]
-    w = np.full(n, 1.0 / n)
-    target = 1.0 / n
-    for _ in range(iters):
-        port_vol = np.sqrt(max(w @ cov_a @ w, 1e-12))
-        marg = (cov_a @ w) / port_vol
-        rc = w * marg / port_vol
-        gradient = (rc - target) * marg
-        w = w - 0.01 * gradient
-        w = np.clip(w, 1e-6, None)
-        w /= w.sum()
-    ret, vol, sh = _stats(w, mu_a, cov_a, 0.0)
+    if n == 0:
+        raise ValueError("risk_parity requires at least one asset")
+    if not np.all(np.isfinite(cov_a)) or np.any(np.diag(cov_a) <= 0):
+        raise ValueError("risk_parity requires finite, positive variance for every asset")
+    if n == 1:
+        w = np.ones(1)
+        converged, err = True, 0.0
+    else:
+        w, converged, err = _erc_weights(cov_a, max_sweeps=max(1, int(iters)))
+    ret, vol, sh = _stats(w, mu_a, cov_a, risk_free)
     return PortfolioResult(
         weights={c: float(wi) for c, wi in zip(returns.columns, w)},
         expected_return=ret, volatility=vol, sharpe=sh, samples=int(len(returns)),
+        converged=bool(converged), max_rc_error=float(err),
     )

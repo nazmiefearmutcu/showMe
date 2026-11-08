@@ -8,7 +8,13 @@
  * `summary.portfolio_linked` so the macro table is never misread as real
  * portfolio exposure — surfaced honestly via the mode pill + footer.
  */
-import { useEffect, useMemo, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -114,10 +120,40 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
   // Visibility-aware poll — macro data refreshes slowly.
   const tick = useVisibilityTick(REFRESH_MS);
 
+  // Country filter: ISO-2 codes sent as the backend `countries` input. Empty
+  // = all countries (the backend default), so the request stays unchanged.
+  const [countryDraft, setCountryDraft] = useState("");
+  const [countryFilter, setCountryFilter] = useState<string[]>([]);
+  const [countryError, setCountryError] = useState<string | null>(null);
+
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
+    params: countryFilter.length
+      ? { countries: countryFilter.join(",") }
+      : undefined,
   });
+
+  function submitCountries(event: FormEvent) {
+    event.preventDefault();
+    const tokens = countryDraft
+      .split(/[\s,]+/)
+      .map((t) => t.trim().toUpperCase())
+      .filter(Boolean);
+    const invalid = tokens.filter((t) => !/^[A-Z]{2}$/.test(t));
+    if (invalid.length > 0) {
+      setCountryError(`Use ISO-2 codes such as US, DE. Not valid: ${invalid.join(", ")}`);
+      return;
+    }
+    setCountryError(null);
+    setCountryFilter([...new Set(tokens)]);
+  }
+
+  function clearCountries() {
+    setCountryDraft("");
+    setCountryFilter([]);
+    setCountryError(null);
+  }
   // Poll on the visibility tick WITHOUT putting it in the fetch params — a
   // changing param key makes useFunction treat every poll as a fresh load and
   // wipes the board into a skeleton instead of a silent refresh.
@@ -317,6 +353,32 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
           subtitle={`${rows.length} economies · ${region} · poll ${REFRESH_MS / 1000}s · ${dataMode}`}
           trailing={
             <FunctionControlGroup>
+              <form onSubmit={submitCountries} style={countryFormStyle}>
+                <input
+                  type="search"
+                  aria-label="Country filter (ISO-2 codes)"
+                  placeholder="All countries"
+                  value={countryDraft}
+                  onChange={(e) => {
+                    setCountryDraft(e.target.value);
+                    setCountryError(null);
+                  }}
+                  style={countryInputStyle}
+                />
+                <button type="submit" className="btn" title="Show only these countries">
+                  Filter
+                </button>
+                {countryFilter.length > 0 ? (
+                  <button type="button" className="btn" onClick={clearCountries} title="Show all countries">
+                    All
+                  </button>
+                ) : null}
+              </form>
+              {countryError ? (
+                <span role="alert" style={countryErrorStyle}>
+                  {countryError}
+                </span>
+              ) : null}
               <label style={toggleStyle}>
                 <input
                   type="checkbox"
@@ -870,6 +932,30 @@ const ccyFillStyle: CSSProperties = {
   borderRadius: 999,
   background: "var(--accent)",
   display: "block",
+};
+
+const countryFormStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+};
+
+const countryInputStyle: CSSProperties = {
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-md)",
+  height: 24,
+  padding: "0 6px",
+  width: 140,
+};
+
+const countryErrorStyle: CSSProperties = {
+  color: "var(--text-warn, var(--text-mute))",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
 };
 
 const toggleStyle: CSSProperties = {

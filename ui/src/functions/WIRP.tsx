@@ -6,10 +6,11 @@
  * is built live and keyless (FRED target range + ^IRX-implied near-term
  * rate, or the CME FedWatch adapter when wired); ECB/BoE report
  * `provider_unavailable` rather than fabricated numbers. The header pill
- * classifies on the backend's actual `source_mode` values
- * (`live_fed_funds_futures` / `cme_fedwatch` / `live_fred_target_no_irx`),
- * so live data is never mislabelled as a reference table — and unknown
- * modes never over-claim live.
+ * classifies on the backend's actual `source_mode` values (only
+ * `cme_fedwatch` earns the live pill; the keyless path emits
+ * `provider_unavailable` with anchors and no probability rows), so live data
+ * is never mislabelled as a reference table, and unknown modes never
+ * over-claim live.
  */
 import { useEffect, useMemo, type CSSProperties } from "react";
 import {
@@ -58,8 +59,8 @@ interface WIRPAnchor {
   current_target_mid?: number | null;
   current_target_upper?: number | null;
   current_target_lower?: number | null;
-  implied_near_term_rate?: number | null;
-  implied_near_term_source?: string;
+  tbill_13w_pct?: number | null;
+  tbill_as_of?: string | null;
   effr?: number | null;
   as_of?: string | null;
   effr_as_of?: string | null;
@@ -137,15 +138,12 @@ export function anchorEntries(anchor: WIRPAnchor | undefined): AnchorEntry[] {
       value: `${anchor.current_target_mid.toFixed(3)}%`,
     });
   }
-  if (
-    typeof anchor.implied_near_term_rate === "number" &&
-    Number.isFinite(anchor.implied_near_term_rate)
-  ) {
+  if (typeof anchor.tbill_13w_pct === "number" && Number.isFinite(anchor.tbill_13w_pct)) {
     out.push({
-      key: "near",
-      label: "Near-term",
-      value: `${anchor.implied_near_term_rate.toFixed(3)}%`,
-      title: anchor.implied_near_term_source,
+      key: "tbill",
+      label: "13w T-bill",
+      value: `${anchor.tbill_13w_pct.toFixed(3)}%`,
+      title: "13-week T-bill yield: a bill basis, not a policy-rate expectation",
     });
   }
   return out;
@@ -196,17 +194,11 @@ export function WIRPPane({ code }: FunctionPaneProps) {
     [payload.rows],
   );
 
-  // F4 fix (A6-WIRP-H): the live backend emits top-level `source_mode` values
-  // such as `live_fed_funds_futures` / `cme_fedwatch` / `live_fred_target_no_irx`.
-  // Comparing against the literal "live" mislabelled every live row as a
-  // reference table. Only the explicit live modes earn the live pill —
-  // anything else (reference table, provider outage, unknown drift) stays
-  // honestly labelled reference.
-  const LIVE_SOURCE_MODES = new Set([
-    "live_fed_funds_futures",
-    "cme_fedwatch",
-    "live_fred_target_no_irx",
-  ]);
+  // Only a real futures-implied source earns the live pill. The keyless path
+  // never emits probability rows (it reports the T-bill basis as an anchor),
+  // so the backend's live modes are CME FedWatch rows only. Anything else
+  // (reference table, provider outage, unknown drift) stays honestly labelled.
+  const LIVE_SOURCE_MODES = new Set(["cme_fedwatch"]);
   const sourceMode = payload.source_mode ?? rows[0]?.source_mode ?? "unknown";
   const status = typeof payload.status === "string" ? payload.status : "";
   const isReferenceTable =
@@ -299,7 +291,11 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                   tone={isReferenceTable ? "warn" : "positive"}
                   variant="soft"
                 >
-                  {isReferenceTable ? "reference table" : "live"}
+                  {status === "provider_unavailable"
+                    ? "unavailable"
+                    : isReferenceTable
+                      ? "reference table"
+                      : "live"}
                 </Pill>
               </span>
               <LoadStatePill state={state} />
@@ -321,7 +317,32 @@ export function WIRPPane({ code }: FunctionPaneProps) {
           ) : state === "error" ? (
             <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
           ) : rows.length === 0 ? (
-            <Empty title="No meetings" body={`No WIRP rows for ${bank}.`} />
+            <div className="u-grid-gap-14">
+              <Empty
+                title="No meetings — probabilities unavailable"
+                body={
+                  warningsList
+                    .map((w) => String(w))
+                    .find((w) => /unavailable/i.test(w)) ?? `No WIRP rows for ${bank}.`
+                }
+              />
+              {anchors.length ? (
+                <section style={pathPanelStyle} aria-label="WIRP reference anchors">
+                  <div style={pathMetaStyle}>
+                    <span style={pathTitleStyle}>Reference anchors</span>
+                    <span className="u-text-mute" style={pathCaptionStyle}>
+                      FRED target range and T-bill basis · not hike/cut odds
+                    </span>
+                    {anchors.map((a) => (
+                      <span key={a.key} style={anchorChipStyle} title={a.title}>
+                        <span style={anchorLabelStyle}>{a.label}</span>
+                        <span style={anchorValueStyle}>{a.value}</span>
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </div>
           ) : (
             <div className="u-grid-gap-14">
               {isReferenceTable ? (

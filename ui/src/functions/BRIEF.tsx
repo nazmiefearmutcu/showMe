@@ -60,6 +60,7 @@ interface BRIEFData {
   articles?: BRIEFArticle[];
   rows?: BRIEFArticle[];
   watchlist?: string[];
+  watchlist_source?: string;
   article_count?: number;
   cards?: BRIEFCard[];
   methodology?: string;
@@ -74,6 +75,13 @@ const SECTION_OPTIONS: { value: SectionFilter; label: string }[] = [
   { value: "watchlist", label: "Watchlist" },
   { value: "top_stories", label: "Top stories" },
 ];
+
+/** Where the backend's symbol list came from (BRIEF#1). */
+const WATCHLIST_SOURCE_LABELS: Record<string, string> = {
+  input: "Watchlist",
+  positions_and_watchlists: "Positions + saved watchlists",
+  instrument: "Instrument",
+};
 
 const SECTION_LABELS: Record<string, string> = {
   watchlist: "Watchlist",
@@ -135,6 +143,8 @@ export function BRIEFPane({ code }: FunctionPaneProps) {
   }, [articles, section]);
 
   const watchlist = payload?.watchlist ?? [];
+  const watchlistLabel =
+    WATCHLIST_SOURCE_LABELS[payload?.watchlist_source ?? ""] ?? "Watchlist";
 
   const body = state === "loading" || state === "idle" ? (
     <div className="u-grid-gap-8">
@@ -156,7 +166,7 @@ export function BRIEFPane({ code }: FunctionPaneProps) {
     />
   ) : articles.length === 0 ? (
     <Empty
-      title="No briefing returned"
+      title={status === "needs_input" ? "Nothing to brief yet" : "No briefing returned"}
       body={
         payload?.next_actions?.[0] ??
         payload?.reason ??
@@ -192,7 +202,7 @@ export function BRIEFPane({ code }: FunctionPaneProps) {
       )}
       {watchlist.length > 0 && (
         <span className="u-text-mute" style={watchlistStyle}>
-          Watchlist: {watchlist.join(", ")}
+          {watchlistLabel}: {watchlist.join(", ")}
         </span>
       )}
       {groups.map((g) => (

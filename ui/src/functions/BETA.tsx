@@ -1,16 +1,16 @@
 /**
  * BETA — CAPM beta vs benchmark.
  *
- * Header: headline window + rolling-history window controls (persisted)
- * + status pill + refresh.
+ * Header: benchmark + headline window + rolling-history window controls
+ * (persisted) + status pill + refresh.
  * Body: beta / R² / correlation / samples headline cards for the selected
  * window, an inline-SVG rolling-beta sparkline, and the full per-window
  * regression table.
  *
- * Honesty: the backend's `computed_market_model` fallback is a SEEDED
- * baseline (static betas, no regression, no history) — the pane labels it
- * as such instead of passing it off as a live estimate. provider_unavailable
- * / input_required reasons are surfaced verbatim.
+ * Honesty: the benchmark control is sent to the backend and the caption
+ * shows the benchmark the payload reports (never a hard-coded default).
+ * provider_unavailable / input_required reasons are surfaced verbatim; the
+ * backend no longer emits a seeded baseline, so there is no baseline branch.
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -50,6 +50,8 @@ interface BetaWindowRow {
   window?: string;
   window_days?: number;
   beta?: number;
+  alpha?: number;
+  r_squared?: number;
   correlation?: number;
   samples?: number;
   annualized_volatility_target?: number;
@@ -68,10 +70,19 @@ interface BetaData {
   reason?: string;
   benchmark?: string;
   rows?: BetaWindowRow[];
-  betas?: Record<string, Omit<BetaWindowRow, "window">>;
   history?: BetaHistoryPoint[];
   methodology?: string;
 }
+
+/** Market proxies offered in the benchmark control; the first is the
+ *  manifest default (^GSPC). */
+const BENCHMARK_OPTIONS = [
+  { value: "^GSPC", label: "^GSPC" },
+  { value: "SPY", label: "SPY" },
+  { value: "QQQ", label: "QQQ" },
+  { value: "IWM", label: "IWM" },
+] as const;
+const BENCHMARK_IDS = BENCHMARK_OPTIONS.map((o) => o.value);
 
 const WINDOW_OPTIONS = [
   { value: "1Y", label: "1Y" },
@@ -99,11 +110,16 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
     ROLLING_IDS,
     60,
   );
+  const [benchmark, setBenchmark] = usePersistentOption<string>(
+    "showme.beta.benchmark",
+    BENCHMARK_IDS,
+    "^GSPC",
+  );
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF", "INDEX"]);
   const { state, data, error, refetch } = useFunction<BetaData>({
     code,
     symbol: effectiveSymbol,
-    params: { rolling_window: rolling },
+    params: { rolling_window: rolling, benchmark },
     enabled: !!effectiveSymbol,
   });
 
@@ -111,13 +127,10 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
   const status = payload?.status ?? "—";
   const isLive = state === "ok" && status === "ok";
   const warnings = data?.warnings ?? [];
-  // The seeded baseline returns `betas` without a `rows` array — normalize
-  // both shapes into the window-row list.
-  const rows: BetaWindowRow[] = useMemo(() => {
-    if (payload?.rows?.length) return payload.rows;
-    const betas = payload?.betas ?? {};
-    return Object.entries(betas).map(([w, v]) => ({ window: w, ...v }));
-  }, [payload]);
+  // Benchmark the figures were regressed against: the payload's echo wins,
+  // the requested control value covers the pre-response state.
+  const shownBenchmark = payload?.benchmark ?? benchmark;
+  const rows: BetaWindowRow[] = useMemo(() => payload?.rows ?? [], [payload]);
   const selected = rows.find((r) => r.window === window) ?? rows[0];
   const history = useMemo(() => payload?.history ?? [], [payload]);
   const historyValues = useMemo(
@@ -127,11 +140,14 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
         .filter((v): v is number => typeof v === "number"),
     [history],
   );
+  // The backend reports r_squared (= correlation² for the single-factor fit);
+  // fall back to correlation² only for payloads that omit it.
   const rSquared =
-    typeof selected?.correlation === "number"
-      ? selected.correlation * selected.correlation
-      : null;
-  const isBaseline = status === "computed_market_model";
+    typeof selected?.r_squared === "number"
+      ? selected.r_squared
+      : typeof selected?.correlation === "number"
+        ? selected.correlation * selected.correlation
+        : null;
 
   // CSV export of the per-window regression table — RAW payload numbers.
   const csvColumns = useMemo<GridCsvColumn<BetaWindowRow>[]>(
@@ -210,17 +226,6 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
     />
   ) : (
     <div className="u-grid-gap-14">
-      {isBaseline && (
-        <div style={noteStyle} role="note">
-          <Pill tone="warn" variant="soft">
-            baseline
-          </Pill>
-          <span>
-            Live provider unavailable — these figures are a seeded market-model
-            baseline, not a regression of real returns. Do not trade on them.
-          </span>
-        </div>
-      )}
       {warnings.length > 0 && (
         <div style={noteStyle} role="note">
           {warnings.map((w, i) => (
@@ -232,7 +237,7 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
         <StatCard
           label={`Beta (${selected.window ?? window})`}
           value={fmtNum(selected.beta, 2)}
-          caption={`vs ${payload?.benchmark ?? "SPY"} · daily returns`}
+          caption={`vs ${shownBenchmark} · simple daily returns`}
           tone={selected.beta >= 1 ? "positive" : "neutral"}
         />
         <StatCard
@@ -294,8 +299,15 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : isBaseline ? "baseline" : status}
+                {isLive ? "live" : status}
               </Pill>
+              <SegmentedControl
+                label="BENCH"
+                value={benchmark}
+                options={BENCHMARK_OPTIONS}
+                onChange={setBenchmark}
+                title="Benchmark index the beta is regressed against"
+              />
               <SegmentedControl
                 label="WINDOW"
                 value={window}
@@ -335,6 +347,8 @@ export function BetaPane({ code, symbol }: FunctionPaneProps) {
           <StatusSection label="sources" value={data?.sources?.join(", ") || "—"} />
           <StatusDivider />
           <StatusSection label="status" value={status} />
+          <StatusDivider />
+          <StatusSection label="benchmark" value={shownBenchmark} tone="accent" />
           <StatusDivider />
           <StatusSection label="window" value={window} tone="accent" />
           <StatusDivider />

@@ -120,6 +120,11 @@ class Backtest:
             last_price = price
             # Decide signal AFTER warmup
             if i >= self.warmup:
+                # Publish the position the book currently holds so stateful
+                # strategies (e.g. rsi_meanrev's hold band) can read it. Without
+                # this, state["pos"] was never written and a held position was
+                # reported as flat between thresholds.
+                state["pos"] = pos
                 try:
                     target = int(self.strategy(window, state))
                 except Exception:

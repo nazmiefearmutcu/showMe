@@ -87,7 +87,7 @@ class BTFWFunction(BaseFunction):
         cash = float(params.get("initial_cash", 10_000))
         sources = ["yfinance"]
         warnings: list[str] = []
-        synthetic_history = False
+        fetch_error = ""
         if strategy_name not in STRATEGY_REGISTRY:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=[f"unknown strategy {strategy_name}",
@@ -111,20 +111,23 @@ class BTFWFunction(BaseFunction):
                     start=datetime.now(timezone.utc) - timedelta(days=days),
                     interval=params.get("interval", "1d"),
                 ))
-            except Exception:
+            except Exception as exc:
+                fetch_error = f"{type(exc).__name__}: {exc}"
                 df = pd.DataFrame()
         else:
+            fetch_error = "no OHLCV provider configured"
             df = pd.DataFrame()
         if df.empty:
-            df = _template_history(days)
-            sources = ["local_backtest_model"]
-            synthetic_history = True
-            # Be explicit about the substitution: the walk-forward below is a
-            # real fit, but it runs on a synthetic sine ramp, not market data.
-            warnings.append(
-                "Live OHLCV was unavailable — walk-forward metrics below were "
-                "computed on a synthetic placeholder history (sine ramp), not "
-                "market data."
+            # DATA POLICY: no synthetic history is ever substituted for market
+            # data. The run is reported as unavailable, with no metrics.
+            reason = (
+                "Live OHLCV was unavailable for this symbol, so no walk-forward "
+                "backtest was run. No synthetic history is substituted."
+            )
+            if fetch_error:
+                reason += f" Provider error: {fetch_error}."
+            return _provider_unavailable(
+                instrument, strategy_name, cash, reason, days, fee_bps, allow_short,
             )
         walk_steps = int(params.get("walk_steps", params.get("n_splits", 5)))
         train_pct = float(params.get("train_pct", 0.7))
@@ -214,7 +217,7 @@ class BTFWFunction(BaseFunction):
             warnings=warnings,
             metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
                       "walk_steps": res.summary["n_splits"], "walk_mode": walk_mode,
-                      "in_sample": False, "synthetic_history": synthetic_history},
+                      "in_sample": False, "synthetic_history": False},
         )
 
 
@@ -224,25 +227,43 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str, Any]:
-    """Illustrative placeholder shown when no backtest was actually run.
-
-    Every number here is INVENTED — a smooth synthetic ramp with hardcoded
-    Sharpe/drawdown/trade counts. It exists so the pane has a shape to render
-    before the user opts into a live backtest. It is flagged on every level
-    that a consumer might read (status, is_placeholder, each metric block, the
-    methodology string and a warning) so it can never be mistaken for a
-    measured result.
-    """
-    curve = [
-        {"ts": f"template-{idx + 1:03d}", "equity": round(cash * (1 + idx * 0.0015), 2)}
-        for idx in range(30)
+def _provider_unavailable(
+    instrument: Instrument, strategy: str, cash: float, reason: str,
+    days: int, fee_bps: float, allow_short: bool,
+) -> FunctionResult:
+    """Explicit no-data state: placeholder shape, no measured values."""
+    data = _walk_forward_template(instrument.symbol, strategy, cash)
+    data["status"] = "provider_unavailable"
+    data["reason"] = reason
+    data["next_actions"] = [
+        "Retry BTFW with live=true once OHLCV history for this symbol is reachable.",
     ]
-    final_equity = curve[-1]["equity"]
+    return FunctionResult(
+        code="BTFW",
+        instrument=instrument,
+        data=data,
+        sources=["provider_unavailable"],
+        warnings=[reason],
+        metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
+                  "live": True, "is_placeholder": True, "synthetic_history": False,
+                  "provider_errors": [reason]},
+    )
+
+
+def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str, Any]:
+    """Empty payload returned when no backtest was actually run.
+
+    No equity curve and no final equity are shipped: a drawn ramp would be
+    an invented series (the old 1.0015^n template). Metrics are None and the
+    payload is flagged on every level a consumer might read. The caller is
+    told to re-run with live=true for a measured out-of-sample curve.
+    """
+    curve: list[dict[str, Any]] = []
+    final_equity = None
     disclaimer = (
-        "PLACEHOLDER — not a backtest. These numbers are invented for layout "
-        "purposes and say nothing about this strategy or this symbol. Re-run "
-        "with live=true to compute a real out-of-sample result."
+        "PLACEHOLDER — no backtest was run, so there is no equity curve and no "
+        "metrics for this strategy or symbol. Re-run with live=true to compute a "
+        "real out-of-sample result."
     )
     return {
         "status": "placeholder",
@@ -277,12 +298,14 @@ def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str,
             "note": disclaimer,
         },
         "methodology": (
-            "No backtest was run. The curve below is an invented placeholder "
-            "used only to give the pane a shape; it is not derived from market "
-            "data and no metrics are reported from it."
+            "No backtest was run. No equity curve is shown and no metrics are reported; "
+            "a curve is only produced by a live run on market data."
         ),
         "field_dictionary": {
-            "is_placeholder": "True when the payload is illustrative rather than measured.",
-            "equity_curve": "Synthetic ramp for layout only — carries no information.",
+            "is_placeholder": "True when no backtest was run; the payload carries no measured values.",
+            "equity_curve": "Empty until a live (live=true) run completes on market data.",
         },
+        "next_actions": [
+            "Run BTFW with live=true to compute a real out-of-sample equity curve.",
+        ],
     }

@@ -221,9 +221,11 @@ def gex() -> FunctionManifest:
             "gamma — under short_calls_long_puts, dealers are short calls "
             "(positive contribution → suppresses realized vol when net γ > 0) "
             "and long puts (negative contribution); (4) aggregate by strike "
-            "across selected expiries; (5) gamma flip = strike where cumulative "
-            "signed γ crosses zero; (6) walls = strikes with largest absolute "
-            "call γ / put γ. Model assumptions are visible — fixed_30d_atm "
+            "across selected expiries; (5) gamma flip = spot level where total dealer "
+            "GEX changes sign, found by re-evaluating GEX on a ±10% spot grid with the "
+            "same chain (IV, OI, T fixed) and taking the zero crossing; (6) walls = "
+            "strike with the largest absolute call GEX and strike with the largest "
+            "absolute put GEX, each reported with its own side value. Model assumptions are visible — fixed_30d_atm "
             "loses skew (flagged as warning), modeled_vol_surface requires "
             "IVOL infra, market uses chain bid/ask mid IV per contract."
         ),
@@ -259,10 +261,12 @@ def gex() -> FunctionManifest:
             ),
             "gamma_flip": Formula(
                 expression=(
-                    r"K^{*} = \min\{K : \sum_{K' \le K} \text{signed}_\gamma(K') \ge 0 "
-                    r"\text{ and prior cumulative} < 0\}"
+                    r"S^{*} = \{S \in [0.9 S_0, 1.1 S_0] : \sum_K \text{signed}_\gamma(K; S) = 0\}"
                 ),
-                variables={"K*": "First strike where cumulative signed gamma crosses zero"},
+                variables={
+                    "S*": "Spot level where total dealer GEX (same chain, re-evaluated on a ±10% spot grid) crosses zero",
+                    "S_0": "Current spot",
+                },
             ),
         },
         field_dict={
@@ -276,7 +280,7 @@ def gex() -> FunctionManifest:
             "cumulative_gex_curve[].strike": FieldDef(unit="$", description="Strike.", source="derived"),
             "cumulative_gex_curve[].cum_gex": FieldDef(unit="$/1%", description="Running Σ signed_gex from lowest strike.", source="derived"),
             "net_gex": FieldDef(unit="$/1%", description="Σ signed_gex across all strikes.", source="derived"),
-            "gamma_flip": FieldDef(unit="$", description="First strike where cumulative crosses zero.", source="derived"),
+            "gamma_flip": FieldDef(unit="$", description="Spot level where total dealer GEX crosses zero (spot-grid re-evaluation of the same chain); null when no crossing lies in the ±10% range.", source="derived"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -302,13 +306,13 @@ def gex() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="gex_gamma_flip_consistent_with_cumulative",
+                name="gex_gamma_flip_spot_grid_zero_crossing",
                 description=(
-                    "Reported gamma_flip strike equals the first cumulative_gex_curve point "
-                    "where cum_gex crosses zero."
+                    "Reported gamma_flip equals the spot level where total dealer GEX, "
+                    "re-evaluated on a ±10% spot grid with the same chain, changes sign."
                 ),
                 inputs={"underlying": "SPY"},
-                assertions=["gamma_flip_matches_cumulative_zero_cross"],
+                assertions=["gamma_flip_matches_spot_grid_zero_cross"],
             ),
             SemanticTest(
                 name="gex_bsm_gamma_matches_reference",

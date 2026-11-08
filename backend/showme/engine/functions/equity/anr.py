@@ -45,8 +45,9 @@ def _date_from_row(row: dict[str, Any]) -> datetime | None:
         return None
     lower = text.lower()
     if lower.endswith("m") and lower[:-1].lstrip("-").isdigit():
-        months = int(lower[:-1] or "0")
-        return _today() + timedelta(days=months * 30)
+        # yfinance period labels ("0m", "-1m") are relative buckets, not dates.
+        # Returning a date here stamped the request day as the as-of date (ANR#1).
+        return None
     for fmt in ("%Y-%m-%d", "%Y-%m", "%Y/%m/%d"):
         try:
             parsed = datetime.strptime(text[:10] if fmt != "%Y-%m" else text[:7], fmt)
@@ -138,7 +139,12 @@ def _latest_recommendation_rows(rows: list[dict[str, Any]]) -> list[dict[str, An
     if dated_values:
         latest = max(dated_values)
         return [row for row, dt in dated if dt is not None and dt.date() == latest.date()]
-    return [rows[0]] if rows else []
+    # Undated period buckets: the current-month bucket ("0m") is the consensus.
+    valid = [row for row in rows if isinstance(row, dict)]
+    current = [row for row in valid if str(row.get("period") or "").strip().lower() == "0m"]
+    if current:
+        return [current[0]]
+    return [valid[0]] if valid else []
 
 
 def _yfinance_recommendations(raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -169,7 +175,9 @@ def _target_from_yfinance_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "targetLow": finite(raw.get("targetLowPrice")),
         "targetMean": finite(raw.get("targetMeanPrice")),
         "targetMedian": finite(raw.get("targetMedianPrice")),
-        "lastUpdated": _today().date().isoformat(),
+        # yfinance analyst price targets carry no provider timestamp. Leave the
+        # as-of date empty rather than stamping the request day (ANR#1).
+        "lastUpdated": None,
         "source_mode": "yfinance_analyst_targets",
     }
     if any(finite(v) for k, v in target.items() if k.startswith("target")):
@@ -451,8 +459,13 @@ class ANRFunction(BaseFunction):
         score = _consensus_score(totals)
         included_dates = [dt for _, dt in dated_recs if dt is not None and dt >= cutoff]
         stale_dates = [dt for _, dt in dated_recs if dt is not None and dt < cutoff]
+        # Only dated provider rows can date the consensus. Undated period buckets
+        # (yfinance "0m"/"-1m") leave these None instead of borrowing today's date.
         last_updated = max(included_dates).date().isoformat() if included_dates else None
         oldest_included = min(included_dates).date().isoformat() if included_dates else None
+        consensus_period = None
+        if consensus_recs and all(dt is None for _, dt in dated_recs):
+            consensus_period = str(consensus_recs[0].get("period") or "") or None
         stale_rule = {
             "cutoff_days": 365,
             "cutoff_date": cutoff.date().isoformat(),
@@ -471,6 +484,7 @@ class ANRFunction(BaseFunction):
             "score": score,
             "last_updated": last_updated,
             "oldest_included": oldest_included,
+            "consensus_period": consensus_period,
             "stale_rule": stale_rule,
         }
 
@@ -501,6 +515,15 @@ class ANRFunction(BaseFunction):
             for key, label, score_value in BUCKETS
         ]
         analyst_rows = _analyst_rows_from_yfinance_raw(inputs["yfinance_raw"], signals["cutoff"])
+        # Newest dated broker rating action: a real date from the provider's
+        # upgrades/downgrades feed, distinct from the consensus as-of date.
+        action_dates = [
+            _date_from_row({"date": row.get("date")}) for row in analyst_rows
+        ]
+        action_dates = [dt for dt in action_dates if dt is not None]
+        latest_rating_action_date = (
+            max(action_dates).date().isoformat() if action_dates else None
+        )
         if analyst_rows:
             analyst_detail_status = "broker_actions_available"
             analyst_detail_reason = (
@@ -525,6 +548,8 @@ class ANRFunction(BaseFunction):
             "included_count": analyst_count,
             "excluded_stale_count": signals["stale_rule"]["excluded_stale_count"],
             "oldest_included_rating_date": signals["oldest_included"],
+            "consensus_period": signals.get("consensus_period"),
+            "latest_rating_action_date": latest_rating_action_date,
             "target_price_source": target_source_label,
             "target_price_source_mode": target_source_mode,
             "not_analyst_target": not_analyst_target,
@@ -576,7 +601,9 @@ class ANRFunction(BaseFunction):
             {
                 "name": "target_price",
                 "status": cards["target_source_mode"],
-                "asOf": target.get("lastUpdated") or target.get("last_update") or signals["last_updated"],
+                # Only the target's own provider timestamp may date the target
+                # statistics; the consensus date is a different dataset (ANR#1).
+                "asOf": target.get("lastUpdated") or target.get("last_update"),
                 "fields": "high, mean, median, low target-price statistics",
             },
             {

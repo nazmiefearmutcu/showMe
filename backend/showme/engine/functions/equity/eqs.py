@@ -101,8 +101,11 @@ def _parse_and(tokens: list[tuple[str, str]], pos: int) -> tuple[Any, int]:
 def _parse_primary(tokens: list[tuple[str, str]], pos: int) -> tuple[Any, int]:
     if pos < len(tokens) and tokens[pos][0] == "LP":
         node, pos = _parse(tokens, pos + 1)
-        if pos < len(tokens) and tokens[pos][0] == "RP":
-            pos += 1
+        if pos >= len(tokens) or tokens[pos][0] != "RP":
+            # CDE#1: an unclosed group used to be accepted, so a truncated
+            # formula evaluated as a different expression.
+            raise ValueError("unbalanced parenthesis: missing ')' in query")
+        pos += 1
         return node, pos
     if pos + 2 >= len(tokens):
         raise ValueError(
@@ -178,7 +181,20 @@ def normalize_query_aliases(query: str) -> str:
 
 
 def parse_dsl(query: str) -> Any:
-    return _parse(_tokenize(normalize_query_aliases(query)))[0]
+    """Parse a complete DSL query; any unconsumed token is an error.
+
+    CDE#1: the parser used to return the first comparison and silently drop
+    the rest ("pe < 25 foo > 3" became "pe < 25"). The whole input must now
+    be consumed, so a stored formula always means what the user typed.
+    """
+    tokens = _tokenize(normalize_query_aliases(query))
+    node, pos = _parse(tokens)
+    if pos != len(tokens):
+        raise ValueError(
+            f"unexpected {tokens[pos][1]!r} at token {pos + 1}: "
+            "expected AND/OR or end of query"
+        )
+    return node
 
 
 def filter_dataframe(df: pd.DataFrame, query: str) -> pd.DataFrame:

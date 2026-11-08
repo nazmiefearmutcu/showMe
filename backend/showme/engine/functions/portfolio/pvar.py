@@ -103,13 +103,23 @@ class PVARFunction(BaseFunction):
                      if p.instrument.asset_class.value not in ("MACRO", "BOND")]
         if not eligible:
             return _empty_pvar(self.code, confidence, params, instrument, "no eligible portfolio positions")
-        eligible = sorted(
+        # PVAR#1: keep the full eligible book for coverage; only the largest
+        # ``max_positions`` are analysed, and the rest are named in a warning.
+        eligible_book = sorted(
             eligible,
             key=lambda p: abs(float(p.quantity or 0) * float(p.avg_cost or 0)),
             reverse=True,
-        )[:max_positions]
+        )
+        eligible = eligible_book[:max_positions]
+        excluded_symbols = [p.instrument.symbol for p in eligible_book[max_positions:]]
 
         warnings: list[str] = []
+        if excluded_symbols:
+            warnings.append(
+                f"PVAR: max_positions={max_positions} excludes "
+                f"{len(excluded_symbols)} of {len(eligible_book)} eligible positions "
+                f"({', '.join(excluded_symbols)}) from VaR/ES; raise max_positions to cover the full book."
+            )
         last_map = {}
         if live:
             async def _ret(p):
@@ -289,9 +299,11 @@ class PVARFunction(BaseFunction):
                 "portfolio_daily_var_dollar": -param_var_pct * total,
                 "samples": int(len(rets_df)),
                 "positions_analyzed": int(len(rets_df.columns)),
-                # HNT-15: analysed share of the eligible book so a subset
-                # VaR is visible at a glance (1.0 = full coverage).
-                "coverage_pct": round(len(rets_df.columns) / len(eligible), 4) if eligible else None,
+                # HNT-15 / PVAR#1: analysed share of the FULL eligible book, so a
+                # subset VaR (from a cap or a failed download) is visible at a glance.
+                "positions_eligible": len(eligible_book),
+                "excluded_symbols": excluded_symbols,
+                "coverage_pct": round(len(rets_df.columns) / len(eligible_book), 4) if eligible_book else None,
                 "max_positions": max_positions,
                 "rows": rows,
                 "series": series,
@@ -301,7 +313,8 @@ class PVARFunction(BaseFunction):
                     "method": method,
                     "horizon": params.get("horizon", "1d"),
                     "positions_analyzed": int(len(rets_df.columns)),
-                    "coverage_pct": round(len(rets_df.columns) / len(eligible), 4) if eligible else None,
+                    "positions_eligible": len(eligible_book),
+                    "coverage_pct": round(len(rets_df.columns) / len(eligible_book), 4) if eligible_book else None,
                     "var": var_dollar,
                     "expected_shortfall": es_dollar,
                 },
@@ -326,7 +339,9 @@ class PVARFunction(BaseFunction):
                     "marginal_contribution_to_risk": "Derivative of portfolio volatility wrt symbol weight.",
                     "component_pct_of_portfolio_risk": "Symbol share of portfolio risk contribution.",
                     "notional_usd": "Position notional used for portfolio weights.",
-                    "coverage_pct": "Share of eligible positions whose live return history loaded (1.0 = full book covered).",
+                    "coverage_pct": "Share of the FULL eligible book analysed (max_positions cap and failed history downloads both reduce it; 1.0 = full book covered).",
+                    "positions_eligible": "Eligible positions in the full book before the max_positions cap.",
+                    "excluded_symbols": "Eligible positions dropped by the max_positions cap (not in VaR/ES).",
                 },
             },
             sources=["yfinance"] if live else ["portfolio_state", "risk_model"],

@@ -102,6 +102,20 @@ function laterWrites(name, scope, out) {
   visit(scope);
 }
 
+/** The scope a declaration's later `name.key = …` writes belong to: the
+ *  nearest block for const/let (two `case` blocks may each declare their own
+ *  `const out`), the enclosing function for var. */
+function declarationScope(decl) {
+  const list = decl.parent;
+  const blockScoped = list && ts.isVariableDeclarationList(list)
+    && (list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) !== 0;
+  if (!blockScoped) return enclosingFunction(decl);
+  let n = decl.parent;
+  while (n && !ts.isBlock(n) && !ts.isCaseClause(n) && !ts.isDefaultClause(n)
+         && !ts.isFunctionLike(n) && !ts.isSourceFile(n)) n = n.parent;
+  return n || decl.getSourceFile();
+}
+
 function enclosingFunction(node) {
   let n = node.parent;
   while (n && !ts.isFunctionLike(n) && !ts.isSourceFile(n)) n = n.parent;
@@ -109,6 +123,26 @@ function enclosingFunction(node) {
 }
 
 function findDeclaration(name, from, sf) {
+  // Lexical (block) scoping first: the nearest enclosing block / case clause
+  // that declares `name` wins, so `return out` inside `case "PORT_WHATIF": {}`
+  // resolves to that block's `const out`, not an earlier case's.
+  for (let n = from; n; n = n.parent) {
+    const statements = (ts.isBlock(n) || ts.isSourceFile(n) || ts.isCaseClause(n) || ts.isDefaultClause(n))
+      ? n.statements : null;
+    if (statements) {
+      for (const st of statements) {
+        if (ts.isVariableStatement(st)) {
+          for (const d of st.declarationList.declarations) {
+            if (ts.isIdentifier(d.name) && d.name.text === name) return d;
+          }
+        } else if (ts.isFunctionDeclaration(st) && st.name && st.name.text === name) {
+          return st;
+        }
+      }
+    }
+    if (ts.isSourceFile(n)) break;
+  }
+  // Fallback: the old function-wide search (declarations in odd places).
   let scope = enclosingFunction(from);
   while (scope) {
     let found = null;
@@ -212,7 +246,7 @@ function resolveExpr(expr, sf, at, depth) {
     if (!decl) return null;
     if (ts.isVariableDeclaration(decl) && decl.initializer) {
       const r = resolveExpr(decl.initializer, sf, decl, depth + 1);
-      if (r && r.kind === "keys") laterWrites(expr.text, enclosingFunction(decl), r);
+      if (r && r.kind === "keys") laterWrites(expr.text, declarationScope(decl), r);
       return r;
     }
     return null;

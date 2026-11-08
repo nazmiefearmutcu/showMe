@@ -7,11 +7,11 @@
  * holder), % of shares outstanding, reported/quarter stamp and a per-row
  * source pill.
  *
- * Data honesty: HDS has a live path (yfinance holder tables + local SEC 13F),
- * but when both providers are unavailable the backend falls back to labelled
- * public-reference rows. The pane detects those rows (source_mode containing
- * "reference" / status "reference_holders") and renders a prominent
- * "Reference data" badge + inline note instead of implying live 13F filings.
+ * Data honesty: HDS has a live path (yfinance holder tables + local SEC 13F).
+ * When no provider returns holder rows the backend reports an explicit state
+ * (provider_unavailable / empty / needs_input) with a reason, and the pane
+ * shows that reason instead of rows. The "Reference data" banner is kept as a
+ * guard for any payload that still labels rows as public-reference.
  */
 import { useMemo, type CSSProperties } from "react";
 import {

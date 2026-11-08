@@ -192,10 +192,10 @@ describe("YAS pane — headline cards", () => {
 });
 
 describe("YAS pane — inputs are optional overrides", () => {
-  it("sends no demo bond: a generic tenor goes out with only the frequency", () => {
+  it("sends no demo bond: a generic tenor goes out with only the frequency and the BOND asset class", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<YASPane code="YAS" />);
-    expect(lastParams).toEqual({ freq: 2 });
+    expect(lastParams).toEqual({ asset_class: "BOND", freq: 2 });
     expect(lastSymbol).toBe("US10Y");
   });
 
@@ -254,7 +254,7 @@ describe("YAS pane — inputs are optional overrides", () => {
       target: { value: "US2Y" },
     });
     expect(lastSymbol).toBe("US2Y");
-    expect(lastParams).toEqual({ freq: 2 });
+    expect(lastParams).toEqual({ asset_class: "BOND", freq: 2 });
   });
 
   it("keeps the inputs visible and shows the reason when the backend needs them", () => {

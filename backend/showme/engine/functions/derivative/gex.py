@@ -49,9 +49,9 @@ _GEX_FIELDS = {
     "strike": "Option strike bucket.",
     "gex": "Dealer-perspective gamma exposure in dollars per 1% underlying move.",
     "value": "Same as gex, provided for chart rendering.",
-    "gamma_flip": "First strike where cumulative gamma exposure changes sign.",
-    "call_wall": "Strike with the largest positive dealer gamma concentration.",
-    "put_wall": "Strike with the largest negative dealer gamma concentration.",
+    "gamma_flip": "Spot level where total dealer GEX changes sign (zero crossing re-evaluated on a ±10% spot grid over the same chain); null when no crossing lies in that range.",
+    "call_wall": "Strike with the largest absolute dealer call gamma exposure; gex is that call-side value (negative).",
+    "put_wall": "Strike with the largest absolute dealer put gamma exposure; gex is that put-side value (positive).",
 }
 
 
@@ -90,6 +90,7 @@ def _shape_gex_payload(
             "gamma_flip": raw.get("gamma_flip"),
             "call_wall": (raw.get("call_wall") or {}).get("strike"),
             "put_wall": (raw.get("put_wall") or {}).get("strike"),
+            "gamma_flip_method": raw.get("gamma_flip_method"),
             "n_strikes": raw.get("n_strikes") or len(rows),
             "source_mode": source_mode,
             "synthetic": synthetic,

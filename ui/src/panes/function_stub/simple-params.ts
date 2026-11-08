@@ -246,7 +246,6 @@ export function simpleParamSpecsForFunction(code: string): SimpleParamSpec[] {
       return [
         { key: "countries", label: "Countries", hint: "TR, US, DE, JP" },
         { key: "recovery", label: "Recovery", hint: "0.4" },
-        { key: "proxy_spread_pct", label: "Fallback spread", hint: "3.25" },
       ];
     case "TAUC":
       return [
@@ -374,7 +373,7 @@ export function defaultSimpleParamsForFunction(code: string): Record<string, str
     GC3D: { country: "US" },
     DDIS: { issuer: "AAPL" },
     DEBT: { countries: "US, JP, DE, TR" },
-    SRSK: { countries: "TR, US, DE, JP", recovery: "0.4", proxy_spread_pct: "3.25" },
+    SRSK: { countries: "TR, US, DE, JP", recovery: "0.4" },
     TAUC: { action: "upcoming", security_type: "" },
     WB: { countries: "US, DE, JP, GB, FR, IT, ES, AU" },
     YAS: { freq: "2" },
@@ -672,7 +671,6 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     return {
       countries: splitCsv(values.countries || "TR, US, DE, JP").map((item) => item.toUpperCase()),
       recovery: numeric("recovery", 0.4),
-      proxy_spread_pct: numeric("proxy_spread_pct", 3.25),
     };
   }
   if (upper === "TAUC") {

@@ -113,10 +113,10 @@ def composite(trend: str, vol: str, dd: str, curve: str) -> str | None:
     return "Range-bound"
 
 
-def _confidence(trend: str, vol: str, dd: str, curve: str) -> float:
-    # 1.0 = all 4 inputs resolved; 0.25 per known input. UNKNOWN trend is
-    # impossible by construction (we always have close), so the practical
-    # floor is 0.25 (trend only).
+def _input_coverage(trend: str, vol: str, dd: str, curve: str) -> float:
+    # REGM#3: this is the share of the four components that resolved
+    # (1.0 = all 4, 0.25 per known input). It is NOT the probability of the
+    # chosen regime, so it is never reported under a "confidence" name.
     known = sum(1 for label in (trend, vol, dd, curve) if label != "UNKNOWN")
     return round(known / 4.0, 4)
 
@@ -129,7 +129,7 @@ def classify(close: np.ndarray, *, spread_2s10s_bp: float | None = None) -> dict
     dd, dd_pct = _drawdown_label(close)
     curve, spread = _curve_label(spread_2s10s_bp)
     regime = composite(trend, vol, dd, curve)
-    confidence = _confidence(trend, vol, dd, curve)
+    input_coverage = _input_coverage(trend, vol, dd, curve)
     # Audit Q3 #5: surface the WHY when trend is UNKNOWN so the UI can pill
     # "insufficient_history" specifically (different from "insufficient_inputs"
     # which means we never got vol/dd/curve resolved).
@@ -148,8 +148,8 @@ def classify(close: np.ndarray, *, spread_2s10s_bp: float | None = None) -> dict
         "drawdown": dd, "drawdown_pct": dd_pct,
         "curve": curve, "curve_2s10s_bp": spread,
         "regime": regime,
-        "confidence": confidence,
-        "confidence_rationale": rationale,
+        "input_coverage": input_coverage,
+        "input_coverage_rationale": rationale,
         "data_state": data_state,
     }
 

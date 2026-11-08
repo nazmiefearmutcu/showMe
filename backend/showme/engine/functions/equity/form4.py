@@ -157,7 +157,11 @@ def _insider_rows_from_yfinance(symbol: str, holdings: Any) -> list[dict[str, An
         value = finite(item.get("Value") or item.get("value"))
         filer = item.get("Insider") or item.get("insider") or item.get("Person")
         transaction_date = date_label(item.get("Start Date") or item.get("startDate") or item.get("Date") or item.get("index"))
-        transaction_type = _normalize_transaction_type(item.get("Transaction"))
+        raw_transaction = item.get("Transaction") or item.get("transaction")
+        text = item.get("Text") or item.get("text")
+        # FORM4#1: yfinance leaves Transaction blank for many filers and carries the
+        # direction in Text ("Sale at price 325.75 per share."). Read both.
+        transaction_type = _yfinance_transaction_type(raw_transaction, text)
         rows.append({
             "symbol": symbol,
             "filingDate": transaction_date,
@@ -167,7 +171,7 @@ def _insider_rows_from_yfinance(symbol: str, holdings: Any) -> list[dict[str, An
             "insider": filer,
             "position": item.get("Position") or item.get("position"),
             "role": item.get("Position") or item.get("position"),
-            "transaction": item.get("Transaction") or item.get("transaction"),
+            "transaction": raw_transaction or text,
             "transaction_type": transaction_type,
             "side": transaction_type,
             "shares": shares,
@@ -177,6 +181,26 @@ def _insider_rows_from_yfinance(symbol: str, holdings: Any) -> list[dict[str, An
             "source_mode": "yfinance_insider_transactions",
         })
     return [r for r in rows if r.get("insider") or r.get("transaction") or r.get("shares")]
+
+
+def _yfinance_transaction_type(transaction: Any, text: Any) -> str:
+    """Direction word for a yfinance insider row; ``""`` when neither field names one."""
+    for raw in (transaction, text):
+        value = str(raw or "").strip().lower()
+        if not value:
+            continue
+        if value.startswith(("sale", "sell", "automatic sale", "disposition")):
+            return "sell"
+        if value.startswith(("purchase", "buy", "acquisition")):
+            return "buy"
+        if value.startswith("gift") or "stock gift" in value:
+            return "gift"
+        if "award" in value or "grant" in value:
+            return "grant"
+        if "exercise" in value:
+            return "option_exercise"
+    fallback = str(transaction or "").strip()
+    return _normalize_transaction_type(fallback) if fallback else ""
 
 
 def _filing_rows(symbol: str, filings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -251,7 +275,7 @@ def _normalize_transaction_type(raw: Any) -> str:
         return "grant"
     if text in {"j", "option", "exercise"}:
         return "option_exercise"
-    if text in {"s", "d", "x", "v", "r", "sell", "disposition", "disposed", "forfeit"}:
+    if text in {"s", "d", "x", "v", "r", "sell", "sale", "disposition", "disposed", "forfeit"}:
         return "sell"
     if "option" in text:
         return "option_exercise"
@@ -309,9 +333,12 @@ def _filter_rows(
 def _form4_summary_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     filing_count = len(rows)
     net_shares = 0.0
-    has_shares = False
+    shares_known = False
+    shares_unknown = False
     net_notional = 0.0
-    has_notional = False
+    notional_known = False
+    notional_unknown = False
+    unclassified = 0
     buyers = set[str]()
     sellers = set[str]()
     latest_ts: datetime | None = None
@@ -319,35 +346,42 @@ def _form4_summary_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         if not isinstance(row, dict):
             continue
-        direction = _infer_direction(row)
+        parsed = _direction(row)
+        if parsed is None:
+            unclassified += 1
+        direction = parsed or 0
         shares = finite(row.get("shares") or row.get("share") or row.get("share_delta") or row.get("net_shares"))
         if shares is not None:
-            if direction < 0:
-                net_shares -= abs(shares)
-            elif direction > 0:
-                net_shares += abs(shares)
-            # HNT-16 fix: neutral transactions (gifts, J-other, unknown
-            # direction) no longer shift the net — a gifted position must
-            # not read as insider buying.
-            has_shares = True
+            if parsed is None:
+                # FORM4#1: an unparsed direction is not a neutral one; it must not read as 0.
+                shares_unknown = True
+            else:
+                # HNT-16: known-neutral transactions (gifts, J-other, grants) move no net.
+                shares_known = True
+                if direction < 0:
+                    net_shares -= abs(shares)
+                elif direction > 0:
+                    net_shares += abs(shares)
 
         value = finite(row.get("value") or row.get("notional") or row.get("signed_value"))
         if value is not None:
-            if direction < 0:
-                net_notional -= abs(value)
-            elif direction > 0:
-                net_notional += abs(value)
-            has_notional = True
+            if parsed is None:
+                notional_unknown = True
+            else:
+                notional_known = True
+                if direction < 0:
+                    net_notional -= abs(value)
+                elif direction > 0:
+                    net_notional += abs(value)
         elif shares is not None:
             price = finite(row.get("price") or row.get("unit_price") or row.get("price_per_share"))
-            if price is not None and direction != 0:
-                notional = shares * price
-                if direction < 0:
-                    notional = -abs(notional)
-                else:
-                    notional = abs(notional)
-                net_notional += notional
-                has_notional = True
+            if price is not None:
+                if parsed is None:
+                    notional_unknown = True
+                elif direction != 0:
+                    notional = shares * price
+                    net_notional += -abs(notional) if direction < 0 else abs(notional)
+                    notional_known = True
 
         insider = row.get("insider") or row.get("filer") or row.get("reportingOwner") or row.get("holder")
         if direction > 0 and isinstance(insider, str):
@@ -361,11 +395,18 @@ def _form4_summary_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     out: dict[str, Any] = {
         "filing_count": filing_count,
+        "unclassified_count": unclassified,
     }
-    if has_shares:
+    # Net is a computed flow only over parsed directions; when every contributing
+    # row is unparsed it is null (unknown), never 0.
+    if shares_known:
         out["net_shares"] = net_shares
-    if has_notional:
+    elif shares_unknown:
+        out["net_shares"] = None
+    if notional_known:
         out["net_notional"] = net_notional
+    elif notional_unknown:
+        out["net_notional"] = None
     if buyers:
         out["buyer_count"] = len(buyers)
     if sellers:
@@ -375,6 +416,13 @@ def _form4_summary_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _infer_direction(row: dict[str, Any]) -> int:
+    """Signed direction; unknown and known-neutral both read as 0 (see ``_direction``)."""
+    direction = _direction(row)
+    return 0 if direction is None else direction
+
+
+def _direction(row: dict[str, Any]) -> int | None:
+    """+1 buy, -1 sell, 0 known-neutral (gift, grant, other), None when not parseable."""
     code = str(
         row.get("acquiredDisposedCode")
         or row.get("transactionCode")
@@ -387,10 +435,12 @@ def _infer_direction(row: dict[str, Any]) -> int:
     # not market purchases — classifying them as +1 inflated "net insider
     # buying" whenever an executive gifted shares. They now count as
     # neutral (direction 0), like the description-path default.
-    if code in {"p", "a", "e"}:
+    if code in {"p", "a", "e", "buy"}:
         return 1
-    if code in {"s", "d", "x", "v", "r"}:
+    if code in {"s", "d", "x", "v", "r", "sell"}:
         return -1
+    if code in {"g", "j", "gift", "grant", "other"}:
+        return 0
 
     description = str(
         row.get("transaction")
@@ -401,15 +451,17 @@ def _infer_direction(row: dict[str, Any]) -> int:
         or row.get("action_type")
     ).strip().lower()
     if not description:
-        return 0
+        return None
 
-    if any(keyword in description for keyword in ("sell", "disposition", "disposed", "forfeit", "surrender", "issue out", "cancel")):
+    if any(keyword in description for keyword in ("sell", "sale", "disposition", "disposed", "forfeit", "surrender", "issue out", "cancel")):
         return -1
-    # HNT-16 fix: "grant" descriptions (yfinance Transaction="Grant" rows)
-    # follow the G-code treatment — neutral, not net insider buying.
-    if any(keyword in description for keyword in ("buy", "purchase", "acquire", "award", "exercise", "subscription", "option", "issue", "receive", "vest", "transfer in")):
+    # HNT-16 fix: "grant"/"award" descriptions (yfinance "Stock Award(Grant)",
+    # Transaction="Grant") follow the G-code treatment — neutral, not net buying.
+    if any(keyword in description for keyword in ("gift", "grant", "award")):
+        return 0
+    if any(keyword in description for keyword in ("buy", "purchase", "acquire", "exercise", "subscription", "option", "issue", "receive", "vest", "transfer in")):
         return 1
-    return 0
+    return None
 
 
 def _pick_tx_time(row: dict[str, Any]) -> datetime | None:

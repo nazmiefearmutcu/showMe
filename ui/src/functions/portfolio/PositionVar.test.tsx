@@ -117,6 +117,37 @@ describe("PVAR Position VaR pane", () => {
     expect(screen.queryByTestId("portx-data-badge")).toBeNull();
   });
 
+  it("shows book coverage when the position cap leaves part of the book out (PVAR#1)", () => {
+    ok(
+      {
+        ...LIVE_PAYLOAD,
+        coverage_pct: 0.6667,
+        positions_analyzed: 2,
+        positions_eligible: 3,
+        excluded_symbols: ["GME"],
+      },
+      {
+        warnings: [
+          "PVAR: max_positions=2 excludes 1 of 3 eligible positions (GME) from VaR/ES; raise max_positions to cover the full book.",
+        ],
+      },
+    );
+    render(<PositionVarPane code="PVAR" />);
+    expect(screen.getByText("66.7% (2/3)")).toBeInTheDocument();
+    expect(screen.getByTestId("portx-warning-strip")).toBeInTheDocument();
+  });
+
+  it("renders an honest dash when the backend sends no coverage figure", () => {
+    ok(LIVE_PAYLOAD);
+    render(<PositionVarPane code="PVAR" />);
+    expect(screen.getByText("Book coverage")).toBeInTheDocument();
+    expect(screen.queryByText("100.0% (2/2)")).toBeNull();
+    const tile = screen.getByTitle("Share of the full eligible book analysed by this VaR (PVAR#1)");
+    expect(tile).toHaveTextContent("Book coverage");
+    expect(tile).toHaveTextContent("—");
+    expect(tile).not.toHaveTextContent("%");
+  });
+
   it("discloses the modelled template path via the badge + warning strip", () => {
     ok(
       { ...LIVE_PAYLOAD, status: "modeled", data_mode: "modeled" },

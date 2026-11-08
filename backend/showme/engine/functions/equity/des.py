@@ -153,8 +153,11 @@ def _coingecko_to_des(payload: dict[str, Any], symbol_hint: str) -> dict[str, An
     current_price = _md_usd("current_price")
     high_24h = _md_usd("high_24h")
     low_24h = _md_usd("low_24h")
-    high_52w = _md_usd("high_52w") or _md_usd("ath")
-    low_52w = _md_usd("low_52w") or _md_usd("atl")
+    # CoinGecko /coins/{id} carries no 52-week fields. Never substitute ATH/ATL
+    # here: those are all-time extremes (DES#1), not a trailing 52-week range.
+    # Missing stays None so the pane shows an empty value, not a 2013 low.
+    high_52w = _md_usd("high_52w")
+    low_52w = _md_usd("low_52w")
     change_pct = md.get("price_change_percentage_24h")
     prev_close = None
     if current_price is not None and change_pct not in (None, 0):

@@ -1,0 +1,187 @@
+"""P1a-g03 IVOL#1 — solver-failure implied vols must not reach the surface.
+
+A deep in-the-money SPY put whose quoted mid sits below intrinsic has no real
+implied vol. The provider reports iv ~ 0 (1e-5 here), and the engine used to
+keep it as a 0.001 percent surface cell. These tests drive IVOLFunction.execute
+through a fake option-chain adapter (no network).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pandas as pd
+
+from showme.engine.core.base_data_source import DataKind, DataRequest
+from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions.derivative._stubs import IVOLFunction
+
+SPOT = 735.29
+EXPIRY = "2026-11-09"
+
+# (strike, iv, bid, ask) — puts and calls for one expiry.
+# Invalid cells: put 750 (iv 1e-5, mid below intrinsic 14.71),
+# put 745 (iv 0.40 but mid 9.2 below intrinsic 9.71),
+# put 760 (iv 0.0, mid below intrinsic), call 720 (iv 0.0).
+PUTS = [
+    (750, 1e-5, 14.14, 14.40),
+    (745, 0.40, 8.80, 9.60),
+    (760, 0.0, 23.46, 24.32),
+    (735, 0.18, 9.00, 9.40),
+    (700, 0.20, 2.00, 2.20),
+]
+CALLS = [
+    (720, 0.0, 22.00, 22.60),
+    (735, 0.17, 10.00, 10.40),
+    (760, 0.19, 3.10, 3.30),
+]
+INVALID_STRIKES = {("PUT", 750.0), ("PUT", 745.0), ("PUT", 760.0), ("CALL", 720.0)}
+
+
+class _ChainYF:
+    async def fetch(self, request: DataRequest) -> Any:
+        assert request.kind == DataKind.OPTIONS_CHAIN
+        if not request.extra or "expiry" not in request.extra:
+            return {"underlyingPrice": SPOT, "expiries": [EXPIRY]}
+        calls = pd.DataFrame({
+            "strike": [c[0] for c in CALLS],
+            "impliedVolatility": [c[1] for c in CALLS],
+            "bid": [c[2] for c in CALLS],
+            "ask": [c[3] for c in CALLS],
+            "lastPrice": [(c[2] + c[3]) / 2 for c in CALLS],
+            "volume": [10] * len(CALLS),
+            "openInterest": [100] * len(CALLS),
+        })
+        puts = pd.DataFrame({
+            "strike": [p[0] for p in PUTS],
+            "impliedVolatility": [p[1] for p in PUTS],
+            "bid": [p[2] for p in PUTS],
+            "ask": [p[3] for p in PUTS],
+            "lastPrice": [(p[2] + p[3]) / 2 for p in PUTS],
+            "volume": [10] * len(PUTS),
+            "openInterest": [100] * len(PUTS),
+        })
+        return {"calls": calls, "puts": puts}
+
+
+class _Deps:
+    def __init__(self, yfinance: Any = None) -> None:
+        self.yfinance = yfinance
+
+    def __getattr__(self, item: str) -> Any:  # pragma: no cover
+        return None
+
+
+def _run() -> Any:
+    fn = IVOLFunction(deps=_Deps(yfinance=_ChainYF()))
+    return asyncio.run(fn.execute(Instrument(symbol="SPY", asset_class=AssetClass.ETF)))
+
+
+def test_no_solver_failure_cell_reaches_the_surface() -> None:
+    result = _run()
+    surface = result.data["surface"]
+    # RED before fix: the 1e-5 and 0.0 cells were kept as 0.001% / 0% IV.
+    assert surface, "valid cells must still produce a surface"
+    assert all(row["vol"] >= 0.01 for row in surface), [
+        (row["label"], row["vol"]) for row in surface if row["vol"] < 0.01
+    ]
+
+
+def test_mid_below_intrinsic_cells_are_dropped() -> None:
+    result = _run()
+    kept = {(row["option_type"], float(row["strike"])) for row in result.data["surface"]}
+    # RED before fix: put 750 (mid 14.27 < intrinsic 14.71) and put 745 stayed in.
+    assert ("PUT", 750.0) not in kept
+    assert ("PUT", 745.0) not in kept
+    assert ("PUT", 760.0) not in kept
+    assert ("CALL", 720.0) not in kept
+
+
+class _AllInvalidYF:
+    """Every cell is a solver failure: iv 0 / 1e-5 or mid below intrinsic."""
+
+    async def fetch(self, request: DataRequest) -> Any:
+        if not request.extra or "expiry" not in request.extra:
+            return {"underlyingPrice": SPOT, "expiries": [EXPIRY]}
+        calls = pd.DataFrame({
+            "strike": [720.0, 725.0],
+            "impliedVolatility": [0.0, 1e-5],
+            "bid": [22.00, 17.00],
+            "ask": [22.60, 17.60],
+            "lastPrice": [22.30, 17.30],
+            "volume": [10, 10],
+            "openInterest": [100, 100],
+        })
+        puts = pd.DataFrame({
+            "strike": [750.0, 760.0],
+            "impliedVolatility": [1e-5, 0.0],
+            "bid": [14.14, 23.46],
+            "ask": [14.40, 24.32],
+            "lastPrice": [14.27, 23.89],
+            "volume": [10, 10],
+            "openInterest": [100, 100],
+        })
+        return {"calls": calls, "puts": puts}
+
+
+def test_all_cells_dropped_returns_honest_status_not_template() -> None:
+    fn = IVOLFunction(deps=_Deps(yfinance=_AllInvalidYF()))
+    result = asyncio.run(fn.execute(Instrument(symbol="SPY", asset_class=AssetClass.ETF)))
+    data = result.data
+    # RED before fix: the all-dropped path fell back to the reference template,
+    # which carried invented constant IVs (0.32 + skew, 0.35 + skew) at volume 0.
+    assert data["status"] == "provider_unavailable", data.get("status")
+    assert data["surface"] == []
+    assert data["rows"] == []
+    assert "calls_grid" not in data and "puts_grid" not in data
+    assert "black_scholes_reference_formula" not in result.sources
+    assert len(data["dropped_cells"]) == 4
+    assert data["summary"]["dropped_invalid_iv"] == 4
+    assert data["next_actions"]
+
+
+def test_valid_cells_are_kept_and_dropped_count_is_reported() -> None:
+    result = _run()
+    kept = {(row["option_type"], float(row["strike"])) for row in result.data["surface"]}
+    assert ("PUT", 735.0) in kept
+    assert ("PUT", 700.0) in kept
+    assert ("CALL", 735.0) in kept
+    assert ("CALL", 760.0) in kept
+    assert kept.isdisjoint(INVALID_STRIKES)
+    assert result.data["summary"]["dropped_invalid_iv"] == len(INVALID_STRIKES)
+    assert result.data["summary"]["contracts"] == len(PUTS) + len(CALLS) - len(INVALID_STRIKES)
+
+
+class _EmptyExpiryYF:
+    """The expiry is listed but its call and put tables are both empty."""
+
+    async def fetch(self, request: DataRequest) -> Any:
+        if not request.extra or "expiry" not in request.extra:
+            return {"underlyingPrice": SPOT, "expiries": [EXPIRY]}
+        empty = pd.DataFrame({
+            "strike": pd.Series([], dtype=float),
+            "impliedVolatility": pd.Series([], dtype=float),
+            "bid": pd.Series([], dtype=float),
+            "ask": pd.Series([], dtype=float),
+            "lastPrice": pd.Series([], dtype=float),
+            "volume": pd.Series([], dtype=float),
+            "openInterest": pd.Series([], dtype=float),
+        })
+        return {"calls": empty, "puts": empty.copy()}
+
+
+def test_empty_expiry_returns_honest_status_not_template() -> None:
+    fn = IVOLFunction(deps=_Deps(yfinance=_EmptyExpiryYF()))
+    result = asyncio.run(fn.execute(Instrument(symbol="SPY", asset_class=AssetClass.ETF)))
+    data = result.data
+    # RED before fix: the empty-rows path fell back to _surface_template, which
+    # carries invented constant IVs and the black_scholes_reference_formula source.
+    assert data["status"] == "provider_unavailable", data.get("status")
+    assert data["surface"] == []
+    assert data["rows"] == []
+    assert "calls_grid" not in data and "puts_grid" not in data
+    assert "black_scholes_reference_formula" not in result.sources
+    assert result.sources == ["yfinance"]
+    assert data["reason"]
+    assert data["next_actions"]

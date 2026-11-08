@@ -106,9 +106,21 @@ def _template_rows(query: BQLQuery, instrument: Instrument | None, params: dict[
                 elif key in {"return", "chg_pct", "change_pct"}:
                     row[field] = round((idx + 1) * 0.0015 + (21 - offset) * 0.0002, 6)
                 else:
-                    row[field] = close
+                    # No model for this field: null, never a copy of another
+                    # series (p2a-g08 FLDS#1). _unmodeled_fields() names it.
+                    row[field] = None
             rows.append(row)
     return rows
+
+
+_TEMPLATE_MODELED_FIELDS = frozenset({
+    "px_last", "last", "price", "close", "open", "high", "low",
+    "volume", "turnover", "return", "chg_pct", "change_pct",
+})
+
+
+def _unmodeled_fields(fields: list[str]) -> list[str]:
+    return [f for f in fields if f.lower() not in _TEMPLATE_MODELED_FIELDS]
 
 
 def _apply_runtime_window(query: BQLQuery, params: dict[str, Any]) -> None:
@@ -229,10 +241,17 @@ class BQLFunction(BaseFunction):
         if not (params.get("live_query") or params.get("live")):
             rows = _template_rows(q, instrument, params)
             rows = _limit_rows(rows, params.get("limit"))
+            unmodeled = _unmodeled_fields(q.fields)
+            template_warnings = [
+                f"BQL computed_model has no model for '{f}': its value is null, "
+                "not a provider value (live mode returns OHLCV fields only)."
+                for f in unmodeled
+            ]
             return FunctionResult(
                 code=self.code,
                 instrument=None,
-                data=_format_payload(q, rows, "computed_model"),
+                data=_format_payload(q, rows, "computed_model", template_warnings),
+                warnings=template_warnings,
                 sources=["showme_query_model"],
                 metadata={"parsed": q.__dict__, "rows": len(rows), "mode": "computed_model"},
             )

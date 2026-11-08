@@ -121,7 +121,10 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
   };
 
   const params = useMemo(() => {
-    const out: Record<string, number> = { freq };
+    // YAS only ever prices bonds. The pane owns the asset class: without it the
+    // sidecar infers one from the symbol, and a CUSIP-style id falls through to
+    // EQUITY and is refused as unsupported_asset.
+    const out: Record<string, string | number> = { asset_class: "BOND", freq };
     if (price != null) out.price = price;
     if (couponPct != null) out.coupon = pctToDecimal(couponPct);
     if (maturity != null) out.maturity_years = maturity;
@@ -142,7 +145,9 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
   const liveCmt =
     !overridden && (data?.sources ?? []).includes("fred") && isGenericTreasury(bond);
   const blocked =
-    payload?.status === "input_error" || payload?.status === "provider_unavailable";
+    payload?.status === "input_error" ||
+    payload?.status === "provider_unavailable" ||
+    payload?.status === "unsupported_asset";
 
   const stats = useMemo(() => {
     const macaulay = payload?.rows?.find(
@@ -257,7 +262,7 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
       />
     ) : blocked ? (
       <Empty
-        title={payload?.status === "input_error" ? "Bond inputs needed" : "Live yield unavailable"}
+        title={blockedTitle(payload?.status)}
         body={payload?.reason ?? "—"}
         icon="!"
         action={
@@ -422,6 +427,12 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
 }
 
 /* ── input fields ──────────────────────────────────────────────────── */
+
+function blockedTitle(status: string | undefined): string {
+  if (status === "input_error") return "Bond inputs needed";
+  if (status === "unsupported_asset") return "Asset not supported";
+  return "Live yield unavailable";
+}
 
 function cleanBond(raw: string | undefined): string | null {
   const value = (raw ?? "").trim().toUpperCase();

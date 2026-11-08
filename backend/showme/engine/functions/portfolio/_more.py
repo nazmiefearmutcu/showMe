@@ -29,8 +29,18 @@ class PORTWhatIfFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("PORT_WHATIF requires instrument")
-        qty = float(params.get("quantity", 0))
-        cost = float(params.get("cost", 0))
+        # No placeholder cost: a what-if P&L is only meaningful for a cost the
+        # user actually typed. Missing inputs return an explicit state.
+        qty, cost, problem = _whatif_inputs(params)
+        if problem is not None:
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={**problem, "rows": [], "methodology": (
+                    "Clone the current portfolio state, add the hypothetical position, "
+                    "rerun portfolio analytics before and after, then display the delta."
+                )},
+                sources=[], warnings=[],
+            )
         baseline = PortfolioState()
         baseline.import_legacy_crypto()
         # HNT-17: the old fixed "/tmp/_showme_whatif.json" path created a
@@ -84,6 +94,52 @@ class PORTWhatIfFunction(BaseFunction):
                                          "n_positions": "Change in position count.",
                                      }},
                               sources=list(set((before.sources or []) + (after.sources or []))))
+
+
+def _finite_number(raw: Any) -> float | None:
+    """Parse a user number; None when blank or not a finite number."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
+def _whatif_inputs(params: dict[str, Any]) -> tuple[float, float, dict[str, Any] | None]:
+    """Return (quantity, cost, problem). ``problem`` is set when a trade cannot be priced."""
+    qty = _finite_number(params.get("quantity"))
+    cost = _finite_number(params.get("cost"))
+    raw_bad = [
+        name for name in ("quantity", "cost")
+        if params.get(name) not in (None, "") and _finite_number(params.get(name)) is None
+    ]
+    if raw_bad:
+        return 0.0, 0.0, {
+            "status": "input_error",
+            "reason": f"non-numeric value for {', '.join(raw_bad)}",
+            "missing": raw_bad,
+            "next_actions": ["Enter numeric quantity and cost per share."],
+        }
+    missing = []
+    if qty is None or qty == 0:
+        missing.append("quantity")
+    if cost is None or cost <= 0:
+        missing.append("cost")
+    if missing:
+        return 0.0, 0.0, {
+            "status": "needs_input",
+            "reason": (
+                "PORT_WHATIF needs an explicit non-zero quantity and a positive cost per "
+                "share; no placeholder cost is assumed, so no P&L is computed."
+            ),
+            "missing": missing,
+            "next_actions": [
+                "Enter the hypothetical quantity and the cost per share you would pay or receive.",
+            ],
+        }
+    return float(qty), float(cost), None
 
 
 def _twr(period_returns: list[float]) -> float:
@@ -173,7 +229,17 @@ class TRAFunction(BaseFunction):
                     "labelled template history instead."
                 )
         close = df["close"]
-        divs = df["dividends"] if "dividends" in df.columns else pd.Series(dtype=float)
+        # A source without a dividend series (e.g. the template) must not read
+        # as "no dividends paid": keep the count/total null and say so.
+        dividends_known = "dividends" in df.columns
+        divs = df["dividends"] if dividends_known else pd.Series(dtype=float)
+        if not dividends_known:
+            warnings.append(
+                "Dividend events are unavailable from this data source; dividend "
+                "fields are null and the IRR excludes dividends."
+            )
+        div_count = int((divs > 0).sum()) if dividends_known else None
+        div_total = float(divs.sum()) if dividends_known else None
         price_ret = float(close.iloc[-1] / close.iloc[0] - 1)
         # TWR (daily compounded)
         daily_returns = close.pct_change().dropna().tolist()
@@ -207,8 +273,8 @@ class TRAFunction(BaseFunction):
                 "twr_total": twr,
                 "irr_annualized": irr,
                 "cagr": float(cagr) if cagr is not None else None,
-                "dividends_count": int((divs > 0).sum()) if len(divs) else 0,
-                "dividends_total": float(divs.sum()) if len(divs) else 0.0,
+                "dividends_count": div_count,
+                "dividends_total": div_total,
                 "n_observations": int(len(close)),
                 "first_date": close.index[0].strftime("%Y-%m-%d"),
                 "last_date":  close.index[-1].strftime("%Y-%m-%d"),
@@ -225,7 +291,7 @@ class TRAFunction(BaseFunction):
                     "price_return_total": price_ret,
                     "twr_total": twr,
                     "irr_annualized": irr,
-                    "dividends_total": float(divs.sum()) if len(divs) else 0.0,
+                    "dividends_total": div_total,
                 },
                 "methodology": (
                     "Compute price return from first and last adjusted closes, compound daily returns for "

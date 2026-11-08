@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import date, datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -27,6 +27,14 @@ from showme.engine.functions.derivative.ovme import _bs_price
 # constant so the chain stays keyless; OVME uses the same 5% default.
 _RISK_FREE_RATE = 0.05
 _DAYS_PER_YEAR = 365.0
+
+# Implied vol below this floor is a failed inversion (yfinance reports e.g. 1e-5
+# for deep-ITM quotes the solver could not invert), not a real vol.
+_IV_FLOOR = 0.001
+
+# The chain is "live" only when its newest option trade is this recent. Older
+# trades are the last trading session or a delayed feed and are labelled so.
+_LIVE_TRADE_WINDOW = timedelta(minutes=60)
 
 # Defensive spot anchor used only when no explicit param and no live quote are
 # available (e.g. air-gapped tests). Mirrors ``_resolve_ivol_spot`` in
@@ -118,6 +126,44 @@ def _years_to_expiry(expiry: str) -> float:
     return max(days, 0.5) / _DAYS_PER_YEAR
 
 
+def _as_utc(value: Any) -> datetime | None:
+    """Coerce a yfinance ``lastTradeDate`` cell (Timestamp/datetime/str) to UTC."""
+    if value is None or value != value:  # NaN / NaT compare unequal to themselves
+        return None
+    dt: Any = value
+    if not isinstance(dt, datetime):
+        to_py = getattr(dt, "to_pydatetime", None)
+        if callable(to_py):
+            try:
+                dt = to_py()
+            except Exception:
+                return None
+        elif isinstance(dt, str):
+            try:
+                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _below_intrinsic(mid: float | None, spot: float | None, strike: float, is_call: bool) -> bool:
+    """True when the quoted mid is under intrinsic value (no-arbitrage violation).
+
+    Intrinsic value is a lower bound for both American and European options, so
+    a mid below it means the implied vol is undefined for that quote.
+    """
+    if mid is None or not spot or spot <= 0:
+        return False
+    intrinsic = max(spot - strike, 0.0) if is_call else max(strike - spot, 0.0)
+    return mid + 1e-6 < intrinsic
+
+
 def _fetch_chain_sync(underlier: str, expiry: str | None) -> dict[str, Any]:
     """Blocking yfinance call — run via ``asyncio.to_thread``.
 
@@ -163,6 +209,7 @@ def _fetch_chain_sync(underlier: str, expiry: str | None) -> dict[str, Any]:
             "volume",
             "impliedVolatility",
             "lastPrice",
+            "lastTradeDate",
         ]
         present = [c for c in cols if c in df.columns]
         return df[present].to_dict(orient="records")
@@ -274,6 +321,9 @@ class OMONFunction(BaseFunction):
 
         # Merge calls and puts on strike.
         merged: dict[float, dict[str, Any]] = {}
+        # Quotes whose IV is undefined (failed inversion or below no-arbitrage
+        # bound). Their IV and delta are null, never 0.0 / -1.0 placeholders.
+        iv_undefined = {"count": 0}
 
         def _ingest(records: list[dict[str, Any]], side: str) -> None:
             is_call = side == "call"
@@ -284,9 +334,19 @@ class OMONFunction(BaseFunction):
                 row = merged.setdefault(strike, {"strike": round(strike, 4)})
                 bid = _num(rec.get("bid"))
                 ask = _num(rec.get("ask"))
-                iv = _num(rec.get("impliedVolatility"))
+                iv_raw = _num(rec.get("impliedVolatility"))
                 oi = _num(rec.get("openInterest"))
                 vol = _num(rec.get("volume"))
+                mid = (bid + ask) / 2.0 if bid is not None and ask is not None and ask > 0 else None
+                has_quote = bid is not None or ask is not None
+                iv_bad = (
+                    iv_raw is None
+                    or iv_raw < _IV_FLOOR
+                    or _below_intrinsic(mid, spot, strike, is_call)
+                )
+                if iv_bad and has_quote:
+                    iv_undefined["count"] += 1
+                iv = None if iv_bad else iv_raw
                 row[f"{side}_bid"] = bid
                 row[f"{side}_ask"] = ask
                 row[f"{side}_oi"] = int(oi) if oi is not None else None
@@ -302,6 +362,16 @@ class OMONFunction(BaseFunction):
 
         _ingest(chain.get("calls", []), "call")
         _ingest(chain.get("puts", []), "put")
+
+        # Newest option trade across the chain = the chain's real timestamp.
+        trade_times = [
+            ts
+            for rec in list(chain.get("calls", [])) + list(chain.get("puts", []))
+            if (ts := _as_utc(rec.get("lastTradeDate"))) is not None
+        ]
+        last_trade = max(trade_times) if trade_times else None
+        now_utc = datetime.now(timezone.utc)
+        is_live = last_trade is not None and (now_utc - last_trade) <= _LIVE_TRADE_WINDOW
 
         rows: list[dict[str, Any]] = []
         for strike in sorted(merged):
@@ -363,6 +433,24 @@ class OMONFunction(BaseFunction):
         total_call_oi = sum(r["call_oi"] for r in rows if r.get("call_oi"))
         total_put_oi = sum(r["put_oi"] for r in rows if r.get("put_oi"))
 
+        warnings: list[str] = []
+        if iv_undefined["count"]:
+            warnings.append(
+                f"Implied vol undefined for {iv_undefined['count']} quote(s) "
+                "(failed inversion or quote below the no-arbitrage bound); "
+                "shown as blank, delta not computed."
+            )
+        if last_trade is None:
+            warnings.append(
+                "Option chain has no trade timestamps; freshness cannot be verified, "
+                "so the chain is not labelled live."
+            )
+        elif not is_live:
+            warnings.append(
+                f"Not live: newest option trade is {last_trade.isoformat()} UTC "
+                "(last session or delayed feed)."
+            )
+
         cards = [
             {
                 "underlier": underlier,
@@ -394,18 +482,27 @@ class OMONFunction(BaseFunction):
                     "total_call_oi": total_call_oi,
                     "total_put_oi": total_put_oi,
                     "strike_count": len(rows),
+                    "iv_undefined_count": iv_undefined["count"],
+                    "last_trade_at": last_trade.isoformat() if last_trade else None,
                 },
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICTIONARY,
             },
             sources=["yfinance"],
-            warnings=[],
+            warnings=warnings,
             metadata={
                 "underlier": underlier,
                 "expiry": expiry,
-                "as_of": date.today().isoformat(),
+                # as_of is the newest option trade date, not the fetch date.
+                "as_of": last_trade.date().isoformat() if last_trade else None,
+                "as_of_timestamp": last_trade.isoformat() if last_trade else None,
+                "fetched_at": now_utc.isoformat(),
                 "strike_count": len(rows),
-                "live": True,
-                "data_mode": "live_yfinance",
+                "live": is_live,
+                "data_mode": (
+                    "live_yfinance"
+                    if is_live
+                    else ("last_trade_yfinance" if last_trade else "yfinance_no_trade_time")
+                ),
             },
         )

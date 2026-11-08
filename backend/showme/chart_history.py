@@ -676,6 +676,11 @@ async def fetch_yahoo_history(
         payload = response.json()
         rows = _rows_from_yahoo_chart(payload)
         meta = _meta_from_yahoo_chart(payload)
+    resampled = normalize_history_interval(interval) == "4h"
+    if resampled:
+        # Yahoo serves no 4h bars: the 60m bars are aggregated into 4h buckets
+        # so the rows really are 4h candles, as the requested interval says.
+        rows = _resample_ohlcv_rows(rows, INTERVAL_SECONDS["4h"])
     rows = _dedupe_sort_trim(rows, bars)
     if not rows:
         raise RuntimeError(f"no Yahoo chart history for {provider_symbol}")
@@ -691,6 +696,7 @@ async def fetch_yahoo_history(
             "bars_requested": bars,
             "bars_returned": len(rows),
             "deep_history": True,
+            **({"resampled_from": provider_interval, "resampled_to": "4h"} if resampled else {}),
             # Identity / 52-week reference fields the HP·GP header strip and
             # key-level rail read. Absent for provider payloads that don't
             # carry a chart meta block (Binance/Stooq), so consumers must
@@ -912,6 +918,44 @@ def _meta_from_yahoo_chart(payload: dict[str, Any]) -> dict[str, Any]:
         if value is not None:
             out[out_key] = value
     return out
+
+
+def _resample_ohlcv_rows(rows: list[dict[str, Any]], bucket_seconds: int) -> list[dict[str, Any]]:
+    """Aggregate OHLCV rows into buckets aligned to the Unix epoch.
+
+    For 4h the buckets start at 00/04/08/... UTC, the same origin pandas uses
+    for ``resample('4H')`` in the yfinance adapter. Each bucket takes the first
+    open, highest high, lowest low, last close and summed volume.
+    """
+    buckets: dict[int, dict[str, Any]] = {}
+    for row in sorted(rows, key=_row_time_ms):
+        ms = _row_time_ms(row)
+        close = _num(row.get("close"))
+        if ms <= 0 or close is None:
+            continue
+        key = (ms // 1000 // bucket_seconds) * bucket_seconds
+        open_ = _num(row.get("open"))
+        high = _num(row.get("high"))
+        low = _num(row.get("low"))
+        volume = _num(row.get("volume"))
+        bucket = buckets.get(key)
+        if bucket is None:
+            buckets[key] = {"open": open_, "high": high, "low": low,
+                            "close": close, "volume": volume}
+            continue
+        if bucket["open"] is None:
+            bucket["open"] = open_
+        if high is not None:
+            bucket["high"] = high if bucket["high"] is None else max(bucket["high"], high)
+        if low is not None:
+            bucket["low"] = low if bucket["low"] is None else min(bucket["low"], low)
+        bucket["close"] = close
+        if volume is not None:
+            bucket["volume"] = volume if bucket["volume"] is None else bucket["volume"] + volume
+    return [
+        {"date": datetime.fromtimestamp(key, tz=timezone.utc).isoformat(), "time": key, **bucket}
+        for key, bucket in sorted(buckets.items())
+    ]
 
 
 def _dedupe_sort_trim(rows: list[dict[str, Any]], bars: int) -> list[dict[str, Any]]:

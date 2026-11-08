@@ -35,7 +35,7 @@ class PolymarketAdapter(BaseDataSource):
         return self._client
 
     async def search(self, query: str | None = None, *,
-                     active: bool = True, closed: bool = False,
+                     active: bool | None = True, closed: bool | None = False,
                      limit: int = 30, tag_id: int | None = None,
                      min_liquidity: float = 0) -> list[dict[str, Any]]:
         client = await self._client_()
@@ -57,10 +57,14 @@ class PolymarketAdapter(BaseDataSource):
 
 
 async def fetch_markets(client: httpx.AsyncClient, query: str | None = None, *,
-                        active: bool = True, closed: bool = False,
+                        active: bool | None = True, closed: bool | None = False,
                         limit: int = 100, tag_id: int | None = None,
                         min_liquidity: float = 0) -> list[dict[str, Any]]:
-    """Filter before the provider limit, and page through its 100-row windows."""
+    """Filter before the provider limit, and page through its 100-row windows.
+
+    ``closed=None`` sends no ``closed`` flag at all (status=all); Gamma treats
+    any explicit ``closed`` value as a hard filter.
+    """
     target = min(max(limit, 1), 400)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -69,8 +73,9 @@ async def fetch_markets(client: httpx.AsyncClient, query: str | None = None, *,
         params: dict[str, Any] = {"limit": min(100, target - len(rows)),
                                  "offset": offset, "order": "volume24hr",
                                  "ascending": "false", "archived": "false",
-                                 "closed": str(closed).lower(),
                                  "liquidity_num_min": max(0, min_liquidity)}
+        if closed is not None:
+            params["closed"] = str(closed).lower()
         if active:
             params["active"] = "true"
         if active and not closed:

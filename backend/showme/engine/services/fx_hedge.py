@@ -31,6 +31,17 @@ class FXExposure:
     spot_rate: float          # quote per base, e.g. EURUSD = 1.10
     base_rate: float = 0.04   # foreign-currency risk-free
     home_rate: float = 0.045  # home-currency risk-free
+    side: str = "long_foreign"  # long_foreign (receive foreign) | short_foreign (pay foreign)
+
+
+SIDE_SIGN: dict[str, float] = {"long_foreign": 1.0, "short_foreign": -1.0}
+
+
+def side_sign(side: str) -> float:
+    """+1 for a long-foreign exposure, -1 for short-foreign (P&L mirrors)."""
+    if side not in SIDE_SIGN:
+        raise ValueError(f"unknown exposure side {side!r}")
+    return SIDE_SIGN[side]
 
 
 def forward_rate(*, spot: float, home_rate: float, base_rate: float,
@@ -47,23 +58,27 @@ def hedge_one(
 ) -> dict[str, Any]:
     fwd = forward_rate(spot=exp.spot_rate, home_rate=exp.home_rate,
                        base_rate=exp.base_rate, days=days)
+    sign = side_sign(exp.side)
     home_value_now = exp.notional * exp.spot_rate
     hedged_notional = exp.notional * hedge_ratio
     unhedged_notional = exp.notional - hedged_notional
-    # Carry PnL on the hedged leg: locked-in forward minus today's spot.
-    carry_pnl = (fwd - exp.spot_rate) * hedged_notional
+    # Carry PnL on the hedged leg: locked-in forward minus today's spot. The
+    # hedge is opposite to the exposure, so a short-foreign book mirrors it.
+    carry_pnl = sign * (fwd - exp.spot_rate) * hedged_notional
     # Scenario: quote/home currency strengthens -> fewer home units per one
     # foreign unit; quote/home weakens -> more home units per foreign unit.
     spot_if_home_strengthens = exp.spot_rate * (1 - usd_shock_pct)
     spot_if_home_weakens = exp.spot_rate * (1 + usd_shock_pct)
     pnl_if_home_strengthens = (
-        unhedged_notional * (spot_if_home_strengthens - exp.spot_rate) + carry_pnl
+        sign * unhedged_notional * (spot_if_home_strengthens - exp.spot_rate) + carry_pnl
     )
     pnl_if_home_weakens = (
-        unhedged_notional * (spot_if_home_weakens - exp.spot_rate) + carry_pnl
+        sign * unhedged_notional * (spot_if_home_weakens - exp.spot_rate) + carry_pnl
     )
     return {
         "currency": exp.currency, "home_currency": exp.home_currency,
+        "exposure_side": exp.side,
+        "hedge_direction": "sell_foreign_forward" if sign > 0 else "buy_foreign_forward",
         "notional_foreign": exp.notional,
         "spot_rate": exp.spot_rate,
         "forward_rate": fwd,

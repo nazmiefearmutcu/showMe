@@ -89,7 +89,7 @@ function okPayload(warnings: string[] = []): Partial<MockFnState> {
         symbol: "SPY",
         status: "ok",
         data_state: "ok",
-        confidence: 1.0,
+        input_coverage: 1.0,
         current: {
           regime: "Risk-on bull",
           trend: "BULL",
@@ -141,7 +141,7 @@ function insufficientPayload(): Partial<MockFnState> {
         symbol: "SPY",
         status: "ok",
         data_state: "insufficient_inputs",
-        confidence: 0.25,
+        input_coverage: 0.25,
         cards: [
           { label: "Regime", value: "Cannot classify — no inputs available" },
           { label: "Trend", value: "UNKNOWN" },
@@ -255,6 +255,17 @@ describe("REGM pane — verbatim classification", () => {
     expect(
       screen.getByText(/FRED curve spread unavailable/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("REGM pane — input coverage (REGM#3)", () => {
+  it("labels the 0..1 value as input coverage, never as confidence", () => {
+    setMockFn(okPayload());
+    render(<REGMPane code="REGM" symbol="SPY" />);
+    const cell = screen.getByTitle(/Share of the four regime components/i);
+    expect(cell).toHaveTextContent("input coverage");
+    expect(cell).toHaveTextContent("1.00 (4/4)");
+    expect(screen.queryByText(/confidence/i)).toBeNull();
   });
 });
 

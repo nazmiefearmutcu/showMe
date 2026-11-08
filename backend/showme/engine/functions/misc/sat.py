@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from datetime import datetime, timedelta, timezone
+import struct
+import zlib
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -55,6 +57,17 @@ _GIBS_LAYERS: dict[str, tuple[str, str]] = {
 _GIBS_BASE = "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi"
 _OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 
+# GIBS answers HTTP 200 with an all-black PNG for days it has not processed yet.
+# A tile counts as imagery only when at least this share of its pixels carry colour;
+# otherwise the search walks back up to _TILE_LOOKBACK_DAYS days for a real tile.
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MIN_IMAGERY_FRACTION = 0.01
+_TILE_LOOKBACK_DAYS = 4
+_TILE_RESOLVE_TIMEOUT = 10.0
+# Open-Meteo runs after the tile walk-back, so its own budget is kept small:
+# worst case is _TILE_RESOLVE_TIMEOUT + _CONDITIONS_TIMEOUT, inside the 14 s router timeout.
+_CONDITIONS_TIMEOUT = 3.0
+
 
 @FunctionRegistry.register
 class SATFunction(BaseFunction):
@@ -69,10 +82,22 @@ class SATFunction(BaseFunction):
 
         # Allow a raw bbox override (legacy) but default to curated AOI presets.
         bbox_override = _parse_bbox(params.get("bbox"))
+        # An unknown area or layer the caller asked for is an input error, not a
+        # silent switch to Cushing / true colour (data policy: no default
+        # location for an unknown input - review of SAT#1).
+        unknown = []
         if aoi_key not in _AOI_PRESETS and bbox_override is None:
-            aoi_key = "cushing_ok"
+            unknown.append(f"aoi {aoi_key!r} (presets: {', '.join(sorted(_AOI_PRESETS))})")
         if layer_key not in _GIBS_LAYERS:
-            layer_key = "true_color"
+            unknown.append(f"layer {layer_key!r} (layers: {', '.join(sorted(_GIBS_LAYERS))})")
+        if unknown:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={"status": "input_error", "reason": "Unknown " + "; ".join(unknown) + ".",
+                      "next_actions": ["Pick a preset area and layer, or pass bbox=minLon,minLat,maxLon,maxLat."],
+                      "rows": []},
+                warnings=["unknown " + "; ".join(unknown)],
+            )
 
         if bbox_override is not None:
             bbox = bbox_override
@@ -85,18 +110,19 @@ class SATFunction(BaseFunction):
             center_lon, center_lat = clon, clat
 
         date_from, date_to = _date_window(params)
-        capture_date = date_to  # GIBS imagery for the end of the window
+        requested_date = date_to  # the window end the caller asked for
 
         gibs_layer_id, _matrix = _GIBS_LAYERS[layer_key]
-        tile_url = _gibs_wms_url(bbox, gibs_layer_id, capture_date)
 
         methodology = (
             "SAT surfaces real, keyless satellite tiles from NASA GIBS (Global Imagery "
             "Browse Services) for the selected AOI, layer and capture date. The tile_url is a "
-            "live WMS PNG of the actual area on the actual day (MODIS/VIIRS daily mosaics, no "
-            "API key). Cloud cover is the real value reported by Open-Meteo for the AOI centroid "
-            "on the capture date (keyless), used as the cloud_pct proxy. No synthetic tiles and "
-            "no fabricated cloud percentages: on a real network outage SAT degrades to "
+            "live WMS PNG of the actual area (MODIS/VIIRS daily mosaics, no API key). A tile is "
+            "only used when it carries imagery: GIBS returns blank black tiles for days it has "
+            "not processed, so SAT walks back to the newest real tile and reports the lag "
+            "(capture_lag_days). Cloud cover is the real value reported by Open-Meteo for the AOI "
+            "centroid on the capture date (keyless), used as the cloud_pct proxy. No synthetic "
+            "tiles and no fabricated cloud percentages: on a real network outage SAT degrades to "
             "provider_unavailable with an honest warning."
         )
         field_dictionary = {
@@ -112,33 +138,14 @@ class SATFunction(BaseFunction):
         sources = ["nasa_gibs"]
         warnings: list[str] = []
 
-        # --- Real conditions / cloud cover from Open-Meteo (keyless) ---------
-        cloud_pct: float | None = None
-        weather_summary: dict[str, Any] = {}
-        try:
-            weather_summary, cloud_pct = await self._fetch_conditions(center_lat, center_lon, capture_date)
-            sources.append("open_meteo")
-        except Exception as exc:  # genuine outage of the conditions provider
-            warnings.append(f"open_meteo: {exc}")
-
-        # Verify the GIBS endpoint is actually reachable so we never hand the UI
-        # a dead tile URL. A HEAD/GET failure => honest provider_unavailable.
-        tile_reachable = True
-        try:
-            tile_reachable = await self._probe_tile(tile_url)
-        except Exception as exc:
-            tile_reachable = False
-            warnings.append(f"nasa_gibs: {exc}")
-
-        if not tile_reachable and cloud_pct is None and not weather_summary:
-            # Both providers down -> honest outage, no fabrication.
+        def _provider_unavailable(reason: str, tile_checks: list[dict[str, Any]]) -> FunctionResult:
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data={
                     "status": "provider_unavailable",
                     "data_mode": "not_configured",
-                    "reason": "; ".join(warnings) or "No live satellite/conditions source reachable.",
+                    "reason": reason,
                     "rows": [],
                     "cards": [],
                     "methodology": methodology,
@@ -148,6 +155,7 @@ class SATFunction(BaseFunction):
                     "layer": layer_key,
                     "bbox": list(bbox),
                     "as_of": now_iso,
+                    "tile_checks": tile_checks,
                     "next_actions": [
                         "Retry SAT; NASA GIBS and Open-Meteo are keyless public services and may be briefly unavailable.",
                         "Pick a different capture date inside GIBS coverage (last ~2 weeks are most reliable).",
@@ -156,6 +164,76 @@ class SATFunction(BaseFunction):
                 sources=sources,
                 warnings=warnings,
                 metadata={"fallback": True, "degraded": True, "latency_ms": None},
+            )
+
+        # --- Newest GIBS tile that actually carries imagery -------------------
+        tile = await self._resolve_tile(bbox, gibs_layer_id, requested_date)
+        if tile["capture_date"] is None and tile["state"] != "empty":
+            # No tile was verified as imagery and no capture day can be attributed.
+            # Presenting the requested day here would show an unverified or blank tile.
+            warnings.append(tile["reason"])
+            return _provider_unavailable(tile["reason"], tile["checks"])
+        if tile["state"] == "empty":
+            # Every candidate day is blank: explicit empty state, no tile row.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "empty",
+                    "data_mode": "delayed_reference",
+                    "reason": tile["reason"],
+                    "rows": [],
+                    "cards": [],
+                    "methodology": methodology,
+                    "field_dictionary": field_dictionary,
+                    "aoi": aoi_key,
+                    "aoi_label": aoi_label,
+                    "layer": layer_key,
+                    "bbox": list(bbox),
+                    "requested_date": requested_date,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "tile_checks": tile["checks"],
+                    "as_of": now_iso,
+                    "next_actions": [
+                        "GIBS has no processed imagery for this window yet; pick an earlier capture date.",
+                        "Retry SAT later for a newer capture.",
+                    ],
+                },
+                sources=sources,
+                warnings=[tile["reason"]],
+                metadata={"fallback": False, "degraded": True, "latency_ms": None},
+            )
+
+        capture_date = tile["capture_date"] or requested_date
+        tile_url = tile["tile_url"] or _gibs_wms_url(bbox, gibs_layer_id, capture_date)
+        tile_reachable = tile["state"] == "imagery"
+        if not tile_reachable:
+            warnings.append(tile["reason"])
+        capture_lag_days = _lag_days(requested_date, capture_date)
+        if capture_lag_days > 0:
+            warnings.append(
+                f"GIBS has no imagery for {requested_date}; newest real tile is {capture_date} "
+                f"({capture_lag_days} day(s) earlier)."
+            )
+
+        # --- Real conditions / cloud cover from Open-Meteo (keyless) ---------
+        cloud_pct: float | None = None
+        weather_summary: dict[str, Any] = {}
+        try:
+            weather_summary, cloud_pct = await asyncio.wait_for(
+                self._fetch_conditions(center_lat, center_lon, capture_date),
+                timeout=_CONDITIONS_TIMEOUT,
+            )
+            sources.append("open_meteo")
+        except Exception as exc:  # genuine outage of the conditions provider
+            warnings.append(f"open_meteo: {str(exc) or type(exc).__name__}")
+
+        if not tile_reachable and cloud_pct is None and not weather_summary:
+            # Both providers down -> honest outage, no fabrication.
+            return _provider_unavailable(
+                "; ".join(warnings) or "No live satellite/conditions source reachable.",
+                tile["checks"],
             )
 
         row = {
@@ -178,14 +256,18 @@ class SATFunction(BaseFunction):
                 "latest_capture": capture_date,
                 "cloud_pct": round(cloud_pct, 1) if isinstance(cloud_pct, (int, float)) else None,
                 "data_mode": "delayed_reference",
+                "capture_lag_days": capture_lag_days,
                 "as_of": now_iso,
             }
         ]
 
+        # partial = the card is not the requested day (lagged) or the tile could not be verified.
         status = "ok"
         if not tile_reachable:
             status = "partial"
             warnings.append("GIBS tile probe failed; conditions still live.")
+        elif capture_lag_days > 0:
+            status = "partial"
 
         data: dict[str, Any] = {
             "status": status,
@@ -197,7 +279,10 @@ class SATFunction(BaseFunction):
             "bbox_label": ",".join(f"{v:.5f}" for v in bbox),
             "date_from": date_from,
             "date_to": date_to,
+            "requested_date": requested_date,
             "capture_date": capture_date,
+            "capture_lag_days": capture_lag_days,
+            "tile_checks": tile["checks"],
             "tile_url": tile_url,
             "true_color_tile": {
                 "label": f"NASA GIBS {gibs_layer_id} ({capture_date})",
@@ -213,10 +298,14 @@ class SATFunction(BaseFunction):
             "as_of": now_iso,
             "next_actions": [],
         }
-        if warnings:
-            data["next_actions"] = [
-                "Some sub-providers were briefly unavailable; retry for a fully-populated card.",
-            ]
+        if capture_lag_days > 0:
+            data["next_actions"].append(
+                f"Newest processed GIBS imagery is {capture_date}, {capture_lag_days} day(s) before the requested date."
+            )
+        if not tile_reachable:
+            data["next_actions"].append(
+                "Some sub-providers were briefly unavailable; retry for a fully-populated card."
+            )
 
         return FunctionResult(
             code=self.code,
@@ -276,14 +365,21 @@ class SATFunction(BaseFunction):
         }
         return summary, cloud_pct
 
-    async def _probe_tile(self, url: str) -> bool:
-        """Best-effort reachability probe of the GIBS WMS tile."""
+    async def _resolve_tile(self, bbox: tuple[float, float, float, float], layer_id: str, requested: str) -> dict[str, Any]:
+        """Newest GIBS tile with imagery at or before ``requested`` (bounded by a timeout)."""
         try:
-            resp = await _http_get_raw(url)
-        except Exception:
-            return False
-        status = getattr(resp, "status_code", None)
-        return bool(status is not None and 200 <= int(status) < 400)
+            return await asyncio.wait_for(
+                _resolve_tile_candidates(bbox, layer_id, requested),
+                timeout=_TILE_RESOLVE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return {
+                "state": "unreachable",
+                "capture_date": None,
+                "tile_url": None,
+                "checks": [],
+                "reason": f"nasa_gibs: tile lookup exceeded {_TILE_RESOLVE_TIMEOUT:.0f}s",
+            }
 
 
 def _gibs_wms_url(bbox: tuple[float, float, float, float], layer_id: str, date: str) -> str:
@@ -343,6 +439,168 @@ async def _http_get_raw(url: str, params: dict[str, Any] | None = None):
     if asyncio.iscoroutine(result):
         result = await result
     return result
+
+
+async def _resolve_tile_candidates(
+    bbox: tuple[float, float, float, float], layer_id: str, requested: str
+) -> dict[str, Any]:
+    """Check the requested day, then walk back day by day until a tile has imagery."""
+    try:
+        base = date.fromisoformat(requested)
+    except ValueError:
+        return {
+            "state": "unreachable",
+            "capture_date": None,
+            "tile_url": None,
+            "checks": [],
+            "reason": f"invalid capture date {requested!r}",
+        }
+    checks: list[dict[str, Any]] = []
+    unreachable: list[str] = []
+    for back in range(_TILE_LOOKBACK_DAYS + 1):
+        day = (base - timedelta(days=back)).isoformat()
+        url = _gibs_wms_url(bbox, layer_id, day)
+        state, detail = await _check_tile(url)
+        check: dict[str, Any] = {"date": day, "state": state}
+        if detail:
+            check["detail"] = detail
+        checks.append(check)
+        if state == "imagery":
+            return {"state": "imagery", "capture_date": day, "tile_url": url, "checks": checks, "reason": ""}
+        if state == "unreachable":
+            unreachable.append(detail)
+    if unreachable:
+        # No day was verified as imagery and at least one probe failed. The requested
+        # day may be blank (checked above), so no capture date is attributed here.
+        return {
+            "state": "unreachable",
+            "capture_date": None,
+            "tile_url": None,
+            "checks": checks,
+            "reason": unreachable[0] or "nasa_gibs: tile could not be verified",
+        }
+    return {
+        "state": "empty",
+        "capture_date": None,
+        "tile_url": None,
+        "checks": checks,
+        "reason": (
+            f"GIBS returned blank tiles for {requested} and the {_TILE_LOOKBACK_DAYS} days before it; "
+            "no imagery to show."
+        ),
+    }
+
+
+async def _check_tile(url: str) -> tuple[str, str]:
+    """Classify one GIBS tile as ("imagery" | "blank" | "unreachable", detail)."""
+    try:
+        resp = await _http_get_raw(url)
+    except Exception as exc:
+        return "unreachable", f"nasa_gibs: {exc}"
+    try:
+        status = int(getattr(resp, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if not 200 <= status < 300:
+        return "unreachable", f"nasa_gibs: HTTP {status}"
+    body = getattr(resp, "content", b"") or b""
+    if not isinstance(body, (bytes, bytearray)) or not bytes(body).startswith(_PNG_SIGNATURE):
+        return "unreachable", "nasa_gibs: response is not a PNG tile"
+    fraction = await asyncio.to_thread(_png_nonzero_fraction, bytes(body))
+    if fraction is None:
+        return "unreachable", "nasa_gibs: PNG tile could not be decoded"
+    if fraction < _MIN_IMAGERY_FRACTION:
+        return "blank", f"only {fraction:.2%} of pixels carry colour"
+    return "imagery", ""
+
+
+def _lag_days(requested: str, capture: str) -> int:
+    try:
+        return max(0, (date.fromisoformat(requested) - date.fromisoformat(capture)).days)
+    except ValueError:
+        return 0
+
+
+def _png_nonzero_fraction(data: bytes) -> float | None:
+    """Share of pixels whose R, G or B is nonzero, from an 8-bit RGB/RGBA PNG.
+
+    Pure-stdlib decoder (zlib + the five scanline filters). Returns None when the
+    bytes are not a PNG this decoder handles, so callers never guess.
+    """
+    if not data.startswith(_PNG_SIGNATURE):
+        return None
+    pos = len(_PNG_SIGNATURE)
+    width = height = 0
+    bit_depth = color_type = interlace = None
+    idat: list[bytes] = []
+    while pos + 8 <= len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR" and len(body) >= 13:
+            width, height, bit_depth, color_type, _comp, _filt, interlace = struct.unpack(">IIBBBBB", body[:13])
+        elif kind == b"IDAT":
+            idat.append(body)
+        elif kind == b"IEND":
+            break
+    if not width or not height or bit_depth != 8 or color_type not in (2, 6) or interlace != 0:
+        return None
+    bpp = 3 if color_type == 2 else 4
+    stride = width * bpp
+    try:
+        raw = zlib.decompress(b"".join(idat))
+    except zlib.error:
+        return None
+    if len(raw) < height * (stride + 1):
+        return None
+    prev = bytearray(stride)
+    lit = 0
+    for y in range(height):
+        start = y * (stride + 1)
+        cur = _unfilter_scanline(raw[start], raw[start + 1:start + 1 + stride], prev, bpp)
+        if cur is None:
+            return None
+        # Per-pixel colour test on whole channel slices (C-level max over bytes).
+        colour = bytes(map(max, cur[0::bpp], cur[1::bpp], cur[2::bpp]))
+        lit += len(colour) - colour.count(0)
+        prev = cur
+    return lit / float(width * height)
+
+
+def _unfilter_scanline(ftype: int, line: bytes, prev: bytearray, bpp: int) -> bytearray | None:
+    n = len(line)
+    if ftype == 0:
+        return bytearray(line)
+    cur = bytearray(n)
+    if ftype == 1:
+        for i in range(n):
+            left = cur[i - bpp] if i >= bpp else 0
+            cur[i] = (line[i] + left) & 0xFF
+    elif ftype == 2:
+        for i in range(n):
+            cur[i] = (line[i] + prev[i]) & 0xFF
+    elif ftype == 3:
+        for i in range(n):
+            left = cur[i - bpp] if i >= bpp else 0
+            cur[i] = (line[i] + ((left + prev[i]) >> 1)) & 0xFF
+    elif ftype == 4:
+        for i in range(n):
+            a = cur[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            if pa <= pb and pa <= pc:
+                pred = a
+            elif pb <= pc:
+                pred = b
+            else:
+                pred = c
+            cur[i] = (line[i] + pred) & 0xFF
+    else:
+        return None
+    return cur
 
 
 def _parse_bbox(value: Any) -> tuple[float, float, float, float] | None:

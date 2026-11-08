@@ -320,6 +320,12 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
                 <Pill tone="muted" variant="soft" withDot={false}>
                   AS OF {formatHeaderTime(summary.last_updated)}
                 </Pill>
+              ) : summary?.latest_rating_action_date ? (
+                // The consensus itself is undated (provider period buckets), so only
+                // the newest dated broker action is shown, under its own label.
+                <Pill tone="muted" variant="soft" withDot={false}>
+                  LAST BROKER ACTION {summary.latest_rating_action_date}
+                </Pill>
               ) : null}
               <label style={veryfinderToggleStyle} title="Show Veryfinder social overlay beside ANR consensus">
                 <input

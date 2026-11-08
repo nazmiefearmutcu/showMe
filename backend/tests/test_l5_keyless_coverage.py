@@ -282,28 +282,32 @@ def test_tauc_reference_true_keeps_labelled_template() -> None:
     assert result.sources == ["treasury_auction_model"]
 
 
-def test_tauc_provider_failure_is_labelled_fallback() -> None:
+def test_tauc_provider_failure_is_unavailable_not_a_template() -> None:
+    # DATA POLICY: a failed live feed must not be replaced by invented rows.
     from showme.engine.functions.bond.tauc import TAUCFunction
 
     result = asyncio.run(
         TAUCFunction(FunctionDeps(treasury_auctions=_FakeTreasuryAuctions(boom=True))).execute()
     )
-    assert result.data["summary"]["source_mode"] == "treasury_auction_fallback"
-    assert result.sources == ["treasury_auction_fallback"]
-    assert result.metadata.get("fallback") is True
+    assert result.data["rows"] == []
+    assert result.data["summary"]["source_mode"] == "treasurydirect_unavailable"
+    assert result.sources == ["treasurydirect"]
+    assert result.metadata.get("live") is False
     assert result.warnings
     sanitized = _body(result)
     assert sanitized["data_state"] != "live"
     assert sanitized["status"] == "provider_unavailable"
 
 
-def test_tauc_without_adapter_stays_labelled_model() -> None:
+def test_tauc_without_adapter_is_unavailable_not_a_template() -> None:
+    # DATA POLICY: no adapter means no rows, not an invented calendar.
     from showme.engine.functions.bond.tauc import TAUCFunction
 
     result = asyncio.run(TAUCFunction(FunctionDeps()).execute())
-    assert result.sources == ["treasury_auction_model"]
-    assert result.metadata.get("fallback") is True
-    assert result.data["summary"]["source_mode"] == "treasury_auction_model"
+    assert result.data["rows"] == []
+    assert result.data["status"] == "provider_unavailable"
+    assert result.sources == ["treasurydirect"]
+    assert result.data["summary"]["source_mode"] == "treasurydirect_unavailable"
     assert _body(result)["data_state"] != "live"
 
 

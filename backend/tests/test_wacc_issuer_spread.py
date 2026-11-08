@@ -91,17 +91,19 @@ async def test_rd_falls_back_to_fred_bbb_not_aaa():
         # no interestExpense → fall through to FRED
         "sector": "Technology",
     }
+    # WACC#1: the BBB input is the YIELD series BAMLC0A4CBBBEY (the spread
+    # series BAMLC0A4CBBB is not a cost of debt).
     deps = FunctionDeps(
         yfinance=_FakeYf(raw=raw),
-        fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBB": 6.5, "AAA": 4.8}),
+        fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 6.5, "AAA": 4.8}),
     )
     fn = WACCFunction(deps)
     instrument = Instrument(symbol="ACME", asset_class=AssetClass.EQUITY)
     res = await fn.execute(instrument=instrument, beta=1.1)
     data = res.data
-    # BBB = 6.5% / 100 = 0.065, not AAA 0.048
+    # BBB yield = 6.5% / 100 = 0.065, not AAA 0.048
     assert abs(data["rd"] - 0.065) < 1e-9
-    assert data["rd_source"] == "fred_bbb"
+    assert data["rd_source"] == "fred_bbb_yield"
 
 
 @pytest.mark.asyncio
@@ -119,10 +121,14 @@ async def test_sector_default_kicks_in_for_bank_without_balance_sheet():
     instrument = Instrument(symbol="BNK", asset_class=AssetClass.EQUITY)
     res = await fn.execute(instrument=instrument, beta=1.0)
     data = res.data
-    assert abs(data["equity_weight"] - 0.1) < 1e-9
-    assert abs(data["debt_weight"] - 0.9) < 1e-9
-    assert data["debt_value_source"] == "sector_default_financial"
-    assert data["capital_structure_data_state"] == "sector_default"
+    # WACC#2: a bank's liabilities are operating funding, so the old 10/90
+    # sector constant is no longer used; WACC is reported as not applicable.
+    assert data["status"] == "not_applicable"
+    assert data["equity_weight"] is None
+    assert data["debt_weight"] is None
+    assert data["wacc"] is None
+    assert data["debt_value_source"] == "not_applicable_financial"
+    assert data["capital_structure_data_state"] == "not_applicable_financial"
 
 
 @pytest.mark.asyncio

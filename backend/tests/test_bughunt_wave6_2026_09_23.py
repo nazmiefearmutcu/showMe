@@ -197,6 +197,16 @@ class _FakeFredCSVClient:
         raise AssertionError(f"unexpected FRED series requested: {url}")
 
 
+class _BenchmarkYahoo:
+    """yfinance-shaped fake: a rising close series so REGM has a real benchmark
+    to classify (the curve leg under test runs alongside it)."""
+
+    async def fetch(self, request):
+        closes = [100.0 + i * 0.5 for i in range(300)]
+        idx = pd.date_range(end="2026-09-20", periods=len(closes), freq="D")
+        return pd.DataFrame({"close": closes}, index=idx)
+
+
 class _FakeKeyedFred:
     """FREDAdapter-shaped fake: keyed fetch returns a date-indexed frame."""
 
@@ -217,7 +227,7 @@ def test_regm_keyed_fred_path_computes_curve() -> None:
     raised AttributeError; it must read the returned DataFrame directly."""
     from showme.engine.functions.macro.regm import REGMFunction
 
-    fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([3.4] * 5, [4.2] * 5)))
+    fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([3.4] * 5, [4.2] * 5), yfinance=_BenchmarkYahoo()))
     out = _run(fn.execute(symbol="SPY", allow_model=True))
     current = out.data["current"]
     assert current.get("curve") == "INVERTED"
@@ -231,9 +241,12 @@ def test_regm_keyless_adapter_falls_through_to_csv_shim(monkeypatch) -> None:
 
     reset_fred_csv_cache()
     try:
-        fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([9.9] * 5, [9.9] * 5, api_key="")))
+        fn = REGMFunction(FunctionDeps(
+            fred=_FakeKeyedFred([9.9] * 5, [9.9] * 5, api_key=""),
+            yfinance=_BenchmarkYahoo(),
+        ))
         fn._http_client = _FakeFredCSVClient(dgs10="3.40", dgs2="4.20")
-        out = _run(fn.execute(symbol="SPY", allow_model=True))
+        out = _run(fn.execute(symbol="SPY"))
         current = out.data["current"]
         # The keyed fake would give +570bp; the shim's CSV values give -80bp.
         assert current.get("curve_2s10s_bp") == pytest.approx(-80.0)
@@ -379,24 +392,30 @@ def test_wirp_irx_refinement_capped_at_remaining_budget(monkeypatch) -> None:
 
     # The 2.5s IRX pull must be cancelled at the ~1s remaining budget...
     assert elapsed < 2.2, f"IRX was awaited past the function budget ({elapsed:.2f}s)"
-    # ...and WIRP still returns honest FRED-anchored rows.
-    assert result.data["rows"], "FRED-anchored rows must survive an IRX timeout"
-    assert result.data["source_mode"] == "live_fred_target_no_irx"
+    # The keyless path has no hike/cut source, so no rows are served either way.
+    # The IRX timeout is still reported honestly and the anchor keeps FRED values.
+    assert result.data["rows"] == []
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["anchor"]["current_target_mid"] == 4.375
+    assert result.data["anchor"]["tbill_13w_pct"] is None
     assert any("timed out" in w for w in result.warnings)
 
 
-def test_wirp_fomc_calendar_exhausted_is_honest(monkeypatch) -> None:
+def test_wirp_keyless_serves_no_stale_calendar_dates(monkeypatch) -> None:
+    """The keyless path has no forward-meeting rows, so no past FOMC date can
+    be served as an upcoming decision."""
     import showme.engine.functions.macro.wirp as wirp_mod
 
     _install_wirp_fakes(monkeypatch)
-    monkeypatch.setattr(wirp_mod, "_FOMC_CALENDAR_2026", ["2026-01-28", "2026-03-18"])
 
+    async def _irx():
+        return 4.30, "2026-09-10"
+
+    monkeypatch.setattr(wirp_mod, "_fetch_irx_implied_rate", _irx)
     result = _run(wirp_mod.WIRPFunction(FunctionDeps()).execute(central_bank="FED", meetings=4))
     assert result.data["rows"] == []
-    assert result.data["status"] == "empty"
-    # Past dates must not be served as forward meetings — say why instead.
-    assert any("calendar exhausted" in w.lower() for w in result.warnings)
-    assert any("2026-03-18" in w for w in result.warnings)
+    assert result.data["status"] == "provider_unavailable"
+    assert not any("calendar" in w.lower() and "exhausted" in w.lower() for w in result.warnings)
 
 
 # ── HNT-08: MGN input_error ───────────────────────────────────────────────

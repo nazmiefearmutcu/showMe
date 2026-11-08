@@ -8,8 +8,9 @@
  * `brokers_checked` / `brokers_online` lists, `warnings`, `next_actions`,
  * `methodology` and (in `metadata`) a `provider_errors` list.
  *
- * Open vs terminal is decided client-side via `OPEN_STATES` (mirrors the
- * backend status vocabulary). With no broker adapters configured the handler
+ * Open vs terminal: a row is Open when the backend says `confirmed_open`
+ * (a live broker listed it); rows without that flag fall back to `OPEN_STATES`
+ * (mirrors the backend status vocabulary). Order history is never Open. With no broker adapters configured the handler
  * returns `orders: []`, `data_mode: "not_configured"` and an actionable
  * `next_actions` — the pane renders an empty-but-honest blotter and never
  * fakes fills.
@@ -35,7 +36,7 @@ import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { navigate } from "@/lib/router";
 import { useWorkspace } from "@/lib/workspace";
-import { formatCurrency, formatMissing, formatNumber } from "@/lib/format";
+import { formatMissing, formatNumber } from "@/lib/format";
 import {
   FunctionControlGroup,
   LoadStatePill,
@@ -55,6 +56,8 @@ interface AimOrder {
   type?: string | null;
   tif?: string | null;
   status?: string | null;
+  /** true only when a live broker listed the order (sidecar AIM row flag). */
+  confirmed_open?: boolean | null;
   filled_qty?: number | null;
   avg_fill_px?: number | null;
 }
@@ -65,6 +68,8 @@ interface AimCards {
   filled_today?: number;
   brokers_online?: number;
   total_notional?: number;
+  priced_count?: number;
+  unpriced_count?: number;
   data_mode?: string;
   as_of?: string;
 }
@@ -83,15 +88,24 @@ interface AimPayload {
   next_actions?: string[];
 }
 
-// Mirrors the backend status vocabulary for "still working" orders.
+// Open is decided by the backend's `confirmed_open` flag (a live broker listed
+// the order). This set is only a fallback for rows without that flag; history
+// rows always carry `confirmed_open: false` from the sidecar.
 const OPEN_STATES = new Set([
   "open",
   "working",
   "partially_filled",
   "pending",
+  "pending_new",
   "accepted",
   "new",
+  "submitted",
 ]);
+
+function isOpenOrder(o: AimOrder): boolean {
+  if (typeof o.confirmed_open === "boolean") return o.confirmed_open;
+  return OPEN_STATES.has((o.status ?? "").toLowerCase());
+}
 
 const TABS = ["open", "history"] as const;
 type TabId = (typeof TABS)[number];
@@ -144,11 +158,11 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
   }, [payload.orders, symbol]);
 
   const openOrders = useMemo(
-    () => allOrders.filter((o) => OPEN_STATES.has((o.status ?? "").toLowerCase())),
+    () => allOrders.filter(isOpenOrder),
     [allOrders],
   );
   const historyOrders = useMemo(
-    () => allOrders.filter((o) => !OPEN_STATES.has((o.status ?? "").toLowerCase())),
+    () => allOrders.filter((o) => !isOpenOrder(o)),
     [allOrders],
   );
   const activeRows = tab === "open" ? openOrders : historyOrders;
@@ -187,6 +201,7 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
     numeric(cards.brokers_online) ??
     (Array.isArray(payload.brokers_online) ? payload.brokers_online.length : 0);
   const totalNotional = numeric(cards.total_notional) ?? 0;
+  const unpricedCount = numeric(cards.unpriced_count) ?? 0;
   const rejectedCount = historyOrders.filter(
     (o) => (o.status ?? "").toLowerCase() === "rejected",
   ).length;
@@ -461,10 +476,14 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
                   }
                 />
                 <StatCard
-                  label="Notional"
+                  label="Notional (indicative)"
                   value={fmtNotional(totalNotional)}
                   caption={
-                    rejectedCount > 0 ? `${rejectedCount} rejected` : "USD est."
+                    rejectedCount > 0
+                      ? `${rejectedCount} rejected`
+                      : unpricedCount > 0
+                        ? `${unpricedCount} unpriced · mixed units`
+                        : "mixed units, no FX"
                   }
                   tone={rejectedCount > 0 ? "negative" : "neutral"}
                 />
@@ -557,7 +576,7 @@ function StatusPill({ status }: { status?: string | null }) {
           ? "warn"
           : s === "cancelled"
             ? "muted"
-            : s === "open" || s === "accepted" || s === "new"
+            : s === "open" || s === "accepted" || s === "new" || s === "submitted"
               ? "accent"
               : "muted";
   const text = s ? s.replace(/_/g, " ").toUpperCase() : formatMissing;
@@ -586,10 +605,11 @@ function fmtNum(v: number | null | undefined): string {
   return formatNumber(v, 6);
 }
 
-// D1 — notional uses the shared compact currency formatter ("$1.20M").
+// Notional sums qty x price across symbols and quote currencies with no FX, so
+// it carries no currency symbol: a "$" would claim a USD figure it is not.
 function fmtNotional(v: number): string {
   if (!Number.isFinite(v) || v === 0) return formatMissing;
-  return formatCurrency(v, { compact: true });
+  return formatNumber(v, 2);
 }
 
 // format.ts has no ISO HH:MM helper, so keep a local UTC time formatter.

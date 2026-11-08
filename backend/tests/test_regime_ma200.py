@@ -2,7 +2,7 @@
 
 Pin: when history < 200 bars, `_trend_label` returns ('UNKNOWN', 0.0)
 and `classify()` surfaces `data_state='insufficient_history'` with
-`confidence_rationale='insufficient_history'`.
+`input_coverage_rationale='insufficient_history'`.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def test_classify_emits_insufficient_history_signal():
     assert out["trend"] == "UNKNOWN"
     assert out["regime"] is None
     assert out["data_state"] == "insufficient_history"
-    assert out["confidence_rationale"] == "insufficient_history"
+    assert out["input_coverage_rationale"] == "insufficient_history"
 
 
 def test_classify_full_history_returns_regime():
@@ -52,7 +52,7 @@ def test_classify_full_history_returns_regime():
     assert out["trend"] == "BULL"
     assert out["regime"] in {"Risk-on bull", "Risk-on melt-up", "Recovery", "Late-cycle"}
     assert out["data_state"] == "ok"
-    assert out["confidence_rationale"] == "ok"
+    assert out["input_coverage_rationale"] == "ok"
 
 
 def test_classify_ma200_is_not_close_mean():

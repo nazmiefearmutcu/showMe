@@ -62,13 +62,18 @@ def _stoch(df: pd.DataFrame, k: int = 14, d: int = 3) -> pd.DataFrame:
 
 def _adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     h, l, _c = df["high"], df["low"], df["close"]
-    plus_dm = h.diff().clip(lower=0)
-    minus_dm = (-l.diff()).clip(lower=0)
+    up = h.diff()
+    down = -l.diff()
+    # Wilder's directional-movement rule: on each bar only the LARGER of the
+    # two positive movements counts; the other side is zeroed. Clipping each
+    # side independently double-counted outside bars and inflated both DIs.
+    plus_dm = up.clip(lower=0).where(up > down, 0.0)
+    minus_dm = down.clip(lower=0).where(down > up, 0.0)
     tr = _atr(df, period)
-    plus_di = 100 * plus_dm.ewm(alpha=1 / period).mean() / tr.replace(0, np.nan)
-    minus_di = 100 * minus_dm.ewm(alpha=1 / period).mean() / tr.replace(0, np.nan)
+    plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / tr.replace(0, np.nan)
+    minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / tr.replace(0, np.nan)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    return pd.DataFrame({"adx": dx.ewm(alpha=1 / period).mean(),
+    return pd.DataFrame({"adx": dx.ewm(alpha=1 / period, adjust=False).mean(),
                           "plus_di": plus_di, "minus_di": minus_di})
 
 

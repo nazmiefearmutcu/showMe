@@ -130,4 +130,6 @@ def test_btfw_offline_returns_equity_curve_dict() -> None:
     assert result.data["symbol"] == "AAPL"
     assert result.data["strategy"] == "buy_and_hold"
     assert isinstance(result.data["equity_curve"], list)
-    assert len(result.data["equity_curve"]) > 0
+    # P2A-G06 BTFW#4: a no-run placeholder must not ship a drawn curve.
+    assert result.data["is_placeholder"] is True
+    assert result.data["equity_curve"] == []

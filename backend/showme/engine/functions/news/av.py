@@ -163,10 +163,34 @@ class AVFunction(BaseFunction):
 
         if filings is None:
             # Resolved cleanly but the ticker has no EDGAR mapping (e.g. crypto/FX).
-            return await self._podcast_archive(
-                query, limit, params, symbol=symbol,
-                note=f"No SEC EDGAR filer maps to '{symbol}'; showing the global media archive.",
+            # The global podcast episodes are not this symbol's archive, so they
+            # are never substituted under the symbol. The global scope serves them.
+            reason = (
+                f"No SEC EDGAR filer maps to {symbol}, so there is no filings archive for it. "
+                "The general podcast archive is available under global scope."
+            )
+            return FunctionResult(
+                code=self.code,
                 instrument=instrument,
+                data={
+                    "status": "empty",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "count": 0,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="live_official"),
+                    "reason": reason,
+                    "next_actions": [
+                        "Switch scope to global for the general finance podcast archive.",
+                        "Use a US equity ticker that has SEC EDGAR filings.",
+                    ],
+                },
+                sources=["sec_edgar"],
+                metadata={"provider_errors": errors, "live": True, "data_mode": "live_official", "symbol_mapped": False},
+                warnings=[reason],
             )
 
         for f in filings:

@@ -260,3 +260,16 @@ def test_empty_dataframe_returns_zero_metrics():
     result = backtest(spec, df, warmup_bars=30, starting_equity=10_000.0)
     assert result.trades == []
     assert result.metrics["trade_count"] == 0
+
+
+# XCON-9 (wb1-g07): the daily timeframe table is a 24/7 crypto calendar and
+# the metrics docstring must say so instead of advertising 252 as the default.
+def test_backtest_daily_table_is_crypto_calendar_and_documented():
+    from showme.strategies import backtest as bt
+
+    assert bt._bars_per_year_for_tf("1d") == 365.0
+    doc = bt._compute_metrics.__doc__ or ""
+    assert "defaults to crypto-hourly" in doc
+    assert "24/7" in doc
+    assert "bars_per_year=252" in doc
+    assert "e.g. 252 for daily equities" not in doc

@@ -32,29 +32,32 @@ def test_regm_returns_provider_unavailable_when_yfinance_missing() -> None:
     assert any("yfinance" in w for w in out.warnings)
 
 
-def test_regm_allow_model_flag_still_returns_template_with_warning() -> None:
+def test_regm_allow_model_flag_never_serves_a_synthetic_series() -> None:
+    """allow_model used to serve a sine-wave 'regime_model'; it is now ignored."""
     from showme.engine.functions.macro.regm import REGMFunction
 
+    # Data policy: allow_model=true no longer substitutes a templated series.
     out = asyncio.run(REGMFunction().execute(symbol="SPY", allow_model=True))
-    # When the caller opts in to the synthetic model, we serve it but log it.
-    assert out.data.get("status") != "provider_unavailable"
-    assert "regime_model" in out.sources
+    assert out.data["status"] == "provider_unavailable"
+    assert out.data["current"] == {}
+    assert "regime_model" not in out.sources
 
 
 # ----------------------- RPAR -----------------------
 
-def test_rpar_default_no_yfinance_returns_template_with_fallback_flag() -> None:
+def test_rpar_default_no_yfinance_is_explicit_state_not_template() -> None:
     from showme.engine.functions.portfolio.rpar import RPARFunction
 
     out = asyncio.run(RPARFunction().execute(symbols="AAPL,MSFT,BTCUSDT"))
-    # No yfinance → live flips false, fallback flagged in metadata.
+    # No yfinance → live flips false; the response is an explicit state with no invented weights.
     assert out.metadata.get("fallback") is True
-    assert out.metadata.get("fallback_reason") in {"yfinance_unavailable", "model_requested"}
-    assert "risk_parity_model" in out.sources
-    assert any("risk-parity_model" in w or "risk_parity_model" in w or "live_risk" in w for w in out.warnings)
+    assert out.metadata.get("fallback_reason") == "yfinance_unavailable"
+    assert out.sources == []
+    assert out.data["status"] == "provider_unavailable"
+    assert out.data["weights"] == {}
 
 
-def test_rpar_explicit_model_flag_forces_template_even_with_yfinance() -> None:
+def test_rpar_explicit_model_flag_is_explicit_state_and_skips_yfinance() -> None:
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.functions.portfolio.rpar import RPARFunction
 
@@ -66,6 +69,8 @@ def test_rpar_explicit_model_flag_forces_template_even_with_yfinance() -> None:
     out = asyncio.run(RPARFunction(deps).execute(symbols="AAPL,MSFT,BTC", model=True))
     assert out.metadata.get("fallback") is True
     assert out.metadata.get("fallback_reason") == "model_requested"
+    assert out.data["status"] == "needs_input"
+    assert out.data["weights"] == {}
 
 
 # ----------------------- SECT -----------------------

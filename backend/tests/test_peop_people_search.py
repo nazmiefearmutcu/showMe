@@ -414,7 +414,8 @@ def test_function_keeps_labelled_reference_fallback_when_live_fails(
     fn = peop_mod.PEOPFunction()
     result = _run(fn.execute(None, action="search", query="tim cook apple", limit=25))
 
-    assert result.data["status"] == "ok"
+    # PEOP#2: the static snapshot is never a live answer, so it is not status ok.
+    assert result.data["status"] == "needs_data"
     assert result.data["source_mode"] == "public_reference"
     assert result.sources == ["people_public_reference"]
     assert all(

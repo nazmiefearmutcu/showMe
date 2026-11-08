@@ -106,6 +106,10 @@ def _is_sovereign(token: str) -> bool:
     return any(hint in upper for hint in _SOVEREIGN_HINTS)
 
 
+def _is_equity_instrument(instrument: Instrument | None) -> bool:
+    return instrument is not None and getattr(instrument, "asset_class", None) == AssetClass.EQUITY
+
+
 def _treasury_security_type(symbol: str) -> str | None:
     """Map a Treasury alias like ``US2Y`` / ``US30Y`` to its FiscalData type.
 
@@ -198,7 +202,9 @@ def _rating_bucket_from_coverage(leverage: float | None, coverage: float | None)
 class CRPRFunction(BaseFunction):
     code = "CRPR"
     name = "Credit Rating Profile"
-    asset_classes = (AssetClass.BOND,)
+    # Must match crpr_seed.py (BOND + EQUITY): the route's compatibility guard
+    # rejects any instrument class not listed here before execute() runs.
+    asset_classes = (AssetClass.BOND, AssetClass.EQUITY)
     category = "bond"
 
     _METHODOLOGY = (
@@ -247,26 +253,38 @@ class CRPRFunction(BaseFunction):
                 metadata={"data_mode": "user_input", "as_of": _as_of()},
             )
 
-        # 2) sovereign / non-tickerable issuer -> labelled reference profile
-        if _is_sovereign(issuer):
-            rows = [
-                {"agency": "model_implied", "rating": "AA+", "outlook": "stable", "watch": "none", "rating_date": _as_of(), "rationale": "Sovereign issuer has no SEC CIK; CRPR's financial-derived model does not apply. Reference high-grade sovereign profile shown."},
-            ]
+        # 2) sovereign / non-tickerable issuer -> honest not-applicable state.
+        # CRPR's model is built from SEC financials, which sovereigns do not
+        # file, and no keyless sovereign-rating feed is wired. A constant rating
+        # here would be placeholder data presented as model output, so the
+        # payload carries no rating row at all.
+        # An EQUITY instrument is never a sovereign: the hint list matches by
+        # substring, so an ETF or company symbol such as BOAT or GOVT would
+        # otherwise be labelled a sovereign issuer.
+        if _is_sovereign(issuer) and not _is_equity_instrument(instrument):
+            reason = (
+                f"{issuer!r} is a sovereign issuer: CRPR's SEC-financials model does not apply "
+                "and no keyless sovereign rating feed is wired, so no rating is shown."
+            )
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "ok",
-                    "rows": rows,
-                    "summary": {"issuer": issuer, "implied_bucket": "high_grade", "agencies": len(rows), "source_mode": "sovereign_reference"},
-                    "implied_bucket": "high_grade",
+                    "status": "empty",
+                    "rows": [],
+                    "summary": {"issuer": issuer, "implied_bucket": "n/a", "agencies": 0, "source_mode": "sovereign_not_applicable"},
+                    "reason": reason,
                     "scale": self._SCALE,
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
+                    "next_actions": [
+                        "Pass a ``rating`` override with the sovereign's published agency ratings.",
+                        "Pick a tickerable corporate issuer for a model-implied profile from SEC financials.",
+                    ],
                 },
-                sources=["reference"],
-                warnings=["Sovereign issuer: CRPR's SEC-financials model is not applicable; showing a reference sovereign profile."],
-                metadata={"data_mode": "reference", "as_of": _as_of()},
+                sources=["no_live_source"],
+                warnings=[reason],
+                metadata={"data_mode": "empty", "as_of": _as_of()},
             )
 
         # 3) corporate -> derive from SEC EDGAR companyfacts
@@ -629,6 +647,30 @@ class DEBTFunction(BaseFunction):
             iso2 = _ISO3_TO_ISO2.get(c, c)
             if iso2 not in normalised:
                 normalised.append(iso2)
+        # Codes with no World Bank mapping are named in the response, never
+        # silently dropped from the requested set.
+        unsupported = [c for c in normalised if c not in _ISO2_TO_ISO3]
+        normalised = [c for c in normalised if c in _ISO2_TO_ISO3]
+        unsupported_warning = (
+            [f"Unsupported country code(s) not fetched: {', '.join(unsupported)}."]
+            if unsupported else []
+        )
+        if not normalised:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"No World Bank debt series for: {', '.join(unsupported)}.",
+                    "rows": [],
+                    "summary": {"countries": 0, "avg_debt_to_gdp": 0.0, "measure": "world_bank", "portfolio_linked": False, "unsupported_countries": unsupported},
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Use ISO-2 codes that the World Bank publishes, such as US, DE, JP or BR."],
+                },
+                sources=[],
+                warnings=unsupported_warning,
+            )
 
         started = time.monotonic()
         rows: list[dict[str, Any]] = []
@@ -685,12 +727,12 @@ class DEBTFunction(BaseFunction):
                     "next_actions": ["Retry when the World Bank API (api.worldbank.org) is reachable."],
                 },
                 sources=["worldbank"],
-                warnings=[f"World Bank debt-to-GDP fetch returned no data{f': {any_error}' if any_error else ''}."],
+                warnings=[f"World Bank debt-to-GDP fetch returned no data{f': {any_error}' if any_error else ''}.", *unsupported_warning],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 
         avg = round(sum(r["debt_to_gdp"] for r in rows) / len(rows), 2)
-        warnings = ["local_currency_share is a published reference, not a live World Bank series."]
+        warnings = ["local_currency_share is a published reference, not a live World Bank series.", *unsupported_warning]
         if any_error:
             warnings.append("Some countries were skipped due to World Bank fetch errors.")
         return FunctionResult(
@@ -699,7 +741,7 @@ class DEBTFunction(BaseFunction):
             data={
                 "status": "ok",
                 "rows": rows,
-                "summary": {"countries": len(rows), "avg_debt_to_gdp": avg, "measure": "world_bank_debt_to_gdp", "portfolio_linked": False},
+                "summary": {"countries": len(rows), "avg_debt_to_gdp": avg, "measure": "world_bank_debt_to_gdp", "portfolio_linked": False, "unsupported_countries": unsupported},
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             },

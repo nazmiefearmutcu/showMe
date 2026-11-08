@@ -145,10 +145,7 @@ def brief() -> FunctionManifest:
         ),
         methodology=(
             "BRIEF composes the briefing from existing surfaces — it does NOT call an LLM and "
-            "does NOT fabricate prose. (1) Read positions from engine.portfolio.state, (2) "
-            "merge with the input watchlist (or WATCH's persisted list), (3) call READ() to "
-            "fetch headlines for that symbol set, (4) call TOP() for cross-asset top news, (5) "
-            "call ECO() for the next 24h calendar. The markdown output lists each section as a "
+            "does NOT fabricate prose. (1) With no watchlist input, read the symbols of the user's portfolio positions (engine.portfolio.state) and of the saved watchlists (watchlist store), and merge them; an explicit watchlist input replaces that default. With no symbols at all the status is 'needs_input' and no news is fetched. (2) Call TOP() for cross-asset top news and once per symbol (capped) for symbol-scoped headlines. READ() and ECO() are not called. The markdown output lists each section as a "
             "bulleted set of headlines with the source publisher in parentheses and a direct "
             "link to the original article — every bullet is a cite. The structured `articles` "
             "array carries the same rows so downstream callers can re-render without re-parsing "
@@ -187,8 +184,8 @@ def brief() -> FunctionManifest:
             ),
             SemanticTest(
                 name="brief_no_synthetic_summary_when_no_news",
-                description="When READ returns zero articles, asserts status='provider_unavailable', markdown lists 'No live watchlist headlines were returned' (no invented quotes), and next_actions explains the empty result.",
-                inputs={"_mock": "read_empty"},
+                description="When TOP and the symbol headline calls return zero articles, asserts status='provider_unavailable', markdown lists 'No live watchlist headlines were returned' (no invented quotes), and next_actions explains the empty result. READ is not called by BRIEF.",
+                inputs={"_mock": "news_empty"},
                 assertions=[
                     "status_equals_provider_unavailable_when_empty",
                     "markdown_has_no_synthetic_quotes",

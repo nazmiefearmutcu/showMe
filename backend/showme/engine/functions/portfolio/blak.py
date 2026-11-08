@@ -34,6 +34,60 @@ def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
     return pd.DataFrame(rows, index=index)
 
 
+_PRIOR_COV_ESTIMATORS = ("sample_cov", "ledoit_wolf", "exp_cov")
+_EXP_COV_SPAN = 180  # EWMA span in trading days (PyPortfolioOpt convention)
+
+
+def _ledoit_wolf_covariance(x: np.ndarray) -> tuple[np.ndarray, float]:
+    """Ledoit & Wolf (2004) shrinkage toward the scaled identity mu * I.
+
+    ``x`` holds one row per period and one column per asset (daily returns).
+    Returns ``(covariance, delta)`` where ``covariance = (1 - delta) * S + delta * mu * I``
+    on the unbiased (ddof=1) scale and ``delta`` in [0, 1] is the shrinkage
+    intensity. Math: S is the 1/T sample covariance, mu = tr(S)/N,
+    d^2 = ||S - mu I||_F^2, b^2 = min(d^2, (1/T^2) sum_t ||x_t x_t' - S||_F^2),
+    delta = b^2 / d^2.
+    """
+    t, n = x.shape
+    xc = x - x.mean(axis=0)
+    s_mle = xc.T @ xc / t
+    mu = float(np.trace(s_mle)) / n
+    d2 = float(np.sum((s_mle - mu * np.eye(n)) ** 2))
+    if d2 <= 0.0:
+        delta = 0.0
+    else:
+        norms_sq = np.sum(xc ** 2, axis=1)
+        b2 = (float(np.sum(norms_sq ** 2)) - t * float(np.sum(s_mle ** 2))) / (t ** 2)
+        delta = min(max(min(b2, d2) / d2, 0.0), 1.0)
+    scale = t / (t - 1)  # MLE -> unbiased, same scale as DataFrame.cov()
+    shrunk = (1.0 - delta) * s_mle + delta * mu * np.eye(n)
+    return shrunk * scale, delta
+
+
+def _exp_weighted_covariance(x: np.ndarray, span: int) -> np.ndarray:
+    """EWMA covariance with reliability-weight correction (unbiased scale)."""
+    t = x.shape[0]
+    alpha = 2.0 / (span + 1.0)
+    w = (1.0 - alpha) ** np.arange(t - 1, -1, -1, dtype=float)
+    w = w / w.sum()
+    mean = w @ x
+    xc = x - mean
+    cov = (xc * w[:, None]).T @ xc
+    return cov / (1.0 - float(np.sum(w ** 2)))
+
+
+def _prior_covariance(df: pd.DataFrame, estimator: str) -> tuple[np.ndarray, float | None]:
+    """Daily-scale covariance for the requested estimator plus LW intensity."""
+    if estimator == "sample_cov":
+        return df.cov().values, None
+    clean = df.dropna()
+    x = clean.values.astype(float)
+    if estimator == "ledoit_wolf":
+        cov, delta = _ledoit_wolf_covariance(x)
+        return cov, delta
+    return _exp_weighted_covariance(x, _EXP_COV_SPAN), None
+
+
 @FunctionRegistry.register
 class BLAKFunction(BaseFunction):
     code = "BLAK"
@@ -48,6 +102,20 @@ class BLAKFunction(BaseFunction):
         if not symbols:
             return FunctionResult(code=self.code, instrument=None, data={},
                                   warnings=["symbols required"])
+        # BLAK#3: the prior covariance estimator is an honest input. An unknown
+        # value is refused explicitly instead of silently using the sample cov.
+        estimator = str(params.get("prior_covariance") or "ledoit_wolf").strip().lower()
+        if estimator not in _PRIOR_COV_ESTIMATORS:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (f"prior_covariance {estimator!r} is not supported; "
+                               f"use one of {', '.join(_PRIOR_COV_ESTIMATORS)}"),
+                    "next_actions": ["Choose sample_cov, ledoit_wolf or exp_cov."],
+                },
+                warnings=[f"unsupported prior_covariance: {estimator}"],
+            )
         days = int(params.get("days", 504))
         delta = float(params.get("delta", 2.5))
         tau = float(params.get("tau", 0.05))
@@ -67,8 +135,8 @@ class BLAKFunction(BaseFunction):
         # other classes we use a yfinance REFDATA pass. Anything we cannot
         # resolve falls back to an equal-weight prior with data_state set to
         # ``approximate`` so the UI can surface the degradation.
-        mcap_lookup, mcap_data_state, mcap_sources = await _resolve_market_caps(
-            self.deps, symbols, market_caps
+        mcap_lookup, mcap_data_state, mcap_sources, mcap_proxied = (
+            await _resolve_market_caps_detail(self.deps, symbols, market_caps)
         )
 
         async def _ret(sym: str) -> tuple[str, pd.Series, float]:
@@ -128,10 +196,34 @@ class BLAKFunction(BaseFunction):
             sources = ["synthetic_fallback"]
         else:
             sources = ["yfinance"] if live else ["computed_return_model"]
-        cov = df.cov().values * 252
+        # BLAK#3 follow-up: the 10-row guard above counts pairwise rows, but the
+        # prior needs complete common history. Fewer than 10 overlapping days
+        # gave a NaN covariance (SVD failure) or a T=1 Ledoit-Wolf division by
+        # zero, so refuse it explicitly.
+        overlap_days = int(df.dropna().shape[0])
+        if overlap_days < 10:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (f"only {overlap_days} common return days across the requested symbols; "
+                               "the prior covariance needs at least 10 overlapping days"),
+                    "next_actions": ["Drop the symbol with the short history or use a longer common window."],
+                    "overlap_days": overlap_days,
+                },
+                warnings=[f"insufficient overlap: {overlap_days} common return days (need 10)"],
+            )
+        cov_daily, shrinkage_delta = _prior_covariance(df, estimator)
+        cov = cov_daily * 252
         cols = list(df.columns)
         mcaps = np.array([next((m for s, _, m in results if s == c), 0.0) for c in cols])
-        if mcaps.sum() <= 0:
+        # BLAK#2: partial coverage used to keep the "real" label while the
+        # unresolved names got weight 0. Any requested name without a market
+        # value now sends the whole prior to the labelled equal-weight fallback.
+        mcap_resolved = [s for s in symbols if float(mcap_lookup.get(s) or 0.0) > 0]
+        mcap_missing = [s for s in symbols if s not in mcap_resolved]
+        mcap_partial = mcap_data_state == "partial"
+        if mcap_partial or mcaps.sum() <= 0:
             mcaps = np.ones(len(cols))
             mcap_data_state = "approximate"
         w_mkt = mcaps / mcaps.sum()
@@ -199,9 +291,27 @@ class BLAKFunction(BaseFunction):
             if src not in sources:
                 sources.append(src)
         warnings: list[str] = []
-        if mcap_data_state == "approximate":
+        if mcap_partial:
+            warnings.append(
+                f"market cap resolved for {len(mcap_resolved)}/{len(symbols)} symbols; "
+                f"no market value for {', '.join(mcap_missing)}; equal-weight prior used "
+                "for the whole universe"
+            )
+        elif mcap_data_state == "approximate":
             warnings.append(
                 "market_weight set to equal-weight prior; real market cap unavailable"
+            )
+        elif mcap_data_state == "proxy":
+            warnings.append(
+                "fund AUM (totalAssets) used as market-value proxy for "
+                + ", ".join(mcap_proxied)
+                + "; not a market capitalization"
+            )
+        excluded_no_returns = [s for s in symbols if s not in cols]
+        if excluded_no_returns:
+            warnings.append(
+                "symbols excluded from the prior (no aligned return rows): "
+                + ", ".join(excluded_no_returns)
             )
         if used_synthetic and live:
             warnings.append(
@@ -223,6 +333,17 @@ class BLAKFunction(BaseFunction):
                 "posterior_returns": dict(zip(cols, pi_bl.tolist())),
                 "implied_optimal_weights": dict(zip(cols, w_opt.tolist())),
                 "market_cap_data_state": mcap_data_state,
+                "market_cap_coverage": {
+                    "resolved": len(mcap_resolved),
+                    "requested": len(symbols),
+                    "missing": mcap_missing,
+                },
+                "prior_covariance_estimator": estimator,
+                "shrinkage_intensity": shrinkage_delta,
+                "prior_covariance": {
+                    a: {b: float(cov[i][j]) for j, b in enumerate(cols)}
+                    for i, a in enumerate(cols)
+                },
                 # B4 surfaced fields so the UI can flag the synthetic fallback.
                 "live_fetch_errors": list(live_fetch_errors),
                 "live_fetch_ok_symbols": sorted(set(live_fetch_ok_symbols)),
@@ -252,7 +373,10 @@ class BLAKFunction(BaseFunction):
                     "posterior_return": "Black-Litterman expected return after blending views.",
                     "optimal_weight": "Mean-variance implied weight from posterior return and covariance.",
                     "view_active": "Whether the symbol participates in at least one submitted view row.",
-                    "market_cap_data_state": "'real' when sourced from a price-provider, 'approximate' when the equal-weight fallback fires.",
+                    "market_cap_data_state": "'real' when every requested symbol has a market value, 'partial' or 'approximate' when the equal-weight fallback fires.",
+                    "prior_covariance_estimator": "Estimator applied to the return series: sample_cov, ledoit_wolf (Ledoit-Wolf 2004 shrinkage toward mu*I) or exp_cov (EWMA, span 180 days).",
+                    "shrinkage_intensity": "Ledoit-Wolf weight on the mu*I target (0 to 1); null for sample_cov and exp_cov.",
+                    "prior_covariance": "Annualized prior covariance matrix actually used for pi and the posterior.",
                 },
             },
             sources=sources,
@@ -302,11 +426,26 @@ async def _market_cap_from_coingecko(deps: Any, symbol: str) -> float:
         return 0.0
 
 
-async def _market_cap_from_yfinance(deps: Any, symbol: str) -> float:
-    """REFDATA pull for equity-style symbols. Returns 0.0 on any failure."""
+def _positive_float(value: Any) -> float:
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if number > 0 else 0.0
+
+
+async def _market_cap_from_yfinance(deps: Any, symbol: str) -> tuple[float, str | None]:
+    """REFDATA pull for equity-style symbols.
+
+    Returns ``(value, source)``; ``(0.0, None)`` on any failure. Funds carry no
+    ``marketCap`` in yfinance, so for ETF / mutual-fund quote types the total
+    net assets (``totalAssets``) is used as a labelled market-value proxy. For
+    operating companies ``totalAssets`` is balance-sheet assets and is never
+    used as a market cap.
+    """
     yfin = getattr(deps, "yfinance", None)
     if yfin is None:
-        return 0.0
+        return 0.0, None
     try:
         inst = Instrument(symbol=symbol, asset_class=AssetClass.EQUITY)
         if getattr(deps, "symbol_registry", None):
@@ -318,12 +457,17 @@ async def _market_cap_from_yfinance(deps: Any, symbol: str) -> float:
             timeout=4,
         )
     except Exception:
-        return 0.0
-    mcap = getattr(meta, "market_cap", None)
-    try:
-        return float(mcap or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+        return 0.0, None
+    mcap = _positive_float(getattr(meta, "market_cap", None))
+    if mcap > 0:
+        return mcap, "yfinance_refdata"
+    extras = getattr(meta, "extras", None)
+    raw = (extras.get("raw") or {}) if isinstance(extras, dict) else {}
+    if str(raw.get("quoteType") or "").upper() in {"ETF", "MUTUALFUND"}:
+        aum = _positive_float(raw.get("totalAssets"))
+        if aum > 0:
+            return aum, "yfinance_fund_aum"
+    return 0.0, None
 
 
 async def _resolve_market_caps(
@@ -331,11 +475,25 @@ async def _resolve_market_caps(
     symbols: list[str],
     overrides: dict[str, Any] | None,
 ) -> tuple[dict[str, float], str, list[str]]:
+    """Resolve market caps; see ``_resolve_market_caps_detail``."""
+    lookup, state, sources, _proxied = await _resolve_market_caps_detail(
+        deps, symbols, overrides
+    )
+    return lookup, state, sources
+
+
+async def _resolve_market_caps_detail(
+    deps: Any,
+    symbols: list[str],
+    overrides: dict[str, Any] | None,
+) -> tuple[dict[str, float], str, list[str], list[str]]:
     """Resolve real market caps for the universe.
 
     Returns ``(symbol → mcap, data_state, extra_sources)`` where data_state is
-    ``"real"`` when at least one symbol resolved through a provider and
-    ``"approximate"`` when the equal-weight fallback will need to fire.
+    ``"real"`` when every symbol resolved to a market cap, ``"proxy"`` when
+    every symbol resolved but at least one value is ETF / fund AUM (a proxy,
+    not a market cap), ``"partial"`` when only some symbols resolved and
+    ``"approximate"`` when none did (the equal-weight fallback fires).
     Overrides are honoured first so callers can inject deterministic values
     in tests.
     """
@@ -351,7 +509,7 @@ async def _resolve_market_caps(
             if value > 0:
                 lookup[sym] = value
     if lookup and len(lookup) == len(symbols):
-        return lookup, "real", extra_sources
+        return lookup, "real", extra_sources, []
 
     async def _resolve(sym: str) -> tuple[str, float, str | None]:
         if sym in lookup:
@@ -360,16 +518,27 @@ async def _resolve_market_caps(
             mcap = await _market_cap_from_coingecko(deps, sym)
             if mcap > 0:
                 return sym, mcap, "coingecko"
-        mcap = await _market_cap_from_yfinance(deps, sym)
+        mcap, src = await _market_cap_from_yfinance(deps, sym)
         if mcap > 0:
-            return sym, mcap, "yfinance_refdata"
+            return sym, mcap, src
         return sym, 0.0, None
 
     results = await asyncio.gather(*(_resolve(s) for s in symbols))
+    proxied: list[str] = []
     for sym, mcap, src in results:
         if mcap > 0:
             lookup[sym] = mcap
             if src and src not in extra_sources:
                 extra_sources.append(src)
-    data_state = "real" if lookup else "approximate"
-    return lookup, data_state, extra_sources
+            if src == "yfinance_fund_aum":
+                proxied.append(sym)
+    resolved = sum(1 for s in symbols if lookup.get(s, 0.0) > 0)
+    if symbols and resolved == len(symbols):
+        # Fund AUM (ETF / mutual-fund totalAssets) is a proxy for market value,
+        # never a market cap, so it must not carry the "real" label.
+        data_state = "proxy" if proxied else "real"
+    elif resolved:
+        data_state = "partial"
+    else:
+        data_state = "approximate"
+    return lookup, data_state, extra_sources, proxied

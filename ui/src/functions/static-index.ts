@@ -410,7 +410,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     code: "GC3D",
-    name: "Yield Curve 3D (live FRED)",
+    name: "Yield Curve Surface (live FRED)",
     category: "bond",
     description: "",
   },
@@ -556,13 +556,6 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     description: "Train a classifier on technical features → predict next N-day direction.",
   },
   {
-    code: "MSENT",
-    name: "Market Sentiment",
-    category: "news",
-    description:
-      "CNN Fear & Greed, crypto Fear & Greed, VIX term structure and social buzz from Awareness.",
-  },
-  {
     code: "MOSS",
     name: "Most Volatile",
     category: "screen",
@@ -573,6 +566,13 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     name: "Most Active",
     category: "screen",
     description: "",
+  },
+  {
+    code: "MSENT",
+    name: "Market Sentiment",
+    category: "news",
+    description:
+      "CNN Fear & Greed, crypto Fear & Greed, VIX term structure and social buzz from Awareness.",
   },
   {
     code: "NGAS",

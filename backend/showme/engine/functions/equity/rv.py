@@ -52,6 +52,7 @@ class RVFunction(BaseFunction):
                 if isinstance(r, Exception) or r is None:
                     continue
                 raw = (r.extras or {}).get("raw", {}) if hasattr(r, "extras") else {}
+                div_yield, div_yield_status = _dividend_yield(raw.get("dividendYield"), raw)
                 rows.append({
                     "symbol": sym,
                     "marketCap": r.market_cap or raw.get("marketCap"),
@@ -63,7 +64,8 @@ class RVFunction(BaseFunction):
                     "roe": raw.get("returnOnEquity"),
                     "roa": raw.get("returnOnAssets"),
                     "debt_equity": raw.get("debtToEquity"),
-                    "div_yield": raw.get("dividendYield"),
+                    "div_yield": div_yield,
+                    "div_yield_status": div_yield_status,
                     "source_mode": "live_yfinance",
                 })
         if not rows:
@@ -101,6 +103,49 @@ class RVFunction(BaseFunction):
             sources=["finnhub", "yfinance"] if self.deps.yfinance else ["relative_value_model"],
             metadata={"peers": peers},
         )
+
+
+def _dividend_yield(value: Any, raw: dict[str, Any] | None = None) -> tuple[float | None, str]:
+    """Dividend yield as a decimal fraction (0.0032 = 0.32%) plus its status.
+
+    yfinance ``dividendYield`` is percent units in current releases (AAPL 0.32),
+    but older releases shipped a decimal. The unit is settled only by evidence:
+
+    * a zero yield is unit-free and resolved (0.0);
+    * otherwise both readings (percent and decimal) are checked against
+      ``dividendRate / price``. The closer reading wins only when it is within a
+      factor of two of that implied yield;
+    * with no rate or price, or when neither reading is consistent with it, the
+      unit is unresolved and the yield is None. A magnitude guess is never used.
+
+    Status is one of ``ok``, ``missing`` (absent or negative) or ``unit_unresolved``.
+    """
+    v = finite(value)
+    if v is None or v < 0:
+        return None, "missing"
+    if v == 0:
+        return 0.0, "ok"
+    implied = _implied_yield_fraction(raw or {})
+    if implied is None:
+        return None, "unit_unresolved"
+    as_percent, as_decimal = v / 100.0, v
+    chosen = as_percent if abs(as_percent - implied) <= abs(as_decimal - implied) else as_decimal
+    if not (0.5 * implied <= chosen <= 2.0 * implied):
+        return None, "unit_unresolved"
+    return chosen, "ok"
+
+
+def _implied_yield_fraction(raw: dict[str, Any]) -> float | None:
+    """``dividendRate / price`` as a fraction, or None when either is missing."""
+    rate = finite(raw.get("dividendRate"))
+    price = None
+    for key in ("currentPrice", "regularMarketPrice", "previousClose"):
+        price = finite(raw.get(key))
+        if price is not None and price > 0:
+            break
+    if rate is None or rate <= 0 or price is None or price <= 0:
+        return None
+    return rate / price
 
 
 def _rank_rows(rows: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:

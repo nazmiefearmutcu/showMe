@@ -39,6 +39,16 @@ _MGMT_HINTS = (
 # A "SPEAKER: utterance" line. Capture group 1 = speaker label, 2 = text.
 _SPEAKER_LINE = re.compile(r"^\s*([A-Z][\w .,'&/-]{0,60}?)\s*[:\-—]\s+(.*\S.*)$")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+# TSAR#1: a speaker label that follows a sentence end inside the same block
+# ("... headwinds. Kevan Parekh, CFO: We expect ...") starts a new utterance.
+# A candidate label is accepted only when it is a "Name, Role" label (a name of
+# at least two words before the comma) or a speaker already seen opening a
+# line in this transcript. Prose labels such as "Guidance:" or "Note:" stay in
+# the sentence they sit in.
+_INLINE_LABEL = re.compile(
+    r"(?<=[.!?])\s+(?=(?P<label>[A-Z][\w.'&/-]*(?:\s+[A-Z][\w.'&/-]*){0,4}"
+    r"(?:,\s*[A-Z][\w.'&/-]*(?:\s+[A-Z][\w.'&/-]*){0,3})?)\s*:\s)"
+)
 
 
 @FunctionRegistry.register
@@ -687,7 +697,17 @@ def _segment(text: str) -> list[dict[str, Any]]:
     saw_qa = False
     matched_any = False
 
-    for ln in lines:
+    known_speakers = {
+        m.group(1).strip()
+        for m in (_SPEAKER_LINE.match(ln) for ln in lines)
+        if m
+    }
+    pieces = [
+        part
+        for ln in lines
+        for part in _split_inline_speakers(ln, known_speakers)
+    ]
+    for ln in pieces:
         low = ln.lower()
         if not saw_qa and (
             "question-and-answer" in low or "q&a" in low or "questions and answers" in low
@@ -716,6 +736,55 @@ def _segment(text: str) -> list[dict[str, Any]]:
         for sent in _split_sentences(flat)
         if sent.strip()
     ]
+
+
+# TSAR#1 follow-up: a bare two-to-four word name ("Tim Cook: Thanks everyone.")
+# is a speaker when the turn starts with a word, not a figure, and no word of
+# the label is a common metric or section head. Single-word prose labels
+# ("Guidance:", "Note:") are still not speakers.
+_NAME_WORD = re.compile(r"^[A-Z][A-Za-z'.-]*$")
+_TURN_START = re.compile(r"""^["'(“]?[A-Z]""")
+_PROSE_HEAD_WORDS = frozenset({
+    "adjusted", "backlog", "bookings", "buyback", "capex", "cash", "costs",
+    "dividend", "earnings", "eps", "expenses", "flow", "forward", "free", "growth",
+    "guidance", "gross", "harbor", "highlights", "income", "key", "looking", "margin",
+    "margins", "metrics", "net", "note", "notes", "operating", "orders", "outlook",
+    "pricing", "quarter", "results", "revenue", "safe", "sales", "segment", "statement",
+    "statements", "summary", "takeaways", "total", "disclaimer", "question", "answer",
+    "demand", "fiscal",
+})
+
+
+def _is_speaker_label(label: str, known_speakers: set[str], turn_text: str = "") -> bool:
+    """True when an inline candidate label is a real speaker, not prose."""
+    if label in known_speakers:
+        return True
+    if "," in label:
+        name = label.split(",", 1)[0].strip()
+        return len(name.split()) >= 2
+    words = label.split()
+    if not 2 <= len(words) <= 4:
+        return False
+    if not all(_NAME_WORD.match(w) for w in words):
+        return False
+    if any(w.lower() in _PROSE_HEAD_WORDS for w in words):
+        return False
+    return bool(_TURN_START.match(turn_text))
+
+
+def _split_inline_speakers(line: str, known_speakers: set[str]) -> list[str]:
+    """Split one line where a sentence end is followed by a real speaker label."""
+    cuts = [
+        m.start()
+        for m in _INLINE_LABEL.finditer(line)
+        if _is_speaker_label(m.group("label"), known_speakers, line[m.end():])
+    ]
+    if not cuts:
+        stripped = line.strip()
+        return [stripped] if stripped else []
+    bounds = [0, *cuts, len(line)]
+    parts = [line[a:b].strip() for a, b in zip(bounds, bounds[1:])]
+    return [part for part in parts if part]
 
 
 def _split_sentences(text: str) -> list[str]:

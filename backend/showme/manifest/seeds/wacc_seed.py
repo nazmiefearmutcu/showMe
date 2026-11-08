@@ -153,7 +153,8 @@ def wacc() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "WACC pulls rf from FRED (DGS10 by default), R_d from FRED corporate Aaa/Baa yields, "
+            "WACC pulls rf from FRED (DGS10 by default), R_d from the FRED ICE BofA BBB corporate "
+            "YIELD (BAMLC0A4CBBBEY, Aaa yield fallback; the option-adjusted spread is not used), "
             "the effective tax rate T from FA (or override), and the market-value equity / debt "
             "split from FA / yfinance. β is computed by the shared BetaFunction at the requested "
             "window. R_e is the CAPM expression rf + β × ERP. WACC = (E/V) × R_e + (D/V) × R_d × "

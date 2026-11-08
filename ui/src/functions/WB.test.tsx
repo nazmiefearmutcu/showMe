@@ -183,3 +183,48 @@ describe("WB pane — visibility poll", () => {
     expect(lastFnArgs?.params).toEqual({ reference: false });
   });
 });
+
+describe("WB pane — observation dates and staleness (WB#1)", () => {
+  function observedPayload() {
+    return {
+      data: {
+        data: {
+          rows: [
+            { country: "US", tenor: "10Y", yield: 4.84, as_of: "2026-11-05", source_mode: "fred" },
+            { country: "RU", tenor: "10Y", yield: 7.62, as_of: "2018-06-01", source_mode: "fred", stale: true },
+          ],
+          summary: {
+            countries: 2,
+            tenor: "10Y",
+            source_mode: "fred",
+            latest_observation: "2026-11-05",
+            oldest_observation: "2018-06-01",
+            stale_countries: 1,
+          },
+          methodology: "m",
+          field_dictionary: {},
+        },
+        sources: ["fred"],
+        elapsed_ms: 10,
+      },
+    };
+  }
+
+  it("labels a stale FRED row as stale, not live", () => {
+    setMockFn({ state: "ok", ...observedPayload() });
+    render(<WBPane code="WB" />);
+    expect(screen.getByText("stale FRED")).toBeInTheDocument();
+    expect(screen.getByText("live FRED")).toBeInTheDocument();
+    expect(within(screen.getByTestId("wb-mode-pill")).getByText("live")).toBeInTheDocument();
+  });
+
+  it("captions the KPI with the data date, not the wall clock", () => {
+    setMockFn({ state: "ok", ...observedPayload() });
+    render(<WBPane code="WB" />);
+    const avgCard = Array.from(document.querySelectorAll(".stat-card")).find((card) =>
+      card.textContent?.includes("Avg yield"),
+    );
+    expect(avgCard?.textContent).toContain("DATA AS OF 2026-11-05");
+    expect(avgCard?.textContent).not.toMatch(/UTC/);
+  });
+});

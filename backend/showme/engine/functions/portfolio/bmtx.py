@@ -15,6 +15,9 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.services.backtest_framework import Backtest, STRATEGY_REGISTRY
 
+# Wall-clock budget for one matrix run (fetch + backtests).
+LIVE_TIMEOUT_S = 9.0
+
 
 @FunctionRegistry.register
 class BMTXFunction(BaseFunction):
@@ -40,17 +43,20 @@ class BMTXFunction(BaseFunction):
         try:
             return await asyncio.wait_for(
                 self._execute_inner(instrument, **params),
-                timeout=9.0,
+                timeout=LIVE_TIMEOUT_S,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"BMTX execution timed out: {exc}"
-            return FunctionResult(
-                code=self.code,
+            # BMTX#3: a timed-out run is an honest outage, not a reference
+            # matrix with invented Sharpe values under the requested tickers.
+            reason = f"BMTX execution timed out after {LIVE_TIMEOUT_S:g}s: {exc}"
+            return _unavailable(
                 instrument=instrument,
-                data=_matrix_template(symbols, strategies),
-                sources=["local_backtest_model"],
-                warnings=[reason],
-                metadata={"days": days, "fee_bps": fee_bps, "live": False, "provider_errors": [reason]},
+                symbols=symbols,
+                strategies=strategies,
+                days=days,
+                fee_bps=fee_bps,
+                reason=reason,
+                failures={},
             )
 
     async def _execute_inner(
@@ -70,11 +76,14 @@ class BMTXFunction(BaseFunction):
         fee_bps = float(params.get("fee_bps", 5.0))
         sources = ["yfinance"]
         if not _truthy(params.get("live_backtest") or params.get("live")):
+            # BMTX residual: without live OHLCV no backtest runs, so the grid
+            # carries requested labels with null metrics and needs_input status.
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_matrix_template(symbols, strategies),
-                sources=["local_backtest_model"],
+                sources=[],
+                warnings=[_OFFLINE_REASON],
                 metadata={"days": days, "fee_bps": fee_bps, "live": False},
             )
         else:
@@ -83,25 +92,35 @@ class BMTXFunction(BaseFunction):
         async def _bars(sym: str):
             try:
                 if not self.deps.yfinance:
-                    raise RuntimeError("no yfinance")
+                    raise RuntimeError("no live OHLCV provider is configured")
                 inst = await self.deps.symbol_registry.resolve(sym) if self.deps.symbol_registry else None
                 if not inst:
                     inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
-                return sym, await self.deps.yfinance.fetch(DataRequest(
+                df = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=inst,
                     start=datetime.now(timezone.utc) - timedelta(days=days),
                     interval="1d",
                 ))
-            except Exception:
-                return sym, None
+            except Exception as exc:
+                return sym, None, f"OHLCV fetch failed ({type(exc).__name__})"
+            if df is None or df.empty:
+                return sym, None, "provider returned no OHLCV rows"
+            return sym, df, None
+        bars_results = await asyncio.gather(*(_bars(s) for s in symbols))
+        bars_dict = {s: df for s, df, _ in bars_results if df is not None}
+        failures = {s: reason for s, df, reason in bars_results if df is None}
         if not bars_dict:
-            bars_results = await asyncio.gather(*(_bars(s) for s in symbols))
-            bars_dict = {s: df for s, df in bars_results
-                          if df is not None and not df.empty}
-        if not bars_dict:
-            from showme.engine.functions.portfolio.btfw import _template_history
-            bars_dict = {s: _template_history(days) for s in symbols[:3]}
-            sources = ["local_backtest_model"]
+            # BMTX#3: never substitute a template history. Report the outage
+            # and name every symbol that produced no bars.
+            return _unavailable(
+                instrument=instrument,
+                symbols=symbols,
+                strategies=strategies,
+                days=days,
+                fee_bps=fee_bps,
+                reason="Live OHLCV providers returned no usable bars for any requested symbol.",
+                failures=failures,
+            )
         cells = []
         for sym, df in bars_dict.items():
             for strat in strategies:
@@ -143,8 +162,9 @@ class BMTXFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=None,
             data={
-                "status": "ok",
+                "status": "partial" if failures else "ok",
                 "symbols": list(bars_dict.keys()),
+                "unavailable_symbols": list(failures),
                 "strategies": strategies,
                 "cells": cells,
                 "surface": surface,
@@ -172,7 +192,60 @@ class BMTXFunction(BaseFunction):
                 },
             },
             sources=sources,
+            warnings=[_failure_warning(sym, reason) for sym, reason in failures.items()],
+            metadata={"days": days, "fee_bps": fee_bps, "live": True,
+                      "unavailable_symbols": list(failures)},
         )
+
+
+def _failure_warning(sym: str, reason: str) -> str:
+    return f"BMTX: no live OHLCV history for {sym} ({reason}); it is excluded from the matrix."
+
+
+def _unavailable(
+    *,
+    instrument: Instrument | None,
+    symbols: list[str],
+    strategies: list[str],
+    days: int,
+    fee_bps: float,
+    reason: str,
+    failures: dict[str, str],
+) -> FunctionResult:
+    """Honest live-mode outage: no cells, no template values, explicit reason."""
+    warnings = [reason] + [_failure_warning(sym, why) for sym, why in failures.items()]
+    return FunctionResult(
+        code="BMTX",
+        instrument=instrument,
+        data={
+            "status": "provider_unavailable",
+            "reason": reason,
+            "symbols": [],
+            "requested_symbols": list(symbols),
+            "unavailable_symbols": list(failures) or list(symbols),
+            "strategies": list(strategies),
+            "cells": [],
+            "surface": [],
+            "best_per_symbol": {},
+            "top_10_by_sharpe": [],
+            "summary": {
+                "symbols": 0,
+                "strategies": len(strategies),
+                "runs": 0,
+                "best_sharpe": None,
+                "source_mode": "live_unavailable",
+            },
+            "next_actions": [
+                "Check that the live OHLCV provider is configured and reachable.",
+                "Verify that each requested symbol is a valid ticker for that provider.",
+            ],
+            "methodology": "No backtest was run: live OHLCV history was unavailable, and no substitute history is used.",
+        },
+        sources=["yfinance"],
+        warnings=warnings,
+        metadata={"days": days, "fee_bps": fee_bps, "live": True,
+                  "provider_errors": [reason], "unavailable_symbols": list(failures) or list(symbols)},
+    )
 
 
 def _truthy(value: Any) -> bool:
@@ -181,55 +254,72 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+_OFFLINE_REASON = (
+    "Live backtest data was not requested, so no backtest ran and no metrics are shown. "
+    "Set live_backtest=true to run backtests on live OHLCV history."
+)
+
+
 def _matrix_template(symbols: list[str], strategies: list[str]) -> dict[str, Any]:
-    cells: list[dict[str, Any]] = []
-    for i, sym in enumerate(symbols[:8]):
-        for j, strat in enumerate(strategies[:5]):
-            cells.append({
-                "label": f"{sym} {strat}",
-                "symbol": sym,
-                "strategy": strat,
-                "sharpe": round(1.05 + i * 0.04 - j * 0.03, 3),
-                "total_return": round(0.08 + i * 0.012 - j * 0.006, 4),
-                "max_drawdown": round(-0.05 - j * 0.008, 4),
-                "trades": 6 + i + j,
-                "final_equity": round(10000 * (1.08 + i * 0.012 - j * 0.006), 2),
-            })
-    best_per_symbol: dict[str, dict[str, Any]] = {}
-    for cell in cells:
-        sym = cell["symbol"]
-        if sym not in best_per_symbol or cell["sharpe"] > best_per_symbol[sym]["sharpe"]:
-            best_per_symbol[sym] = cell
-    cells.sort(key=lambda item: -item["sharpe"])
+    """Offline grid of the requested labels. Metric fields are explicit nulls.
+
+    BMTX residual: the previous template invented Sharpe, return, drawdown and
+    equity values under the requested tickers. No metric is computed or
+    hard-coded here; only the labels the caller asked for are echoed.
+    """
+    syms = symbols[:8]
+    strats = strategies[:5]
+    cells: list[dict[str, Any]] = [
+        {
+            "label": f"{sym} {strat}",
+            "symbol": sym,
+            "strategy": strat,
+            "sharpe": None,
+            "total_return": None,
+            "max_drawdown": None,
+            "trades": None,
+            "final_equity": None,
+        }
+        for sym in syms
+        for strat in strats
+    ]
     return {
-        "status": "reference",
-        "symbols": symbols[:8],
-        "strategies": strategies[:5],
+        "status": "needs_input",
+        "reason": _OFFLINE_REASON,
+        "symbols": syms,
+        "strategies": strats,
         "cells": cells,
         "surface": [
             {
                 "label": cell["label"],
                 "symbol": cell["symbol"],
                 "strategy": cell["strategy"],
-                "sharpe": cell["sharpe"],
-                "total_return": cell["total_return"],
-                "max_drawdown": cell["max_drawdown"],
+                "sharpe": None,
+                "total_return": None,
+                "max_drawdown": None,
             }
             for cell in cells
         ],
-        "best_per_symbol": best_per_symbol,
+        "best_per_symbol": {},
         "top_10_by_sharpe": cells[:10],
         "summary": {
-            "symbols": len(symbols[:8]),
-            "strategies": len(strategies[:5]),
-            "runs": len(cells),
-            "source_mode": "reference_model",
+            "symbols": len(syms),
+            "strategies": len(strats),
+            "runs": 0,
+            "best_sharpe": None,
+            "source_mode": "needs_live_input",
         },
-        "methodology": "Reference strategy-by-symbol matrix used when live backtest data is not requested or unavailable.",
+        "next_actions": [
+            "Set live_backtest=true to compute backtests from live OHLCV history.",
+        ],
+        "methodology": (
+            "No backtest was run. The grid lists the requested symbols and strategies with "
+            "no metric values until live OHLCV history is requested."
+        ),
         "field_dictionary": {
-            "sharpe": "Annualized return/risk score from the backtest equity curve.",
-            "total_return": "Final equity divided by initial equity minus one.",
-            "max_drawdown": "Worst peak-to-trough equity decline during the test.",
+            "sharpe": "Annualized return/risk score from the backtest equity curve. Null without live data.",
+            "total_return": "Final equity divided by initial equity minus one. Null without live data.",
+            "max_drawdown": "Worst peak-to-trough equity decline during the test. Null without live data.",
             "surface": "Strategy-by-symbol grid used by the heatmap.",
         },
     }

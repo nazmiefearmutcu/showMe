@@ -51,14 +51,52 @@ class DDMFunction(BaseFunction):
             )
         # Required return: WACC if not specified
         if r is None:
+            # Data policy: never substitute a constant required return. When
+            # WACC is not applicable or unavailable, report the explicit state.
             try:
                 from showme.engine.functions.equity.wacc import WACCFunction
                 wres = await WACCFunction(self.deps).execute(instrument)
-                r = float(wres.data.get("wacc") or 0.08)
                 sources += list(wres.sources or [])
+                wacc_value = (wres.data or {}).get("wacc")
+                if wacc_value is None:
+                    wacc_status = str((wres.data or {}).get("status") or "")
+                    reason = (wres.data or {}).get("reason") or (
+                        "WACC is not available for this issuer, so no required return can be derived. "
+                        "Pass required_return explicitly to value this DDM."
+                    )
+                    warnings.append(f"wacc: {reason}")
+                    return FunctionResult(
+                        code=self.code, instrument=instrument,
+                        data={
+                            "status": "not_applicable" if wacc_status == "not_applicable" else "needs_input",
+                            "reason": reason,
+                            "next_actions": [
+                                "Pass required_return explicitly (cost of equity) to value this DDM.",
+                            ],
+                            "dividend_ttm": d0, "growth": g,
+                            "required_return": None,
+                            "fair_value_per_share": None,
+                        },
+                        sources=list(set(sources)), warnings=warnings,
+                    )
+                r = float(wacc_value)
             except Exception as e:
                 warnings.append(f"wacc: {e}")
-                r = 0.08
+                return FunctionResult(
+                    code=self.code, instrument=instrument,
+                    data={
+                        "status": "provider_unavailable",
+                        "reason": f"WACC provider failed ({e}); required return is unknown.",
+                        "next_actions": [
+                            "Retry once the WACC provider is reachable.",
+                            "Or pass required_return explicitly.",
+                        ],
+                        "dividend_ttm": d0, "growth": g,
+                        "required_return": None,
+                        "fair_value_per_share": None,
+                    },
+                    sources=list(set(sources)), warnings=warnings,
+                )
         r = float(r)
         d1 = d0 * (1 + g)
         if r <= g:
@@ -118,20 +156,59 @@ class DCFFunction(BaseFunction):
         g_high = float(params.get("growth_high", 0.10))
         g_terminal = float(params.get("growth_terminal", 0.025))
         wacc = params.get("wacc")
+        # Review of DCF#1: say where WACC came from (caller input vs the WACC model).
+        wacc_source = "input" if wacc is not None else "wacc_model"
         fcfe = params.get("fcfe")
         shares = params.get("shares_outstanding")
         warnings: list[str] = []
         sources: list[str] = []
         if wacc is None:
+            # Data policy: never discount at a silent constant. When WACC is
+            # not applicable or unavailable, report the explicit state (merged
+            # from the DCF#1 and WACC#1 fixes: their state names, the full
+            # payload shape the pane expects).
+            def _no_wacc(status: str, reason: str, next_actions: list[str]) -> FunctionResult:
+                warnings.append(f"wacc: {reason}")
+                return FunctionResult(
+                    code=self.code, instrument=instrument,
+                    data={"status": status, "reason": reason, "next_actions": next_actions,
+                          "wacc": None, "wacc_source": None, "g_high": g_high, "g_terminal": g_terminal,
+                          "years": N, "starting_fcfe": None, "fcfe_source": None, "shares_source": None,
+                          "shares_outstanding": None, "equity_value": None, "fair_value_per_share": None,
+                          "rows": [], "bridge": [],
+                          "methodology": "Two-stage FCFE DCF; WACC is required and is never substituted with a constant.",
+                          "field_dictionary": FIELD_DICTIONARIES["valuation"]},
+                    sources=list(set(sources)), warnings=warnings,
+                )
+
             try:
                 from showme.engine.functions.equity.wacc import WACCFunction
                 w = await WACCFunction(self.deps).execute(instrument)
-                wacc = float(w.data.get("wacc") or 0.08)
-                sources += list(w.sources or [])
-            except Exception as e:
-                warnings.append(f"wacc: {e}")
-                wacc = 0.08
+            except Exception as e:  # noqa: BLE001 - reported as the provider state
+                return _no_wacc(
+                    "provider_unavailable",
+                    f"WACC provider failed ({str(e) or type(e).__name__}); discount rate is unknown.",
+                    ["Retry once the WACC provider is reachable.", "Or pass wacc explicitly."],
+                )
+            sources += list(w.sources or [])
+            wacc_value = (w.data or {}).get("wacc")
+            if wacc_value is None:
+                wacc_status = str((w.data or {}).get("status") or "")
+                reason = (w.data or {}).get("reason") or (
+                    "WACC is not available for this issuer, so no discount rate can be derived. "
+                    "Pass wacc explicitly to value this DCF."
+                )
+                return _no_wacc(
+                    "not_applicable" if wacc_status == "not_applicable" else "needs_input",
+                    reason,
+                    ["Pass wacc explicitly, or use a financials-specific model for this issuer."],
+                )
+            wacc = float(wacc_value)
         wacc = float(wacc)
+        # Provenance of every model input: a caller value is a manual override,
+        # a provider value is labelled with its source, and a missing value is
+        # reported as missing. Nothing is substituted with a placeholder.
+        fcfe_source: str | None = "user_override" if fcfe is not None else None
         # FCFE proxy: yfinance freeCashflow. Preserve negative values as-is so
         # distressed companies aren't silently coerced to a zero base case
         # (the surface payload would then look real but be driven entirely by
@@ -147,11 +224,31 @@ class DCFFunction(BaseFunction):
                 provider_raw_fcfe = raw.get("freeCashflow")
                 if provider_raw_fcfe is not None:
                     fcfe = provider_raw_fcfe
+                    fcfe_source = "yfinance"
                 sources.append("yfinance")
             except Exception as e:
                 warnings.append(f"yfinance: {e}")
         if fcfe is None:
-            fcfe = 0.0
+            warnings.append(
+                "free_cash_flow: no FCFE from the caller or the provider; pass fcfe to run the model."
+            )
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={"status": "needs_input",
+                      "reason": "Provider free cash flow is unavailable for this instrument; pass fcfe to run the model.",
+                      "next_actions": ["Enter FCFE (USD) as a manual override.",
+                                       "Retry once the yfinance reference data recovers."],
+                      "wacc": wacc, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
+                      "years": N, "starting_fcfe": None,
+                      "fcfe_source": "missing",
+                      "shares_source": "user_override" if shares is not None else None,
+                      "shares_outstanding": shares,
+                      "fair_value_per_share": None,
+                      "rows": [], "bridge": [],
+                      "methodology": "Two-stage FCFE DCF; FCFE is required and is never substituted with a placeholder.",
+                      "field_dictionary": FIELD_DICTIONARIES["valuation"]},
+                sources=list(set(sources)), warnings=warnings,
+            )
         fcfe = float(fcfe)
         if provider_raw_fcfe is not None and float(provider_raw_fcfe) < 0:
             warnings.append(
@@ -175,26 +272,35 @@ class DCFFunction(BaseFunction):
         pv_tv = tv / (1 + wacc) ** N
         # Equity value (FCFE basis — already after debt)
         equity_value = pv_explicit + pv_tv
-        # Per-share if we know share count
-        per_share = None
-        if shares:
+        # Per-share needs a share count: caller override first, then provider.
+        shares_source: str | None = None
+        if shares is not None:
             try:
-                shares = float(shares)
-                if shares > 0:
-                    per_share = equity_value / shares
+                shares_f = float(shares)
+                if shares_f > 0:
+                    shares = shares_f
+                    shares_source = "user_override"
+                else:
+                    shares = None
+                    warnings.append("shares_outstanding: non-positive override ignored.")
             except Exception:
                 shares = None
-        if per_share is None and self.deps.yfinance:
+                warnings.append("shares_outstanding: override is not a number; ignored.")
+        if shares is None and self.deps.yfinance:
             try:
                 from showme.engine.core.base_data_source import DataKind, DataRequest
                 rd = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.REFDATA, instrument=instrument
                 ))
-                shares = rd.shares_outstanding or (rd.extras or {}).get("raw", {}).get("sharesOutstanding")
-                if shares and shares > 0:
-                    per_share = equity_value / shares
-            except Exception:
-                pass
+                provider_shares = rd.shares_outstanding or (rd.extras or {}).get("raw", {}).get("sharesOutstanding")
+                if provider_shares and provider_shares > 0:
+                    shares = float(provider_shares)
+                    shares_source = "yfinance"
+            except Exception as e:
+                warnings.append(f"shares_outstanding: {e}")
+        per_share = equity_value / shares if shares else None
+        if per_share is None:
+            warnings.append("shares_outstanding: no share count from the caller or the provider; fair value per share is not computed.")
         bridge = [
             {"component": "PV explicit FCFE", "value": pv_explicit},
             {"component": "PV terminal value", "value": pv_tv},
@@ -203,11 +309,15 @@ class DCFFunction(BaseFunction):
         ]
         if fcfe <= 0:
             warnings.append("free_cash_flow: provider returned missing or non-positive free cash flow; user should override fcfe for a tradable DCF.")
+        if fcfe_source == "user_override" or shares_source == "user_override":
+            warnings.append("manual_override: at least one model input is a caller override, not provider data.")
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={"status": "ok" if fcfe > 0 and per_share is not None else "needs_input",
-                   "wacc": wacc, "g_high": g_high, "g_terminal": g_terminal,
+                   "wacc": wacc, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
                    "years": N, "starting_fcfe": fcfe,
+                   "fcfe_source": fcfe_source,
+                   "shares_source": shares_source or "missing",
                    "pv_explicit": pv_explicit,
                    "terminal_value": tv, "pv_terminal": pv_tv,
                    "equity_value": equity_value,
@@ -215,7 +325,7 @@ class DCFFunction(BaseFunction):
                    "shares_outstanding": shares,
                    "rows": cashflows,
                    "bridge": bridge,
-                   "methodology": "Two-stage FCFE DCF: forecast FCFE for N years at high growth, discount each cash flow by WACC, then add terminal value TV = FCFE_N * (1 + g_terminal) / (WACC - g_terminal).",
+                   "methodology": "Two-stage FCFE DCF: forecast FCFE for N years at high growth, discount each cash flow by WACC, then add terminal value TV = FCFE_N * (1 + g_terminal) / (WACC - g_terminal). Inputs are labelled user_override (caller value) or provider (yfinance).",
                    "field_dictionary": FIELD_DICTIONARIES["valuation"]},
             sources=list(set(sources)), warnings=warnings,
         )

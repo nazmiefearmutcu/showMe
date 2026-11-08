@@ -171,6 +171,68 @@ describe("ISIN pane — load states", () => {
     expect(screen.getByText(/OpenFIGI unavailable/i)).toBeInTheDocument();
   });
 
+  it("reports a rate-limited lookup as a rate limit, not as a missing adapter", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "provider_unavailable",
+          rows: [],
+          reason: "OpenFIGI rate limit reached (HTTP 429). Retry in about 17 s.",
+        },
+      },
+    });
+    render(<ISINPane code="ISIN" symbol="US0378331005" />);
+    expect(screen.getByText(/OpenFIGI unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/rate limit reached/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not configured/i)).toBeNull();
+  });
+
+  it("shows a partial lookup as a warning, with the per-identifier failure visible", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "partial",
+          rows: [
+            { input: "AAPL", id_type: "TICKER", figi: "BBG000B9XRY4", ticker: "AAPL", name: "APPLE INC", exchange: "US" },
+          ],
+          match_groups: [
+            {
+              input: "AAPL",
+              id_type: "TICKER",
+              matches: [
+                {
+                  figi: "BBG000B9XRY4",
+                  ticker: "AAPL",
+                  name: "APPLE INC",
+                  marketSector: "Equity",
+                  securityType: "Common Stock",
+                  exchCode: "US",
+                },
+              ],
+            },
+            {
+              input: "MSFT",
+              id_type: "TICKER",
+              error: "OpenFIGI rate limit reached (HTTP 429). Retry in about 17 s.",
+              matches: [],
+            },
+          ],
+          summary: { inputs: 2, matches: 1, unresolved: 1 },
+        },
+      },
+    });
+    const { container } = render(<ISINPane code="ISIN" symbol="AAPL" />);
+    const pill = Array.from(container.querySelectorAll(".ds-pill")).find(
+      (el) => el.textContent === "partial",
+    );
+    expect(pill, "partial status pill").toBeDefined();
+    expect(pill?.className).toContain("ds-pill--tone-warn");
+    expect(pill?.className).not.toContain("ds-pill--tone-positive");
+    expect(screen.getByText(/lookup failed: OpenFIGI rate limit reached/i)).toBeInTheDocument();
+  });
+
   it("renders the empty state with guidance when there are no matches", () => {
     setMockFn({
       state: "ok",

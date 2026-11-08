@@ -67,6 +67,12 @@ SANCTIONED_DATA_MODES = frozenset({
     "imported",
     # computed / model states
     "modeled",
+    # EXEC (2026-11-08): an execution schedule replayed on real historical
+    # bars - neither live nor synthetic.
+    "historical_replay",
+    # CPF (2026-11-08): actual leg = Yahoo futures proxy, forecast = trend
+    # extrapolation; neither official, so not live_official.
+    "futures_proxy_trend",
     "user_input",
     "user_supplied",
     # honest failure / absence states

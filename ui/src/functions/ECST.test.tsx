@@ -134,6 +134,24 @@ describe("ECST pane — source-mode honesty", () => {
     render(<ECSTPane code="ECST" />);
     expect(screen.getByText(/No observations/i)).toBeInTheDocument();
   });
+
+  it("shows an explicit unavailable state with the backend reason, never a reference series", () => {
+    const payload = seriesPayload("provider_unavailable");
+    const inner = payload.data.data as Record<string, unknown>;
+    inner.rows = [];
+    inner.history = [];
+    inner.cards = [{ label: "Latest", value: null }];
+    inner.status = "provider_unavailable";
+    inner.reason = "keyless FRED CSV unavailable for 'ZZTESTID'";
+    setMockFn({ state: "ok", ...payload });
+    render(<ECSTPane code="ECST" />);
+    const pill = screen.getByTestId("ecst-mode-pill");
+    expect(pill.textContent).toContain("unavailable");
+    expect(pill.textContent).not.toContain("live");
+    expect(pill.textContent).not.toContain("reference");
+    expect(screen.getByText("Series unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/keyless FRED CSV unavailable for 'ZZTESTID'/)).toBeInTheDocument();
+  });
 });
 
 describe("ECST pane — series control", () => {

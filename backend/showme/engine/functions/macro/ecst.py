@@ -151,22 +151,20 @@ class ECSTFunction(BaseFunction):
                     except Exception as e:
                         provider_errors.append(f"worldbank (compare): {e}")
 
-        if source_mode is None:
-            source_mode = sources[-1] if sources else "macro_series_baseline"
-        
-        # 3. Fall back to robust baseline if still empty
-        if df.empty:
-            df = pd.DataFrame(_baseline_rows_for_series(sid))
-            _note_source("macro_series_baseline")
-            source_mode = "macro_series_baseline"
-            
+        # Data policy: no synthetic series is ever served as data. When no
+        # provider returned observations the series is unavailable (no rows,
+        # explicit status + reason); it is never replaced by a constructed curve.
+        main_available = not df.empty
+        if main_available:
+            if source_mode is None:
+                source_mode = sources[-1] if sources else "provider_unavailable"
+        else:
+            source_mode = "provider_unavailable"
+            sources = ["no_live_source"]
+
         if compare_sid and compare_df.empty:
-            # The compare overlay must stay honest: the baseline is labelled
-            # via compare_source_mode (+ a warning), never passed off as the
-            # provider the main series used.
-            compare_df = pd.DataFrame(_baseline_rows_for_series(compare_sid))
-            _note_source("macro_series_baseline")
-            compare_source_mode = "macro_series_baseline"
+            # The overlay is omitted, not filled with a constructed curve.
+            compare_source_mode = "provider_unavailable"
 
         # Standardize and merge dataframes
         if not df.empty:
@@ -181,7 +179,8 @@ class ECSTFunction(BaseFunction):
             if start_date:
                 df = df[df.index >= start_date]
 
-        if not compare_df.empty:
+        # The overlay only exists alongside a live main series (no compare-only rows).
+        if not compare_df.empty and main_available:
             compare_df = compare_df.copy()
             if "date" not in compare_df.columns:
                 compare_df = compare_df.reset_index()
@@ -196,8 +195,11 @@ class ECSTFunction(BaseFunction):
             # Rename value to compare_value
             compare_df = compare_df.rename(columns={"value": "compare_value"})
             merged = pd.merge(df, compare_df[["compare_value"]], left_index=True, right_index=True, how="outer")
-            merged = merged.sort_index().ffill().bfill()
-            df = merged
+            # Data policy: no value is carried onto a date it was not observed.
+            # The overlay keeps only dates the main series observed; compare_value
+            # is present only where the compare series itself was observed.
+            df = merged.sort_index()
+            df = df[df["value"].notna()]
 
         # Normalize and construct response metadata
         rows = _normalize_rows(df, sid, source_mode, compare_sid)
@@ -208,20 +210,45 @@ class ECSTFunction(BaseFunction):
         unit = series_info.get("units") or catalog["unit"]
         frequency = series_info.get("frequency") or catalog["frequency"]
         
-        warnings: list[str] = []
-        if source_mode == "macro_series_baseline":
-            warnings.extend(provider_errors)
-        if compare_sid and compare_source_mode == "macro_series_baseline":
+        warnings: list[str] = list(provider_errors)
+        reason: str | None = None
+        if not main_available:
+            reason = (
+                "; ".join(provider_errors)
+                if provider_errors
+                else f"no live provider returned observations for {sid!r}"
+            )
+            if not provider_errors:
+                warnings.append(f"ECST: {reason}")
+        # Observations existed but none fall inside the requested window: an
+        # explicit empty state, not an ok live series with zero rows.
+        main_in_window = main_available and bool(rows)
+        if main_available and not rows:
+            reason = (
+                f"provider returned observations for {sid!r}, but none fall on or "
+                f"after the requested window start {start_date or 'MAX'}"
+            )
+        if compare_sid and compare_source_mode == "provider_unavailable":
             warnings.append(
                 f"{compare_sid} compare series was unavailable from the providers — "
-                "the labelled macro_series_baseline is shown for the overlay."
+                "the overlay is omitted (no synthetic series is served)."
             )
-        
+
         data_res = {
             "series_id": sid,
             "series_name": label,
             "unit": unit,
             "frequency": frequency,
+            "status": (
+                "ok" if main_in_window
+                else "empty" if main_available
+                else "provider_unavailable"
+            ),
+            "data_state": (
+                "live" if main_in_window
+                else "empty" if main_available
+                else "provider_unavailable"
+            ),
             "rows": rows,
             "history": rows,
             "cards": [
@@ -232,8 +259,9 @@ class ECSTFunction(BaseFunction):
             ],
             "methodology": (
                 "ECST shows one named macro series at a time. FRED is queried first, "
-                "World Bank is used as a secondary adapter, and a labelled baseline "
-                "is only used when neither provider returns data."
+                "World Bank is used as a secondary adapter. When neither provider "
+                "returns observations the response is status provider_unavailable with "
+                "no rows: no synthetic or baseline series is ever served as data."
             ),
             "field_dictionary": {
                 "date": "Observation date.",
@@ -245,14 +273,20 @@ class ECSTFunction(BaseFunction):
             },
             "source_mode": source_mode,
         }
-        
+        if reason is not None:
+            data_res["reason"] = reason
+            data_res["next_actions"] = [
+                "Retry ECST — FRED and World Bank may be momentarily unreachable.",
+                f"Confirm '{sid}' is a valid FRED series id.",
+            ]
+
         if compare_sid:
             compare_catalog = _series_meta(compare_sid)
             compare_label = compare_info.get("title") or compare_catalog["label"]
             data_res["cards"].append({"label": f"vs {compare_sid}", "value": latest.get("compare_value")})
             data_res["compare_series_id"] = compare_sid
             data_res["compare_series_name"] = compare_label
-            data_res["compare_source_mode"] = compare_source_mode or "macro_series_baseline"
+            data_res["compare_source_mode"] = compare_source_mode or "provider_unavailable"
 
         return FunctionResult(
             code=self.code,
@@ -267,92 +301,6 @@ class ECSTFunction(BaseFunction):
 
 def _series_meta(series_id: str) -> dict[str, str]:
     return _SERIES_CATALOG.get(series_id, {"label": series_id, "unit": "value", "frequency": "unknown"})
-
-
-def _baseline_rows_for_series(series_id: str) -> list[dict[str, float | str]]:
-    import datetime
-    meta = _series_meta(series_id)
-    freq = meta["frequency"]
-    
-    start_date = datetime.date(2016, 1, 1)
-    end_date = datetime.date(2026, 6, 1)
-    rows = []
-    
-    if series_id == "CPIAUCSL":
-        curr_date = start_date
-        val = 236.9
-        while curr_date <= end_date:
-            growth = 0.005 if curr_date.year >= 2021 else 0.0015
-            val = val * (1 + growth)
-            rows.append({"date": curr_date.strftime("%Y-%m-%d"), "value": round(val, 3)})
-            if curr_date.month == 12:
-                curr_date = datetime.date(curr_date.year + 1, 1, 1)
-            else:
-                curr_date = datetime.date(curr_date.year, curr_date.month + 1, 1)
-                
-    elif series_id == "GDPC1":
-        curr_date = start_date
-        val = 17500.0
-        while curr_date <= end_date:
-            val = val * (1 + 0.005)
-            if curr_date.year == 2020 and curr_date.month == 4:
-                val = val * 0.90
-            elif curr_date.year == 2020 and curr_date.month == 7:
-                val = val * 1.08
-            rows.append({"date": curr_date.strftime("%Y-%m-%d"), "value": round(val, 1)})
-            if curr_date.month == 10:
-                curr_date = datetime.date(curr_date.year + 1, 1, 1)
-            else:
-                curr_date = datetime.date(curr_date.year, curr_date.month + 3, 1)
-                
-    elif series_id == "UNRATE":
-        curr_date = start_date
-        while curr_date <= end_date:
-            if curr_date.year == 2020 and curr_date.month == 4:
-                val = 14.7
-            elif curr_date.year == 2020 and curr_date.month == 5:
-                val = 13.2
-            elif curr_date.year == 2020 and curr_date.month in (6, 7, 8):
-                val = 10.0
-            elif curr_date.year < 2020:
-                val = 5.0 - (curr_date.year - 2016) * 0.3 - (curr_date.month / 12.0) * 0.3
-                val = max(3.5, val)
-            else:
-                val = 6.0 - (curr_date.year - 2021) * 0.8
-                val = max(3.7, val)
-            val += (curr_date.month % 3) * 0.1
-            rows.append({"date": curr_date.strftime("%Y-%m-%d"), "value": round(val, 2)})
-            if curr_date.month == 12:
-                curr_date = datetime.date(curr_date.year + 1, 1, 1)
-            else:
-                curr_date = datetime.date(curr_date.year, curr_date.month + 1, 1)
-                
-    elif series_id in ("DGS10", "DGS2"):
-        curr_date = start_date
-        val = 2.0 if series_id == "DGS10" else 1.0
-        while curr_date <= end_date:
-            if curr_date.weekday() < 5:
-                if curr_date.year <= 2018:
-                    val = 2.0 if series_id == "DGS10" else 1.5
-                elif curr_date.year == 2020:
-                    val = 0.8 if series_id == "DGS10" else 0.2
-                elif curr_date.year >= 2023:
-                    val = 4.2 if series_id == "DGS10" else 4.5
-                else:
-                    val = 2.5 if series_id == "DGS10" else 2.0
-                day_offset = (curr_date.day % 7) * 0.05 - 0.15
-                rows.append({"date": curr_date.strftime("%Y-%m-%d"), "value": round(val + day_offset, 2)})
-            curr_date += datetime.timedelta(days=1)
-    else:
-        curr_date = start_date
-        while curr_date <= end_date:
-            rows.append({"date": curr_date.strftime("%Y-%m-%d"), "value": 1.0})
-            if curr_date.month == 12:
-                curr_date = datetime.date(curr_date.year + 1, 1, 1)
-            else:
-                curr_date = datetime.date(curr_date.year, curr_date.month + 1, 1)
-                
-    return rows
 
 
 def _normalize_rows(
@@ -376,6 +324,8 @@ def _normalize_rows(
         if date_value is None:
             date_value = item.get("index")
         value = item.get("value")
+        if value is None or pd.isna(value):
+            continue
         try:
             numeric_value = round(float(value), 6)
         except (TypeError, ValueError):
@@ -391,7 +341,7 @@ def _normalize_rows(
             "source_mode": source_mode,
         }
         
-        if "compare_value" in item and item.get("compare_value") is not None:
+        if "compare_value" in item and item.get("compare_value") is not None and not pd.isna(item.get("compare_value")):
             try:
                 compare_value = round(float(item["compare_value"]), 6)
                 row["compare_value"] = compare_value

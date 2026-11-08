@@ -219,7 +219,9 @@ export function TAUCPane({ code }: FunctionPaneProps) {
         title="No auctions returned"
         body={
           payload?.reason ??
-          `No ${action} Treasury auctions in the ${horizon}-day window.`
+          (sourceMode === "treasurydirect"
+            ? `TreasuryDirect returned no ${action} auction rows that fall in the ${horizon}-day window.`
+            : `No ${action} auction rows were produced for the ${horizon}-day window.`)
         }
         icon="⌦"
         action={

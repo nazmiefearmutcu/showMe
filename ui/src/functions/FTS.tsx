@@ -43,7 +43,9 @@ interface FTSRow {
   url?: string | null;
   score?: number | null;
   snippet?: string | null;
-  symbol_match?: string;
+  symbol?: string | null;
+  cik?: string | null;
+  issuer_match?: boolean | null;
 }
 
 interface FTSData {

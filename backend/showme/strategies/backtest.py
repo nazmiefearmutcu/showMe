@@ -108,8 +108,9 @@ def _compute_metrics(
     Sharpe / Sortino annualise over the PER-BAR return series
     (``bar_equities`` — equity marked to each evaluated bar's close,
     including unrealised PnL on open positions): ``mean/std * sqrt(bars_per_year)``.
-    Bars-per-year defaults to crypto-hourly; callers should override based
-    on the spec's timeframe (e.g. 252 for daily equities).
+    Bars-per-year defaults to crypto-hourly (8760). The timeframe table in
+    ``_bars_per_year_for_tf`` assumes a 24/7 crypto calendar (1d = 365). For
+    daily equities pass ``bars_per_year=252`` to ``backtest()`` explicitly.
     """
     n = len(trades)
     if n == 0 or not equity_curve:
@@ -504,7 +505,11 @@ def _close_trade(
 
 
 def _bars_per_year_for_tf(timeframe: str) -> float:
-    """Approximate bars-per-year for Sharpe annualisation."""
+    """Approximate bars-per-year for Sharpe annualisation.
+
+    Assumes a 24/7 crypto calendar, so daily bars are 365 per year. Daily
+    equity series (252 sessions) must pass ``bars_per_year=252`` explicitly.
+    """
     table = {
         "1m": 365.0 * 24.0 * 60.0,
         "5m": 365.0 * 24.0 * 12.0,

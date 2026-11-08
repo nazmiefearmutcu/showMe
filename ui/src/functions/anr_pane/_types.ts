@@ -11,6 +11,8 @@ export interface ANRSummary {
   neutral_pct?: number;
   negative_pct?: number;
   last_updated?: string | null;
+  consensus_period?: string | null;
+  latest_rating_action_date?: string | null;
   included_count?: number;
   excluded_stale_count?: number;
   oldest_included_rating_date?: string | null;

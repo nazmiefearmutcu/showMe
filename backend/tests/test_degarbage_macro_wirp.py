@@ -22,7 +22,6 @@ from showme.engine.core.base_function import FunctionDeps
 from showme.engine.functions.macro.wirp import (
     WIRPFunction,
     _bucket_probabilities,
-    _live_fed_rows,
 )
 
 # The old hardcoded reference table that we must NOT regress to.
@@ -58,25 +57,6 @@ def test_bucket_probabilities_sum_to_one_and_lean_correctly():
     assert abs(cut + hold + hike - 1.0) < 1e-9
     assert hold > cut and hold > hike
     assert abs(cut - hike) < 1e-9
-
-
-def test_live_fed_rows_are_derived_not_constants():
-    rows = _live_fed_rows(target_mid=4.50, implied_rate=4.05, meetings_limit=4)
-    assert rows, "expected forward meeting rows"
-    for row in rows:
-        triple = (
-            round(row["cut_25bp"], 2),
-            round(row["hold"], 2),
-            round(row["hike_25bp"], 2),
-        )
-        assert triple not in _OLD_CONSTANTS, "must not regress to the old table"
-        total = row["cut_25bp"] + row["hold"] + row["hike_25bp"]
-        assert abs(total - 1.0) < 1e-6
-        assert row["source_mode"] == "live_fed_funds_futures"
-        expected = round((-25 * row["cut_25bp"]) + (25 * row["hike_25bp"]), 2)
-        assert row["implied_change_bp"] == expected
-    # Implied rate below target ⇒ a cut is priced for the near meeting.
-    assert rows[0]["cut_25bp"] > rows[0]["hike_25bp"]
 
 
 # --------------------------------------------------------------------------- #

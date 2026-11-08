@@ -32,21 +32,23 @@ class TLDRFunction(BaseFunction):
                 return 0.0
             return max(floor, min(float(default), remaining))
 
+        sources: list[str] = []
+        warnings: list[str] = []
+
         symbols = _parse_symbols(params.get("symbols"))
-        # Pull from PortfolioState if no list
+        watchlist_source = "explicit" if symbols else ""
+        # No explicit list: the user's own holdings are the scope. No invented
+        # default watchlist is substituted when there are no holdings.
         if not symbols:
             try:
                 from showme.engine.portfolio.state import PortfolioState
                 p = PortfolioState()
                 p.import_legacy_crypto()
                 symbols = [pos.instrument.symbol for pos in p.positions[:15]]
-            except Exception:
-                pass
-        if not symbols:
-            symbols = ["AAPL", "MSFT", "TSLA", "BTCUSDT", "EURUSD", "DGS10"]
-
-        sources: list[str] = []
-        warnings: list[str] = []
+                watchlist_source = "portfolio" if symbols else "portfolio_empty"
+            except Exception as exc:
+                watchlist_source = "portfolio_unavailable"
+                warnings.append(f"portfolio: {str(exc) or type(exc).__name__}")
 
         # Quotes (best-effort) — BugHunt 2026-05-24:
         # TLDR previously walked deps.yfinance / deps.ccxt_failover with its
@@ -100,13 +102,13 @@ class TLDRFunction(BaseFunction):
         except Exception:
             quotes = [{"symbol": s} for s in symbols]
             warnings.append("quotes: provider timeout")
-        sources.append("yfinance")
+        # Provenance: cite the quote sources that actually answered, not a fixed name.
+        sources += sorted({str(q["quote_source"]) for q in quotes if q.get("quote_source")})
 
-        # Top news
-        # TOP answers a {status, rows, ...} dict from Awareness; only a usable
-        # answer (status ok or empty, not provider_unavailable) counts as news.
+        # Top news. TOP answers a dict envelope {status, rows, ...} from Awareness.
         news_summary: list[str] = []
-        news_ok = False
+        news_status = "unavailable"
+        news_reason = "no response"
         try:
             news_timeout = _remaining(float(params.get("news_timeout", 3)), floor=0.75)
             if news_timeout <= 0:
@@ -116,41 +118,46 @@ class TLDRFunction(BaseFunction):
                 TOPFunction(self.deps).execute(limit=12),
                 timeout=news_timeout,
             )
-            top_data = top.data if isinstance(top.data, dict) else {}
-            if top_data.get("status") in {"ok", "empty"}:
-                news_ok = True
-                news_summary = [
-                    str(row.get("title", ""))
-                    for row in (top_data.get("rows") or [])[:8]
-                    if isinstance(row, dict) and row.get("title")
-                ]
+            items, news_reason = _payload_rows(top, "rows", "items")
+            news_summary = [str(a.get("title", "")) for a in items[:8]]
+            if news_reason:
+                news_status = "unavailable"
+                warnings.append(f"top: {news_reason}")
             else:
-                warnings.append(f"top: {top_data.get('reason') or top_data.get('status') or 'no usable answer'}")
+                news_status = "ok" if news_summary else "empty"
             sources += list(top.sources or [])
         except Exception as e:
-            warnings.append(f"top: {e}")
+            news_reason = str(e) or type(e).__name__
+            warnings.append(f"top: {str(e) or type(e).__name__}")
 
-        # Today's economic events (ECO answers a {status, rows, ...} dict)
+        # Today's economic events. ECO answers a dict envelope whose rows live
+        # under "rows" (Awareness). A failed call is "unavailable", never a zero count.
         events: list[dict[str, Any]] = []
-        calendar_ok = False
+        calendar_total = 0
+        calendar_status = "unavailable"
+        calendar_reason = "no response"
         try:
             eco_timeout = _remaining(float(params.get("eco_timeout", 2)), floor=0.75)
             if eco_timeout <= 0:
                 raise TimeoutError("no time remaining for economic calendar")
             from showme.engine.functions.macro.eco import ECOFunction
             eco = await asyncio.wait_for(
-                ECOFunction(self.deps).execute(days=1),
+                ECOFunction(self.deps).execute(),
                 timeout=eco_timeout,
             )
-            eco_data = eco.data if isinstance(eco.data, dict) else {}
-            if eco_data.get("status") in {"ok", "empty"}:
-                calendar_ok = True
-                events = [row for row in (eco_data.get("rows") or [])[:10] if isinstance(row, dict)]
+            rows, calendar_reason = _payload_rows(eco, "rows", "events")
+            # The count is the real row total; only the listed events are capped.
+            calendar_total = len(rows)
+            events = rows[:10]
+            if calendar_reason:
+                calendar_status = "unavailable"
+                warnings.append(f"eco: {calendar_reason}")
             else:
-                warnings.append(f"eco: {eco_data.get('reason') or eco_data.get('status') or 'no usable answer'}")
+                calendar_status = "ok"
             sources += list(eco.sources or [])
         except Exception as e:
-            warnings.append(f"eco: {e}")
+            calendar_reason = str(e) or type(e).__name__
+            warnings.append(f"eco: {str(e) or type(e).__name__}")
 
         # LLM summary if available
         prose = ""
@@ -205,7 +212,10 @@ class TLDRFunction(BaseFunction):
                     "quotes": quotes,
                     "news": news_summary,
                     "events": events,
+                    "news_status": news_status,
+                    "calendar_status": calendar_status,
                     "watchlist": symbols,
+                    "watchlist_source": watchlist_source,
                     "next_actions": [
                         "Retry TLDR after quote/news providers recover.",
                         "Increase timeout/news_timeout/quote_timeout for an interactive summary.",
@@ -221,21 +231,24 @@ class TLDRFunction(BaseFunction):
             movers = [q for q in quotes if q.get("change_pct") is not None]
             ups_line = _format_movers(movers, positive=True)
             downs_line = _format_movers(movers, positive=False)
+            if not symbols:
+                ups_line = downs_line = "no holdings or symbols to rank (pass a symbol list)."
+            if news_summary:
+                news_line = "; ".join(news_summary[:3])
+            elif news_status == "empty":
+                news_line = "no headlines returned."
+            else:
+                news_line = f"unavailable ({news_reason})."
+            if calendar_status == "ok":
+                calendar_line = f"{calendar_total} scheduled."
+            else:
+                calendar_line = f"unavailable ({calendar_reason}); not a zero count."
             prose = (
                 f"# ShowMe TL;DR — {datetime.now(timezone.utc):%Y-%m-%d}\n\n"
                 f"- **Top movers up:** {ups_line}"
                 f"\n- **Top movers down:** {downs_line}"
-                + "\n- **News themes:** "
-                + (
-                    ("; ".join(news_summary[:3]) or "no headlines matched")
-                    if news_ok
-                    else "unavailable (Awareness news service)"
-                )
-                + (
-                    f"\n- **Calendar items:** {len(events)} scheduled."
-                    if calendar_ok
-                    else "\n- **Calendar items:** unavailable (Awareness calendar)."
-                )
+                + "\n- **News themes:** " + news_line
+                + f"\n- **Calendar items:** {calendar_line}"
                 + "\n- **Summary engine:** local deterministic template; no LLM response was available in the latency budget."
                 + "\n- **Action items:** review portfolio positions, scan ALRT log."
             )
@@ -244,12 +257,39 @@ class TLDRFunction(BaseFunction):
             code=self.code, instrument=None,
             data={"markdown": prose, "quotes": quotes,
                    "news": news_summary, "events": events,
-                   "watchlist": symbols, "summary_model": summary_model,
+                   "calendar_total": calendar_total,
+                   "news_status": news_status, "news_reason": news_reason,
+                   "calendar_status": calendar_status, "calendar_reason": calendar_reason,
+                   "watchlist": symbols, "watchlist_source": watchlist_source,
+                   "summary_model": summary_model,
                    "quote_count": len([q for q in quotes if q.get("last") is not None]),
                    "mover_count": len([q for q in quotes if q.get("change_pct") is not None])},
             sources=list(set(sources)) or ["local_briefing_model"],
             metadata={"format": "markdown", "provider_errors": warnings, "summary_model": summary_model},
         )
+
+
+def _payload_rows(result: Any, *keys: str) -> tuple[list[dict[str, Any]], str]:
+    """Rows from a sibling function result, plus an unavailable reason ("" when usable).
+
+    TOP and ECO return dict envelopes ({status, rows, ...}); a list
+    payload is accepted as-is. A non-ok status is reported, never read as zero rows.
+    """
+    data = getattr(result, "data", None)
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)], ""
+    if not isinstance(data, dict):
+        return [], "unexpected payload"
+    status = str(data.get("status") or "ok")
+    if status not in {"ok", "empty"}:
+        return [], str(data.get("reason") or status)
+    # Awareness-backed TOP and ECO answer ``rows``; the legacy envelopes used
+    # ``items`` / ``events``. The first list present wins.
+    for key in keys:
+        rows = data.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)], ""
+    return [], f"missing '{keys[0] if keys else 'rows'}' rows"
 
 
 def _parse_symbols(value: Any) -> list[str]:
