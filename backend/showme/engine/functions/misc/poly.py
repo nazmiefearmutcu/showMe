@@ -57,6 +57,8 @@ class POLYFunction(BaseFunction):
         except (TypeError, ValueError):
             limit = 100
         limit = max(1, min(limit, 100))
+        # Gamma window the adapter scans (mirrors fetch_markets' target cap).
+        resolved_scan_window = min(max(limit * 4, 100), 400)
         timeout = float(params.get("timeout", 8))
         try:
             min_liq = float(params.get("min_liquidity_usd") or 0)
@@ -139,6 +141,15 @@ class POLYFunction(BaseFunction):
             result_warnings.append(
                 "Gamma returned closed markets, but none carried umaResolutionStatus=resolved."
             )
+        # The resolved (UMA) filter runs client-side over the Gamma window the
+        # adapter fetched. A saturated window can hide resolved markets beyond
+        # it, so say so instead of reporting a complete ok result.
+        if status == "resolved":
+            if len(raw_rows) >= resolved_scan_window:
+                result_warnings.append(
+                    f"status=resolved filters only the first {resolved_scan_window} closed markets "
+                    "by 24h volume; resolved markets beyond that window are not listed."
+                )
 
         return FunctionResult(
             code=self.code,
@@ -195,7 +206,8 @@ class POLYFunction(BaseFunction):
             sources=["polymarket"],
             warnings=result_warnings,
             metadata={"query": query, "matched": len(compact), "provider_errors": provider_errors,
-                      "fetched": len(raw_rows), "limit": limit, "min_liquidity_usd": min_liq},
+                      "fetched": len(raw_rows), "limit": limit, "min_liquidity_usd": min_liq,
+                      **({"resolved_scan_window": resolved_scan_window} if status == "resolved" else {})},
         )
 
 
