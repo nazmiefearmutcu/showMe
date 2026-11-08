@@ -1,8 +1,9 @@
 /**
  * EXEC — Execution Monitor.
  *
- * Slice-by-slice VWAP/TWAP execution plan built against live intraday bars
- * (backend drives the real algo schedulers over Binance/Yahoo 5m OHLCV).
+ * Slice-by-slice TWAP/VWAP/ICEBERG/SNIPER execution schedule replayed over
+ * historical intraday bars (backend drives the real algo schedulers over
+ * Binance/Yahoo OHLCV; no order is sent).
  * Header: algo / side / slices / horizon / parent-size controls (all
  * persisted under `showme.exec.*`) + status pill + refresh. Body: schedule +
  * implementation-shortfall headline cards, then the per-slice TCA table —
