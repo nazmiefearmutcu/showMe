@@ -182,6 +182,17 @@ def normalize_function_contract(
     payload["retrievedAt"] = payload.get("fetched_at") or _utcnow()
     payload["asOf"] = _observation_as_of(metadata, data, rows, _parse_observation(payload["retrievedAt"]))
     payload["inputEcho"] = _clean_input(params)
+    # The router injects a default symbol when the caller chose none and flags
+    # it __explicit_symbol=False. That default must never be silent: say so in
+    # the envelope (defaultedInputs) and in the visible warnings (XCON-5).
+    if params.get("__explicit_symbol") is False and params.get("symbol"):
+        default_symbol = str(params["symbol"])
+        payload["defaultedInputs"] = {"symbol": default_symbol}
+        note = (f"No symbol was given, so this ran on the default symbol {default_symbol}; "
+                "pass symbol to choose the instrument.")
+        current = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+        if note not in current:
+            payload["warnings"] = [*current, note]
     payload["payload"] = _contract_payload(data)
     payload["rows"] = rows
     payload["series"] = series
