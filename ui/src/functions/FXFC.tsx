@@ -1,5 +1,5 @@
 /**
- * FXFC — FX Forecasts (covered-interest-parity forward carry).
+ * FXFC — CIP FX Forward Path (covered-interest-parity forward carry).
  *
  * Header: pair segmented control (persisted) + source honesty pill +
  * status + refresh. Body: warning banner when the backend fell back to
