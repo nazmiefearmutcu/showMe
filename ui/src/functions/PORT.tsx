@@ -550,6 +550,15 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
 }
 
 /**
+ * A position's weight against the book total. A row with no market value
+ * (unpriced) has no weight: it is undefined, never a 0% weight.
+ */
+function weightOf(marketValue: unknown, total: number): number | undefined {
+  const mv = marketValue == null ? Number.NaN : Number(marketValue);
+  return total > 0 && Number.isFinite(mv) ? mv / total : undefined;
+}
+
+/**
  * Apply live ticks to the snapshot positions and compute each weight.
  *
  * PORT#4: the weight denominator must be the same total the rows are valued
@@ -589,7 +598,7 @@ export function overlayLivePositions(
   const total = hasOverlay && !guarded ? liveSum : (snapshotMv ?? liveSum);
   return overlaid.map((p) => ({
     ...p,
-    weight: total > 0 ? (Number(p.market_value) || 0) / total : undefined,
+    weight: weightOf(p.market_value, total),
   }));
 }
 
@@ -769,7 +778,7 @@ export function PORTPane({ code }: FunctionPaneProps) {
     const totalMv = rows.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
     return rows.map((p) => ({
       ...p,
-      weight: totalMv > 0 ? (Number(p.market_value) || 0) / totalMv : undefined,
+      weight: weightOf(p.market_value, totalMv),
     }));
   }, [enriched.length, portfolioGroups]);
 
@@ -1016,8 +1025,15 @@ function PORTView({
         : best,
     null,
   );
+  // Largest weight first; a missing weight sorts after every reported one
+  // (including short, negative weights) instead of ranking as 0%.
   const topPositions = [...positions]
-    .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
+    .sort((a, b) => {
+      if (a.weight == null && b.weight == null) return 0;
+      if (a.weight == null) return 1;
+      if (b.weight == null) return -1;
+      return b.weight - a.weight;
+    })
     .slice(0, 5);
 
   // P5 — local column sort. DataGrid supports sortBy/sortDir/onSort but PORT
