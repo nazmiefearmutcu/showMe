@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import pandas as pd
 
+from showme.providers.base import get_redacted
 from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
@@ -55,8 +56,9 @@ class EIAAdapter(BaseDataSource):
         if facets:
             for k, v in facets.items():
                 params[f"facets[{k}][]"] = v
-        r = await client.get(f"/{route.strip('/')}/data/", params=params)
-        r.raise_for_status()
+        r = await get_redacted(
+            client, f"/{route.strip('/')}/data/", params=params, secrets=(self.api_key,),
+        )
         rows = ((r.json() or {}).get("response", {}) or {}).get("data", [])
         if not rows:
             return pd.DataFrame()

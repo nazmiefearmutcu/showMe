@@ -24,6 +24,7 @@ from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
 from showme.engine.utils.throttle import throttle
+from showme.providers.base import get_redacted
 
 # B5: Finnhub's date filters (/company-news) and intraday candle ranges are
 # anchored to America/New_York exchange time. Internal datetimes always live
@@ -78,8 +79,9 @@ class FinnhubAdapter(BaseDataSource):
         if not self.api_key:
             raise DataSourceError("FINNHUB_API_KEY not set")
         client = await self._client_()
-        r = await client.get(endpoint, params={**params, "token": self.api_key})
-        r.raise_for_status()
+        r = await get_redacted(
+            client, endpoint, params={**params, "token": self.api_key}, secrets=(self.api_key,),
+        )
         return r.json()
 
     async def fetch(self, request: DataRequest) -> Any:
