@@ -552,24 +552,101 @@ class APPLFunction(BaseFunction):
             )
         profile = reference_profile(instrument.symbol)
         rows = _taxonomy_rows(instrument, rd.sector, rd.industry, rd.country, rd.currency, rd.exchange, profile)
+        # APPL#2: the GICS/NAICS/ICB crosswalk is bundled per symbol only.
         crosswalk_used = any(r.get("source_mode") == "reference_taxonomy_crosswalk" for r in rows)
-        live_sources = ["yfinance"] + (["taxonomy_crosswalk_static"] if crosswalk_used else [])
+        # APPL#1: CIK / SIC / fiscal year end / latest filings from SEC EDGAR.
+        sec_timeout = max(1.0, min(float(params.get("sec_timeout", 4)), 6.0))
+        ids, sec_error = await _appl_sec_identifiers(self.deps.sec_edgar, instrument.symbol, sec_timeout)
+        rows.extend(_appl_identifier_rows(ids))
+        live_sources = ["yfinance"]
+        if crosswalk_used:
+            live_sources.append("taxonomy_crosswalk_static")
+        if ids["cik"]:
+            live_sources.append("sec_edgar")
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"status": "ok",
                                      "sector": rd.sector, "industry": rd.industry,
                                      "country": rd.country, "currency": rd.currency,
                                      "exchange": rd.exchange,
                                      "exchange_name": EXCHANGE_LEGEND.get(str(rd.exchange or ""), rd.exchange),
+                                     "crosswalk_status": "bundled" if crosswalk_used else "not_bundled",
+                                     "cik": ids["cik"],
+                                     "sic_code": ids["sic_code"],
+                                     "sic_description": ids["sic_description"],
+                                     "fiscal_year_end": ids["fiscal_year_end"],
+                                     "latest_filings": ids["latest_filings"],
                                      "rows": rows,
                                      "peers": [{"symbol": s, "peer_set": "reference_sector_peer"} for s in profile.get("peers", [])],
-                                     "methodology": "APPL combines live provider sector/industry fields with a labelled taxonomy crosswalk for GICS/NAICS/ICB-style hierarchy where available. Exchange codes are expanded for end-user readability.",
+                                     "methodology": "APPL combines live provider sector/industry fields and keyless SEC EDGAR identifiers (CIK, SIC, fiscal year end, latest 10-K/10-Q/8-K filings) with a labelled GICS/NAICS/ICB crosswalk only where one is bundled for the symbol (crosswalk_status). Exchange codes are expanded for end-user readability.",
                                      "field_dictionary": {
                                          "level": "Taxonomy level or provider field.",
                                          "classification": "Human-readable classification value.",
-                                         "source_mode": "live_yfinance or labelled reference taxonomy crosswalk.",
+                                         "source_mode": "live_yfinance, sec_edgar_submissions, or labelled reference taxonomy crosswalk.",
+                                         "crosswalk_status": "bundled when a static GICS/NAICS/ICB crosswalk exists for the symbol, else not_bundled.",
                                      }},
                               sources=live_sources,
+                              warnings=[sec_error] if sec_error else [],
                               metadata={"live": True, "data_mode": "live_yfinance"})
+
+
+_APPL_FILING_FORMS = ("10-K", "10-Q", "8-K")
+
+
+async def _appl_sec_identifiers(sec: Any, symbol: str, timeout: float) -> tuple[dict[str, Any], str | None]:
+    """CIK, SIC, fiscal year end and latest filings from SEC EDGAR (keyless).
+
+    Each field stays None unless its lookup succeeded: nothing is inferred or
+    stubbed. Returns (identifiers, warning-or-None).
+    """
+    out: dict[str, Any] = {"cik": None, "sic_code": None, "sic_description": None,
+                           "fiscal_year_end": None, "latest_filings": []}
+    if sec is None:
+        return out, "sec_edgar adapter not configured; CIK, SIC and fiscal year end not resolved"
+    try:
+        cik = await asyncio.wait_for(sec.cik_for(symbol), timeout=timeout)
+        if not cik:
+            return out, f"sec_edgar: no CIK found for {symbol}"
+        sub = await asyncio.wait_for(sec.submissions(str(cik)), timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - reported as a warning, never raised
+        return out, f"sec_edgar: {type(exc).__name__}: {exc}"[:200]
+    if not isinstance(sub, dict):
+        return out, "sec_edgar: submissions payload was not an object"
+    out["cik"] = str(cik)
+    out["sic_code"] = str(sub.get("sic") or "") or None
+    out["sic_description"] = sub.get("sicDescription") or None
+    out["fiscal_year_end"] = str(sub.get("fiscalYearEnd") or "") or None
+    recent = (sub.get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+
+    def _nth(key: str, i: int) -> Any:
+        lst = recent.get(key) or []
+        return lst[i] if i < len(lst) else None
+
+    filings: list[dict[str, Any]] = []
+    for i, form in enumerate(forms):
+        if str(form or "").upper() not in _APPL_FILING_FORMS:
+            continue
+        filings.append({
+            "form": form,
+            "filing_date": _nth("filingDate", i),
+            "accession": _nth("accessionNumber", i),
+            "document": _nth("primaryDocument", i),
+        })
+        if len(filings) >= 5:
+            break
+    out["latest_filings"] = filings
+    return out, None
+
+
+def _appl_identifier_rows(ids: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for level, key in (("CIK", "cik"), ("SIC", "sic_code"),
+                       ("SIC description", "sic_description"),
+                       ("Fiscal year end (MMDD)", "fiscal_year_end")):
+        value = ids.get(key)
+        if value:
+            rows.append({"level": level, "classification": value, "source_mode": "sec_edgar_submissions"})
+    return rows
 
 
 def _taxonomy_template(instrument: Instrument) -> dict[str, Any]:
