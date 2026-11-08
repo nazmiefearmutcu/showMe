@@ -37,6 +37,9 @@ class DDMFunction(BaseFunction):
         # until the provider returns a usable payload (T10: a failed or empty
         # provider must never read as "pays no dividend, value 0, status ok").
         provider_failed = d0 is None
+        # DDM#3 follow-up: a caller-supplied dividend (even 0) must be credited to the
+        # caller, never to the provider, so the non-payer reason stays honest.
+        caller_supplied_dividend = d0 is not None
         # Try to source D0 from yfinance
         if d0 is None and self.deps.yfinance:
             try:
@@ -66,6 +69,13 @@ class DDMFunction(BaseFunction):
             if provider_failed:
                 status = "provider_unavailable"
                 reason = "Dividend reference data is unavailable, so the trailing dividend is unknown. Pass dividend_ttm explicitly."
+            elif caller_supplied_dividend:
+                status = "not_applicable"
+                reason = f"The dividend_ttm input is {d0:g}, so DDM is not applicable for non-dividend payers."
+                warnings.append(
+                    f"dividend_ttm={d0:g} was supplied by the caller (no provider lookup was made); "
+                    "DDM is not applicable for non-dividend payers."
+                )
             elif forward_indicated is not None and float(forward_indicated) > 0:
                 status = "needs_input"
                 reason = "Provider reports a forward dividend but no trailing 12-month dividend. Pass dividend_ttm explicitly."
@@ -80,7 +90,11 @@ class DDMFunction(BaseFunction):
                 data={
                     "status": status,
                     "reason": reason,
-                    "next_actions": ["Pass dividend_ttm explicitly (trailing annual dividend per share)."],
+                    "next_actions": (
+                        ["Pass a positive dividend_ttm (trailing annual dividend per share) to value this payer."]
+                        if caller_supplied_dividend
+                        else ["Pass dividend_ttm explicitly (trailing annual dividend per share)."]
+                    ),
                     "dividend_ttm": None,
                     "dividend_forward_indicated": forward_indicated,
                     "next_dividend": None,
