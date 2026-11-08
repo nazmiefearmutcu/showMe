@@ -370,8 +370,10 @@ _home_swr_warming: set[str] = set()
 _home_swr_inflight: dict[str, Any] = {}
 _home_swr_lock = threading.Lock()
 # Exact params the Welcome dashboard sends (keys must match the routed merge).
+# TOP mirrors Welcome.tsx NewsflowPanel `{ hours: 48, limit: 24, _epoch }`
+# (tests/test_home_prewarm_params.py pins the two together).
 HOME_PREWARM_PARAMS: dict[str, dict[str, str]] = {
-    "TOP": {"query": "market", "limit": "24", "days": "7", "_epoch": "0"},
+    "TOP": {"hours": "48", "limit": "24", "_epoch": "0"},
     "BRIEF": {"limit": "6"},
     "MOST": {"live": "true", "limit": "24"},
 }
@@ -2030,8 +2032,13 @@ def _function_next_actions(code: str, params: dict[str, Any], status: str) -> li
         actions.append("Use a function whose native asset class supports this symbol.")
     if upper in {"ACCT", "PORT", "MGN", "PCAS", "PVAR", "PORT_OPT", "REBA", "RPAR"}:
         actions.append("Add real positions through portfolio state or pass positions in Params JSON.")
-    if upper in {"CN", "TOP", "NI", "NSE", "READ", "TLDR", "BRIEF"}:
-        actions.append("Check network access and news/RSS providers, then retry with a specific query or symbol.")
+    if upper in {"CN", "TOP", "NI", "NSE", "NALRT", "TLDR", "BRIEF"}:
+        actions.append(
+            "Check that the Awareness service (awareness-markets, 127.0.0.1:8086) is running, "
+            "then retry with a specific query or symbol."
+        )
+    if upper == "READ":
+        actions.append("Save articles from TOP, NI, CN or NSE to fill the reading list.")
     if upper in {"GP", "HP", "TECH", "BETA", "FA", "DES", "RV"}:
         actions.append("Verify the symbol and retry with live=true or a supported provider symbol.")
     if params.get("symbol") is None and params.get("topic") is None:
