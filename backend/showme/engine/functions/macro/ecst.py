@@ -195,8 +195,11 @@ class ECSTFunction(BaseFunction):
             # Rename value to compare_value
             compare_df = compare_df.rename(columns={"value": "compare_value"})
             merged = pd.merge(df, compare_df[["compare_value"]], left_index=True, right_index=True, how="outer")
-            merged = merged.sort_index().ffill().bfill()
-            df = merged
+            # Data policy: no value is carried onto a date it was not observed.
+            # The overlay keeps only dates the main series observed; compare_value
+            # is present only where the compare series itself was observed.
+            df = merged.sort_index()
+            df = df[df["value"].notna()]
 
         # Normalize and construct response metadata
         rows = _normalize_rows(df, sid, source_mode, compare_sid)
@@ -305,6 +308,8 @@ def _normalize_rows(
         if date_value is None:
             date_value = item.get("index")
         value = item.get("value")
+        if value is None or pd.isna(value):
+            continue
         try:
             numeric_value = round(float(value), 6)
         except (TypeError, ValueError):
@@ -320,7 +325,7 @@ def _normalize_rows(
             "source_mode": source_mode,
         }
         
-        if "compare_value" in item and item.get("compare_value") is not None:
+        if "compare_value" in item and item.get("compare_value") is not None and not pd.isna(item.get("compare_value")):
             try:
                 compare_value = round(float(item["compare_value"]), 6)
                 row["compare_value"] = compare_value
