@@ -91,7 +91,7 @@ def regm() -> FunctionManifest:
                 label="Confidence floor",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=False,
-                description="Minimum classifier confidence for a definitive regime label; below this returns 'transitional'.",
+                description="Not wired in this build: no code reads this value, so it does not change the regime label.",
                 min=0.0,
                 max=1.0,
                 step=0.05,
@@ -128,7 +128,7 @@ def regm() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=900, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["regime_label", "confidence", "features", "data_mode"],
+            must_have=["regime_label", "input_coverage", "features", "data_mode"],
             rows=True,
             series=True,
             cards=True,
@@ -150,7 +150,7 @@ def regm() -> FunctionManifest:
         card_schema=CardSchema(
             slots=[
                 CardSlot(key="regime_label", label="Regime", kind="big_number"),
-                CardSlot(key="confidence", label="Confidence", kind="kpi"),
+                CardSlot(key="input_coverage", label="Input coverage", kind="kpi"),
                 CardSlot(key="taxonomy", label="Taxonomy", kind="badge"),
                 CardSlot(key="dominant_feature", label="Top Feature", kind="badge"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
@@ -161,10 +161,10 @@ def regm() -> FunctionManifest:
             "REGM is an internal regime classifier. Features come from FRED — yield curve "
             "slope (T10Y2Y), ISM PMI (NAPM), real Fed Funds (FEDFUNDS - core PCE YoY), credit "
             "spreads (BAMLC0A0CM, BAMLH0A0HYM2), unemployment 3m trend, etc — each smoothed "
-            "over the configured window. A taxonomy-specific logistic model maps the feature "
-            "vector to a regime label probability vector; the label with the highest probability "
-            "is the headline regime IF the probability exceeds model_threshold, otherwise the "
-            "label is 'transitional' and the warning explains the threshold miss. Per-feature "
+            "over the configured window. The regime label is the rule-based composite of the "
+            "trend, volatility, drawdown and curve components. input_coverage reports how many "
+            "of those four components resolved (0.25 each); it is not a probability of the label. "
+            "Per-feature "
             "contribution scores (Shapley-style decomposition over the logistic linear predictor) "
             "are returned in the features array so the analyst can see exactly which inputs "
             "drove the classification. Live FRED is the data source; the regime call itself is "
@@ -191,8 +191,8 @@ def regm() -> FunctionManifest:
             ),
         },
         field_dict={
-            "regime_label": FieldDef(description="Headline regime label (or 'transitional' when below threshold).", source="model"),
-            "confidence": FieldDef(unit="[0,1]", description="Probability of the selected regime label.", source="model"),
+            "regime_label": FieldDef(description="Headline regime label from the rule-based composite; absent when inputs are insufficient.", source="model"),
+            "input_coverage": FieldDef(unit="[0,1]", description="Share of the four classifier components (trend, volatility, drawdown, curve) that resolved. Not a probability of the regime label.", source="computed"),
             "features[].feature": FieldDef(description="Feature name.", source="reference"),
             "features[].value": FieldDef(unit="varies", description="Smoothed feature value at as_of.", source="fred"),
             "features[].zscore": FieldDef(unit="σ", description="Feature z-score vs 5y history.", source="computed"),
@@ -209,13 +209,10 @@ def regm() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="regm_label_below_threshold_is_transitional",
-                description="When max regime probability < model_threshold, asserts regime_label == 'transitional' and a warning mentions the threshold.",
-                inputs={"model_threshold": 0.95, "_mock": "ambiguous_features"},
-                assertions=[
-                    "regime_label_equals_transitional",
-                    "warning_mentions_confidence_below_threshold",
-                ],
+                name="regm_input_coverage_is_resolved_share",
+                description="Asserts input_coverage equals the resolved share of the four components (0.25 each); it is not a probability of the regime label.",
+                inputs={},
+                assertions=["input_coverage_is_resolved_share_of_four"],
             ),
             SemanticTest(
                 name="regm_feature_zscores_are_signed",
