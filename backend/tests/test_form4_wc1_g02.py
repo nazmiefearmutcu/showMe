@@ -230,3 +230,33 @@ def test_form4_7_by_month_counts_the_returned_rows() -> None:
     res = _execute_yf_and_sec(_yf_frame_relative(), months=24)
     counts = {b["month"]: b["count"] for b in res.data["by_month"]}
     assert sum(counts.values()) == len(res.data["rows"]) == 3
+
+
+# ─── FORM4#2: yfinance description text must classify sales and grants ────
+
+
+def test_form4_2_yfinance_sale_text_is_a_sale_and_grant_text_is_neutral() -> None:
+    frame = pd.DataFrame(
+        {
+            "Shares": [10000, 5000, 100],
+            "Value": [2300000.0, 0.0, 21000.0],
+            "Text": [
+                "Sale at price 230.00 - 232.00 per share.",
+                "Stock Award(Grant)",
+                "Purchase at price 210.00 per share.",
+            ],
+            "Insider": ["Seller", "Grantee", "Buyer"],
+            "Position": ["Officer", "Officer", "Director"],
+            "Transaction": [None, None, None],
+            "Start Date": pd.to_datetime(["2026-10-01", "2026-10-02", "2026-10-03"]),
+        }
+    )
+    rows = form4_mod._insider_rows_from_yfinance("AAPL", {"insider_transactions": frame})
+    assert [r["transaction_type"] for r in rows] == ["sell", "grant", "buy"]
+    assert form4_mod._infer_direction({"transaction": "Sale at price 230.00 - 232.00 per share."}) == -1
+    assert form4_mod._infer_direction({"transaction": "Stock Award(Grant)"}) == 0
+    summary = form4_mod._form4_summary_rows(rows)
+    # Grant is neutral: the net is the purchase minus the sale only.
+    assert summary["net_shares"] == pytest.approx(100 - 10000)
+    assert summary["seller_count"] == 1
+    assert summary["buyer_count"] == 1
