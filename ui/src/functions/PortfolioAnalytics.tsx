@@ -1433,8 +1433,12 @@ function formatSmart(key: string, value: unknown): string {
     if (iso) return iso;
   }
   if (k.includes("pct") || k.includes("percent")) return formatPercent(value);
+  // UI-4: a bare weight has no declared unit (a fraction in rpar / pcas /
+  // port_opt, percent x100 in pvar under the same key), so it is never guessed
+  // from magnitude. It shows the raw number; percent comes from the explicit
+  // *_pct siblings (weight_pct, target_weight_pct, ...).
   if (k === "weight" || k.endsWith("_weight") || k.includes("fraction")) {
-    return formatPercent(value, { fromFraction: Math.abs(value) <= 1 });
+    return value.toFixed(4);
   }
   // HNT-04: the return/vol/rate/alpha family is a FRACTION by backend
   // contract (bmtx/btune total_return = final equity / initial − 1, rpar
