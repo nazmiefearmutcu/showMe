@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 from datetime import datetime, timezone
 from typing import Any
 
@@ -158,7 +159,8 @@ def _fallback_form4(symbol: str) -> dict[str, Any]:
         "symbol": symbol,
         "n": 0,
         "data_mode": "provider_unavailable",
-        "as_of": datetime.now(timezone.utc).isoformat(),
+        # FORM4#8: no dated rows means no as-of date; never the request time.
+        "as_of": None,
         "rows": [],
         "filings": [],
         "by_month": [],
@@ -286,9 +288,15 @@ def _in_month_window(ts: datetime | None, months: int) -> bool:
         return True
     if months <= 0:
         return True
-    now = datetime.now(timezone.utc)
-    window_days = months * 31
-    return (now - ts).days <= window_days
+    # FORM4#8: a calendar-month lookback (6 months is not 186 days).
+    return ts >= _months_back(datetime.now(timezone.utc), months)
+
+
+def _months_back(now: datetime, months: int) -> datetime:
+    total = now.year * 12 + (now.month - 1) - months
+    year, month0 = divmod(total, 12)
+    day = min(now.day, calendar.monthrange(year, month0 + 1)[1])
+    return now.replace(year=year, month=month0 + 1, day=day)
 
 
 def _normalize_transaction_type(raw: Any) -> str:
@@ -446,7 +454,7 @@ def _form4_summary_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         out["buyer_count"] = len(buyers)
     if sellers:
         out["seller_count"] = len(sellers)
-    out["as_of"] = (latest_ts or datetime.now(timezone.utc)).isoformat()
+    out["as_of"] = latest_ts.isoformat() if latest_ts is not None else None
     return out
 
 

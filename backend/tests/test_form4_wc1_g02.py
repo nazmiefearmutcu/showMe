@@ -201,3 +201,22 @@ def test_form4_4_sec_only_summary_does_not_report_a_net_flow() -> None:
     res = _execute_sec_only([_sec_adapter_row(10)])
     assert res.data.get("net_shares") is None
     assert res.data.get("net_notional") is None
+
+
+# ─── FORM4#8: as_of is null without dated rows; windows are calendar months ─
+
+
+def test_form4_8_summary_as_of_is_null_without_dated_rows() -> None:
+    summary = form4_mod._form4_summary_rows([{"transaction": "Sale at price 1.00", "shares": 1.0}])
+    assert summary["as_of"] is None
+
+
+def test_form4_8_fallback_as_of_is_null_not_request_time() -> None:
+    assert form4_mod._fallback_form4("AAPL")["as_of"] is None
+
+
+def test_form4_8_six_month_window_is_calendar_not_186_days() -> None:
+    # Six calendar months back is 181-184 days; 186 days back is outside it.
+    now = datetime.now(timezone.utc)
+    assert form4_mod._in_month_window(now - timedelta(days=186), 6) is False
+    assert form4_mod._in_month_window(now - timedelta(days=120), 6) is True
