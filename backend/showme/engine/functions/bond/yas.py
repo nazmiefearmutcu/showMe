@@ -137,6 +137,25 @@ def _ambiguous_rate(value: Any, assume_decimal: bool) -> bool:
     return _AMBIGUOUS_RATE_LOW < number <= 1.0
 
 
+def _plain_decimal_note(name: str, value: Any, assume_decimal: bool) -> str | None:
+    """Warning for a rate in (0, 0.2] with no stated unit (XCON-2, sub-0.2 part).
+
+    Such a value is priced as a decimal (0.04 = 4% is the documented form), but a
+    user who typed a percent (0.1 meaning 0.1%) would get 10% priced. Say which
+    reading was used. Values above 0.2 are refused or read as percent elsewhere.
+    """
+    if assume_decimal or value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0 < abs(number) <= _AMBIGUOUS_RATE_LOW:
+        return None
+    return (f"{name} {number:g} was read as a decimal and priced at {number * 100:g}%; "
+            f"if you meant {number:g}%, pass {name}={number / 100:g} with assume_decimal=true.")
+
+
 def _rate_decimal(value: Any, fallback: float, *,
                   assume_decimal: bool = False) -> float:
     """Coerce a rate input to decimal form.
@@ -315,6 +334,9 @@ class YASFunction(BaseFunction):
         # price in currency units (price per 100 x face / 100), not with the per-100 quote.
         price_amount = price * face / 100.0
         coupon = _rate_decimal(coupon_raw, 0.0, assume_decimal=assume_dec)
+        coupon_note = _plain_decimal_note("coupon", coupon_raw, assume_dec)
+        if coupon_note:
+            warnings.append(coupon_note)
         maturity_years = float(maturity)
         if maturity_years * freq < 1 and "n_periods" not in params:
             # Shorter than one coupon period (US1M/US3M bills): a single cash
@@ -333,6 +355,9 @@ class YASFunction(BaseFunction):
         bench_series: str | None = None
         if bench_raw is not None:
             benchmark = _rate_decimal(bench_raw, 0.0, assume_decimal=bool(params.get("assume_decimal", False)))
+            bench_note = _plain_decimal_note("benchmark", bench_raw, bool(params.get("assume_decimal", False)))
+            if bench_note:
+                warnings.append(bench_note)
             metadata["benchmark"] = "input"
             bench_label = "custom rate"
         elif bench_name is not None:
