@@ -135,7 +135,10 @@ class WACCFunction(BaseFunction):
         else:
             damo = getattr(self.deps, "damodaran", None)
             if damo:
-                country = "US"
+                # WACC#3: the Damodaran premium is the issuer's own country's. An
+                # issuer whose country cannot be resolved gets no premium from
+                # any other location; the failure is reported, never swallowed.
+                country: str | None = None
                 try:
                     if self.deps.yfinance:
                         from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -145,34 +148,40 @@ class WACCFunction(BaseFunction):
                             )),
                             timeout=float(params.get("yfinance_timeout", 8)),
                         )
-                        country = rd.country or "US"
-                except Exception:
-                    pass
-                try:
-                    if hasattr(damo, "get_erp_with_source"):
-                        erp, erp_source = await asyncio.wait_for(
-                            damo.get_erp_with_source(country),
-                            timeout=float(params.get("damodaran_timeout", 8)),
-                        )
-                    else:
-                        erp = await asyncio.wait_for(
-                            damo.get_erp(country),
-                            timeout=float(params.get("damodaran_timeout", 8)),
-                        )
-                        erp_source = "damodaran"
-                    sources.append("damodaran")
-                    if erp_source.startswith("damodaran_snapshot"):
-                        warnings.append(
-                            "Damodaran ERP table unavailable; the January 2025 snapshot is used "
-                            f"for {country} (erp_source {erp_source})"
-                        )
-                    elif erp_source.endswith("_country_unmatched"):
-                        warnings.append(
-                            f"Damodaran has no ERP for country {country}; the mature-market ERP is used"
-                        )
+                        country = str(getattr(rd, "country", None) or "").strip() or None
                 except Exception as e:
-                    warnings.append(f"damodaran: {e}")
-                    erp = None
+                    warnings.append(f"issuer country lookup failed: {e}")
+                if country is None:
+                    warnings.append(
+                        "issuer country unknown: the Damodaran ERP is set per country, so no "
+                        "premium is matched to this issuer (erp_source assumption_default_5pct)"
+                    )
+                else:
+                    try:
+                        if hasattr(damo, "get_erp_with_source"):
+                            erp, erp_source = await asyncio.wait_for(
+                                damo.get_erp_with_source(country),
+                                timeout=float(params.get("damodaran_timeout", 8)),
+                            )
+                        else:
+                            erp = await asyncio.wait_for(
+                                damo.get_erp(country),
+                                timeout=float(params.get("damodaran_timeout", 8)),
+                            )
+                            erp_source = "damodaran"
+                        sources.append("damodaran")
+                        if erp_source.startswith("damodaran_snapshot"):
+                            warnings.append(
+                                "Damodaran ERP table unavailable; the January 2025 snapshot is used "
+                                f"for {country} (erp_source {erp_source})"
+                            )
+                        elif erp_source.endswith("_country_unmatched"):
+                            warnings.append(
+                                f"Damodaran has no ERP for country {country}; the mature-market ERP is used"
+                            )
+                    except Exception as e:
+                        warnings.append(f"damodaran: {e}")
+                        erp = None
             if erp is None:
                 erp = 0.05
                 erp_source = "assumption_default_5pct"

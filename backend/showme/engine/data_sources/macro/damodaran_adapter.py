@@ -27,6 +27,16 @@ from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRe
 
 def _cache_path():
     return runtime_path("damodaran_erp.json")
+
+
+# The table is keyed by ISO-2 codes in the snapshot and by country names in a
+# live workbook. Both spellings of the US map to one key (wc1-g34 WACC#3).
+_US_COUNTRY_NAMES = frozenset({"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"})
+
+
+def _country_key(country: str) -> str:
+    key = " ".join(str(country).upper().split())
+    return "US" if key in _US_COUNTRY_NAMES else key
 _CACHE_TTL = 30 * 24 * 3600  # 30 gün
 # Provenance label for the hard-coded table below (wc1-g34 WACC#3).
 SNAPSHOT_SOURCE = "damodaran_snapshot_2025_01"
@@ -168,19 +178,24 @@ class DamodaranAdapter(BaseDataSource):
     async def fetch(self, request: DataRequest) -> Any:
         return await self.country_erp()
 
-    async def get_erp_with_source(self, country: str = "US") -> tuple[float, str]:
+    async def get_erp_with_source(self, country: str) -> tuple[float, str]:
         """ERP as a decimal plus its source label.
 
-        A country missing from the table gets the mature-market (_global)
-        value; that case is labelled ``..._country_unmatched`` rather than
-        passed off as the country's own premium.
+        The country is required: a missing one is an error, never a default
+        location (wc1-g34 WACC#3). A country missing from the table gets the
+        mature-market (_global) value; that case is labelled
+        ``..._country_unmatched`` rather than passed off as the country's own
+        premium. Names match case-insensitively, and the US spellings match.
         """
+        key = _country_key(country) if country else ""
+        if not key:
+            raise ValueError("a country is required to look up a Damodaran ERP")
         table, source = await self._erp_table()
-        key = (country or "US").upper()
-        if key in table:
-            return float(table[key]) / 100.0, source
+        keys = {_country_key(name): value for name, value in table.items() if name != "_global"}
+        if key in keys:
+            return float(keys[key]) / 100.0, source
         return float(table.get("_global", 4.60)) / 100.0, f"{source}_country_unmatched"
 
-    async def get_erp(self, country: str = "US") -> float:
+    async def get_erp(self, country: str) -> float:
         erp, _source = await self.get_erp_with_source(country)
         return erp
