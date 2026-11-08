@@ -110,3 +110,49 @@ def test_unknown_window_is_refused_explicitly() -> None:
     assert result.data["status"] == "input_error"
     assert "prior_covariance" not in result.data
     assert yf.starts == []
+
+
+def test_routed_pane_payload_with_window_reaches_the_engine() -> None:
+    """BLAK#1 follow-up: the pane sends ``window`` and no ``days``.
+
+    The router used to keep the generic profile's injected ``days=120`` when a
+    ``window`` was present, so the seeded 1Y selector was silently overridden.
+    The routed payload must carry no injected days, and the engine must start
+    history 1Y back.
+    """
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    pane_params = {
+        "symbols": _SYMBOLS,
+        "window": "1Y",
+        "live": True,
+        "tau": 0.05,
+        "delta": 2.5,
+        "views_text": "",
+    }
+    routed = _route_function_params("BLAK", pane_params)
+    assert "days" not in routed
+    assert "range" not in routed
+    assert routed["window"] == "1Y"
+
+    yf = _RecordingYf()
+    func = BLAKFunction(deps=FunctionDeps(yfinance=yf))
+    result = asyncio.run(func.execute(**routed))
+    assert yf.starts, "routed live run must request history"
+    assert 364 <= _age_days(yf.starts[0]) <= 366
+    assert result.data["window"] == "1Y"
+    assert result.data["lookback_days"] == 365
+
+
+def test_routed_pane_payload_with_explicit_days_keeps_days() -> None:
+    """A caller-supplied ``days`` is an explicit day count and must survive routing."""
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("BLAK", {"symbols": _SYMBOLS, "days": 504, "live": True})
+    assert routed["days"] == 504
+
+    yf = _RecordingYf()
+    func = BLAKFunction(deps=FunctionDeps(yfinance=yf))
+    result = asyncio.run(func.execute(**routed))
+    assert 503 <= _age_days(yf.starts[0]) <= 505
+    assert result.data["lookback_days"] == 504

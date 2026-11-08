@@ -824,13 +824,15 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # group (BTC/ETH/SOL for crypto routes) must not stand in for the
         # user's holdings: with no list sent, TLDR ranks PortfolioState itself.
         defaults.pop("symbols", None)
-    if code.upper() == "BLAK" and "days" not in merged and "window" not in merged:
+    if code.upper() == "BLAK" and "days" not in merged:
         # BLAK#1: the generic agent profile injects a 120-day window (range 3M),
         # which silently replaced the seeded 1Y lookback and left the prior on
         # about 83 observations. BLAK owns its window (blak.py _WINDOW_DAYS), so
-        # only a caller-supplied days/window reaches it.
+        # the injected days is dropped unless the caller sent its own days; a
+        # caller ``window`` (the pane always sends one) then selects the lookback.
         defaults.pop("days", None)
-        defaults.pop("range", None)
+        if "range" not in merged:
+            defaults.pop("range", None)
     if code.upper() == "ICX" and defaults.get("query") and not merged.get("index"):
         defaults["index"] = str(defaults["query"]).strip().upper()
     if code.upper() == "TRQA" and defaults.get("query") and not merged.get("questions"):
