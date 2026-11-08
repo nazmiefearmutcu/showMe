@@ -84,13 +84,17 @@ interface AimPayload {
 }
 
 // Mirrors the backend status vocabulary for "still working" orders.
+// Mirrors AIMFunction._OPEN_STATUSES in the sidecar. "submitted" is the state
+// stored when a broker accepts a ticket, so it is a working order.
 const OPEN_STATES = new Set([
   "open",
   "working",
   "partially_filled",
   "pending",
+  "pending_new",
   "accepted",
   "new",
+  "submitted",
 ]);
 
 const TABS = ["open", "history"] as const;
@@ -557,7 +561,7 @@ function StatusPill({ status }: { status?: string | null }) {
           ? "warn"
           : s === "cancelled"
             ? "muted"
-            : s === "open" || s === "accepted" || s === "new"
+            : s === "open" || s === "accepted" || s === "new" || s === "submitted"
               ? "accent"
               : "muted";
   const text = s ? s.replace(/_/g, " ").toUpperCase() : formatMissing;

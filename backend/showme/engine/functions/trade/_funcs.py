@@ -244,6 +244,14 @@ class AIMFunction(BaseFunction):
 
     _BROKERS = ("binance_broker", "alpaca_broker", "ibkr_broker", "oanda_broker")
 
+    # Lifecycle states that still count as working. "submitted" is what EMSX /
+    # BBGT store at placement (order_history.record_order default), so it must
+    # count as open; the pane's OPEN_STATES mirrors this vocabulary.
+    _OPEN_STATUSES = frozenset({
+        "open", "new", "accepted", "pending", "pending_new", "working",
+        "submitted", "partially_filled",
+    })
+
     _FIELD_DICTIONARY = {
         "created_at": "Order creation timestamp.",
         "broker": "Adapter name (binance_broker, alpaca_broker, ...).",
@@ -267,6 +275,15 @@ class AIMFunction(BaseFunction):
         "chronological ledger even when individual brokers are momentarily down. AIM never mutates "
         "state — it is the read-only counterpart to EMSX/BBGT/FXGO/TSOX."
     )
+
+    @staticmethod
+    def _broker_identities(key: str, broker: Any) -> set[str]:
+        """Names one adapter's orders are stored under: its config key and its ``.name``."""
+        ids = {key}
+        nm = getattr(broker, "name", None)
+        if isinstance(nm, str) and nm:
+            ids.add(nm)
+        return ids
 
     @staticmethod
     def _normalise_order(broker_name: str, raw: Any, *, from_history: bool = False) -> dict[str, Any]:
@@ -303,6 +320,8 @@ class AIMFunction(BaseFunction):
         warnings: list[str] = []
         rows: list[dict[str, Any]] = []
         brokers_online: list[str] = []
+        # (broker identity, order_id) pairs that a live adapter currently lists.
+        live_keys: set[tuple[str, str]] = set()
 
         broker_filter = params.get("broker_filter") or []
         if isinstance(broker_filter, str):
@@ -321,7 +340,11 @@ class AIMFunction(BaseFunction):
                 continue
             brokers_online.append(name)
             for raw in (open_orders or []):
-                rows.append(self._normalise_order(name, raw, from_history=False))
+                live_row = self._normalise_order(name, raw, from_history=False)
+                rows.append(live_row)
+                if live_row.get("order_id") is not None:
+                    for ident in self._broker_identities(name, broker):
+                        live_keys.add((ident, str(live_row["order_id"])))
 
         # Persisted order history (cross-broker tail)
         raw_limit = params.get("limit", 200)
@@ -339,6 +362,20 @@ class AIMFunction(BaseFunction):
         except Exception as exc:  # noqa: BLE001
             provider_errors.append(f"order_history.list_orders: {exc}")
             warnings.append(f"order history unavailable: {exc}")
+        # A history row that a live adapter already lists is the same order:
+        # keep the live row only, so it is neither duplicated nor double counted.
+        history_rows = [
+            r for r in history_rows
+            if (str(r.get("broker")), str(r.get("order_id"))) not in live_keys
+        ]
+        # The history store is written once at placement and never updated on
+        # fills, so a 'submitted' row no live broker confirms may be stale.
+        unconfirmed = [r for r in history_rows if str(r.get("status") or "").lower() == "submitted"]
+        if unconfirmed:
+            warnings.append(
+                f"{len(unconfirmed)} order(s) recorded as 'submitted' in local history could not be "
+                "confirmed open by a live broker; their current status may have changed since placement."
+            )
         rows.extend(history_rows)
 
         # Optional status filter (manifest input).
@@ -349,7 +386,7 @@ class AIMFunction(BaseFunction):
             wanted = {str(s).lower() for s in status_filter}
             rows = [r for r in rows if str(r.get("status") or "").lower() in wanted]
 
-        open_count = sum(1 for r in rows if str(r.get("status") or "").lower() == "open")
+        open_count = sum(1 for r in rows if str(r.get("status") or "").lower() in self._OPEN_STATUSES)
         filled_count = sum(
             1 for r in rows if str(r.get("status") or "").lower() in {"filled", "partially_filled"}
         )
@@ -373,6 +410,7 @@ class AIMFunction(BaseFunction):
             "filled_today": filled_count,
             "brokers_online": len(brokers_online),
             "total_notional": total_notional,
+            "unconfirmed_submitted_count": len(unconfirmed),
             "data_mode": data_mode,
             "as_of": _utc_now_iso(),
         }
