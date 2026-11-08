@@ -33,7 +33,9 @@ def test_manifest_asset_classes_match_served_function() -> None:
     # carry the same fund taxonomy, not only ETF.
     served = {str(c.value).lower() for c in FSRCFunction.asset_classes}
     manifest = {str(c.value).lower() for c in entry.asset_classes}
-    assert served <= manifest, (served, manifest)
+    # Equality, not a subset: an extra manifest class the served function does not
+    # declare is the same kind of mismatch the finding reported.
+    assert served == manifest, (served, manifest)
     assert AssetClass.FUTURE not in entry.asset_classes
     assert AssetClass.COMMODITY not in entry.asset_classes
 
