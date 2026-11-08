@@ -383,6 +383,21 @@ describe("OVDV pane — honesty notices + KPI budget", () => {
     expect(screen.getAllByRole("status").length).toBe(1);
   });
 
+  it("labels a desk-quoted user_inputs surface as user-quoted, not a reference model", () => {
+    // user_inputs is the desk-quoted path (data_mode "modeled"). The surface
+    // head already says "User-quoted vol"; the notice must not call the same
+    // surface a "Reference vol model".
+    const payload = okPayload();
+    const data = payload.data.data as Record<string, unknown>;
+    data.vol_source = "user_inputs";
+    data.data_mode = "modeled";
+    mockFn.data = payload.data;
+    render(<OVDVPane code="OVDV" />);
+    const notice = screen.getByTestId("ovdv-notice");
+    expect(notice.textContent).toMatch(/User-quoted vol/);
+    expect(notice.textContent).not.toMatch(/Reference vol model/);
+  });
+
   it("keeps the KPI strip at four cards and states provenance once", () => {
     const { container } = render(<OVDVPane code="OVDV" />);
     expect(container.querySelectorAll(".stat-card").length).toBe(4);

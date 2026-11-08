@@ -476,7 +476,11 @@ export function OVDVPane({ code }: FunctionPaneProps) {
               >
                 {!isLive && (
                   <div>
-                    <strong className="u-text-warn">Reference vol model</strong>{" "}
+                    <strong className="u-text-warn">
+                      {volSource === "user_inputs"
+                        ? "User-quoted vol"
+                        : "Reference vol model"}
+                    </strong>{" "}
                     <span className="u-text-secondary">
                       ATM curve labelled <code>{dataMode}</code> — no live OTC FX
                       vol vendor configured. Reference, not vendor-quoted OTC vols.
