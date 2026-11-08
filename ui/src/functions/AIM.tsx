@@ -8,8 +8,9 @@
  * `brokers_checked` / `brokers_online` lists, `warnings`, `next_actions`,
  * `methodology` and (in `metadata`) a `provider_errors` list.
  *
- * Open vs terminal is decided client-side via `OPEN_STATES` (mirrors the
- * backend status vocabulary). With no broker adapters configured the handler
+ * Open vs terminal: a row is Open when the backend says `confirmed_open`
+ * (a live broker listed it); rows without that flag fall back to `OPEN_STATES`
+ * (mirrors the backend status vocabulary). Order history is never Open. With no broker adapters configured the handler
  * returns `orders: []`, `data_mode: "not_configured"` and an actionable
  * `next_actions` — the pane renders an empty-but-honest blotter and never
  * fakes fills.
@@ -55,6 +56,8 @@ interface AimOrder {
   type?: string | null;
   tif?: string | null;
   status?: string | null;
+  /** true only when a live broker listed the order (sidecar AIM row flag). */
+  confirmed_open?: boolean | null;
   filled_qty?: number | null;
   avg_fill_px?: number | null;
 }
@@ -85,9 +88,9 @@ interface AimPayload {
   next_actions?: string[];
 }
 
-// Mirrors the backend status vocabulary for "still working" orders.
-// Mirrors AIMFunction._OPEN_STATUSES in the sidecar. "submitted" is the state
-// stored when a broker accepts a ticket, so it is a working order.
+// Open is decided by the backend's `confirmed_open` flag (a live broker listed
+// the order). This set is only a fallback for rows without that flag; history
+// rows always carry `confirmed_open: false` from the sidecar.
 const OPEN_STATES = new Set([
   "open",
   "working",
@@ -98,6 +101,11 @@ const OPEN_STATES = new Set([
   "new",
   "submitted",
 ]);
+
+function isOpenOrder(o: AimOrder): boolean {
+  if (typeof o.confirmed_open === "boolean") return o.confirmed_open;
+  return OPEN_STATES.has((o.status ?? "").toLowerCase());
+}
 
 const TABS = ["open", "history"] as const;
 type TabId = (typeof TABS)[number];
@@ -150,11 +158,11 @@ export function AIMPane({ code, symbol }: FunctionPaneProps) {
   }, [payload.orders, symbol]);
 
   const openOrders = useMemo(
-    () => allOrders.filter((o) => OPEN_STATES.has((o.status ?? "").toLowerCase())),
+    () => allOrders.filter(isOpenOrder),
     [allOrders],
   );
   const historyOrders = useMemo(
-    () => allOrders.filter((o) => !OPEN_STATES.has((o.status ?? "").toLowerCase())),
+    () => allOrders.filter((o) => !isOpenOrder(o)),
     [allOrders],
   );
   const activeRows = tab === "open" ? openOrders : historyOrders;

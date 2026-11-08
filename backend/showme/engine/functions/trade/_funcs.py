@@ -244,12 +244,12 @@ class AIMFunction(BaseFunction):
 
     _BROKERS = ("binance_broker", "alpaca_broker", "ibkr_broker", "oanda_broker")
 
-    # Lifecycle states that still count as working. "submitted" is what EMSX /
-    # BBGT store at placement (order_history.record_order default), so it must
-    # count as open; the pane's OPEN_STATES mirrors this vocabulary.
+    # Lifecycle states that still count as working when a live broker lists
+    # the order. "submitted" is deliberately absent: it is the placement-time
+    # state EMSX / BBGT write to history, not a broker-reported state.
     _OPEN_STATUSES = frozenset({
         "open", "new", "accepted", "pending", "pending_new", "working",
-        "submitted", "partially_filled",
+        "partially_filled",
     })
 
     _FIELD_DICTIONARY = {
@@ -335,12 +335,15 @@ class AIMFunction(BaseFunction):
         skip_live = provider_mode == "cached_snapshot"
         if provider_mode and provider_mode not in {"live_exchange", "cached_snapshot"}:
             warnings.append(f"AIM: unsupported provider_mode={provider_mode!r}; live broker polling was used.")
-        polled = [] if skip_live else list(targets)
+        # brokers_checked: configured adapters AIM actually attempted a poll on
+        # (failed polls included, unconfigured adapters and cached_snapshot excluded).
+        polled: list[str] = []
 
-        for name in polled:
+        for name in ([] if skip_live else targets):
             broker = getattr(self.deps, name, None)
             if broker is None:
                 continue
+            polled.append(name)
             try:
                 open_orders = await broker.get_open_orders()
             except Exception as exc:  # noqa: BLE001
@@ -350,6 +353,10 @@ class AIMFunction(BaseFunction):
             brokers_online.append(name)
             for raw in (open_orders or []):
                 live_row = self._normalise_order(name, raw, from_history=False)
+                # Only a live broker listing proves an order is working now.
+                live_row["confirmed_open"] = (
+                    str(live_row.get("status") or "").lower() in self._OPEN_STATUSES
+                )
                 rows.append(live_row)
                 if live_row.get("order_id") is not None:
                     for ident in self._broker_identities(name, broker):
@@ -391,7 +398,11 @@ class AIMFunction(BaseFunction):
             if (str(r.get("broker")), str(r.get("order_id"))) not in live_keys
         ]
         # The history store is written once at placement and never updated on
-        # fills, so a 'submitted' row no live broker confirms may be stale.
+        # fills or closes, so no history row can prove a working order: it is
+        # shown for the audit trail but never counted as open.
+        for r in history_rows:
+            r["confirmed_open"] = False
+        # A 'submitted' row no live broker confirms may be stale (filled, closed).
         unconfirmed = [r for r in history_rows if str(r.get("status") or "").lower() == "submitted"]
         if unconfirmed:
             warnings.append(
@@ -408,7 +419,7 @@ class AIMFunction(BaseFunction):
             wanted = {str(s).lower() for s in status_filter}
             rows = [r for r in rows if str(r.get("status") or "").lower() in wanted]
 
-        open_count = sum(1 for r in rows if str(r.get("status") or "").lower() in self._OPEN_STATUSES)
+        open_count = sum(1 for r in rows if r.get("confirmed_open") is True)
         filled_count = sum(
             1 for r in rows if str(r.get("status") or "").lower() in {"filled", "partially_filled"}
         )

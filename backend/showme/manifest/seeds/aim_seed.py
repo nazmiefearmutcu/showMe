@@ -179,7 +179,13 @@ def aim() -> FunctionManifest:
             "orders[].status": FieldDef(description="open / submitted / filled / partially_filled / cancelled / rejected. Local-history rows keep the status written at placement (submitted) and are not updated on fills.", source="broker"),
             "orders[].filled_qty": FieldDef(unit="base", description="Quantity executed so far.", source="broker"),
             "orders[].avg_fill_px": FieldDef(unit="quote", description="Volume-weighted average fill price.", source="broker"),
-            "brokers_checked": FieldDef(description="List of broker adapters AIM polled this refresh.", source="aim"),
+            "brokers_checked": FieldDef(
+                description=(
+                    "Configured broker adapters AIM attempted to poll this refresh (failed polls included; "
+                    "brokers_online lists those that answered). Empty for provider_mode=cached_snapshot."
+                ),
+                source="aim",
+            ),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

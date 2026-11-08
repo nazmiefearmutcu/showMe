@@ -65,24 +65,54 @@ def _aim(deps: Any = None):
 # --------------------------------------------------------------------------- #
 # AIM#1 — orders accepted by a broker ("submitted") are open, not history.
 # --------------------------------------------------------------------------- #
-def test_submitted_history_order_is_counted_as_open(monkeypatch):
+def test_submitted_history_order_without_broker_confirmation_is_not_open(monkeypatch):
+    """History is written once at placement and never updated, so a 'submitted'
+    row that no live broker lists must not be counted as working."""
     _install_history(monkeypatch, [_hist("ord-1")])
     res = _run(_aim().execute())
-    assert res.data["cards"]["open_count"] == 1
+    assert res.data["cards"]["open_count"] == 0
+    assert res.data["cards"]["unconfirmed_submitted_count"] == 1
     assert res.data["rows"][0]["status"] == "submitted"
+    assert res.data["rows"][0]["confirmed_open"] is False
+
+
+def test_submitted_history_order_not_listed_by_polled_broker_is_not_open(monkeypatch):
+    """The owning adapter answered its poll and does not list the order, so it
+    is not working at the broker: it must not inflate open_count."""
+    _install_history(monkeypatch, [_hist("ord-1", broker="alpaca-paper")])
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper", []))
+    res = _run(_aim(deps).execute())
+    assert res.data["cards"]["open_count"] == 0
+    assert res.data["rows"][0]["status"] == "submitted"
+    assert any("live broker" in w for w in res.warnings)
+
+
+def test_broker_listed_submitted_order_is_open(monkeypatch):
+    """Only a live broker listing makes an order open."""
+    live = {"order_id": "ord-1", "symbol": "AAPL", "side": "BUY", "quantity": 3,
+            "price": 190.0, "status": "new"}
+    _install_history(monkeypatch, [_hist("ord-1", broker="alpaca-paper")])
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper", [live]))
+    res = _run(_aim(deps).execute())
+    assert res.data["cards"]["open_count"] == 1
+    assert res.data["rows"][0]["confirmed_open"] is True
 
 
 def test_open_count_uses_same_open_vocabulary_as_pane(monkeypatch):
-    rows = [
-        _hist("a", status="submitted"),
-        _hist("b", status="new"),
-        _hist("c", status="accepted"),
-        _hist("d", status="pending"),
-        _hist("e", status="filled"),
-        _hist("f", status="cancelled"),
+    live = [
+        {"order_id": "a", "symbol": "AAPL", "side": "BUY", "quantity": 1, "price": 1.0, "status": "new"},
+        {"order_id": "b", "symbol": "AAPL", "side": "BUY", "quantity": 1, "price": 1.0, "status": "accepted"},
+        {"order_id": "c", "symbol": "AAPL", "side": "BUY", "quantity": 1, "price": 1.0, "status": "pending"},
+        {"order_id": "d", "symbol": "AAPL", "side": "BUY", "quantity": 1, "price": 1.0, "status": "working"},
+        {"order_id": "e", "symbol": "AAPL", "side": "BUY", "quantity": 1, "price": 1.0, "status": "filled"},
     ]
-    _install_history(monkeypatch, rows)
-    res = _run(_aim().execute())
+    history = [
+        _hist("h1", broker="alpaca-paper", status="submitted"),
+        _hist("h2", broker="alpaca-paper", status="filled"),
+    ]
+    _install_history(monkeypatch, history)
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper", live))
+    res = _run(_aim(deps).execute())
     assert res.data["cards"]["open_count"] == 4
 
 
@@ -195,6 +225,31 @@ def test_provider_mode_cached_snapshot_skips_live_polling(monkeypatch):
     assert res.data["data_mode"] == "cached_snapshot"
     assert res.data["provider_mode"] == "cached_snapshot"
     assert [r["order_id"] for r in res.data["rows"]] == ["h-1"]
+
+
+def test_brokers_checked_lists_only_configured_adapters_that_were_polled(monkeypatch):
+    _install_history(monkeypatch, [])
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper", [
+        {"order_id": "live-1", "symbol": "AAPL", "side": "BUY", "quantity": 1,
+         "price": 1.0, "status": "open"}]))
+    res = _run(_aim(deps).execute())
+    assert res.data["brokers_checked"] == ["alpaca_broker"]
+    assert res.data["brokers_online"] == ["alpaca_broker"]
+
+
+def test_failed_poll_is_checked_but_not_online(monkeypatch):
+    _install_history(monkeypatch, [_hist("h-1", broker="alpaca-paper", status="filled")])
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper", boom=True))
+    res = _run(_aim(deps).execute(broker_filter=[]))
+    assert res.data["brokers_checked"] == ["alpaca_broker"]
+    assert res.data["brokers_online"] == []
+
+
+def test_cached_snapshot_checks_no_brokers(monkeypatch):
+    _install_history(monkeypatch, [_hist("h-1", status="filled")])
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper"))
+    res = _run(_aim(deps).execute(provider_mode="cached_snapshot"))
+    assert res.data["brokers_checked"] == []
 
 
 def test_unknown_provider_mode_is_reported_not_silently_used(monkeypatch):
