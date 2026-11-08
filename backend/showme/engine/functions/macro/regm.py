@@ -97,6 +97,11 @@ class REGMFunction(BaseFunction):
                 timeout=timeout,
             )
             close = np.asarray(df["close"].values, dtype=float)
+            # An empty frame (Yahoo 404 / unknown quote) is a provider failure,
+            # not a series to classify: an empty close array must not come back
+            # as status ok with a live regime.
+            if np.count_nonzero(np.isfinite(close)) < 2:
+                raise RuntimeError(f"yfinance returned no usable closes for {sym}")
         except Exception as exc:
             # S12 BugHunt: never masquerade a synthetic sine wave as a live
             # benchmark series — the UI used to display a "regime model" that
@@ -125,7 +130,8 @@ class REGMFunction(BaseFunction):
                             {"label": "Curve", "value": "—"},
                         ],
                     },
-                    sources=sources,
+                    # No provider produced the benchmark, so no source is claimed.
+                    sources=[],
                     warnings=[f"yfinance benchmark unavailable: {provider_error}"],
                     metadata={"live": False, "fallback": False, "provider_error": provider_error},
                 )
