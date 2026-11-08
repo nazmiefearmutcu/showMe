@@ -71,8 +71,9 @@ def _require_typed_confirmation(broker: Any, provided: str) -> None:
     account label. Shared by order submit and position close (SEC-4).
 
     This is a typo guard, not authorization (see SEC-5 on
-    ``_expected_confirmation_token``); the sidecar auth token is the only
-    access control on these routes."""
+    ``_expected_confirmation_token``). The only access control on these
+    routes is the sidecar auth token, and it applies only when
+    ``SHOWME_AUTH_TOKEN`` is set; with it unset the routes are open."""
     expected = _expected_confirmation_token(broker.name)
     if not expected:
         raise HTTPException(
