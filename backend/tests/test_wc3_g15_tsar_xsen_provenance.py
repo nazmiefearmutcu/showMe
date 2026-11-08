@@ -64,3 +64,25 @@ def test_xsen_only_reading_is_labelled_model_not_live(monkeypatch):
 
 def test_xsen_source_name_classifies_as_model():
     assert server._classify_source_state("xsen_roberta_model") == "model"
+
+
+def test_finbert_reading_is_labelled_model_not_live(monkeypatch):
+    """wc3-g15 TSAR#2 (review follow-up): a FinBERT reading of pasted text is a model
+    output too. The source must classify as a model and the data_mode must not claim
+    'live_official', so the sanitizer's data_state is 'model'."""
+    import showme.finbert_analyzer as fb
+
+    class _StubFinbert:
+        @staticmethod
+        def instance():
+            return _StubFinbert()
+
+        async def label_many(self, texts):
+            return [{"label": "positive", "score_signed": 0.5} for _ in texts]
+
+    monkeypatch.setattr(fb.FinBertAnalyzer, "instance", _StubFinbert.instance)
+    res = _run(TSARFunction().execute(text=_TRANSCRIPT, models=["finbert"]))
+    assert res.data["data_mode"] != "live_official", res.data["data_mode"]
+
+    payload = server.enforce_live_or_label_synthetic("TSAR", {}, res.to_dict())
+    assert payload["data_state"] == "model", payload["data_state"]

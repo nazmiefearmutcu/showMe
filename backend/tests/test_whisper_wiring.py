@@ -377,4 +377,5 @@ async def test_tsar_ingest_auto_transcribes_audio(monkeypatch, tmp_path):
     assert captured.get("sentiment") == 0.42
     # Sources reflect the actual pipeline used.
     assert "whisper" in result.sources
-    assert "finbert" in result.sources
+    # wc3-g15 TSAR#2: the FinBERT sentiment stamped at ingest is a model reading.
+    assert "finbert_model" in result.sources

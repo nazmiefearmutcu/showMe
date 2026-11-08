@@ -162,7 +162,9 @@ class TSARFunction(BaseFunction):
             if finbert_warn:
                 warnings.append(finbert_warn)
             else:
-                sources.append("finbert")
+                # wc3-g15 (TSAR#2 review): a FinBERT reading of pasted text is a model
+                # output; the bare "finbert" name classifies as live data.
+                sources.append("finbert_model")
         else:
             finbert_scores = [None] * len(texts)
 
@@ -249,7 +251,9 @@ class TSARFunction(BaseFunction):
         ]
 
         as_of = datetime.now(timezone.utc).isoformat()
-        data_mode = "live_official" if "finbert" in sources else "modeled"
+        # wc3-g15 (TSAR#2 review): every reading here is model output over transcript
+        # text, and a model is not live, so the data_mode is always "modeled".
+        data_mode = "modeled"
         cards = {
             "dominant_tone": dominant_tone,
             "net_score": round(net_score, 4),
@@ -667,7 +671,7 @@ class TSARFunction(BaseFunction):
                 analyzer = await asyncio.to_thread(FinBertAnalyzer.instance)
                 result = await analyzer.label(content[:512])
                 sentiment = float(result.get("score_signed") or 0.0)
-                ingest_sources.append("finbert")
+                ingest_sources.append("finbert_model")
             except Exception as exc:  # noqa: BLE001
                 ingest_warnings.append(f"finbert: {exc.__class__.__name__}")
         tid = archive.upsert(
