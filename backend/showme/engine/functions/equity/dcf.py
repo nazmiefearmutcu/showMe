@@ -231,9 +231,15 @@ class DCFFunction(BaseFunction):
         # reference only and never used to discount FCFE.
         caller_rate = params.get("wacc")
         wacc_source = "input" if caller_rate is not None else "cost_of_equity"
-        wacc_reference: float | None = float(caller_rate) if caller_rate is not None else None
+        # The "wacc" output is the WACC model's own value. A caller rate is the discount
+        # rate (discount_rate), so the WACC model is not consulted and "wacc" stays null
+        # rather than carrying the caller's number under the WACC key.
+        wacc_reference: float | None = None
         cost_of_equity: float | None = None
         wacc: float | None = float(caller_rate) if caller_rate is not None else None
+        # Provenance of the cost of equity (CAPM) inputs, set on the provider path only.
+        erp_source: str | None = None
+        discount_rate_data_state: str | None = None
         fcfe = params.get("fcfe")
         shares = params.get("shares_outstanding")
         warnings: list[str] = []
@@ -292,6 +298,13 @@ class DCFFunction(BaseFunction):
                 )
             cost_of_equity = float(re_capm)
             wacc = cost_of_equity
+            erp_source = (w.data or {}).get("erp_source")
+            discount_rate_data_state = (w.data or {}).get("data_state")
+            if erp_source == "assumption_default_5pct":
+                warnings.append(
+                    "discount_rate: the cost of equity rests on a constant 5.0% equity risk premium "
+                    "(erp_source assumption_default_5pct); pass market_premium to replace it."
+                )
         wacc = float(wacc)
         if caller_rate is not None:
             warnings.append(
@@ -440,11 +453,14 @@ class DCFFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={"status": "ok" if fcfe > 0 and per_share is not None else "needs_input",
-                   "wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
+                   "wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source,
+                   "erp_source": erp_source, "discount_rate_data_state": discount_rate_data_state,
+                   "g_high": g_high, "g_terminal": g_terminal,
                    "years": N, "starting_fcfe": fcfe,
                    "fcfe_source": fcfe_source,
                    "shares_source": shares_source or "missing",
                    "assumptions": {"wacc": wacc_reference, "discount_rate": wacc, "cost_of_equity": cost_of_equity, "wacc_source": wacc_source,
+                                   "erp_source": erp_source, "discount_rate_data_state": discount_rate_data_state,
                                    "growth_high": g_high, "growth_terminal": g_terminal,
                                    "years": N, "fcfe_source": fcfe_source,
                                    "shares_source": shares_source or "missing"},
@@ -455,7 +471,7 @@ class DCFFunction(BaseFunction):
                    "shares_outstanding": shares,
                    "rows": cashflows,
                    "bridge": bridge,
-                   "methodology": "Two-stage FCFE DCF: forecast FCFE for N years at high growth, discount each cash flow at discount_rate (the cost of equity by default, or a caller override), then add terminal value TV = FCFE_N * (1 + g_terminal) / (discount_rate - g_terminal). wacc is the WACC model's value, reported for reference only. Inputs are labelled user_override (caller value) or provider (yfinance).",
+                   "methodology": "Two-stage FCFE DCF: forecast FCFE for N years at high growth, discount each cash flow at discount_rate (the cost of equity by default, or a caller override), then add terminal value TV = FCFE_N * (1 + g_terminal) / (discount_rate - g_terminal). wacc is the WACC model's value (null when the caller supplies the discount rate), reported for reference only; erp_source and discount_rate_data_state label the cost-of-equity inputs. Inputs are labelled user_override (caller value) or provider (yfinance).",
                    "field_dictionary": FIELD_DICTIONARIES["valuation"]},
             sources=list(set(sources)), warnings=warnings,
         )

@@ -19,7 +19,7 @@ class DCFSensitivityFunction(BaseFunction):
     name = "DCF Sensitivity"
     asset_classes = (AssetClass.EQUITY,)
     category = "equity"
-    description = "WACC × terminal-growth grid + ±20% input tornado."
+    description = "Discount-rate (cost of equity by default) × terminal-growth grid + ±20% input tornado."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
@@ -74,12 +74,12 @@ class DCFSensitivityFunction(BaseFunction):
                         "wacc": w, "g_terminal": g,
                         "fair_value_per_share": (r.data or {}).get("fair_value_per_share"),
                         "equity_value": (r.data or {}).get("equity_value"),
-                        "bucket": f"WACC {float(w):.1%} / g {float(g):.1%}",
+                        "bucket": f"discount rate {float(w):.1%} / g {float(g):.1%}",
                     })
                 except Exception:
                     grid.append({"wacc": w, "g_terminal": g,
                                   "fair_value_per_share": None,
-                                  "bucket": f"WACC {float(w):.1%} / g {float(g):.1%}"})
+                                  "bucket": f"discount rate {float(w):.1%} / g {float(g):.1%}"})
         # Tornado: which input has biggest effect at ±20% perturbation
         tornado: list[dict[str, Any]] = []
         if base_fv is not None and base_fv > 0:
@@ -91,7 +91,7 @@ class DCFSensitivityFunction(BaseFunction):
             # (growth_terminal / growth_high), so each entry carries
             # (label, output_key, param_key) separately.
             label_to_keys = [
-                ("wacc",       "discount_rate", "wacc"),
+                ("discount_rate", "discount_rate", "wacc"),
                 ("g_terminal", "g_terminal",    "growth_terminal"),
                 ("g_high",     "g_high",        "growth_high"),
                 ("years",      "years",         "years"),
@@ -157,6 +157,9 @@ class DCFSensitivityFunction(BaseFunction):
         # DCFS#5: echo the base assumptions the grid and tornado were computed from.
         assumptions = {
             "wacc": base_data.get("discount_rate"),
+            "discount_rate": base_data.get("discount_rate"),
+            "discount_rate_data_state": base_data.get("discount_rate_data_state"),
+            "erp_source": base_data.get("erp_source"),
             "wacc_reference": base_data.get("wacc"),
             "g_terminal": base_data.get("g_terminal"),
             "g_high": base_data.get("g_high"),
@@ -176,10 +179,11 @@ class DCFSensitivityFunction(BaseFunction):
                 "surface": grid,
                 "grid": grid, "tornado": tornado,
                 "rows": tornado or grid,
-                "methodology": "DCFS runs the DCF engine across a WACC x terminal-growth grid, then perturbs key assumptions by +/-20% for a tornado sensitivity. Heatmap cells are fair value per share.",
+                "methodology": "DCFS runs the DCF engine across a discount rate (cost of equity by default, or a caller override) x terminal-growth grid, then perturbs key assumptions by +/-20% for a tornado sensitivity. Heatmap cells are fair value per share.",
                 "field_dictionary": {
-                    "fair_value_per_share": "DCF-implied value per share at the selected WACC and terminal-growth pair.",
-                    "wacc": "Discount rate in the grid.",
+                    "fair_value_per_share": "DCF-implied value per share at the selected discount rate and terminal-growth pair.",
+                    "discount_rate": "Discount rate applied to FCFE in the grid: the cost of equity by default, or a caller override. Grid rows keep the value under the key wacc for compatibility.",
+                    "wacc": "Same value as discount_rate in each grid row (kept for compatibility; not the WACC model's WACC).",
                     "g_terminal": "Terminal growth assumption in the grid.",
                     "delta": "High-case fair value minus low-case fair value for a perturbed input.",
                 },

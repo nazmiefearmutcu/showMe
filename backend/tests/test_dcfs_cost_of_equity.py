@@ -40,6 +40,6 @@ def test_dcfs_base_and_tornado_use_cost_of_equity(monkeypatch: pytest.MonkeyPatc
     assert assumptions["wacc_reference"] == pytest.approx(0.0994), assumptions
 
     tornado = {row["input"]: row for row in res.data.get("tornado", [])}
-    assert "wacc" in tornado, res.data.get("tornado")
-    assert tornado["wacc"]["low_value"] == pytest.approx(0.1057 * 0.8, rel=1e-3), tornado["wacc"]
-    assert tornado["wacc"]["high_value"] == pytest.approx(0.1057 * 1.2, rel=1e-3), tornado["wacc"]
+    assert "discount_rate" in tornado, res.data.get("tornado")
+    assert tornado["discount_rate"]["low_value"] == pytest.approx(0.1057 * 0.8, rel=1e-3), tornado["discount_rate"]
+    assert tornado["discount_rate"]["high_value"] == pytest.approx(0.1057 * 1.2, rel=1e-3), tornado["discount_rate"]

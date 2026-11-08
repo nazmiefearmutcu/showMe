@@ -66,7 +66,9 @@ def test_caller_wacc_runs_model_without_lookup(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(WACCFunction, "execute", must_not_run)
     result = _run(wacc=0.09)
     assert result.data["status"] == "ok"
-    assert result.data["wacc"] == 0.09
+    # DCFS#2 residual: the caller rate is the discount rate; the WACC-model key stays null.
+    assert result.data["discount_rate"] == 0.09
+    assert result.data["wacc"] is None
     assert result.data["fair_value_per_share"] is not None
 
 
