@@ -55,6 +55,16 @@ def grab() -> FunctionManifest:
                 required=False,
                 description="Email address the screenshot would be sent to. Only a draft is prepared.",
             ),
+            InputSpec(
+                name="send",
+                label="Send requested",
+                control=ControlKind.BOOLEAN,
+                required=False,
+                description=(
+                    "Requests delivery. Never executed here: the response records a warning and "
+                    "the email step stays draft_only or not_configured."
+                ),
+            ),
         ],
         defaults={},
         provider_chain=ProviderChain(
@@ -90,8 +100,8 @@ def grab() -> FunctionManifest:
         ),
         methodology=(
             "GRAB is an auxiliary utility in the miscellaneous tray (low nav weight), not a finance "
-            "function. It returns a capture plan with two steps. The capture step is local and does not "
-            "transmit data. The email step is reported as draft_only when a recipient is given and "
+            "function. It returns a capture plan with two steps. The capture step is a plan entry only: "
+            "no screenshot is taken by this function, and it does not transmit data. The email step is reported as draft_only when a recipient is given and "
             "not_configured otherwise, and it always carries transmits_data=true as a flag. "
             "A send request is recorded as a warning; no mail is sent automatically, and sending "
             "requires a separately confirmed mail integration."
@@ -99,7 +109,7 @@ def grab() -> FunctionManifest:
         field_dict={
             "rows[].step": FieldDef(description="Capture or delivery phase.", source="computed"),
             "rows[].target": FieldDef(description="Pane, URL or recipient for the phase.", source="input"),
-            "rows[].status": FieldDef(description="ready, draft_only or not_configured.", source="computed"),
+            "rows[].status": FieldDef(description="planned, draft_only or not_configured.", source="computed"),
             "rows[].transmits_data": FieldDef(description="Whether the phase would share user data outside the app.", source="computed"),
         },
         provenance=ProvenanceSpec(

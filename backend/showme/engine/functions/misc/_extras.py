@@ -28,8 +28,8 @@ class GRABFunction(BaseFunction):
             {
                 "step": "capture",
                 "target": target,
-                "status": "ready",
-                "output": "local screenshot artifact",
+                "status": "planned",
+                "output": "capture plan only: no screenshot is taken by this function",
                 "transmits_data": False,
             },
             {
@@ -52,7 +52,7 @@ class GRABFunction(BaseFunction):
                 "recipient": recipient or None,
                 "rows": rows,
                 "cards": [
-                    {"label": "Capture", "value": "local"},
+                    {"label": "Capture", "value": "plan only"},
                     {"label": "Email", "value": "draft only"},
                 ],
                 "methodology": (
