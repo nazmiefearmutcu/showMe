@@ -67,7 +67,8 @@ _DEFAULT_PLAN_SYMBOL = "AAPL"
 _FIELD_DICTIONARY = {
     "slice_idx": "Zero-based slice index in the execution schedule.",
     "offset_s": "Seconds from schedule start at which the slice releases.",
-    "ts_ms": "Epoch-ms of the live intraday bar the slice maps to.",
+    "release_ts_ms": "Epoch-ms at which the slice releases (schedule start + offset_s).",
+    "ts_ms": "Epoch-ms of the historical bar in effect at the release instant (the bar that contains it).",
     "qty": "Quantity scheduled for this slice (algo-weighted).",
     "cum_qty": "Cumulative quantity scheduled through this slice.",
     "bar_close": "Close price of the live bar (the marketable reference).",
@@ -89,9 +90,41 @@ def _resolve_plan_asset_class(asset_class: str | None, symbol: str) -> str:
     return "EQUITY"
 
 
-def _plan_interval(asset_class: str) -> str:
-    # 5-minute bars give a tradeable intraday volume profile across markets.
-    return "5m"
+_BAR_SECONDS = {"1m": 60, "5m": 300}
+
+
+def _plan_interval(asset_class: str, slot_s: float) -> str:
+    """Pick the bar interval for a schedule whose slices are ``slot_s`` apart.
+
+    EXEC#3: a fixed 5m bar cannot resolve sub-5-minute slices. Use the finest
+    supported bar (1m) when slices are closer than 5 minutes; otherwise 5m
+    bars give a tradeable intraday volume profile. The asset class does not
+    change the choice (both venues serve 1m and 5m klines).
+    """
+    return "1m" if slot_s < 300 else "5m"
+
+
+def _median_spacing(times: list[float]) -> float | None:
+    """Median gap between consecutive bar opens (the bar length actually served)."""
+    gaps = sorted(b - a for a, b in zip(times, times[1:]) if b > a)
+    if not gaps:
+        return None
+    return gaps[len(gaps) // 2]
+
+
+def _bar_index_at(times: list[float], instant_s: float) -> int:
+    """Index of the bar in effect at ``instant_s``: the last bar opening at or
+    before the instant (clamped to the first bar before the window)."""
+    lo, hi = 0, len(times) - 1
+    idx = 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if times[mid] <= instant_s:
+            idx = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return idx
 
 
 def _bar_interval_vwap(row: dict[str, Any]) -> float | None:
@@ -111,17 +144,23 @@ def _build_plan_rows(
     target_qty: float,
     side: str,
     arrival_price: float | None,
+    schedule_start_s: int,
 ) -> list[dict[str, Any]]:
-    """Map an algo ``schedule`` onto the tail of live ``bars`` and compute
-    real per-slice slippage / shortfall / pace from the bar data."""
-    n = len(schedule)
-    # Use the most recent ``n`` bars so each slice sits on a real, distinct bar.
-    window = bars[-n:] if len(bars) >= n else bars
+    """Map an algo ``schedule`` onto the real ``bars`` by RELEASE TIME and
+    compute real per-slice slippage / shortfall / pace from the bar data.
+
+    EXEC#3: slice ``i`` releases at ``schedule_start_s + offset_s`` and is
+    measured against the bar in effect at that instant. Slices therefore span
+    exactly the requested horizon instead of the last N consecutive bars.
+    """
+    times = [float(b["time"]) for b in bars]
     side_sign = -1.0 if str(side).upper() == "SELL" else 1.0
     rows: list[dict[str, Any]] = []
     cum_qty = 0.0
     for idx, slot in enumerate(schedule):
-        bar = window[idx] if idx < len(window) else window[-1]
+        offset_s = int(slot.get("offset_s", 0))
+        release_s = schedule_start_s + offset_s
+        bar = bars[_bar_index_at(times, release_s)]
         close = bar.get("close")
         bench = _bar_interval_vwap(bar)
         qty = float(slot.get("qty", 0.0))
@@ -136,7 +175,8 @@ def _build_plan_rows(
         rows.append(
             {
                 "slice_idx": idx,
-                "offset_s": int(slot.get("offset_s", 0)),
+                "offset_s": offset_s,
+                "release_ts_ms": int(release_s) * 1000,
                 "ts_ms": int(ts_s) * 1000 if ts_s is not None else None,
                 "qty": round(qty, 8),
                 "cum_qty": round(cum_qty, 8),
@@ -348,12 +388,14 @@ class EXECFunction(BaseFunction):
         except (TypeError, ValueError):
             arrival_price = None
 
-        interval = _plan_interval(asset_class)
+        slot_s = horizon_s / slices
+        interval = _plan_interval(asset_class, slot_s)
+        bar_s_nominal = _BAR_SECONDS[interval]
         provider = "binance" if asset_class == "CRYPTO" else "yfinance"
 
         # --- fetch live intraday bars (graceful network-failure fallback) ----
         try:
-            want_bars = max(slices * 2, 60)
+            want_bars = max(slices * 2, 60, horizon_s // bar_s_nominal + 2)
             # 5m bars: ~5 days covers a deep intraday window on both venues.
             fetch_days = 5
             if asset_class == "CRYPTO":
@@ -426,8 +468,59 @@ class EXECFunction(BaseFunction):
         last_close = bars[-1].get("close")
         if last_close is not None:
             ref_price = float(last_close)
+
+        # EXEC#3: the replay window is the last ``horizon_s`` seconds of
+        # completed bars; the schedule starts at its beginning.
+        bars = sorted(bars, key=lambda b: float(b["time"]))
+        times = [float(b["time"]) for b in bars]
+        bar_s = _median_spacing(times) or float(bar_s_nominal)
+        window_end_s = int(times[-1]) + int(bar_s)
+        schedule_start_s = window_end_s - horizon_s
+        if schedule_start_s < int(times[0]):
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "action": "plan",
+                    "symbol": symbol,
+                    "algo": algo,
+                    "reason": (
+                        f"horizon_seconds={horizon_s} exceeds the intraday history "
+                        f"fetched for {symbol} ({window_end_s - int(times[0])} s)"
+                    ),
+                    "rows": [],
+                    "orders": [],
+                    "n": 0,
+                    "series": [],
+                    "cards": {},
+                    "methodology": self._plan_methodology(),
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "next_actions": [
+                        "Lower horizon_seconds or the slice count and retry.",
+                    ],
+                },
+                sources=[src],
+                metadata={"status": "input_error", "provider": src,
+                          "asset_class": asset_class, "interval": interval},
+            )
+
+        # EXEC#2: with no supplied arrival, the decision price is the price at
+        # the START of the schedule (open of the bar in effect then), never the
+        # close of the window's last bar, which would be look-ahead.
+        arrival_bar = bars[_bar_index_at(times, schedule_start_s)]
         if arrival_price is None:
-            arrival_price = ref_price
+            start_px = arrival_bar.get("open")
+            if start_px is None:
+                start_px = arrival_bar.get("close")
+            arrival_price = float(start_px) if start_px is not None else None
+
+        warnings: list[str] = []
+        if bar_s > slot_s:
+            warnings.append(
+                f"bar_coarser_than_slice_spacing: {int(bar_s)}s bars for "
+                f"{slot_s:g}s slice spacing; consecutive slices share a bar."
+            )
 
         schedule, resolved_algo = _algo_schedule(
             algo, target_qty=target_qty, horizon_s=horizon_s, slices=slices,
@@ -435,8 +528,13 @@ class EXECFunction(BaseFunction):
         )
         rows = _build_plan_rows(
             bars, schedule=schedule, target_qty=target_qty, side=side,
-            arrival_price=arrival_price,
+            arrival_price=arrival_price, schedule_start_s=schedule_start_s,
         )
+
+        # EXEC#4: the cards report the monitor store, not a hard-coded parent.
+        parents = exec_monitor.list_parents(limit=10_000)
+        open_parents = sum(1 for p in parents if not p.get("ended_at"))
+        needs_close = sum(1 for p in parents if p.get("status") == "filled_not_closed")
 
         # Parent-level aggregates from the real per-slice rows.
         filled_qty = rows[-1]["cum_qty"] if rows else 0.0
@@ -459,17 +557,19 @@ class EXECFunction(BaseFunction):
             "is_bps": avg_is_bps,
             "pace_pct": rows[-1]["pace_pct"] if rows else None,
             "status": "planned",
-            "opened_at": rows[0]["ts_ms"] if rows else None,
+            "opened_at": schedule_start_s * 1000,
         }
 
+        # Series sit on the wall-clock release instants so the pace curve
+        # reflects the requested horizon.
         price_series = [
-            {"t": r["ts_ms"], "v": r["bar_close"]} for r in rows if r["ts_ms"] is not None
+            {"t": r["release_ts_ms"], "v": r["bar_close"]} for r in rows
         ]
         slippage_series = [
-            {"t": r["ts_ms"], "v": r["slip_bps"]} for r in rows if r["ts_ms"] is not None
+            {"t": r["release_ts_ms"], "v": r["slip_bps"]} for r in rows
         ]
         pace_series = [
-            {"t": r["ts_ms"], "v": r["pace_pct"]} for r in rows if r["ts_ms"] is not None
+            {"t": r["release_ts_ms"], "v": r["pace_pct"]} for r in rows
         ]
 
         return FunctionResult(
@@ -482,6 +582,10 @@ class EXECFunction(BaseFunction):
                 "algo": resolved_algo,
                 "asset_class": asset_class,
                 "interval": interval,
+                "bar_seconds": int(bar_s),
+                "horizon_seconds": horizon_s,
+                "schedule_start_ms": schedule_start_s * 1000,
+                "window_end_ms": window_end_s * 1000,
                 "rows": rows,
                 "orders": [order_row],
                 "n": len(rows),
@@ -491,17 +595,20 @@ class EXECFunction(BaseFunction):
                     "pace": pace_series,
                 },
                 "cards": {
-                    "open_parents": 1,
-                    "needs_close": 0,
+                    # EXEC#4: report the monitor store, never a hard-coded parent.
+                    "open_parents": open_parents,
+                    "needs_close": needs_close,
                     "avg_is_bps": avg_is_bps,
                     "worst_slippage_bps": worst_slip,
-                    "data_mode": "live_exchange",
+                    # EXEC#1: the plan replays HISTORICAL bars; it is not a live
+                    # exchange feed. "live_exchange" would be a false live claim.
+                    "data_mode": "historical_replay",
                     # F9 [M]: the plan path executes NOTHING — the IS/slip/avg
                     # numbers are hypothetical against historical interval
                     # bars. Stamp the lifecycle so the pane (and any consumer)
                     # can label plan vs actual honestly; keep output additive.
                     "execution_mode": "planned",
-                    "as_of": rows[-1]["ts_ms"] if rows else None,
+                    "as_of": window_end_s * 1000,
                 },
                 "methodology": self._plan_methodology(),
                 "field_dictionary": _FIELD_DICTIONARY,
@@ -511,6 +618,7 @@ class EXECFunction(BaseFunction):
                 ],
             },
             sources=[src],
+            warnings=warnings,
             metadata={
                 "status": "ok",
                 "provider": src,
@@ -524,13 +632,15 @@ class EXECFunction(BaseFunction):
     @staticmethod
     def _plan_methodology() -> str:
         return (
-            "action=plan drives the live execution-algo schedulers "
-            "(algos.TWAP/VWAP/Iceberg/Sniper) against real intraday OHLCV — "
-            "Binance 5m klines for crypto, Yahoo 5m bars for listed assets. "
-            "Each schedule slice is mapped onto an actual recent market bar; the "
-            "per-slice benchmark is that bar's typical-price VWAP (H+L+C)/3, "
-            "slippage = (close - benchmark)/benchmark * 1e4 bps, and "
-            "implementation shortfall = (close - arrival)/arrival * 1e4 * sign(side). "
-            "Pace is cumulative scheduled qty / target. No numbers are fabricated: "
-            "on a feed outage the function returns status=provider_unavailable."
+            "action=plan is a HISTORICAL REPLAY (data_mode=historical_replay, no order "
+            "is sent). It drives the execution-algo schedulers (algos.TWAP/VWAP/Iceberg/"
+            "Sniper) over the last horizon_seconds of completed intraday OHLCV: Binance "
+            "klines for crypto, Yahoo bars for listed assets (1m when slices are under "
+            "5 minutes apart, otherwise 5m). Slice i releases at schedule_start + offset_s "
+            "and is measured against the bar in effect at that instant. The default "
+            "arrival is the open of the bar at schedule_start. Per-slice benchmark is that "
+            "bar's typical-price VWAP (H+L+C)/3, slippage = (close - benchmark)/benchmark "
+            "* 1e4 bps, and implementation shortfall = (close - arrival)/arrival * 1e4 * "
+            "sign(side). Pace is cumulative scheduled qty / target. No numbers are "
+            "fabricated: on a feed outage the function returns status=provider_unavailable."
         )

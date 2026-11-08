@@ -97,7 +97,8 @@ async def test_plan_crypto_returns_real_slices_or_graceful_outage(fn):
         assert paces[-1] == pytest.approx(100.0, abs=0.5)
         # Series + cards shipped for the chart grammar.
         assert "price" in data["series"] and data["series"]["price"]
-        assert data["cards"]["data_mode"] == "live_exchange"
+        # EXEC#1: a replay over stored bars is labelled historical, never live.
+        assert data["cards"]["data_mode"] == "historical_replay"
     else:
         # Outage path: honest provider_unavailable, no fabricated rows.
         assert data["status"] == "provider_unavailable"
@@ -126,7 +127,8 @@ async def test_plan_equity_vwap_uses_yahoo(fn):
         # VWAP weights are non-uniform → slice qty should vary across slices.
         qtys = [r["qty"] for r in rows]
         assert len(set(round(q, 6) for q in qtys)) > 1
-        assert data["cards"]["open_parents"] == 1
+        # EXEC#4: the store is empty in this fixture, so no parent is claimed.
+        assert data["cards"]["open_parents"] == 0
     else:
         assert data["status"] == "provider_unavailable"
 
