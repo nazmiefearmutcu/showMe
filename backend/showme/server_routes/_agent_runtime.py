@@ -603,15 +603,20 @@ def _function_usage(
                 "Run to inspect the expiration payoff/P&L curve, net debit, and leg premium table.",
                 "Open Advanced only for custom legs arrays.",
             ],
+            # Shape only, not a priced case: no spot or strike is supplied by
+            # default (T10). Every <...> must be replaced with a real input.
             "example": {
-                "spot": 100,
-                "rate": 0.045,
+                "underlying": "<TICKER>",
                 "strategy": "CALL_SPREAD",
                 "legs": [
-                    {"qty": 1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-                    {"qty": -1, "strike": 110, "type": "CALL", "expiry": 0.25, "vol": 0.25},
+                    {"qty": 1, "strike": "<long strike>", "type": "CALL", "expiry": "<years>", "vol": "<implied vol>"},
+                    {"qty": -1, "strike": "<short strike>", "type": "CALL", "expiry": "<years>", "vol": "<implied vol>"},
                 ],
             },
+            "example_note": (
+                "Shape only. Enter the spot, or the underlying ticker to take its live quote, "
+                "and every leg input; nothing is priced from defaults."
+            ),
         }
     if upper == "MLSIG":
         return {
