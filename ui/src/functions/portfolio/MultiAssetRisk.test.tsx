@@ -152,3 +152,21 @@ describe("MARS factor contribution waterfall (real derivation)", () => {
     expect(screen.getByText("No factor loadings returned.")).toBeInTheDocument();
   });
 });
+
+describe("MARS default universe and disclosed dropped legs", () => {
+  it("defaults to the Yahoo-served universe without BTCUSDT", () => {
+    ok(LIVE_PAYLOAD);
+    render(<MultiAssetRiskPane code="MARS" />);
+    expect(screen.getByLabelText("Universe")).toHaveValue("SPY,TLT,GLD");
+  });
+
+  it("shows the backend warning naming a leg that had no series", () => {
+    ok(LIVE_PAYLOAD, {
+      metadata: { live: false, fallback: true, data_mode: "modeled", factor_proxies_loaded: ["MKT", "SMB"] },
+      warnings: ["Live return series unavailable for: BTCUSDT; the portfolio was computed over the 1/2 requested legs that loaded (AAPL) only."],
+    });
+    render(<MultiAssetRiskPane code="MARS" />);
+    expect(screen.getByTestId("portx-warning-strip")).toHaveTextContent("BTCUSDT");
+    expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
+  });
+});

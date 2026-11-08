@@ -751,15 +751,32 @@ class MARSFunction(BaseFunction):
         port_ret = align_return_series(
             zip((str(s) for s in symbols), rets), policy="pairwise"
         )
+        requested_legs = list(dict.fromkeys(str(s) for s in symbols))
         if port_ret.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
-            port_ret = _template_returns([str(s) for s in symbols], days)
-            if "fallback" not in metadata:
-                metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
+            port_ret = _template_returns(requested_legs, days)
+            metadata.update({"live": False, "fallback": True, "data_mode": "modeled"})
+            metadata["legs_loaded"] = []
+            metadata["legs_missing"] = requested_legs
             warnings.append(
                 "Live symbol return series were unavailable; portfolio legs use "
                 "the labelled template series."
             )
+        else:
+            # The pairwise join drops any leg with no series. Disclose the drop and
+            # downgrade the label, as for a partial factor-proxy shortfall.
+            loaded_legs = [str(c) for c in port_ret.columns]
+            missing_legs = [s for s in requested_legs if s not in loaded_legs]
+            metadata["legs_loaded"] = loaded_legs
+            metadata["legs_missing"] = missing_legs
+            if missing_legs:
+                metadata.update({"live": False, "fallback": True, "data_mode": "modeled"})
+                warnings.append(
+                    "Live return series unavailable for: " + ", ".join(missing_legs)
+                    + f"; the portfolio was computed over the {len(loaded_legs)}/"
+                    + f"{len(requested_legs)} requested legs that loaded ("
+                    + ", ".join(loaded_legs) + ") only."
+                )
         weights = np.ones(port_ret.shape[1]) / max(port_ret.shape[1], 1)
         port_series = (port_ret * weights).sum(axis=1)
         return _mars_result(

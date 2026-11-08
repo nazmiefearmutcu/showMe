@@ -150,3 +150,22 @@ def test_mars_router_quote_timeout_does_not_drop_live_factor_proxies():
     assert set(result.metadata.get("factor_proxies_loaded") or []) == {
         "MKT", "SMB", "HML", "MOM", "QMJ", "BAB",
     }
+
+
+# ────────────────────────────────────────────────────────────────────────
+# MARS#3: a requested leg with no series is dropped silently and the
+# result still reads LIVE. BTCUSDT is not a Yahoo ticker.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def test_mars_dropped_portfolio_leg_is_disclosed_not_live():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    yf = _KeyedYfinance(ok_symbols={"AAPL", "SPY", "IWM", "VLUE", "MTUM", "QUAL", "USMV"})
+    result = _run(MARSFunction(FunctionDeps(yfinance=yf)).execute(
+        instrument=EQ, symbols=["AAPL", "BTCUSDT"], live=True,
+    ))
+    assert result.metadata.get("live") is False, "a requested leg with no series must not read LIVE"
+    assert result.metadata.get("legs_missing") == ["BTCUSDT"]
+    joined = " ".join(result.warnings)
+    assert "BTCUSDT" in joined, f"warning must name the dropped leg, got {result.warnings}"

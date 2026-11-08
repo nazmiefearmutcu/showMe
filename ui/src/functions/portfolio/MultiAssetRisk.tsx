@@ -132,7 +132,7 @@ const LOADING_COLUMNS: DataGridColumn<Row>[] = [
 ];
 
 export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
-  const [symbolsInput, setSymbolsInput] = useState("SPY,TLT,GLD,BTCUSDT");
+  const [symbolsInput, setSymbolsInput] = useState("SPY,TLT,GLD");
   const [reference, setReference] = useState(false);
 
   const symbols = useMemo(

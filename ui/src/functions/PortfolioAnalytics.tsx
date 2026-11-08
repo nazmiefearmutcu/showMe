@@ -146,7 +146,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   MARS: {
     title: "Multi-Asset Risk",
     subtitle: "Factor loadings, VaR, and residual risk",
-    defaultSymbols: "SPY,TLT,GLD,BTCUSDT",
+    defaultSymbols: "SPY,TLT,GLD",
     usesUniverse: true,
     supportsLive: true,
   },
