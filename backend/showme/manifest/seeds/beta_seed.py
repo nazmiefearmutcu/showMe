@@ -123,12 +123,14 @@ def beta() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "BETA pulls aligned daily-close series for target + benchmark from yfinance over the "
-            "requested window, drops NaN rows, computes log returns, and runs OLS R_i = α + β R_m "
-            "+ ε. β = Cov(R_i, R_m) / Var(R_m); alpha is the daily intercept and R² the regression "
-            "fit. The handler runs the regression independently for each requested window so the "
-            "frame shows beta term structure. Assumptions (benchmark, window) are echoed in the "
-            "payload so the consumer can audit which β it is reading."
+            "BETA pulls aligned daily-close series for target + benchmark from yfinance, keeps the "
+            "dates both series share, and computes simple close-to-close daily returns "
+            "(P_t / P_{t-1} - 1). β = Cov(R_i, R_m) / Var(R_m) with sample (ddof=1) moments, "
+            "alpha is the daily intercept mean(R_i) - β mean(R_m), and R² is the single-factor fit "
+            "(correlation squared). The handler runs this independently for each 1Y/2Y/5Y window "
+            "and for the requested beta_window, so the frame shows beta term structure. The "
+            "benchmark, beta_window and return method are echoed in the payload's assumptions so "
+            "the consumer can audit which β it is reading."
         ),
         formula_dict={
             "Beta": Formula(
@@ -137,7 +139,7 @@ def beta() -> FunctionManifest:
                     "R_i": "Target asset daily returns",
                     "R_m": "Benchmark daily returns",
                 },
-                notes="CAPM textbook beta from daily log returns.",
+                notes="CAPM textbook beta from daily simple (close-to-close) returns.",
             ),
             "RSquared": Formula(
                 expression=r"R^2 = 1 - \frac{SS_{res}}{SS_{tot}}",
