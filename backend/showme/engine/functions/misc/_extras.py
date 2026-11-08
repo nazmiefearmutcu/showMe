@@ -315,12 +315,12 @@ class FLYFunction(BaseFunction):
             data = await asyncio.wait_for(self.deps.opensky.fetch(None), timeout=timeout)
         except Exception as exc:
             payload = _flight_unavailable(callsign_filter, country_filter)
-            payload["reason"] = f"OpenSky request failed: {exc}"
+            payload["reason"] = f"OpenSky request failed: {str(exc) or type(exc).__name__}"
             return FunctionResult(code=self.code, instrument=None, data=payload,
                                   sources=["no_live_source"],
                                   metadata={"live": False, "fallback": True,
                                             "data_mode": "provider_unavailable",
-                                            "provider_errors": [f"opensky: {exc}"]})
+                                            "provider_errors": [f"opensky: {str(exc) or type(exc).__name__}"]})
         rows = _normalize_opensky(data, callsign_filter, country_filter, limit)
         source_time = _unix_to_iso(data.get("time")) if isinstance(data, dict) else None
         if not rows:
@@ -408,7 +408,7 @@ class DINEFunction(BaseFunction):
                 instrument=None,
                 data={
                     "status": "provider_unavailable",
-                    "reason": f"OpenStreetMap lookup failed: {exc}",
+                    "reason": f"OpenStreetMap lookup failed: {str(exc) or type(exc).__name__}",
                     "rows": [],
                     "next_actions": ["Retry shortly (Nominatim allows about one request per second).", "Try a more specific location such as 'SoHo New York'."],
                 },

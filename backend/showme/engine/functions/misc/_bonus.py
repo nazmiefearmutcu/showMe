@@ -639,7 +639,7 @@ class APPLFunction(BaseFunction):
                 data=template,
                 sources=_appl_template_sources(template),
                 metadata={"live": False, "fallback": True, "data_mode": "reference",
-                          "provider_errors": [f"yfinance: {exc}"]},
+                          "provider_errors": [f"yfinance: {str(exc) or type(exc).__name__}"]},
             )
         profile = reference_profile(instrument.symbol)
         rows = _taxonomy_rows(instrument, rd.sector, rd.industry, rd.country, rd.currency, rd.exchange, profile)

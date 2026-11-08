@@ -71,7 +71,7 @@ def validate_envelope(payload: dict) -> FunctionEnvelope:
         return FunctionEnvelope.model_validate(payload)
     except ValidationError as exc:
         raise ValueError(
-            f"function envelope validation failed for code={payload.get('code')!r}: {exc}"
+            f"function envelope validation failed for code={payload.get('code')!r}: {str(exc) or type(exc).__name__}"
         ) from exc
 
 ERROR_STATUSES = {
