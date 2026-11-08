@@ -54,9 +54,22 @@ _ISO2_TO_ISO3: dict[str, str] = {
 }
 
 
+# The pane and seed offer ``EUR`` (a currency code), but the IMF DataMapper has
+# no ``EUR`` key — the euro area is the IMF group code ``EURO``. A request for
+# ``/EUR`` answers 200 with the all-country dataset and no requested key, so
+# every indicator came back "no series for EUR" and the pane was empty although
+# the euro-area forecasts exist under ``EURO`` (verified live 2026-11-08).
+_IMF_GROUP_ALIASES: dict[str, str] = {"EUR": "EURO", "EU": "EURO", "EZ": "EURO"}
+
+
 def _normalize_country(code: str) -> str:
-    """Alpha-2 -> alpha-3 where known; pass IMF group / alpha-3 codes through."""
+    """Alpha-2 -> alpha-3 where known; currency/group aliases -> IMF group key.
+
+    Anything else (alpha-3 codes, other IMF group codes) passes through.
+    """
     c = (code or "").strip().upper()
+    if c in _IMF_GROUP_ALIASES:
+        return _IMF_GROUP_ALIASES[c]
     return _ISO2_TO_ISO3.get(c, c)
 
 
