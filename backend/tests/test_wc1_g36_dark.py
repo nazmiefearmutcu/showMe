@@ -151,3 +151,75 @@ def test_dark_without_symbol_asks_for_input_instead_of_aapl(monkeypatch) -> None
 # helper so the tests read the same way regardless of how the handler is built
 def DARKFunctionFactory():  # noqa: N802
     return DARKFunction(deps=FunctionDeps())
+
+
+# ---------------------------------------------------------------- DARK#2
+
+
+class _WideWiredFinra:
+    """A wired adapter that returns more weeks than the caller asked for."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    async def ats_weekly(self, symbol=None, limit=26):  # noqa: ANN001
+        return pd.DataFrame(self._rows)
+
+
+def test_dark_total_off_exchange_sums_only_the_requested_weeks(monkeypatch) -> None:
+    """The KPI caption says 8W WINDOW; the total must cover those 8 weeks only."""
+    monkeypatch.setattr(DARKFunction, "_weekly_total_volume", lambda self, sym: g3._no_yfinance())
+    rows = g3._dataset()  # 260 weeks, far more than the 8 requested
+
+    result = _run(
+        DARKFunction(deps=FunctionDeps(finra=_WideWiredFinra(rows))).execute(symbol="AAPL", weeks=8)
+    )
+    data = result.data
+
+    assert data["status"] == "ok", data.get("reason")
+    assert len(data["by_week"]) == 8
+    window_total = sum(r["ats_share_volume"] for r in data["by_week"])
+    assert data["total_shares_off_exchange"] == window_total
+    assert data["total_shares_off_exchange"] < sum(r["totalWeeklyShareQuantity"] for r in rows)
+
+
+# ---------------------------------------------------------------- DARK#4 (production route)
+
+
+def _simulate_worker_dispatch(code: str, raw_params: dict[str, Any], finra: Any) -> Any:
+    """Mirror server.py's worker: the router's symbol becomes the Instrument."""
+    from showme.engine.core.instrument import AssetClass, Instrument
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    params = _route_function_params(code, dict(raw_params))
+    symbol = params.pop("symbol", None)
+    asset_class = params.pop("asset_class", None)
+    instrument = None
+    if symbol:
+        instrument = Instrument(symbol=str(symbol), asset_class=AssetClass.EQUITY)
+    return _run(DARKFunction(deps=FunctionDeps(finra=finra)).execute(instrument=instrument, **params))
+
+
+def test_dark_production_route_without_symbol_never_queries_aapl(monkeypatch) -> None:
+    """The router injects AAPL with __explicit_symbol=False; that must not reach FINRA."""
+    monkeypatch.setattr(DARKFunction, "_weekly_total_volume", lambda self, sym: g3._no_yfinance())
+    fake = g3.FakeFinra(g3._dataset())
+    g3._patch_direct_finra(monkeypatch, fake)
+
+    for raw in ({"asset_class": "EQUITY"}, {"symbol": "", "asset_class": "EQUITY"}):
+        result = _simulate_worker_dispatch("DARK", raw, finra=None)
+        assert result.data["status"] == "input_required", raw
+        assert result.data.get("symbol") in (None, ""), raw
+        assert result.data["venues"] == [], raw
+    assert fake.bodies == [], "no FINRA request may be made for an unselected symbol"
+
+
+def test_dark_production_route_explicit_symbol_still_resolves(monkeypatch) -> None:
+    monkeypatch.setattr(DARKFunction, "_weekly_total_volume", lambda self, sym: g3._no_yfinance())
+    fake = g3.FakeFinra(g3._dataset("MSFT"))
+    g3._patch_direct_finra(monkeypatch, fake)
+
+    result = _simulate_worker_dispatch("DARK", {"symbol": "MSFT", "asset_class": "EQUITY"}, finra=None)
+
+    assert result.data["symbol"] == "MSFT"
+    assert result.data["status"] == "ok", result.data.get("reason")

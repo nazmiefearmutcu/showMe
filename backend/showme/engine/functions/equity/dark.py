@@ -242,7 +242,10 @@ class DARKFunction(BaseFunction):
                 "reason": stale,
                 "symbol": sym,
                 "n_rows": int(len(df)),
-                "total_shares_off_exchange": round(float(df["ats_share_volume"].sum() or 0.0)),
+                # Only the weeks in the requested window, matching the KPI caption.
+                "total_shares_off_exchange": round(
+                    float(sum(float(rec["ats_share_volume"] or 0.0) for rec in week_records))
+                ),
                 "top_venue_share_pct": None if stale else top_venue_share,
                 "rows": visible_records,
                 "venues": visible_records,
@@ -340,7 +343,14 @@ _INPUT_REASON = "DARK requires an equity or ETF symbol (instrument or params.sym
 
 
 def _requested_symbol(instrument: Instrument | None, params: dict[str, Any]) -> str:
-    """The ticker the caller asked for; empty when none was given (no default ticker)."""
+    """The ticker the caller asked for; empty when none was given (no default ticker).
+
+    The production router injects a default symbol (AAPL for equity routes) and
+    flags it ``__explicit_symbol=False``; the worker then turns it into the
+    Instrument. That injected symbol is not a request, so it is ignored here.
+    """
+    if params.get("__explicit_symbol") is False and not str(params.get("symbol") or "").strip():
+        return ""
     raw = instrument.symbol if instrument else params.get("symbol")
     return str(raw or "").strip().upper()
 
