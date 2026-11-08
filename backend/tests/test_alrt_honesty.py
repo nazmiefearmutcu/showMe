@@ -102,6 +102,25 @@ async def test_invalid_cooldown_is_reported_not_silently_replaced(alrt_home: Pat
     assert any("cooldown" in w and "abc" in w for w in res.warnings), res.warnings
 
 
+def test_alrt_seed_describes_the_backend_store() -> None:
+    """ALRT#8: the seed must not document fire counts, delivery channels or an
+    active flag that the backend never produces."""
+    from showme.manifest.seeds.alrt_seed import alrt
+
+    entry = alrt  # @manifest() yields the FunctionManifest object itself
+    column_keys = {c.key for c in entry.table_schema.columns}
+    slot_keys = {s.key for s in entry.card_schema.slots}
+    assert not column_keys & {"active", "fired_count", "last_fired_at"}, column_keys
+    assert not slot_keys & {"fired_today", "native_notify"}, slot_keys
+    assert entry.alerting is None
+    assert not any(
+        k.endswith(("fired_count", "last_fired_at", ".active")) for k in entry.field_dict
+    ), list(entry.field_dict)
+    text = f"{entry.intent} {entry.methodology}".lower()
+    assert "no background evaluator" in text, text
+    assert "os notification" not in text and "tray" not in text
+
+
 _CORRUPT_STORE = '[{"id": "old1", "condition": "AAPL.price > 100"'
 
 
