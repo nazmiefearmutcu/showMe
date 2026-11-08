@@ -8,7 +8,7 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.services.fx_hedge import FXExposure, forward_rate, hedge_book
+from showme.engine.services.fx_hedge import SIDE_SIGN, FXExposure, forward_rate, hedge_book
 
 # Illustrative-book defaults. The pane exposes explicit inputs for all three;
 # these remain for API callers and are echoed as ``assumed_defaults`` so a
@@ -55,6 +55,14 @@ class FXHFunction(BaseFunction):
             days = TENOR_DAYS[tenor_key]
         else:
             days = int(params.get("days", 90))
+        # Manifest exposure_side (long_foreign | short_foreign). Per-exposure
+        # ``side`` overrides it; an unknown side is an explicit input error.
+        exposure_side = str(params.get("exposure_side") or "long_foreign").strip().lower()
+        if exposure_side not in SIDE_SIGN:
+            return _input_error(
+                self.code,
+                f"Unknown exposure_side {params.get('exposure_side')!r}; expected long_foreign or short_foreign.",
+            )
         # Shock: legacy usd_shock_pct is a decimal; the manifest spot_shock_pct
         # is a percent. The legacy key wins when both are sent.
         if not _missing(params.get("usd_shock_pct")):
@@ -90,7 +98,17 @@ class FXHFunction(BaseFunction):
                     "spot_rate": params.get("spot_rate") or params.get("spot"),
                     "base_rate": params.get("base_rate", DEFAULT_BASE_RATE),
                     "home_rate": params.get("home_rate", DEFAULT_HOME_RATE),
+                    "side": exposure_side,
                 }]
+        for e in exposures:
+            if _missing(e.get("side")):
+                e["side"] = exposure_side
+            if str(e["side"]).strip().lower() not in SIDE_SIGN:
+                return _input_error(
+                    self.code,
+                    f"Unknown exposure side {e['side']!r}; expected long_foreign or short_foreign.",
+                )
+            e["side"] = str(e["side"]).strip().lower()
         # Resolve spot rates if missing. _fill_spots returns the list of
         # currencies whose spot could NOT be resolved live and were not
         # supplied manually. We do not substitute 1.0 silently — the hedge
@@ -156,6 +174,7 @@ class FXHFunction(BaseFunction):
                 spot_rate=float(e["spot_rate"]),
                 base_rate=_rate(e.get("base_rate"), DEFAULT_BASE_RATE),
                 home_rate=_rate(e.get("home_rate"), DEFAULT_HOME_RATE),
+                side=e["side"],
             ))
         # Effective source_mode reflects whether ANY spot came from the live
         # provider — not a blanket "yfinance,ecb" claim.
@@ -308,6 +327,16 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _input_error(code: str, reason: str) -> FunctionResult:
+    return FunctionResult(
+        code=code,
+        instrument=None,
+        data={"status": "input_error", "reason": reason, "rows": [], "source_mode": "manual_exposure"},
+        sources=["manual_exposure"],
+        warnings=[],
+    )
+
+
 def _missing(value: Any) -> bool:
     return value is None or value == ""
 
@@ -329,12 +358,13 @@ def _scenario_curve(objs: list[FXExposure], hedge_ratio: float, days: int) -> li
                 base_rate=exp.base_rate,
                 days=days,
             )
+            sign = SIDE_SIGN[exp.side]
             hedged_notional = exp.notional * hedge_ratio
             residual = exp.notional - hedged_notional
             shocked_spot = exp.spot_rate * (1 + shock)
-            carry = (fwd - exp.spot_rate) * hedged_notional
-            total += residual * (shocked_spot - exp.spot_rate) + carry
-            unhedged += exp.notional * (shocked_spot - exp.spot_rate)
+            carry = sign * (fwd - exp.spot_rate) * hedged_notional
+            total += sign * residual * (shocked_spot - exp.spot_rate) + carry
+            unhedged += sign * exp.notional * (shocked_spot - exp.spot_rate)
         curve.append({
             "shock_pct": round(shock * 100, 2),
             "total_pnl": total,

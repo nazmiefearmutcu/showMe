@@ -167,3 +167,45 @@ def test_fxh3_unknown_tenor_is_an_explicit_input_error() -> None:
     assert result.data["status"] == "input_error"
     assert "tenor" in result.data["reason"].lower()
     assert result.data["rows"] == []
+
+
+# ── FXH#1: exposure_side flips the hedge direction and P&L sign ─────────
+
+
+def _book(side: str | None, **extra):
+    kwargs = dict(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03, hedge_ratio=0.5, spot_shock_pct=5.0,
+    )
+    kwargs.update(extra)
+    if side is not None:
+        kwargs["exposure_side"] = side
+    return _run(_fn().execute(**kwargs))
+
+
+def test_fxh1_short_foreign_mirrors_long_foreign_pnl() -> None:
+    """Was: exposure_side was never read, so short_foreign returned the same
+    long-foreign P&L (pnl_if_home_strengthens negative for both)."""
+    long_res = _book("long_foreign")
+    short_res = _book("short_foreign")
+    lr = long_res.data["rows"][0]
+    sr = short_res.data["rows"][0]
+    assert lr["pnl_if_home_strengthens"] < 0
+    assert sr["pnl_if_home_strengthens"] == pytest.approx(-lr["pnl_if_home_strengthens"])
+    assert sr["pnl_if_home_weakens"] == pytest.approx(-lr["pnl_if_home_weakens"])
+    assert sr["carry_pnl_home"] == pytest.approx(-lr["carry_pnl_home"])
+    assert short_res.data["total_pnl_if_home_strengthens"] == pytest.approx(
+        -long_res.data["total_pnl_if_home_strengthens"]
+    )
+
+
+def test_fxh1_side_is_echoed_and_defaults_to_long() -> None:
+    assert _book(None).data["rows"][0]["exposure_side"] == "long_foreign"
+    assert _book("short_foreign").data["rows"][0]["exposure_side"] == "short_foreign"
+
+
+def test_fxh1_unknown_side_is_an_explicit_input_error() -> None:
+    result = _book("sideways")
+    assert result.data["status"] == "input_error"
+    assert "exposure_side" in result.data["reason"]
+    assert result.data["rows"] == []
