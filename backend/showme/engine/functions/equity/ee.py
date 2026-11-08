@@ -92,7 +92,7 @@ class EEFunction(BaseFunction):
             if placeholder
             else {
                 "live": True,
-                "data_mode": "live_official" if finnhub_data else "live_yfinance",
+                "data_mode": "live_official" if "finnhub" in sources else "live_yfinance",
             }
         )
         return FunctionResult(
@@ -101,7 +101,7 @@ class EEFunction(BaseFunction):
                 "status": "provider_unavailable" if placeholder else "ok",
                 "rows": reported_rows,
                 "next_report": next_report,
-                "earnings": (finnhub_data or [])[:history] if isinstance(finnhub_data, list) else finnhub_data,
+                "earnings": (finnhub_data or [])[:history] if isinstance(finnhub_data, list) else [],
                 "calendar": (yf_data or {}).get("calendar") if yf_data else None,
                 "earnings_dates": (yf_data or {}).get("earnings_dates") if yf_data else None,
                 "methodology": "EE merges Finnhub historical earnings with Yahoo earnings-date tables. Visible rows show actual EPS, consensus/estimate EPS, surprise percent, and source mode when available.",

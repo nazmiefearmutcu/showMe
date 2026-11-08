@@ -195,3 +195,24 @@ def test_ee_finnhub_upcoming_row_keeps_source_label() -> None:
     result = _run(EEFunction(deps).execute(instrument=EQ))
     assert result.data["next_report"]["date"] == fut
     assert result.data["next_report"]["source"] == "finnhub_earnings"
+
+
+def test_ee_non_list_finnhub_payload_is_not_labelled_official_or_served_as_earnings() -> None:
+    """EE#4-RQ: a bare Finnhub object contributes no rows, so it must not set
+    ``live_official`` nor be passed through as ``data.earnings``."""
+    earnings = pd.DataFrame(
+        {
+            "Earnings Date": [pd.Timestamp("2026-09-30")],
+            "EPS Estimate": [1.99],
+            "Reported EPS": [2.10],
+            "Surprise(%)": [5.53],
+        }
+    ).set_index("Earnings Date")
+    deps = FunctionDeps(
+        finnhub=_RawFinnhub({"error": "unexpected payload"}),
+        yfinance=_FakeYf({"calendar": None, "earnings_dates": earnings}),
+    )
+    result = _run(EEFunction(deps).execute(instrument=EQ))
+    assert result.sources == ["yfinance"], result.sources
+    assert result.metadata.get("data_mode") == "live_yfinance", result.metadata
+    assert result.data["earnings"] == [], result.data["earnings"]
