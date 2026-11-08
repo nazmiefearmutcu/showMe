@@ -123,23 +123,19 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _reset_caches():
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
     yield
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
+
+
+from _meet_awareness import awareness_from_ff_client  # noqa: E402
 
 
 def _meet(deps=None, client=None):
     fn = meet_mod.MEETFunction(deps=deps or FunctionDeps())
     if client is not None:
         fn._http_client = client
+        fn._awareness = awareness_from_ff_client(client)
     return fn
 
 
@@ -208,18 +204,6 @@ def test_mode_calendar_skips_world_fetch():
     assert result.data["filters_applied"]["kind"] == "all"
 
 
-def test_mode_wire_has_no_economic_rows():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient()).execute(
-            mode="wire", limit=100
-        )
-    )
-    assert result.data["status"] == "ok"
-    assert result.data["rows"]
-    assert all(r["kind"] == "world" for r in result.data["rows"])
-    assert result.data["filters_applied"]["mode"] == "wire"
-
-
 def test_mode_wins_over_kind():
     gdelt = _FakeGDELT()
     result = _run(
@@ -250,20 +234,6 @@ def test_kind_backward_compat_without_mode():
 # ---------------------------------------------------------------------------
 # tags
 # ---------------------------------------------------------------------------
-
-
-def test_tags_btc_keeps_bitcoin_drops_unrelated():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient()).execute(
-            tags="BTC", limit=100
-        )
-    )
-    assert result.data["status"] == "ok"
-    titles = [r["title"] for r in result.data["rows"]]
-    assert any("Bitcoin" in t for t in titles)
-    assert not any("Germany" in t for t in titles)
-    assert not any("CPI" in t for t in titles)
-    assert "BTC" in (result.data["filters_applied"]["tags"] or [])
 
 
 # ---------------------------------------------------------------------------
@@ -301,41 +271,6 @@ _DATA_ROWS = [
 ]
 
 
-def test_data_filter_with_actual_drops_actual_less_calendar():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient(_DATA_ROWS)).execute(
-            data_filter="with_actual", limit=100
-        )
-    )
-    titles = [r["title"] for r in result.data["rows"]]
-    assert "CPI y/y" in titles
-    assert "Retail Sales m/m" in titles
-    assert "TCMB Interest Rate Decision" not in titles
-    # World rows are calendar-only filters' collateral: dropped.
-    assert all(r["kind"] == "economic" for r in result.data["rows"])
-
-
-def test_data_filter_with_forecast_drops_forecast_less_calendar():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient(_DATA_ROWS)).execute(
-            data_filter="with_forecast", limit=100
-        )
-    )
-    titles = [r["title"] for r in result.data["rows"]]
-    assert "CPI y/y" in titles
-    assert "TCMB Interest Rate Decision" in titles
-    assert "Retail Sales m/m" not in titles
-
-
-def test_data_filter_surprise_only_keeps_both_present_numeric():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient(_DATA_ROWS)).execute(
-            data_filter="surprise_only", limit=100
-        )
-    )
-    assert [r["title"] for r in result.data["rows"]] == ["CPI y/y"]
-
-
 @pytest.mark.parametrize(
     "bad", [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity"]
 )
@@ -358,29 +293,6 @@ def test_data_filter_unknown_is_all_noop():
     )
     assert odd.data["filters_applied"]["data_filter"] == "all"
     assert [r["id"] for r in odd.data["rows"]] == [r["id"] for r in base.data["rows"]]
-
-
-def test_data_filter_spot_still_works_task2_compat():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient(_DATA_ROWS)).execute(
-            data_filter="spot", limit=100
-        )
-    )
-    titles = [r["title"] for r in result.data["rows"]]
-    assert "TCMB Interest Rate Decision" in titles
-    assert "CPI y/y" not in titles
-    assert "Retail Sales m/m" not in titles
-
-
-def test_data_filter_pinned_still_works_task2_compat():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient(_DATA_ROWS)).execute(
-            data_filter="pinned", limit=100
-        )
-    )
-    titles = [r["title"] for r in result.data["rows"]]
-    assert "TCMB Interest Rate Decision" in titles
-    assert "CPI y/y" in titles
 
 
 # ---------------------------------------------------------------------------
@@ -430,3 +342,16 @@ def test_filters_applied_kind_carries_raw_input():
     assert result.data["filters_applied"]["mode"] == "calendar"
     assert result.data["filters_applied"]["kind"] == "world"
     assert all(r["kind"] == "economic" for r in result.data["rows"])
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

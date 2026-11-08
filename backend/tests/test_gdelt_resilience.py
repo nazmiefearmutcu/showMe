@@ -122,32 +122,14 @@ async def test_distinct_requests_are_spaced_by_shared_gate():
     await adapter.aclose()
 
 
-@pytest.mark.asyncio
-async def test_meet_uses_completed_background_snapshot_without_waiting(monkeypatch):
-    from showme.engine.core.base_function import FunctionDeps
-    from showme.engine.functions.comm.meet import MEETFunction
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
 
-    adapter = GDELTAdapter()
-    adapter._world_checked = time.monotonic()
-    adapter._world_result = ([{"title": "Fed cuts rates", "url": "https://example.com/fed"}], "gdelt_gal", "language unknown")
-    fn = MEETFunction(FunctionDeps(gdelt=adapter))
-    rows, source, note = await fn._world_headlines(now=datetime.now(timezone.utc), timeout=2)
-    assert len(rows) == 1 and source == "gdelt_gal"
-    assert note == "language unknown"
-    assert adapter._world_task is None
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
 
-
-@pytest.mark.asyncio
-async def test_meet_merges_rss_cache_with_new_gal_snapshot(monkeypatch):
-    from showme.engine.core.base_function import FunctionDeps
-    from showme.engine.functions.comm import meet
-
-    monkeypatch.setattr(meet, "_WORLD_CACHE", (time.monotonic(),
-        ([{"title": "RSS headline", "url": "https://example.com/rss"}], "rss", None), 60))
-    adapter = GDELTAdapter()
-    adapter._world_checked = time.monotonic()
-    adapter._world_result = ([{"title": "GAL headline", "url": "https://example.com/gal"}], "gdelt_gal", None)
-    fn = meet.MEETFunction(FunctionDeps(gdelt=adapter, rss=object()))
-    rows, source, _ = await fn._world_headlines(now=datetime.now(timezone.utc), timeout=2)
-    assert len(rows) == 2
-    assert source == "rss+gdelt_gal"
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

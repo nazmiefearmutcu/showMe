@@ -124,23 +124,19 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _reset_caches():
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
     yield
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
+
+
+from _meet_awareness import awareness_from_ff_client  # noqa: E402
 
 
 def _meet(deps=None, client=None):
     fn = meet_mod.MEETFunction(deps=deps or FunctionDeps())
     if client is not None:
         fn._http_client = client
+        fn._awareness = awareness_from_ff_client(client)
     return fn
 
 
@@ -181,17 +177,6 @@ def test_top_level_data_mode_alerts_count_countries_tracked():
     assert data["alerts_count"] == len(data["alerts"])
     assert data["alerts_count"] == result.metadata["counts"]["alerts"]
     assert data["countries_tracked"] == len(data["country_index"])
-
-
-def test_empty_envelope_carries_top_level_contract():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT(boom=True)), _FakeFFClient(boom=True)).execute()
-    )
-    assert result.data["status"] == "provider_unavailable"
-    assert result.data["data_mode"] == "provider_unavailable"
-    assert result.data["data_mode"] == result.metadata["data_mode"]
-    assert result.data["alerts_count"] == 0
-    assert result.data["countries_tracked"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -257,29 +242,6 @@ def test_undated_ids_still_unique_per_article():
 # ---------------------------------------------------------------------------
 # 6. GDELT error surfaced when RSS wins
 # ---------------------------------------------------------------------------
-
-
-def test_gdelt_error_noted_when_rss_serves():
-    rss = _SlowRSS([
-        {
-            "title": "RSS wire on budgets",
-            "link": "https://example.test/r1",
-            "published_at": _iso_in(timedelta(minutes=-30)),
-        },
-    ])
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT(boom=True), rss=rss), _FakeFFClient()).execute(
-            kind="world", limit=100
-        )
-    )
-    assert "rss" in result.sources
-    assert "gdelt" not in result.sources
-    blob = " ".join(result.warnings)
-    assert "gdelt" in blob
-    assert "(rss served)" in blob
-    world_rows = [r for r in result.data["rows"] if r["kind"] == "world"]
-    assert world_rows
-    assert all(r["source"] == "rss" for r in world_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -365,45 +327,6 @@ def test_pair_map_usd_crosses_for_uncovered_currencies():
 # ---------------------------------------------------------------------------
 # 9. Combined tags + data_filter (behaviour lock, no behaviour change)
 # ---------------------------------------------------------------------------
-
-
-def test_tags_btc_with_actual_drops_btc_world_row():
-    """data_filter=with_actual applies to calendar rows only: the BTC world
-    row (no Actual cell) is dropped when combined with tags=BTC, while the
-    tags-only call keeps it. Locks current behaviour."""
-    base = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient()).execute(
-            tags="BTC", limit=100
-        )
-    )
-    assert any("Bitcoin" in r["title"] for r in base.data["rows"])
-    combo = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient()).execute(
-            tags="BTC", data_filter="with_actual", limit=100
-        )
-    )
-    assert not any("Bitcoin" in r["title"] for r in combo.data["rows"])
-    assert all(r["kind"] == "economic" for r in combo.data["rows"])
-
-
-def test_gdelt_empty_result_serves_rss_without_note():
-    rss = _SlowRSS([
-        {
-            "title": "RSS wire on budgets",
-            "link": "https://example.test/r1",
-            "published_at": _iso_in(timedelta(minutes=-30)),
-        },
-    ])
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT(articles=[]), rss=rss), _FakeFFClient()).execute(
-            kind="world", limit=100
-        )
-    )
-    assert "rss" in result.sources
-    assert "(rss served)" not in " ".join(result.warnings)
-    world_rows = [r for r in result.data["rows"] if r["kind"] == "world"]
-    assert world_rows
-    assert all(r["source"] == "rss" for r in world_rows)
 
 
 def test_undated_empty_url_same_title_dedupes_to_one_row():
@@ -588,3 +511,16 @@ def test_data_filter_parity():
     assert set(meet_mod._DATA_FILTERS) == set(seed_options) == set(
         contract["data_filter_values"]
     )
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

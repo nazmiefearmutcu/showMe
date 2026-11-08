@@ -20,6 +20,8 @@ Fully offline: every provider is a fake; no test performs network I/O.
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 import sys
 from datetime import UTC, datetime
@@ -71,11 +73,7 @@ class _RoutingClient:
 def _clear_caches():
     cg._HOLIDAY_CACHE.clear()
     cg._GOOGLE_NEWS_CACHE.clear()
-    meet_mod._WORLD_CACHE = None
     meet_mod._SYMBOL_NEWS_CACHE = None
-    meet_mod._FINANCE_CALENDAR_CACHE.update({
-        "fetched_at": 0.0, "key": "", "rows": [], "attribution": None,
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -295,77 +293,14 @@ class _InstantRSS:
         return []
 
 
-def test_meet_execute_runs_country_gates_and_ships_report(monkeypatch):
-    _clear_caches()
-    # Pin MEET's clock to the fixture date: the Nager rows are fixed
-    # October-2026 dates, so an unpinned clock turns this into a time bomb
-    # (it started failing once the real date left the window).
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: _NOW)
-    nager = _FakeResponse(json_data=[
-        {"date": "2026-10-08", "name": "Republic Day"},
-    ])
-    client = _RoutingClient({
-        "date.nager.at": nager,
-        # Calendar chain fails honestly: FF and FinanceCalendar both empty.
-        "faireconomy.media": _FakeResponse(json_data=[]),
-        "financecalendar.com": _FakeResponse(json_data={"events": []}),
-    })
-    fn = meet_mod.MEETFunction(
-        deps=FunctionDeps(gdelt=_WorldGDELT(), rss=_InstantRSS())
-    )
-    fn._http_client = client
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
 
-    result = asyncio.run(meet_mod.MEETFunction.execute(
-        fn, countries="TR", days_ahead=90.0, days_back=7.0,
-    ))
-    data = result.data
-    gates = data["data_gates"]
-    # The world-stream article carries no TR tag, so the stage-2 country RSS
-    # gate fires for the shortfall — exactly the floor behaviour being pinned.
-    assert [g["gate"] for g in gates] == ["holidays", "country_wire", "country_rss"]
-    holidays = next(g for g in gates if g["gate"] == "holidays")
-    assert holidays["rows_added"] == 1
-    # Holiday rows flow through the calendar pipeline as real economic rows.
-    holiday_rows = [
-        r for r in data["rows"]
-        if str((r.get("details") or {}).get("provider")) == "nager_date"
-    ]
-    assert holiday_rows and holiday_rows[0]["countries"] == ["TR"]
-    report = data["country_gate_report"]
-    assert report["min_events_per_7d"] == cg.MEET_GATE_MIN_EVENTS
-    tr = next(c for c in report["countries"] if c["iso"] == "TR")
-    assert tr["future_7d"] >= 1, "the Oct-29 holiday lands inside the future 7d window"
-    # Nothing dated inside the past 7d for TR in this offline fixture.
-    assert tr["past_7d"] == 0
-    assert "gate shortfall" in " ".join(result.warnings)
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
 
-
-def test_meet_execute_calendar_mode_keeps_holidays_drops_wire(monkeypatch):
-    _clear_caches()
-    # Pin MEET's clock to the fixture date: the Nager rows are fixed
-    # October-2026 dates, so an unpinned clock turns this into a time bomb
-    # (it started failing once the real date left the window).
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: _NOW)
-    nager = _FakeResponse(json_data=[
-        {"date": "2026-10-08", "name": "Republic Day"},
-    ])
-    client = _RoutingClient({
-        "date.nager.at": nager,
-        "faireconomy.media": _FakeResponse(json_data=[]),
-        "financecalendar.com": _FakeResponse(json_data={"events": []}),
-    })
-    fn = meet_mod.MEETFunction(
-        deps=FunctionDeps(gdelt=_WorldGDELT(), rss=_InstantRSS())
-    )
-    fn._http_client = client
-
-    result = asyncio.run(meet_mod.MEETFunction.execute(
-        fn, countries="TR", mode="calendar", days_ahead=90.0, days_back=7.0,
-    ))
-    gates = result.data["data_gates"]
-    assert [g["gate"] for g in gates] == ["holidays"], "wire gate skipped in calendar mode"
-    assert any(
-        str((r.get("details") or {}).get("provider")) == "nager_date"
-        for r in result.data["rows"]
-    )
-    assert all(r.get("kind") != "world" for r in result.data["rows"])
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

@@ -1,27 +1,58 @@
-"""EVTS — Corporate Events Calendar."""
+"""EVTS — Corporate events for one symbol (Awareness corporate calendar and SEC filings).
+
+Earnings, dividends, splits, IPO rows and SEC filings for a symbol inside a
+window around today. Rows are split into ``upcoming`` (ascending) and
+``recent`` (descending); ``rows`` is upcoming followed by recent.
+"""
 
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
-import pandas as pd
-
-from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions.calendar._common import (
+    aw_get,
+    data_meta,
+    iso_day,
+    parse_bool,
+    parse_csv,
+    parse_int,
+    provenance_metadata,
+    unavailable_result,
+    utc_today,
+)
+
+ALL_TYPES = ("earnings", "dividend", "split", "ipo", "filing")
+_LABELS = {
+    "earnings": "Earnings report",
+    "dividend": "Dividend",
+    "split": "Stock split",
+    "ipo": "IPO",
+    "filing": "SEC filing",
+}
+_FILING_WINDOW_MAX_DAYS = 90
 
 
-def _is_empty(value: Any) -> bool:
-    if value is None:
-        return True
-    if getattr(value, "empty", False):
-        return True
-    if isinstance(value, dict):
-        return not value or all(_is_empty(item) for item in value.values())
-    if isinstance(value, (list, tuple, set)):
-        return not value or all(_is_empty(item) for item in value)
-    return False
+def _event_row(item: dict[str, Any], symbol: str, event_type: str) -> dict[str, Any]:
+    fields = item.get("fields") or {}
+    label = _LABELS.get(event_type, event_type)
+    if event_type == "filing" and fields.get("form"):
+        label = f"SEC filing {fields.get('form')}"
+    return {
+        "date": str(item.get("date") or "")[:10],
+        "datetime_utc": item.get("datetime_utc"),
+        "type": event_type,
+        "event": label,
+        "symbol": item.get("symbol") or symbol,
+        "company": item.get("company"),
+        "time_of_day": item.get("time_of_day"),
+        "status": item.get("status"),
+        "details": fields,
+        "sources": item.get("sources") or [],
+    }
 
 
 @FunctionRegistry.register
@@ -30,204 +61,104 @@ class EVTSFunction(BaseFunction):
     name = "Corporate Events"
     asset_classes = (AssetClass.EQUITY,)
     category = "news"
+    description = (
+        "Dated corporate events for one equity: earnings, dividends, splits, IPOs and SEC filings "
+        "from the Awareness corporate calendar, split into upcoming and recent."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        if instrument is None:
-            raise ValueError
-        events: dict[str, Any] = {}
-        warnings: list[str] = []
-        # Default-polarity flip (2026-09-08): EVTS fetches the live
-        # corporate-events feed by default; ``reference=true`` opts out
-        # (returning the honest empty envelope).
-        live = not _truthy(params.get("reference"))
-        live_attempted = live and bool(self.deps.yfinance)
-        if live_attempted:
-            try:
-                timeout = max(1.0, min(float(params.get("yfinance_timeout", 4)), 6.0))
-                events = await asyncio.wait_for(
-                    self.deps.yfinance.fetch(DataRequest(
-                        kind=DataKind.EVENTS,
-                        instrument=instrument,
-                        extra={"timeout": timeout},
-                    )),
-                    timeout=timeout + 1,
-                )
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"yfinance: {exc}")
-        rows = _event_rows(events, instrument.symbol)
-        if not rows:
-            reason = "No dated corporate events were returned for this symbol."
+        symbol = str(params.get("symbol") or (instrument.symbol if instrument else "") or "").strip().upper()
+        if not symbol:
             return FunctionResult(
                 code=self.code,
-                instrument=instrument,
-                data={
-                    "status": "provider_unavailable" if live_attempted else "empty",
-                    "reason": reason,
-                    "rows": [],
-                    "symbol": instrument.symbol,
-                    "next_actions": [
-                        "Retry with another equity symbol or a longer provider timeout.",
-                        "Open Raw function payload to inspect event provider errors.",
-                    ],
-                },
-                sources=["yfinance" if live_attempted else "no_live_source"],
-                metadata={
-                    "live": bool(live_attempted),
-                    "fallback": not live_attempted,
-                    "provider_errors": warnings or [reason],
-                    "data_mode": "live_yfinance" if live_attempted else "empty",
-                },
+                instrument=None,
+                data={"status": "input_required", "reason": "EVTS needs a symbol.", "rows": [], "symbol": ""},
+                sources=["no_live_source"],
+                metadata={"fallback": True, "live": False, "data_mode": "provider_unavailable"},
             )
+        if parse_bool(params.get("reference")):
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": "reference event template removed — data is live from Awareness",
+                    "rows": [],
+                    "symbol": symbol,
+                },
+                sources=["no_live_source"],
+                metadata={"fallback": True, "live": False, "data_mode": "provider_unavailable"},
+            )
+        days_back = parse_int(params.get("days_back"), default=90, floor=0, ceiling=730)
+        days_ahead = parse_int(params.get("days_ahead"), default=180, floor=0, ceiling=730)
+        requested = [t for t in parse_csv(params.get("types"), upper=False) if t in ALL_TYPES] or list(ALL_TYPES)
+        today = utc_today()
+        window = {"from": iso_day(today - timedelta(days=days_back)), "to": iso_day(today + timedelta(days=days_ahead))}
+
+        corporate_types = [t for t in requested if t != "filing"]
+        calls: list[Any] = []
+        if corporate_types:
+            calls.append(aw_get(self, "/calendar/corporate", {**window, "types": ",".join(corporate_types), "symbols": symbol}))
+        if "filing" in requested and days_back > 0:
+            calls.append(aw_get(self, "/filings", {"symbols": symbol, "days": min(days_back, _FILING_WINDOW_MAX_DAYS), "limit": 200}))
+        answers = await asyncio.gather(*calls) if calls else []
+
+        responses = []
+        warnings: list[str] = []
+        rows: list[dict[str, Any]] = []
+        answered = 0
+        index = 0
+        if corporate_types:
+            resp, error = answers[index]
+            index += 1
+            if resp is None:
+                return unavailable_result("EVTS", instrument, error or "awareness returned no response",
+                                          extra={"symbol": symbol, "rows": []})
+            answered += 1
+            responses.append(resp)
+            for item in resp.data or []:
+                if isinstance(item, dict) and item.get("type") in corporate_types:
+                    rows.append(_event_row(item, symbol, str(item.get("type"))))
+        if "filing" in requested and days_back > 0:
+            resp, error = answers[index]
+            if resp is None:
+                warnings.append(f"filings: {error}")
+            else:
+                answered += 1
+                responses.append(resp)
+                for item in resp.data or []:
+                    if isinstance(item, dict):
+                        rows.append(_event_row(item, symbol, "filing"))
+        if answered == 0:
+            return unavailable_result("EVTS", instrument, "awareness returned no response",
+                                      extra={"symbol": symbol, "rows": []})
+
+        today_text = today.isoformat()
+        upcoming = sorted((r for r in rows if r["date"] >= today_text), key=lambda r: (r["date"], r["type"]))
+        recent = sorted((r for r in rows if r["date"] < today_text), key=lambda r: (r["date"], r["type"]), reverse=True)
+        ordered = upcoming + recent
+        status = "ok" if ordered else "empty"
+        sources = [f"awareness:{area}" for area in (["corporate"] if corporate_types else []) + (["filings"] if "filing" in requested and days_back > 0 else [])]
         return FunctionResult(
             code=self.code,
             instrument=instrument,
             data={
-                "status": "ok",
-                "rows": rows,
-                "symbol": instrument.symbol,
-                "event_count": len(rows),
-            },
-            sources=["yfinance" if live_attempted else "corporate_events_model"],
-            metadata={
-                "live": bool(live_attempted),
-                "provider_errors": warnings,
-                "data_mode": "live_yfinance" if live_attempted else "modeled",
-            },
-        )
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _event_rows(events: dict[str, Any], symbol: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    calendar = events.get("calendar") if isinstance(events, dict) else None
-    if isinstance(calendar, dict):
-        for key, value in calendar.items():
-            if _is_empty(value):
-                continue
-            rows.append({
+                "status": status,
                 "symbol": symbol,
-                "event": _human_label(str(key)),
-                "date": _date_value(value),
-                "value": _scalar_value(value),
-                "source_section": "calendar",
-            })
-    elif isinstance(calendar, list):
-        for item in calendar:
-            if isinstance(item, dict) and not _is_empty(item):
-                rows.append({"symbol": symbol, "source_section": "calendar", **item})
-    earnings = events.get("earnings_dates") if isinstance(events, dict) else None
-    rows.extend(_frame_rows(earnings, symbol, "earnings"))
-    actions = events.get("actions") if isinstance(events, dict) else None
-    rows.extend(_frame_rows(actions, symbol, "action"))
-    for section in ("dividends", "splits"):
-        series = events.get(section) if isinstance(events, dict) else None
-        if isinstance(series, pd.Series) and not series.empty:
-            for idx, value in series.tail(12).items():
-                rows.append({
-                    "symbol": symbol,
-                    "event": section[:-1],
-                    "date": _date_value(idx),
-                    "value": _scalar_value(value),
-                    "source_section": section,
-                })
-    rows = [row for row in rows if row.get("date") or row.get("value") not in (None, "")]
-    rows.sort(key=lambda row: str(row.get("date") or ""), reverse=True)
-    return rows[:50]
-
-
-def _frame_rows(value: Any, symbol: str, event_name: str) -> list[dict[str, Any]]:
-    if not isinstance(value, pd.DataFrame) or value.empty:
-        return []
-    frame = value.tail(20).reset_index()
-    out: list[dict[str, Any]] = []
-    for raw in frame.to_dict(orient="records"):
-        row = {str(k): _scalar_value(v) for k, v in raw.items()}
-        date = row.get("Earnings Date") or row.get("Date") or row.get("index")
-        out.append({
-            "symbol": symbol,
-            "event": event_name,
-            "date": _date_value(date),
-            "source_section": event_name,
-            **row,
-        })
-    return out
-
-
-def _date_value(value: Any) -> str | None:
-    """Return an ISO 8601 string for any date-like value.
-
-    BugHunt 2026-05-24: yfinance often hands back calendar values as
-    single-element lists like ``[datetime.date(2026, 7, 30)]``. The previous
-    implementation fell through to ``str(value)`` and emitted the literal
-    Python repr ``"[datetime.date(2026, 7, 30)]"`` into the UI. We now unwrap
-    one-element list/tuple/set/Series values and ISO-format each candidate
-    before stringifying.
-    """
-    if value is None:
-        return None
-    if isinstance(value, (list, tuple, set)):
-        for item in value:
-            if item is None:
-                continue
-            converted = _date_value(item)
-            if converted:
-                return converted
-        return None
-    if hasattr(value, "tolist"):
-        try:
-            unwrapped = value.tolist()
-        except Exception:
-            unwrapped = None
-        if isinstance(unwrapped, list):
-            return _date_value(unwrapped)
-    if hasattr(value, "isoformat"):
-        try:
-            return value.isoformat()
-        except Exception:
-            pass
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    text = str(value).strip()
-    return text or None
-
-
-def _scalar_value(value: Any) -> Any:
-    if isinstance(value, (list, tuple, set)):
-        # BugHunt 2026-05-24: yfinance calendar values are wrapped in
-        # single-element lists. Returning them raw made the UI render the
-        # literal Python repr instead of a usable scalar/date. Try to ISO
-        # the inner date(s) if any; otherwise return the list of normalised
-        # scalars so downstream JSON encoding stays safe.
-        converted = [_scalar_value(item) for item in value]
-        if len(converted) == 1:
-            return converted[0]
-        return converted
-    if isinstance(value, dict):
-        return value
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            pass
-    if hasattr(value, "isoformat"):
-        return _date_value(value)
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    return value
-
-
-def _human_label(value: str) -> str:
-    return value.replace("_", " ").strip().lower() or "event"
+                "rows": ordered,
+                "upcoming": upcoming,
+                "recent": recent,
+                "event_count": len(ordered),
+                "filters": {**window, "days_back": days_back, "days_ahead": days_ahead, "types": requested},
+                "meta": data_meta(responses),
+                "methodology": (
+                    "EVTS lists earnings, dividend, split, IPO and SEC filing rows for the symbol from the "
+                    "Awareness corporate calendar and filings index. Upcoming rows (date today or later) sort "
+                    "ascending; recent rows sort descending. Nothing is estimated."
+                ),
+                "reason": None if ordered else f"No {', '.join(requested)} events for {symbol} in this window.",
+            },
+            sources=sources,
+            warnings=warnings,
+            metadata=provenance_metadata(responses, provider_errors=warnings, extra={"symbol": symbol}),
+        )

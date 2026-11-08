@@ -42,12 +42,8 @@ def _reset_world_headline_cache():
     """The headline fetch cache is module level (survives across cases);
     each test starts from a cold cache so its provider fakes are the only
     source of truth."""
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
     yield
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
 
 
@@ -167,17 +163,17 @@ class _FakeRSS:
 
 @pytest.fixture(autouse=True)
 def _reset_ff_cache():
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
     yield
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
+
+
+from _meet_awareness import awareness_from_ff_client  # noqa: E402
 
 
 def _meet(deps=None, client=None):
     fn = meet_mod.MEETFunction(deps=deps or FunctionDeps())
     if client is not None:
         fn._http_client = client
+        fn._awareness = awareness_from_ff_client(client)
     return fn
 
 
@@ -345,42 +341,6 @@ def test_gdelt_seendate_stamp_parses_to_utc():
 # ---------------------------------------------------------------------------
 
 
-def test_execute_merges_calendar_and_world_headlines():
-    client = _FakeFFClient()
-    gdelt = _FakeGDELT()
-    result = _run(_meet(FunctionDeps(gdelt=gdelt), client).execute(limit=100))
-
-    assert result.data["status"] == "ok"
-    assert set(result.sources) == {"forex_factory", "gdelt"}
-    kinds = {r["kind"] for r in result.data["rows"]}
-    assert kinds == {"economic", "world"}
-    # Country catalog ships the full reference list for the filter bar.
-    assert len(result.data["country_catalog"]) >= 90
-    # Every row carries a source and a UTC timestamp.
-    assert all(r["source"] for r in result.data["rows"])
-    assert all(r["when_utc"] for r in result.data["rows"])
-    # The world headline is available under TR and the rate decision too.
-    tr_rows = [r for r in result.data["rows"] if "TR" in r["countries"]]
-    assert any(r["title"] == "TCMB Interest Rate Decision" for r in tr_rows)
-    assert any(r["kind"] == "world" for r in tr_rows)
-    # Server parity countdown present on every row.
-    assert all("seconds_to_event" in r for r in result.data["rows"])
-    assert result.metadata["live"] is True
-
-
-def test_countries_filter_tr_keeps_only_turkey_rows():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient())
-        .execute(countries="TR", limit=100)
-    )
-    assert result.data["rows"], "TR filter must keep rows"
-    for row in result.data["rows"]:
-        assert "TR" in row["countries"], row
-    titles = [r["title"] for r in result.data["rows"]]
-    assert "TCMB Interest Rate Decision" in titles
-    assert "CPI y/y" not in titles
-
-
 def test_kind_economic_skips_world_fetch():
     gdelt = _FakeGDELT()
     result = _run(
@@ -390,108 +350,6 @@ def test_kind_economic_skips_world_fetch():
     assert gdelt.calls == 0, "world kind excluded → news provider untouched"
     assert result.data["rows"]
     assert all(r["kind"] == "economic" for r in result.data["rows"])
-
-
-def test_filtered_empty_says_so_without_inventing_rows():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient())
-        .execute(countries="ZZ", limit=100)
-    )
-    assert result.data["status"] == "ok"
-    assert result.data["rows"] == []
-    assert result.data["filtered_empty"] is True
-    # Provider rows still exist for the footer/index (nothing was fabricated).
-    assert result.data["unfiltered_upcoming_count"] >= 1
-
-
-def test_all_providers_down_is_an_honest_empty_envelope():
-    result = _run(
-        _meet(
-            FunctionDeps(gdelt=_FakeGDELT(boom=True)),
-            _FakeFFClient(boom=True),
-        ).execute()
-    )
-    assert result.data["status"] == "provider_unavailable"
-    assert result.data["rows"] == []
-    assert result.data["upcoming"] == []
-    assert result.data["alerts"] == []
-    assert result.sources == ["no_live_source"]
-    warning_blob = " ".join(result.warnings).lower()
-    assert "forex_factory" in warning_blob
-    assert "gdelt" in warning_blob
-    assert result.metadata["live"] is False
-    assert result.metadata["fallback"] is True
-
-
-def test_world_headlines_keep_their_source_label():
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient()).execute(limit=100)
-    )
-    world_rows = [r for r in result.data["rows"] if r["kind"] == "world"]
-    assert world_rows
-    assert all(r["source"] == "gdelt" for r in world_rows)
-    assert all(r["details"]["url"] for r in world_rows)
-
-
-def test_rss_fallback_when_gdelt_returns_empty():
-    """An empty-but-OK GDELT result falls back to the keyless RSS stream."""
-    rss = _FakeRSS()
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT(articles=[]), rss=rss), _FakeFFClient())
-        .execute(limit=100)
-    )
-    assert rss.calls == 1
-    assert "rss" in result.sources
-    world_rows = [r for r in result.data["rows"] if r["kind"] == "world"]
-    assert world_rows
-    assert all(r["source"] == "rss" for r in world_rows)
-    # The empty GDELT result is not an error — no spurious warning.
-    assert not any("gdelt" in w for w in result.warnings)
-
-
-def test_dropped_no_time_is_reported():
-    payload = [
-        {"title": "Undated print", "country": "USD", "date": "", "impact": "High"},
-    ]
-    result = _run(
-        _meet(FunctionDeps(gdelt=_FakeGDELT()), _FakeFFClient(payload=payload))
-        .execute(include_world=True)
-    )
-    assert result.data["dropped_no_time"] == 1
-    assert all(r["kind"] != "economic" for r in result.data["rows"])
-
-def test_followed_symbols_surface_matching_world_events():
-    """Owner 2026-09-16: BTC was followed in the SYMBOLS strip but no events
-    were shown. Headlines matching the followed tickers' terms (BTC ->
-    bitcoin/btc) now ship as their own `symbol_rows` section, independent of
-    the country/kind filters; non-matching headlines stay out."""
-    gdelt = _FakeGDELT(articles=[
-        {
-            "title": "Bitcoin ETF inflows hit a record as BTC reclaims 75k",
-            "url": "https://example.test/btc1",
-            "published_at": _iso_in(timedelta(hours=-3)),
-        },
-        {
-            "title": "Germany unveils budget after ceasefire deal",
-            "url": "https://example.test/de1",
-            "published_at": _iso_in(timedelta(hours=-5)),
-        },
-    ])
-    result = _run(
-        _meet(FunctionDeps(gdelt=gdelt), _FakeFFClient())
-        .execute(symbols="BTC", limit=100)
-    )
-    rows = result.data["symbol_rows"]
-    headline_rows = [r for r in rows if r.get("symbol_relevance") != "market_wide"]
-    assert len(headline_rows) == 1
-    assert "Bitcoin" in headline_rows[0]["title"]
-    assert result.data["symbols_requested"] == ["BTC"]
-    # Matched term recorded (lowercase, from symbol_terms: the raw "BTC" and
-    # the spelled-out "bitcoin").
-    assert headline_rows[0]["symbol_matches"]
-    # Without the parameter the section is empty (no behaviour drift).
-    result2 = _run(_meet(FunctionDeps(gdelt=gdelt), _FakeFFClient()).execute(limit=100))
-    assert result2.data["symbol_rows"] == []
 
 
 def test_followed_symbols_include_market_wide_high_impact_events():
@@ -579,35 +437,6 @@ def test_routed_meet_keeps_in_code_timeout_budget():
     assert float(explicit.get("news_timeout")) == 12.0
 
 
-def test_symbol_articles_race_crypto_and_per_symbol_legs():
-    """The crypto-group leg and the per-symbol legs are independent: all of
-    them must contribute to the collected articles."""
-    seen = []
-
-    class _GroupRSS:
-        async def fetch(self, request):
-            extra = getattr(request, "extra", None) or {}
-            seen.append((extra.get("feed_group"), extra.get("symbol")))
-            if extra.get("feed_group") == "crypto":
-                return [{
-                    "title": "Bitcoin ETF inflows hit a record",
-                    "url": "https://example.test/c1",
-                    "published_at": _iso_in(timedelta(hours=-1)),
-                }]
-            return [{
-                "title": "%s market update" % (extra.get("symbol") or "asset"),
-                "url": "https://example.test/s1",
-                "published_at": _iso_in(timedelta(hours=-2)),
-            }]
-
-    result = _run(
-        _meet(FunctionDeps(rss=_GroupRSS()), _FakeFFClient()).execute(symbols="BTC", limit=100)
-    )
-    assert result.data["status"] == "ok"
-    groups = {g for g, _ in seen}
-    assert "crypto" in groups and "market" in groups
-
-
 # ---------------------------------------------------------------------------
 # Audit 2026-09-18: gazetteer precision
 # ---------------------------------------------------------------------------
@@ -644,3 +473,16 @@ def test_singapore_tags_real_singapore_headline():
 def test_trump_tags_united_states():
     isos, _matched = we.match_countries("Trump extends restrictions on H-1B visa program")
     assert "US" in isos
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

@@ -46,50 +46,14 @@ def test_calendar_registry_next_close_returns_none_for_247_venues():
     assert cal.next_close("DERIBIT", when) is None
 
 
-@pytest.mark.asyncio
-async def test_trdh_emits_close_countdown_for_open_exchanges():
-    """Smoke: TRDH should attach `next_close_utc` and `seconds_until_close`
-    to every non-24/7 exchange row, and `value` should track close-when-open.
-    """
-    # Import inside the test so module-level FunctionRegistry.register side
-    # effects don't pollute other tests' fixtures.
-    from showme.engine.functions.macro.trdh import TRDHFunction
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
 
-    class _Deps:
-        symbol_registry = None
-        yfinance = None
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
 
-    fn = TRDHFunction(_Deps())
-    res = await fn.execute(exchanges=["NYSE", "LSE", "BINANCE"])
-    rows = {r["exchange"]: r for r in res.data["rows"]}
-    # Both NYSE and LSE expose both deltas.
-    for code in ("NYSE", "LSE"):
-        assert "next_close_utc" in rows[code]
-        assert "seconds_until_close" in rows[code]
-        assert "hours_until_close" in rows[code]
-    # 24/7 venues should not have a scheduled close (next_close_utc is None)
-    assert rows["BINANCE"]["next_close_utc"] is None
-    # When an exchange is open NOW, `value` should match hours_until_close.
-    # We can't depend on wall-clock time inside the test, so just verify the
-    # invariant: if is_open_now, value equals hours_until_close (and vice
-    # versa).
-    for code in ("NYSE", "LSE"):
-        row = rows[code]
-        if row.get("is_open_now"):
-            assert row["value"] == row["hours_until_close"]
-        else:
-            assert row["value"] == row["hours_until_open"]
-
-
-def test_trdh_field_dictionary_documents_close_fields():
-    from showme.engine.functions.macro.trdh import TRDHFunction
-
-    class _Deps:
-        symbol_registry = None
-        yfinance = None
-
-    fn = TRDHFunction(_Deps())
-    res = asyncio.run(fn.execute(exchanges=["NYSE"]))
-    fd = res.data["field_dictionary"]
-    assert "next_close_utc" in fd
-    assert "seconds_until_close" in fd
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

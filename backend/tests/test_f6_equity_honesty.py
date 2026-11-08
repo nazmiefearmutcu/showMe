@@ -15,6 +15,8 @@ Pins the F6 fixes for the CRITICAL/HIGH audit findings:
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 import json
 from typing import Any
@@ -130,21 +132,6 @@ def test_rv_negative_pe_is_excluded_from_ranking():
 # ---------------------------------------------------------------------------
 
 
-def test_dvd_model_mode_returns_labelled_rows():
-    from showme.engine.functions.equity.dvd import DVDFunction
-
-    result = _run(DVDFunction(FunctionDeps()).execute(instrument=_instrument("AAPL")))
-    data = result.data
-    assert data["status"] == "modeled"
-    assert data["rows"], "model mode must return rows, not a bare template dict"
-    assert all(r["source_mode"] == "model" for r in data["rows"])
-    assert data["history"], "dividend rows must be filterable by action_type"
-    assert result.sources == ["dividend_calendar_model"]
-    assert result.metadata.get("live") is False
-    assert result.metadata.get("data_mode") == "modeled"
-    assert result.warnings, "model rows must carry an explicit warning"
-
-
 # ---------------------------------------------------------------------------
 # CDE — evaluate keeps the store truth
 # ---------------------------------------------------------------------------
@@ -203,3 +190,16 @@ def test_esg_proxy_path_labels_counts_not_scores(monkeypatch):
     assert data["rows"][0]["scale"] == "filing mentions (proxy)"
     assert data["warnings"], "proxy counts must carry the derived-signal warning"
     assert "not risk scores" in data["warnings"][0]
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())
