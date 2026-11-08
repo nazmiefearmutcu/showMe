@@ -91,3 +91,42 @@ def test_known_single_word_speaker_inline_is_still_split() -> None:
     utts = _segment(text)
     by_text = {u["utterance"]: u["speaker"] for u in utts}
     assert by_text.get("Our next question comes from Jane Doe.") == "Operator", by_text
+
+
+def test_two_word_name_label_after_sentence_end_is_split() -> None:
+    """TSAR#1 follow-up: a two-word speaker name with no comma, inline after a
+    sentence end, starts its own utterance (the reviewer's transcript case)."""
+    text = (
+        "Operator: Good morning and welcome. Tim Cook: Thanks everyone. "
+        "Our margins improved strongly. Kevan Parekh, CFO: We expect headwinds next quarter."
+    )
+    utts = _segment(text)
+    by_text = {u["utterance"]: u["speaker"] for u in utts}
+    assert by_text.get("Thanks everyone.") == "Tim Cook", utts
+    assert by_text.get("Our margins improved strongly.") == "Tim Cook", utts
+    assert by_text.get("We expect headwinds next quarter.") == "Kevan Parekh, CFO", utts
+    assert by_text.get("Good morning and welcome.") == "Operator", utts
+    assert all("Tim Cook:" not in u["utterance"] for u in utts), utts
+    assert all("CFO:" not in u["utterance"] for u in utts), utts
+
+
+def test_two_word_inline_label_with_figure_body_is_not_a_speaker() -> None:
+    """A metric label followed by a figure is prose, not a speaker turn."""
+    text = (
+        "John Ternus, CEO: We delivered strong results. "
+        "Free Cash Flow: $2.1 billion this quarter."
+    )
+    utts = _segment(text)
+    assert {u["speaker"] for u in utts} == {"John Ternus, CEO"}, utts
+    assert any("$2.1 billion" in u["utterance"] for u in utts), utts
+
+
+def test_two_word_metric_heading_is_not_a_speaker() -> None:
+    """Metric and section heads with a stoplisted word stay in the sentence."""
+    text = (
+        "John Ternus, CEO: We delivered strong results. "
+        "Gross Margin: Expanded across all regions."
+    )
+    utts = _segment(text)
+    assert {u["speaker"] for u in utts} == {"John Ternus, CEO"}, utts
+    assert any("Expanded across all regions" in u["utterance"] for u in utts), utts
