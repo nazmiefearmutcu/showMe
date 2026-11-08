@@ -275,3 +275,102 @@ def test_sat_selected_aoi_is_rendered_not_san_francisco(monkeypatch) -> None:
     assert data["aoi_label"] == "Singapore Strait"
     assert data["bbox"] == pytest.approx([103.5198, 0.95, 104.1198, 1.55])
     assert "BBOX=0.950000,103.519800,1.550000,104.119800" in data["tile_url"]
+
+
+def _png_filtered(width: int, height: int, rgb_fn) -> bytes:
+    """Reference PNG encoder that cycles through all five scanline filters."""
+    import struct
+    import zlib
+
+    bpp = 4
+    raw_rows: list[list[int]] = []
+    for y in range(height):
+        row: list[int] = []
+        for x in range(width):
+            r, g, b = rgb_fn(x, y)
+            row.extend([r, g, b, 255])
+        raw_rows.append(row)
+
+    def _paeth(a: int, b: int, c: int) -> int:
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        if pa <= pb and pa <= pc:
+            return a
+        return b if pb <= pc else c
+
+    out = bytearray()
+    stride = width * bpp
+    for y, row in enumerate(raw_rows):
+        ftype = y % 5
+        out.append(ftype)
+        prev = raw_rows[y - 1] if y else [0] * stride
+        for i in range(stride):
+            x = row[i]
+            a = row[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            if ftype == 0:
+                pred = 0
+            elif ftype == 1:
+                pred = a
+            elif ftype == 2:
+                pred = b
+            elif ftype == 3:
+                pred = (a + b) // 2
+            else:
+                pred = _paeth(a, b, c)
+            out.append((x - pred) & 0xFF)
+
+    def _chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+            + _chunk(b"IDAT", zlib.compress(bytes(out))) + _chunk(b"IEND", b""))
+
+
+def test_png_decoder_counts_nonzero_rgb_across_all_filters() -> None:
+    """SAT#2 support: the tile check must decode real PNG filters, not guess."""
+    import showme.engine.functions.misc.sat as sat_mod
+
+    pattern = lambda x, y: (200, 10, 5) if x < 8 else (0, 0, 0)  # noqa: E731
+    png = _png_filtered(16, 10, pattern)
+    fraction = sat_mod._png_nonzero_fraction(png)
+    assert fraction == pytest.approx(0.5)
+    assert sat_mod._png_nonzero_fraction(_png_filtered(16, 10, lambda x, y: (0, 0, 0))) == 0.0
+    assert sat_mod._png_nonzero_fraction(b"not a png") is None
+
+
+def test_sat_blank_todays_tile_walks_back_to_real_capture(monkeypatch) -> None:
+    """SAT#2: an all-black GIBS tile for the requested day must not be shown
+    as the latest capture; the newest real tile is used and its lag reported."""
+    from datetime import datetime, timedelta, timezone
+
+    import showme.engine.functions.misc.sat as sat_mod
+
+    today = datetime.now(timezone.utc).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    blank_today = _blank_png()
+    real = _imagery_png()
+    _patch_sat_http(monkeypatch, lambda day: blank_today if day == today.isoformat() else real)
+    result = asyncio.run(sat_mod.SATFunction().execute(aoi="cushing_ok", layer="true_color"))
+    data = result.data
+    assert data["capture_date"] == yesterday, data["capture_date"]
+    assert data["capture_lag_days"] == 1
+    assert data["status"] == "partial"
+    assert f"TIME={yesterday}" in data["tile_url"]
+    assert data["cards"][0]["latest_capture"] == yesterday
+    assert data["rows"][0]["capture_utc"] == yesterday
+
+
+def test_sat_all_blank_tiles_is_explicit_empty_state(monkeypatch) -> None:
+    import showme.engine.functions.misc.sat as sat_mod
+
+    _patch_sat_http(monkeypatch, lambda day: _blank_png())
+    result = asyncio.run(sat_mod.SATFunction().execute(aoi="cushing_ok", layer="true_color"))
+    data = result.data
+    assert data["status"] == "empty"
+    assert data["rows"] == []
+    assert data["cards"] == []
+    assert data["reason"]
+    assert all(check["state"] == "blank" for check in data["tile_checks"])

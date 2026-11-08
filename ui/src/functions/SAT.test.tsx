@@ -299,3 +299,45 @@ describe("SAT pane — P0 key-path wiring", () => {
     expect(screen.queryByText("18.7")).toBeNull();
   });
 });
+
+describe("SAT pane — honest capture state (G7 SAT#2)", () => {
+  it("shows an explicit empty state, never a timestamp as the capture date", () => {
+    setMockFn({
+      state: "ok",
+      ...envelope({
+        status: "empty",
+        data_mode: "delayed_reference",
+        aoi_label: "Cushing OK tank farm",
+        requested_date: "2026-09-12",
+        reason: "GIBS returned blank tiles for 2026-09-12 and the 4 days before it; no imagery to show.",
+        rows: [],
+        cards: [],
+        as_of: "2026-09-12T10:00:00+00:00",
+      }),
+      refetch: vi.fn(),
+    });
+    const { container } = render(<SATPane code="SAT" />);
+    expect(screen.getByText("No processed imagery")).toBeInTheDocument();
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.queryByText(/^for 2026-09-12T10/)).toBeNull();
+  });
+
+  it("names the lag when the newest real tile is earlier than the requested day", () => {
+    setMockFn({
+      state: "ok",
+      ...envelope(
+        realData({
+          status: "partial",
+          requested_date: "2026-09-12",
+          capture_date: "2026-09-10",
+          capture_lag_days: 2,
+        }),
+      ),
+      refetch: vi.fn(),
+    });
+    render(<SATPane code="SAT" />);
+    expect(
+      screen.getByText(/No GIBS imagery for 2026-09-12; newest processed tile is 2026-09-10 \(2 day\(s\) earlier\)\./),
+    ).toBeInTheDocument();
+  });
+});
