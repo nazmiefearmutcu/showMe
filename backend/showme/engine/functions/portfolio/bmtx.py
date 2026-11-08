@@ -15,6 +15,9 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.services.backtest_framework import Backtest, STRATEGY_REGISTRY
 
+# Wall-clock budget for one matrix run (fetch + backtests).
+LIVE_TIMEOUT_S = 9.0
+
 
 @FunctionRegistry.register
 class BMTXFunction(BaseFunction):
@@ -40,17 +43,20 @@ class BMTXFunction(BaseFunction):
         try:
             return await asyncio.wait_for(
                 self._execute_inner(instrument, **params),
-                timeout=9.0,
+                timeout=LIVE_TIMEOUT_S,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"BMTX execution timed out: {exc}"
-            return FunctionResult(
-                code=self.code,
+            # BMTX#3: a timed-out run is an honest outage, not a reference
+            # matrix with invented Sharpe values under the requested tickers.
+            reason = f"BMTX execution timed out after {LIVE_TIMEOUT_S:g}s: {exc}"
+            return _unavailable(
                 instrument=instrument,
-                data=_matrix_template(symbols, strategies),
-                sources=["local_backtest_model"],
-                warnings=[reason],
-                metadata={"days": days, "fee_bps": fee_bps, "live": False, "provider_errors": [reason]},
+                symbols=symbols,
+                strategies=strategies,
+                days=days,
+                fee_bps=fee_bps,
+                reason=reason,
+                failures={},
             )
 
     async def _execute_inner(
@@ -83,25 +89,35 @@ class BMTXFunction(BaseFunction):
         async def _bars(sym: str):
             try:
                 if not self.deps.yfinance:
-                    raise RuntimeError("no yfinance")
+                    raise RuntimeError("no live OHLCV provider is configured")
                 inst = await self.deps.symbol_registry.resolve(sym) if self.deps.symbol_registry else None
                 if not inst:
                     inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
-                return sym, await self.deps.yfinance.fetch(DataRequest(
+                df = await self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=inst,
                     start=datetime.now(timezone.utc) - timedelta(days=days),
                     interval="1d",
                 ))
-            except Exception:
-                return sym, None
+            except Exception as exc:
+                return sym, None, f"OHLCV fetch failed ({type(exc).__name__})"
+            if df is None or df.empty:
+                return sym, None, "provider returned no OHLCV rows"
+            return sym, df, None
+        bars_results = await asyncio.gather(*(_bars(s) for s in symbols))
+        bars_dict = {s: df for s, df, _ in bars_results if df is not None}
+        failures = {s: reason for s, df, reason in bars_results if df is None}
         if not bars_dict:
-            bars_results = await asyncio.gather(*(_bars(s) for s in symbols))
-            bars_dict = {s: df for s, df in bars_results
-                          if df is not None and not df.empty}
-        if not bars_dict:
-            from showme.engine.functions.portfolio.btfw import _template_history
-            bars_dict = {s: _template_history(days) for s in symbols[:3]}
-            sources = ["local_backtest_model"]
+            # BMTX#3: never substitute a template history. Report the outage
+            # and name every symbol that produced no bars.
+            return _unavailable(
+                instrument=instrument,
+                symbols=symbols,
+                strategies=strategies,
+                days=days,
+                fee_bps=fee_bps,
+                reason="Live OHLCV providers returned no usable bars for any requested symbol.",
+                failures=failures,
+            )
         cells = []
         for sym, df in bars_dict.items():
             for strat in strategies:
@@ -143,8 +159,9 @@ class BMTXFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=None,
             data={
-                "status": "ok",
+                "status": "partial" if failures else "ok",
                 "symbols": list(bars_dict.keys()),
+                "unavailable_symbols": list(failures),
                 "strategies": strategies,
                 "cells": cells,
                 "surface": surface,
@@ -172,7 +189,60 @@ class BMTXFunction(BaseFunction):
                 },
             },
             sources=sources,
+            warnings=[_failure_warning(sym, reason) for sym, reason in failures.items()],
+            metadata={"days": days, "fee_bps": fee_bps, "live": True,
+                      "unavailable_symbols": list(failures)},
         )
+
+
+def _failure_warning(sym: str, reason: str) -> str:
+    return f"BMTX: no live OHLCV history for {sym} ({reason}); it is excluded from the matrix."
+
+
+def _unavailable(
+    *,
+    instrument: Instrument | None,
+    symbols: list[str],
+    strategies: list[str],
+    days: int,
+    fee_bps: float,
+    reason: str,
+    failures: dict[str, str],
+) -> FunctionResult:
+    """Honest live-mode outage: no cells, no template values, explicit reason."""
+    warnings = [reason] + [_failure_warning(sym, why) for sym, why in failures.items()]
+    return FunctionResult(
+        code="BMTX",
+        instrument=instrument,
+        data={
+            "status": "provider_unavailable",
+            "reason": reason,
+            "symbols": [],
+            "requested_symbols": list(symbols),
+            "unavailable_symbols": list(failures) or list(symbols),
+            "strategies": list(strategies),
+            "cells": [],
+            "surface": [],
+            "best_per_symbol": {},
+            "top_10_by_sharpe": [],
+            "summary": {
+                "symbols": 0,
+                "strategies": len(strategies),
+                "runs": 0,
+                "best_sharpe": None,
+                "source_mode": "live_unavailable",
+            },
+            "next_actions": [
+                "Check that the live OHLCV provider is configured and reachable.",
+                "Verify that each requested symbol is a valid ticker for that provider.",
+            ],
+            "methodology": "No backtest was run: live OHLCV history was unavailable, and no substitute history is used.",
+        },
+        sources=["yfinance"],
+        warnings=warnings,
+        metadata={"days": days, "fee_bps": fee_bps, "live": True,
+                  "provider_errors": [reason], "unavailable_symbols": list(failures) or list(symbols)},
+    )
 
 
 def _truthy(value: Any) -> bool:
