@@ -114,7 +114,7 @@ class SPLCFunction(BaseFunction):
                 for item in [*ref.get("customers", []), *ref.get("suppliers", [])]
             ]
             comp_rows = [
-                {"symbol": instrument.symbol, "relationship": "competitor", "counterparty": str(p).strip().upper(), "ticker": str(p).strip().upper(), "confidence": 0.35, "disclosed_pct": None, "source_url": None, "source_mode": "reference_sector_peer_list"}
+                {"symbol": instrument.symbol, "relationship": "competitor", "counterparty": str(p).strip().upper(), "ticker": str(p).strip().upper(), "confidence": None, "disclosed_pct": None, "source_url": None, "source_mode": "reference_sector_peer_list"}
                 for p in (ref.get("peers") or [])
             ]
             if ref_rows or comp_rows:
@@ -417,7 +417,7 @@ def _relationship_rows(
     # extract competitors, so these rows stay explicitly reference-sourced.
     for peer in peers or []:
         ticker = str(peer).strip().upper()
-        rows.append({"symbol": symbol, "relationship": "competitor", "counterparty": ticker, "ticker": ticker, "confidence": 0.35, "disclosed_pct": None, "source_url": None, "source_mode": "reference_sector_peer_list"})
+        rows.append({"symbol": symbol, "relationship": "competitor", "counterparty": ticker, "ticker": ticker, "confidence": None, "disclosed_pct": None, "source_url": None, "source_mode": "reference_sector_peer_list"})
     if not rows:
         for item in frame_rows(filings, limit=3):
             rows.append({"symbol": symbol, "relationship": "evidence_filing", "counterparty": item.get("form"), "filingDate": item.get("filingDate"), "confidence": 0.2, "disclosed_pct": None, "source_url": filing_url, "source_mode": "sec_10k_filing_evidence"})

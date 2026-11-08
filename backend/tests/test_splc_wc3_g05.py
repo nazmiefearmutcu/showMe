@@ -87,3 +87,35 @@ def test_static_reference_rows_carry_no_invented_confidence(no_extraction) -> No
     assert rows
     for row in rows:
         assert row.get("confidence") is None, row
+
+
+def test_competitor_rows_on_reference_branch_carry_no_invented_confidence(no_extraction) -> None:
+    # SPLC#2 follow-up: the reference branch also emits competitor rows
+    # (source_mode reference_sector_peer_list), which the prefix filter above skips.
+    fn = splc_mod.SPLCFunction(FunctionDeps(sec_edgar=_FakeSec()))
+    instrument = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    res = asyncio.run(fn.execute(instrument))
+    competitors = [r for r in res.data["rows"] if r.get("relationship") == "competitor"]
+    assert competitors, "expected competitor peer rows on the AAPL reference branch"
+    for row in competitors:
+        assert row.get("confidence") is None, row
+
+
+def test_sec_path_competitor_rows_carry_no_invented_confidence() -> None:
+    # SPLC#2 follow-up: the SEC-extracted path also emits peer competitor rows
+    # through _relationship_rows; those must not carry the fixed 0.35 score.
+    rows = splc_mod._relationship_rows(
+        "AAPL",
+        [{"name": "Carrier X", "pct": 12.0, "confidence": 0.6}],
+        [],
+        pd.DataFrame(),
+        peers=["MSFT", "GOOGL"],
+        filing_url=_FILING_URL,
+    )
+    competitors = [r for r in rows if r.get("relationship") == "competitor"]
+    assert len(competitors) == 2, rows
+    for row in competitors:
+        assert row.get("confidence") is None, row
+    # Extracted customer rows keep their own extraction confidence.
+    customer = next(r for r in rows if r.get("relationship") == "customer")
+    assert customer.get("confidence") == 0.6
