@@ -69,3 +69,19 @@ def test_reference_template_envelope_is_not_status_ok() -> None:
     # The request clock is not a data freshness stamp for a deterministic model.
     assert "as_of" not in out.data
     assert out.data.get("generated_at")
+
+
+def test_region_param_filters_rows_server_side() -> None:
+    """WEI#2: the region param is honoured by the API, not only by the pane."""
+    out = asyncio.run(WEIFunction().execute(reference=True, region="europe"))
+    rows = out.data["rows"]
+    assert rows, "europe region returned no rows"
+    assert {row["region"] for row in rows} == {"europe"}
+    assert len(rows) < len(_world_index_symbols())
+
+
+def test_unknown_region_is_an_input_error_not_the_full_board() -> None:
+    out = asyncio.run(WEIFunction().execute(reference=True, region="mars"))
+    assert out.data["status"] == "input_error"
+    assert out.data["rows"] == []
+    assert out.data.get("reason")

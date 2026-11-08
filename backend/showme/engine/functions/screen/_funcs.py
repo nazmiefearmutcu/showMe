@@ -537,6 +537,28 @@ class WEIFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         # Single source of truth: the curated, provider-verified world set.
         indices = _world_index_symbols()
+        # WEI#2: the region param is honoured server-side (not only by the pane).
+        region = str(params.get("region") or "").strip().lower()
+        known_regions = sorted({str(_WORLD_INDEX_META[s]["region"]) for s in indices})
+        region_filter = region if region and region != "all" else None
+        if region_filter is not None and region_filter not in known_regions:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"Unknown world-index region '{region}'.",
+                    "rows": [],
+                    "universe_size": len(indices),
+                    "source_mode": "none",
+                    "next_actions": [f"Use region one of: all, {', '.join(known_regions)}."],
+                },
+                metadata={"live": False, "universe_size": len(indices)},
+                sources=[],
+                warnings=[],
+            )
+        if region_filter is not None:
+            indices = [s for s in indices if _WORLD_INDEX_META[s]["region"] == region_filter]
         # Default polarity (2026-09-11, L9): attempt keyless yfinance quotes by
         # default; an explicit falsy ``live``/``live_screen`` or
         # ``reference=true`` serves the labelled deterministic template only.
@@ -569,7 +591,7 @@ class WEIFunction(BaseFunction):
                 burst=True,
             )
             if rows:
-                complete = _complete_world_index_rows(rows)
+                complete = _region_world_rows(_complete_world_index_rows(rows), region_filter)
                 resolved = sum(1 for row in complete if row.get("last") is not None)
                 unresolved = len(complete) - resolved
                 if unresolved:
@@ -611,7 +633,7 @@ class WEIFunction(BaseFunction):
                     sources=["yfinance"],
                     warnings=warnings,
                 )
-            fallback_rows = _world_index_template()
+            fallback_rows = _region_world_rows(_world_index_template(), region_filter)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -648,7 +670,7 @@ class WEIFunction(BaseFunction):
                 # on the explicit reference path, provider_unavailable when live was
                 # requested but no provider is wired.
                 "status": "model" if not live else "provider_unavailable",
-                "rows": _world_index_template(),
+                "rows": _region_world_rows(_world_index_template(), region_filter),
                 "universe_size": len(indices),
                 "source_mode": "world_index_template",
                 # Model generation time, not a market or quote time.
@@ -2665,6 +2687,13 @@ _WORLD_INDEX_BASELINE: dict[str, float] = {
     "399001.SZ": 13300.0, "^SET": 7600.0, "PSEI.PS": 6010.0, "^NZ50": 13480.0,
     "XU100.IS": 9800.0, "^TA125.TA": 2000.0, "^J203.JO": 80000.0, "^CASE30": 28000.0,
 }
+
+
+def _region_world_rows(rows: list[dict[str, Any]], region: str | None) -> list[dict[str, Any]]:
+    """WEI region filter over already-built rows (``None`` keeps every row)."""
+    if region is None:
+        return rows
+    return [row for row in rows if str(row.get("region") or "").lower() == region]
 
 
 def _world_index_symbols() -> list[str]:
