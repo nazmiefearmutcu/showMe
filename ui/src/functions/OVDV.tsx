@@ -239,8 +239,11 @@ export function OVDVPane({ code }: FunctionPaneProps) {
     return [...fromPayload, ...fromEnvelope.map((w) => String(w))];
   }, [payload.warnings, data?.warnings]);
 
+  // With no vol source the backend reports provider_unavailable and emits no
+  // sources; the footer must not name a reference model that was never used.
   const sources =
-    data?.sources?.join(", ") || (isLive ? "yfinance" : "reference_fx_vol_model");
+    data?.sources?.join(", ") ||
+    (isLive ? "yfinance" : statusOverride ? "none" : "user_inputs");
 
   // ATM term-structure points (chronological) for the term panel.
   // Preferred source: the REAL `series[].atm_vol_pct` (verified live 2026-09-12:
@@ -606,7 +609,7 @@ export function OVDVPane({ code }: FunctionPaneProps) {
                                 size={32}
                                 label={vol.toFixed(2)}
                                 tabIndex={isActive ? 0 : -1}
-                                ariaLabel={`${tenor} × ${delta} implied vol ${vol.toFixed(2)} percent`}
+                                ariaLabel={`${tenor} × ${delta} vol ${vol.toFixed(2)} percent`}
                                 onClick={() => setActivePref({ r, c })}
                               />
                             )}

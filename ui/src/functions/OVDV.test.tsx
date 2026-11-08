@@ -150,7 +150,7 @@ describe("OVDV pane — design-system HeatCell adoption", () => {
     expect(container.querySelectorAll(".showme-heat-cell").length).toBe(10);
     expect(
       screen.getByRole("button", {
-        name: "1W × 10P implied vol 6.90 percent",
+        name: "1W × 10P vol 6.90 percent",
       }),
     ).toBeInTheDocument();
   });
@@ -168,14 +168,14 @@ describe("OVDV pane — design-system HeatCell adoption", () => {
     render(<OVDVPane code="OVDV" />);
     // FIX R2-#4: min cell (6.45) mapped to intensity 0 → `transparent`.
     const minCell = screen.getByRole("button", {
-      name: "1W × ATM implied vol 6.45 percent",
+      name: "1W × ATM vol 6.45 percent",
     });
     const minStyle = minCell.getAttribute("style") ?? "";
     expect(minStyle).toMatch(/--heat-pos-/);
     expect(minStyle).not.toMatch(/transparent/);
     // The span still drives the top of the scale.
     const maxCell = screen.getByRole("button", {
-      name: "1M × 10P implied vol 7.70 percent",
+      name: "1M × 10P vol 7.70 percent",
     });
     expect(maxCell.getAttribute("style")).toMatch(/--heat-pos-5/);
   });
@@ -228,7 +228,7 @@ describe("OVDV pane — keyboard grid", () => {
     render(<OVDVPane code="OVDV" />);
     fireEvent.click(
       screen.getByRole("button", {
-        name: "1M × 25P implied vol 7.40 percent",
+        name: "1M × 25P vol 7.40 percent",
       }),
     );
     expect(screen.getByTestId("ovdv-readout").textContent).toBe(
@@ -293,6 +293,24 @@ describe("OVDV pane — provider failure honesty (FIX R1-H/R2-#1)", () => {
     const footer = container.querySelector(".ds-pane-footer");
     expect(footer?.textContent).toContain("provider_unavailable");
     expect(footer?.textContent).not.toContain("modeled");
+  });
+
+  it("never names a reference vol model in the footer when no vol source exists", () => {
+    mockFn.data = {
+      data: {
+        status: "provider_unavailable",
+        reason: "live realized-vol history unavailable",
+        surface: [],
+        rows: [],
+      },
+      status: "provider_unavailable",
+      sources: [],
+      elapsed_ms: 5,
+    };
+    const { container } = render(<OVDVPane code="OVDV" />);
+    const footer = container.querySelector(".ds-pane-footer");
+    expect(footer?.textContent).not.toContain("reference_fx_vol_model");
+    expect(footer?.textContent).toContain("provider_unavailable");
   });
 
   it("prefers the envelope status over a payload-provided mode label", () => {
