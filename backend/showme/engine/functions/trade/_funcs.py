@@ -1216,10 +1216,14 @@ class BBGTFunction(EMSXFunction):
             "time_in_force": tif,
             "tif": tif,
         }
-        # BBGT#1: an explicit EQUITY class bypasses the symbol classifier, and
-        # _select_broker would then route a CME Treasury future (ZN=F) to the
-        # equity broker. Refuse that combination before any preview or broker call.
-        if instrument.asset_class == AssetClass.EQUITY and _is_treasury_future_symbol(instrument.symbol):
+        # BBGT#1: an explicit asset class bypasses the symbol classifier, and
+        # _select_broker would then route a CME Treasury future (ZN=F) to whichever
+        # venue that class maps to (EQUITY -> alpaca, ETF -> alpaca, FX -> oanda,
+        # CRYPTO -> binance, BOND/COMMODITY -> ibkr with the wrong margin model).
+        # Only DERIVATIVE is the futures class, so every other explicit class is
+        # refused before any preview or broker call.
+        if instrument.asset_class != AssetClass.DERIVATIVE and _is_treasury_future_symbol(instrument.symbol):
+            requested = instrument.asset_class.value
             return _ticket_input_error_result(
                 self.code,
                 instrument,
@@ -1227,8 +1231,9 @@ class BBGTFunction(EMSXFunction):
                     "field": "asset_class",
                     "reason": (
                         f"{instrument.symbol} is a CME Treasury future and cannot be traded as "
-                        "EQUITY: the equity broker would receive it. Set the asset class to "
-                        "DERIVATIVE (IBKR desk) or leave it on auto-detect."
+                        f"{requested}: only a DERIVATIVE ticket is priced and routed as a futures "
+                        "contract. Set the asset class to DERIVATIVE (IBKR desk) or leave it on "
+                        "auto-detect."
                     ),
                 },
                 side=side or "",
