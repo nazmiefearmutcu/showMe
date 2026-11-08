@@ -615,6 +615,18 @@ def _function_usage(
             ],
             "example": {"history_days": 90},
         }
+    if upper == "SOSC":
+        return {
+            "purpose": "News and social sentiment for one symbol: FinBERT news series, Reddit buzz rank and GDELT tone from Awareness.",
+            "scope": "symbol",
+            "inputs": ["symbol", "window"],
+            "steps": [
+                "Pick a symbol and a window (1d, 7d or 30d), then Run.",
+                "Read the news sentiment series and summary (mean, momentum, dispersion) with the scored headlines.",
+                "Compare with the Reddit buzz rank and the GDELT tone line; empty sections mean Awareness has no data yet.",
+            ],
+            "example": {"symbol": "NVDA", "window": "7d"},
+        }
     if upper == "MLSIG":
         return {
             "purpose": "Train a directional classifier for one symbol and explain the feature drivers.",
