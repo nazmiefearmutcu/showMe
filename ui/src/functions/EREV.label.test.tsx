@@ -63,33 +63,6 @@ function liveData() {
     elapsed_ms: 5,
   };
 }
-
-function unavailableData() {
-  return {
-    status: "provider_unavailable",
-    data: {
-      status: "provider_unavailable",
-      symbol: "AAPL",
-      rows: [],
-      trend: [],
-      revisions: [],
-      velocity_avg: null,
-      current_score: null,
-      reason: "finnhub provider not wired (no API key configured)",
-      warnings: [
-        "No Finnhub key wired; analyst recommendation buckets unavailable.",
-      ],
-      next_actions: [
-        "Configure a Finnhub API key so analyst recommendation buckets can load.",
-      ],
-      data_mode: "not_configured",
-    },
-    sources: [],
-    metadata: { live: false, fallback: true, data_mode: "not_configured" },
-    elapsed_ms: 3,
-  };
-}
-
 beforeEach(() => {
   localStorage.clear();
   mockFn.state = "idle";
