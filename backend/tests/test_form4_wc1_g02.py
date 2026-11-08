@@ -51,3 +51,39 @@ def test_form4_3_exercise_row_moves_no_net_shares() -> None:
     )
     assert summary["net_shares"] == 0
     assert "seller_count" not in summary
+
+
+# ─── FORM4#5: Form 4 document URLs must be served from www.sec.gov ───────
+
+
+def _adapter_with_filings(filings: list[dict[str, Any]]) -> Any:
+    from showme.engine.data_sources.equity.sec_edgar_adapter import SECEdgarAdapter
+
+    adapter = SECEdgarAdapter()
+
+    async def fake_cik(_ticker: str) -> str:
+        return "0000320193"
+
+    async def fake_recent(_cik: str, *, form: str | None = None, limit: int = 40) -> list[dict[str, Any]]:
+        return [dict(f) for f in filings][:limit]
+
+    adapter.cik_for = fake_cik  # type: ignore[method-assign]
+    adapter.recent_filings = fake_recent  # type: ignore[method-assign]
+    return adapter
+
+
+def test_form4_5_archive_document_url_is_on_www_sec_gov() -> None:
+    adapter = _adapter_with_filings([
+        {"accession": "0001140361-26-042149", "primaryDocument": "xslF345X06/form4.xml",
+         "filingDate": "2026-10-01", "form": "4"},
+    ])
+    rows = asyncio.run(adapter.form4_filings("AAPL", limit=5))
+    assert rows[0]["url"] == (
+        "https://www.sec.gov/Archives/edgar/data/320193/000114036126042149/xslF345X06/form4.xml"
+    )
+
+
+def test_form4_5_fallback_index_url_is_on_www_sec_gov() -> None:
+    adapter = _adapter_with_filings([{"accession": "", "primaryDocument": "", "form": "4"}])
+    rows = asyncio.run(adapter.form4_filings("AAPL", limit=5))
+    assert rows[0]["url"].startswith("https://www.sec.gov/cgi-bin/browse-edgar")

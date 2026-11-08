@@ -132,14 +132,17 @@ class SECEdgarAdapter(BaseDataSource):
         if not cik:
             return []
         rows = await self.recent_filings(cik, form="4", limit=limit)
-        # Construct viewer URLs.
+        # Construct viewer URLs. FORM4#5: Archives documents and the browse-edgar
+        # index are served from www.sec.gov; data.sec.gov only serves the JSON APIs
+        # (the old base_url-based URLs returned 404).
+        web_base = "https://www.sec.gov"
         for r in rows:
             acc_no = (r.get("accession") or "").replace("-", "")
             r["url"] = (
-                f"{self.base_url}/cgi-bin/browse-edgar?action=getcompany&"
+                f"{web_base}/cgi-bin/browse-edgar?action=getcompany&"
                 f"CIK={cik}&type=4&dateb=&owner=include&count=40"
             ) if not acc_no else (
-                f"{self.base_url}/Archives/edgar/data/{int(cik)}/{acc_no}/"
+                f"{web_base}/Archives/edgar/data/{int(cik)}/{acc_no}/"
                 f"{r.get('primaryDocument') or ''}"
             )
         return rows
