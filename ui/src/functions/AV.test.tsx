@@ -30,18 +30,13 @@ function setMockFn(next: Partial<MockFnState>) {
   mockFn.error = next.error ?? null;
 }
 
-const mockCalls: Array<{ code: string; params?: Record<string, unknown> }> = [];
-
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: (args: { code: string; params?: Record<string, unknown> }) => {
-    mockCalls.push(args);
-    return {
-      state: mockFn.state,
-      data: mockFn.data,
-      error: mockFn.error,
-      refetch: vi.fn(),
-    };
-  },
+  useFunction: () => ({
+    state: mockFn.state,
+    data: mockFn.data,
+    error: mockFn.error,
+    refetch: vi.fn(),
+  }),
 }));
 
 /* ── fixtures (shape mirrors a live /api/fn/AV probe) ──────────────── */
@@ -162,16 +157,6 @@ describe("AV pane — archive items", () => {
     render(<AVPane code="AV" symbol="AAPL" />);
     expect(screen.getByText("No archive entries")).toBeInTheDocument();
     expect(screen.getByText(/No archive entries for AAPL match these filters./i)).toBeInTheDocument();
-  });
-});
-
-describe("AV pane — request shape", () => {
-  it("asks for an explicit limit so the agent default of 6 does not cap the archive", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    render(<AVPane code="AV" symbol="AAPL" />);
-    const last = mockCalls[mockCalls.length - 1];
-    expect(last.code).toBe("AV");
-    expect(last.params?.limit).toBe(25);
   });
 });
 

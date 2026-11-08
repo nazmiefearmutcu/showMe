@@ -914,7 +914,9 @@ def test_av_media_rows_keep_playable_audio_url(monkeypatch) -> None:
     assert row["audio_url"] == "https://example.com/audio.mp3"
     assert row["url"] == "https://example.com/audio.mp3"
     assert row["source_url"] == "https://example.com/episode"
-    assert row["media_type"] == "audio/mpeg"
+    # AV#7: the enclosure MIME type is no longer the media_type; podcast rows
+    # carry the enumerated media type and keep the playable URL above.
+    assert row["media_type"] == "podcast"
     assert _matches_query(row, "market")
 
 
