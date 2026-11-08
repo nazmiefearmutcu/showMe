@@ -117,6 +117,11 @@ export interface ChartProps {
    * daily-studies pane (CHGS) for the same symbol. Omit for unscoped keys.
    */
   layoutScope?: string;
+  /**
+   * GP#5: reports the effective timeframe (restored, default or user pick) so a
+   * host pane can request and label the same timeframe the chart shows.
+   */
+  onIntervalChange?: (interval: string) => void;
   /** Auto-refresh cadence; 0 disables. Defaults to 30s. */
   refreshMs?: number;
   /** Multi-symbol compare overlay (percent-normalized lines). Default []. */
@@ -141,6 +146,7 @@ export function Chart({
   initialInterval = DEFAULT_TF,
   initialType = "candles",
   layoutScope,
+  onIntervalChange,
   refreshMs = 30_000,
   compareSymbols = [],
   className,
@@ -166,6 +172,12 @@ export function Chart({
   const [restored] = useState(() => loadLayout(symbol, undefined, layoutScope));
 
   const [interval, setInterval] = useState(restored?.interval ?? initialInterval);
+  // GP#5: the host hears the effective timeframe on mount and on every change.
+  const onIntervalChangeRef = useRef(onIntervalChange);
+  onIntervalChangeRef.current = onIntervalChange;
+  useEffect(() => {
+    onIntervalChangeRef.current?.(interval);
+  }, [interval]);
   const [chartType, setChartType] = useState<ChartType>(restored?.chartType ?? initialType);
   const [bars, setBars] = useState<Bar[]>([]);
   const [source, setSource] = useState("");

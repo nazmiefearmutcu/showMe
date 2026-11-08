@@ -7,7 +7,7 @@
  * (range/interval) that feeds the header strip, key-level rail and footer,
  * plus the resizable frame, the 52-week rail and the honest transport pills.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useLiveQuote } from "@/lib/market-data";
 import type { TransportState } from "@/lib/market-data";
 import {
@@ -36,6 +36,8 @@ import {
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 import { Chart } from "@/chart/Chart";
+import { loadLayout } from "@/chart/chart-layout";
+import { timeframeById } from "@/chart/timeframes";
 import { formatPrice } from "@/lib/format";
 
 interface OHLCRow {
@@ -99,8 +101,10 @@ const INTERVAL_SECONDS: Record<IntervalId, number> = {
  * trading days in seven, with DEFAULT_BARS as the floor. Provider limits
  * (e.g. Yahoo's 7-day 1m history) are still reported by the engine.
  */
-export function barsForWindow(days: number, interval: IntervalId): number {
-  const seconds = INTERVAL_SECONDS[interval] ?? 86_400;
+export function barsForWindow(days: number, interval: string): number {
+  // GP#5: the timeframe may be any chart id; unknown ones use the chart catalog's seconds.
+  const known: Partial<Record<string, number>> = INTERVAL_SECONDS;
+  const seconds = known[interval] ?? timeframeById(interval)?.seconds ?? 86_400;
   const needed = Math.ceil(((days * 86_400) / seconds) * (5 / 7)) + 10;
   return Math.min(MAX_REQUEST_BARS, Math.max(DEFAULT_BARS, needed));
 }
@@ -140,6 +144,13 @@ function mapInterval(interval: IntervalId): string {
   return interval;
 }
 
+/** The engine's GP interval id for a chart timeframe id (the chart catalog uses "1D"/"1W"). */
+function payloadIntervalFor(chartId: string): string {
+  if (chartId === "1D") return "1d";
+  if (chartId === "1W") return "1w";
+  return chartId;
+}
+
 /** GP's historical default chart style, mapped to the engine vocabulary. */
 const GP_CHART_STYLE: ChartStyle = "candle";
 
@@ -155,14 +166,20 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
     RANGE_IDS,
     "1Y",
   );
-  // The engine owns the live timeframe picker; GP keeps the persisted
-  // interval only to seed the engine and to serve the payload's resolution
-  // (the rail stats derive from the candles it returns).
-  const [interval] = usePersistentOption<IntervalId>(
+  // GP#5: the chart owns the live timeframe. The persisted GP interval only
+  // seeds the chart's default; the timeframe in use is the chart's own saved
+  // layout for this surface, or what the chart reports on mount and on change.
+  const [persistedInterval] = usePersistentOption<IntervalId>(
     `showme.${code.toLowerCase()}-interval`,
     INTERVAL_IDS,
     "1d",
   );
+  const [interval, setChartInterval] = useState<string>(
+    () =>
+      loadLayout(effectiveSymbol, undefined, code.toUpperCase())?.interval ??
+      mapInterval(persistedInterval),
+  );
+  const payloadInterval = payloadIntervalFor(interval);
   const days = useMemo(
     () => RANGES.find((r) => r.id === range)?.days ?? 365,
     [range],
@@ -171,7 +188,12 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
     code,
     symbol: effectiveSymbol,
     enabled: !!effectiveSymbol,
-    params: { days, range, interval, bars: barsForWindow(days, interval) },
+    params: {
+      days,
+      range,
+      interval: payloadInterval,
+      bars: barsForWindow(days, payloadInterval),
+    },
   });
 
   const ohlc = useMemo(() => normalizeOHLC(data?.data?.ohlcv), [data]);
@@ -306,7 +328,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
             >
               <span style={tickerStyle}>{symbol}</span>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {interval.toUpperCase()}
+                {timeframeById(interval)?.label ?? interval.toUpperCase()}
               </Pill>
               {state === "ok" && transportState === "live" && (
                 <span data-testid="gp-transport-pill" data-state="live">
@@ -481,7 +503,8 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
                     symbol={effectiveSymbol}
                     fill
                     layoutScope={code.toUpperCase()}
-                    initialInterval={mapInterval(interval)}
+                    initialInterval={mapInterval(persistedInterval)}
+                    onIntervalChange={setChartInterval}
                     initialType={mapStyle(GP_CHART_STYLE)}
                   />
                 </ResizableChartFrame>
