@@ -35,6 +35,7 @@ import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import { useWorkspace } from "@/lib/workspace";
 import { maxOf } from "@/lib/maxOf";
 import { navigate } from "@/lib/router";
+import { formatTime } from "@/lib/timezone";
 import { formatCompactNumber, formatMissing, formatPrice } from "@/lib/format";
 import {
   FunctionControlGroup,
@@ -594,7 +595,7 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                   <StatCard
                     label="Source"
                     value={sourceLabel.toUpperCase()}
-                    caption={`AS OF ${payload?.as_of ? new Date(payload.as_of).toLocaleTimeString("en-US") : "—"}`}
+                    caption={`AS OF ${payload?.as_of ? formatTime(payload.as_of, { seconds: true }) : "—"}`}
                     tone="neutral"
                   />
                 </div>

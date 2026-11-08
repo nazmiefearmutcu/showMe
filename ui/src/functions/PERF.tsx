@@ -46,6 +46,7 @@ import {
   formatSignedCurrency,
   formatMissing,
 } from "@/lib/format";
+import { formatTime } from "@/lib/timezone";
 import { maxOf, minOf } from "@/lib/maxOf";
 import { isKaosRecord } from "@/lib/kaos-venues";
 import { KaosEngineBadge } from "@/functions/KaosBadges";
@@ -553,7 +554,7 @@ export function PERFPane() {
           style={{ marginLeft: "auto", fontSize: "var(--font-size-sm)" }}
         >
           {generatedAt
-            ? `Last updated: ${new Date(generatedAt).toLocaleTimeString()}`
+            ? `Last updated: ${formatTime(generatedAt, { seconds: true })}`
             : `Last updated: ${formatMissing}`}
         </span>
         <button

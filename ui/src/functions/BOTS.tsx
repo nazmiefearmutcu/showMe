@@ -42,6 +42,7 @@ import { useStrategyStore } from "@/lib/strategy-store";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import { formatPrice } from "@/lib/format";
+import { formatTime } from "@/lib/timezone";
 import { isKaosRecord } from "@/lib/kaos-venues";
 import { KaosEngineBadge, VenueBadges } from "@/functions/KaosBadges";
 import {
@@ -289,7 +290,7 @@ function KPIStrip({ unhealthy }: { unhealthy: number }) {
         />
       </div>
       <div style={{ marginLeft: "auto", fontSize: "var(--font-size-sm)" }} className="u-text-secondary">
-        {generatedAt ? `Last: ${new Date(generatedAt).toLocaleTimeString()}` : ""}
+        {generatedAt ? `Last: ${formatTime(generatedAt, { seconds: true })}` : ""}
       </div>
     </div>
   );

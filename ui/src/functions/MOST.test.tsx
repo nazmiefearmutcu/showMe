@@ -42,6 +42,7 @@ vi.mock("@/lib/useVisibilityTick", () => ({
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
 import { MOSTPane } from "./MOST";
+import { formatTime } from "@/lib/timezone";
 import * as router from "@/lib/router";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -234,12 +235,13 @@ describe("MOST — numeric cells (P5/P6)", () => {
     expect(screen.getByText("10.00%")).toBeInTheDocument();
   });
 
-  it("formats the as-of clock with the pinned en-US locale (F14 L)", () => {
+  it("formats the as-of clock in the app timezone, 24-hour (WC2-G05 UI-14; was en-US 12-hour)", () => {
     const asOf = "2026-06-08T10:11:28.250007+00:00";
     mockState("ok", [makeRow()], { as_of: asOf });
     const { container } = render(<MOSTPane code="MOST" />);
-    const expected = new Date(asOf).toLocaleTimeString("en-US");
+    const expected = formatTime(asOf, { seconds: true });
     expect(container.textContent).toContain(`AS OF ${expected}`);
+    expect(container.textContent).not.toMatch(/AS OF .*(AM|PM)/);
   });
 
   it("marks price×volume estimates with ≈ when dollar_volume is absent (F14 L)", () => {

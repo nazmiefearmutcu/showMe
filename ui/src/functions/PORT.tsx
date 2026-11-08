@@ -33,6 +33,7 @@ import {
   formatPercent,
   formatPrice,
 } from "@/lib/format";
+import { formatTime } from "@/lib/timezone";
 import { usePortfolioStore, type PortfolioGroup } from "@/lib/portfolio-store";
 import { useExchangeStore } from "@/lib/exchange-store";
 import {
@@ -224,7 +225,7 @@ function PortfolioCommandBar() {
       <div className="port-command-bar__actions">
         <span className="port-subtle">
           {lastFetched
-            ? `Last ${new Date(lastFetched).toLocaleTimeString("en-US", { hour12: false })}`
+            ? `Last ${formatTime(lastFetched, { seconds: true })}`
             : "Not fetched"}
         </span>
         <button className="btn btn--ghost port-icon-btn" type="button" onClick={() => load()} disabled={loading} title="Refresh portfolio">
