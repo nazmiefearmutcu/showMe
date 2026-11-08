@@ -15,9 +15,9 @@
  *   rows[]          (each: { side, price, size, cum_size, notional }),
  *   best_bid, best_ask, mid, spread, spread_bps, microprice,
  *   imbalance (top-of-book), methodology.
- * Emitted-but-not-yet-rendered (depth-scaling opportunity, not a wire read):
- *   surface[]/depth_table[] (buckets w/ imbalance), top10_imbalance,
- *   kyle_lambda_proxy.
+ * Also rendered: depth_table[] (cumulative depth buckets with signed
+ * imbalance) and the Kyle lambda card (kyle_lambda_bps_per_1m_usd, R², n;
+ * shown as "insufficient flow data" when the signed-flow fit is unavailable).
  * Plus envelope: data.sources, data.warnings, data.elapsed_ms.
  */
 import { useEffect, useMemo, type CSSProperties } from "react";
@@ -60,6 +60,8 @@ interface MicroRow {
 interface MicroBucket {
   bucket?: string;
   levels?: number;
+  bid_qty?: number;
+  ask_qty?: number;
   imbalance?: number;
 }
 
@@ -84,6 +86,9 @@ interface MicroPayload {
   imbalance?: number | null;
   top10_imbalance?: number | null;
   kyle_lambda_proxy?: number | null;
+  kyle_lambda_bps_per_1m_usd?: number | null;
+  kyle_lambda_r2?: number | null;
+  kyle_lambda_points?: number | null;
   methodology?: string;
 }
 
@@ -193,6 +198,10 @@ export function MICROPane({ code, symbol }: FunctionPaneProps) {
     totalBid + totalAsk > 0 ? (totalBid - totalAsk) / (totalBid + totalAsk) : 0;
 
   const topImbalance = num(payload.imbalance) ?? 0;
+  const kyleBps = num(payload.kyle_lambda_bps_per_1m_usd);
+  const kyleR2 = num(payload.kyle_lambda_r2);
+  const kylePoints = num(payload.kyle_lambda_points);
+  const depthBuckets = Array.isArray(payload.depth_table) ? payload.depth_table : [];
   const mid = num(payload.mid);
   const microprice = num(payload.microprice);
   const spread = num(payload.spread);
@@ -338,6 +347,22 @@ export function MICROPane({ code, symbol }: FunctionPaneProps) {
                         : "neutral"
                   }
                 />
+                <StatCard
+                  label="Kyle λ"
+                  value={kyleBps != null ? `${kyleBps.toFixed(2)} bps` : "—"}
+                  caption={
+                    kyleBps != null
+                      ? [
+                          "per $1M net flow",
+                          kyleR2 != null ? `R² ${kyleR2.toFixed(2)}` : null,
+                          kylePoints != null ? `n=${kylePoints}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")
+                      : "insufficient flow data"
+                  }
+                  tone="neutral"
+                />
               </section>
 
               <ImbalanceGauge
@@ -354,6 +379,8 @@ export function MICROPane({ code, symbol }: FunctionPaneProps) {
                 spread={spread}
                 spreadBps={spreadBps}
               />
+
+              {depthBuckets.length ? <DepthBuckets buckets={depthBuckets} /> : null}
 
               {warnings.length ? <WarningBox warnings={warnings} /> : null}
               {payload.methodology ? (
@@ -383,6 +410,71 @@ export function MICROPane({ code, symbol }: FunctionPaneProps) {
     </div>
   );
 }
+
+/* ── Depth buckets ───────────────────────────────────────────────── */
+
+function DepthBuckets({ buckets }: { buckets: MicroBucket[] }) {
+  return (
+    <section style={ladderWrap} aria-label="Depth buckets section">
+      <table aria-label="Depth buckets" style={bucketTable}>
+        <thead>
+          <tr>
+            <th style={bucketHeadCell}>Depth</th>
+            <th style={{ ...bucketHeadCell, textAlign: "right" }}>Bid qty</th>
+            <th style={{ ...bucketHeadCell, textAlign: "right" }}>Ask qty</th>
+            <th style={{ ...bucketHeadCell, textAlign: "right" }}>Imbalance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.map((b, i) => {
+            const imb = num(b.imbalance);
+            const bid = num(b.bid_qty);
+            const ask = num(b.ask_qty);
+            return (
+              <tr key={b.bucket ?? `bucket-${i}`}>
+                <td style={bucketCell}>{b.bucket ?? "—"}</td>
+                <td style={{ ...bucketCell, textAlign: "right" }}>
+                  {bid == null ? "—" : bid.toFixed(2)}
+                </td>
+                <td style={{ ...bucketCell, textAlign: "right" }}>
+                  {ask == null ? "—" : ask.toFixed(2)}
+                </td>
+                <td style={{ ...bucketCell, textAlign: "right" }}>
+                  {imb == null
+                    ? "—"
+                    : `${imb >= 0 ? "+" : ""}${(imb * 100).toFixed(1)}%`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+const bucketTable: CSSProperties = {
+  width: "100%",
+  borderCollapse: "collapse",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-xs)",
+};
+
+const bucketHeadCell: CSSProperties = {
+  padding: "8px 12px",
+  textAlign: "left",
+  color: "var(--text-mute)",
+  fontSize: "var(--font-size-2xs)",
+  textTransform: "uppercase",
+  letterSpacing: "0.07em",
+  fontWeight: 500,
+};
+
+const bucketCell: CSSProperties = {
+  padding: "6px 12px",
+  borderTop: "1px solid var(--border-card)",
+  color: "var(--text-primary)",
+};
 
 /* ── Imbalance gauge ─────────────────────────────────────────────── */
 
