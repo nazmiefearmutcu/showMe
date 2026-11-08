@@ -25,7 +25,6 @@ from showme.engine.functions.macro.gmm import (
     _resolve_countries,
 )
 
-OK_STATUSES = {"ok", "empty"}
 
 
 def _run(coro):
@@ -112,12 +111,66 @@ def test_provider_unavailable_shape_is_honest():
     assert "methodology" in result.data and result.data["methodology"]
 
 
-def test_gmm_live_returns_real_worldbank_data():
-    """Live happy path against the keyless World Bank API.
+class _FakeWorldBank:
+    """Serves World Bank v2 indicator payloads from a fixed table; no network."""
 
-    Guarded: on any network error we assert the graceful provider_unavailable
-    shape instead, so the suite stays green offline.
+    def __init__(self, table):
+        self.table = table
+
+    async def get(self, url, params=None):
+        head, ind = url.rsplit("/indicator/", 1)
+        codes = head.split("/country/", 1)[1].split(";")
+        obs = [self.table[(c, ind)] for c in codes if (c, ind) in self.table]
+        return _FakeResp([{"page": 1, "pages": 1, "total": len(obs)}, obs])
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _wb_obs(code, iso3, ind, value, year):
+    return {
+        "indicator": {"id": ind},
+        "country": {"id": code, "value": ""},
+        "countryiso3code": iso3,
+        "date": str(year),
+        "value": value,
+    }
+
+
+def test_gmm_matrix_rows_from_worldbank_payload(monkeypatch):
+    """Happy path: rows built from World Bank-shaped payloads, with no network.
+
+    The fake answers the four indicators for US, DE and JP. Previously this
+    test called the live API and only passed or skipped depending on whether
+    the network was reachable.
     """
+    indicators = [
+        "NY.GDP.MKTP.KD.ZG",
+        "FP.CPI.TOTL.ZG",
+        "SL.UEM.TOTL.ZS",
+        "GC.DOD.TOTL.GD.ZS",
+    ]
+    table = {}
+    for code, iso3 in (("US", "USA"), ("DE", "DEU"), ("JP", "JPN")):
+        for ind in indicators:
+            table[(code, ind)] = _wb_obs(code, iso3, ind, 2.5, 2025)
+    fake = _FakeWorldBank(table)
+
+    async def _get_client():
+        return fake
+
+    import showme.providers._http as http_mod
+
+    monkeypatch.setattr(http_mod, "get_client", _get_client)
+
     fn = GMMFunction(deps=FunctionDeps())
     result = _run(fn.execute(countries=["US", "DE", "JP"], top_n=10))
     data = result.data
@@ -127,29 +180,15 @@ def test_gmm_live_returns_real_worldbank_data():
     assert "PMI" not in serialized
     assert "Retail sales" not in serialized
 
-    if data["status"] == "provider_unavailable":
-        # Offline / rate-limited: graceful shape, no fabricated rows.
-        assert data["rows"] == []
-        assert result.warnings
-        pytest.skip("World Bank API unreachable; verified graceful outage shape.")
-
-    assert data["status"] in OK_STATUSES
+    assert data["status"] == "ok"
     assert result.sources == ["worldbank"]
     assert data["methodology"]
     assert isinstance(data["field_dictionary"], dict) and data["field_dictionary"]
 
     rows = data["rows"]
-    assert rows, "live fetch should return at least one country row"
-    # At least one row must carry a real numeric macro value (not all null).
-    has_real_value = any(
-        any(
-            isinstance(r.get(k), (int, float))
-            for k in ("gdp_growth", "inflation", "unemployment", "debt_gdp")
-        )
-        for r in rows
-    )
-    assert has_real_value, "live World Bank rows must contain real numbers"
-    # Every row carries the ISO code and a country label.
+    assert {r["country_code"] for r in rows} == {"US", "DE", "JP"}
+    # Every row carries a real numeric value for each indicator.
     for r in rows:
-        assert r.get("country_code")
-        assert r.get("country")
+        assert r["country"]
+        for k in ("gdp_growth", "inflation", "unemployment", "debt_gdp"):
+            assert isinstance(r.get(k), (int, float)), (r["country_code"], k)
