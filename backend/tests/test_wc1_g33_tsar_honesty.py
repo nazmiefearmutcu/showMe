@@ -101,3 +101,32 @@ def test_no_text_summary_carries_no_neutral_score():
     assert res.data["status"] == "no_text"
     assert res.data["summary"]["net_score"] is None
     assert res.data["summary"]["dominant_tone"] is None
+
+
+# ── TSAR#2 review follow-up: a signed label with no confidence is not neutral ──
+
+
+def test_xsen_label_without_confidence_is_not_a_zero_reading():
+    from showme.engine.functions.news.tsar import _xsen_signed
+
+    assert _xsen_signed({"sentiment": "positive"}) is None
+    assert _xsen_signed({"sentiment": "negative"}) is None
+    # A neutral label is a genuine neutral reading, not a missing one.
+    assert _xsen_signed({"sentiment": "neutral"}) == 0.0
+
+
+# ── TSAR#3 review follow-up: a no-text envelope is not a live reading ──
+
+
+def test_no_text_envelope_is_not_labelled_live_and_status_is_empty():
+    from showme import server
+    from showme.function_contracts import normalize_function_contract
+
+    res = _run(TSARFunction().execute(models=["finbert"]))
+    assert res.data["status"] == "no_text"
+
+    payload = server.enforce_live_or_label_synthetic("TSAR", {}, res.to_dict())
+    assert payload["data_state"] != "live", payload["data_state"]
+
+    envelope = normalize_function_contract("TSAR", {}, res.to_dict())
+    assert envelope["status"] == "empty", envelope["status"]

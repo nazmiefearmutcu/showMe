@@ -125,7 +125,10 @@ class TSARFunction(BaseFunction):
                 },
                 sources=sources or ["transcripts_archive"],
                 warnings=warnings or ["no transcript text resolved"],
-                metadata={"latency_ms": _ms(started), "models": models},
+                # wc1-g33 (TSAR#3 follow-up): nothing was read, so the archive
+                # source name alone must not earn a LIVE data_state.
+                metadata={"latency_ms": _ms(started), "models": models,
+                          "live": False, "data_mode": "no_text"},
             )
 
         # ── 2. Segment into utterances with speaker + role + section ──────────
@@ -949,18 +952,23 @@ def _xsen_signed(result: dict[str, Any]) -> float | None:
                 pass
     # XAnalyzer (and generic) label + confidence.
     label = str(result.get("sentiment") or result.get("label") or "").lower()
+    # wc1-g33 (TSAR#2 follow-up): a directional label without a confidence is
+    # unknown, not a neutral 0.0. A neutral label is a real neutral reading.
+    raw_conf = next(
+        (result.get(key) for key in ("sentiment_score", "score", "confidence")
+         if result.get(key) is not None),
+        None,
+    )
+    conf: float | None
     try:
-        conf = float(
-            result.get("sentiment_score")
-            if result.get("sentiment_score") is not None
-            else (result.get("score") or result.get("confidence") or 0.0)
-        )
+        conf = float(raw_conf) if raw_conf is not None else None
     except (TypeError, ValueError):
-        conf = 0.0
-    conf = max(0.0, min(1.0, conf))
-    if label in ("positive", "pos", "bullish", "label_2"):
+        conf = None
+    if conf is not None:
+        conf = max(0.0, min(1.0, conf))
+    if label in ("positive", "pos", "bullish", "label_2") and conf is not None:
         return conf
-    if label in ("negative", "neg", "bearish", "label_0"):
+    if label in ("negative", "neg", "bearish", "label_0") and conf is not None:
         return -conf
     if label in ("neutral", "neu", "label_1"):
         return 0.0
