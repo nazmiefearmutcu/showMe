@@ -379,8 +379,8 @@ class EQSFunction(BaseFunction):
         500+ symbol universe instead of the ~11 symbols that used to slip
         inside the per-symbol, rate-limited budget. ``beta``/``industry``/
         ``ps`` are not part of the batch payload, so a bounded rotated REFDATA
-        slice refreshes them into a process cache whenever the active query
-        actually references them. Without batch support (or when it hard
+        slice refreshes them into a process cache on every live batch scan,
+        whatever the query text. Without batch support (or when it hard
         fails) the legacy per-symbol REFDATA fan-out runs unchanged.
         """
         provider = self.deps.yfinance
@@ -478,7 +478,9 @@ class EQSFunction(BaseFunction):
         process-local cache. The slice used to run only when the query text
         named one of those fields, which made the same universe show different
         columns depending on the previous query. Coverage is reported by
-        ``_enrichment_coverage``; no value is ever invented.
+        ``_enrichment_coverage``; no value is ever invented. Calls use the shared
+        Yahoo token bucket, and the added wait per scan is bounded by
+        ``refdata_screen_timeout`` (default 3s, max 5s).
         """
         budget = int(max(0.0, min(_param_float(params, "refdata_budget", 24.0), 64.0)))
         if budget <= 0:
@@ -506,7 +508,11 @@ class EQSFunction(BaseFunction):
                         asset_class=AssetClass.EQUITY,
                         exchange="NASDAQ",
                     ),
-                    extra={"timeout": per_timeout, "bypass_rate_limit": True},
+                    # The slice goes through the adapter's shared token bucket like
+                    # every other Yahoo call; bypassing it let each scan add up to
+                    # `budget` unthrottled public requests. The slice timeout below
+                    # caps the wall-clock wait a scan can spend here.
+                    extra={"timeout": per_timeout},
                 ))
 
         tasks = [asyncio.create_task(_one(symbol)) for symbol in window]
