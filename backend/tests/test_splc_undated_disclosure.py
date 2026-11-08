@@ -1,10 +1,9 @@
-"""SPLC#1 follow-up: an undated share is not replaced by a dated prior-year share.
+"""SPLC#1 follow-up: an undated share never displaces a dated one, in either order.
 
-Only two disclosures that both name a fiscal year are compared; the later
-fiscal year wins between them. A disclosure that names no year is never
-displaced by a dated one (and vice versa): the first disclosure in document
-order is kept, so the current share is not silently swapped for a prior-year
-share, and a row without a year still reports none rather than a guess.
+A disclosure whose sentence names a fiscal year is preferred over one that
+names none, because only its period is verifiable; between two dated shares the
+later fiscal year wins. A row whose only disclosure is undated still reports no
+year rather than a guess.
 
 Offline: the EDGAR fetch and the httpx client are faked; no network is used.
 """
@@ -67,9 +66,11 @@ def _run(**params: Any) -> Any:
     return asyncio.run(fn.execute(instrument, **params))
 
 
-def test_undated_share_listed_first_is_not_replaced_by_a_dated_prior_year(
+def test_undated_share_listed_first_is_displaced_by_a_dated_prior_year(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The dated FY2025 share is labelled, so it is shown with its year; the undated
+    # 22% cannot be dated and does not win over a dated disclosure.
     html = (
         "<p>Major customers: Sales to one direct customer represented 22% of total revenue. "
         "For fiscal year 2025, sales to one direct customer represented 12% of total revenue.</p>"
@@ -78,9 +79,9 @@ def test_undated_share_listed_first_is_not_replaced_by_a_dated_prior_year(
 
     result = _run(relationship="customer")
 
-    assert [(r["name"], r["pct"]) for r in result.data["customers"]] == [("One direct customer", 22.0)]
-    assert result.data["customers"][0]["fiscal_year"] is None
-    assert result.data["rows"][0]["fiscal_year"] is None
+    assert [(r["name"], r["pct"]) for r in result.data["customers"]] == [("One direct customer", 12.0)]
+    assert result.data["customers"][0]["fiscal_year"] == 2025
+    assert result.data["rows"][0]["fiscal_year"] == 2025
 
 
 def test_dated_share_listed_first_is_kept_over_a_later_undated_one(
@@ -96,3 +97,19 @@ def test_dated_share_listed_first_is_kept_over_a_later_undated_one(
 
     assert [(r["name"], r["pct"]) for r in result.data["customers"]] == [("One direct customer", 12.0)]
     assert result.data["customers"][0]["fiscal_year"] == 2025
+
+
+def test_dated_share_listed_after_an_undated_one_is_reported_with_its_year(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    html = (
+        "<p>Major customers: Sales to one direct customer represented 12% of total revenue. "
+        "For fiscal year 2026, sales to one direct customer represented 22% of total revenue.</p>"
+    )
+    _patch_filing_html(monkeypatch, html)
+
+    result = _run(relationship="customer")
+
+    assert [(r["name"], r["pct"]) for r in result.data["customers"]] == [("One direct customer", 22.0)]
+    assert result.data["customers"][0]["fiscal_year"] == 2026
+    assert result.data["rows"][0]["fiscal_year"] == 2026

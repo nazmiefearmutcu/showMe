@@ -169,7 +169,7 @@ class SPLCFunction(BaseFunction):
             "counterparty": "Named or summarized relationship counterparty.",
             "confidence": "Extraction confidence; lower values indicate approximate/reference rows.",
             "disclosed_pct": "Share of revenue or inputs stated in the 10-K, in percent (22.0 = 22%); null when not disclosed.",
-            "fiscal_year": "Fiscal year the disclosed share refers to, read from its sentence; null when the sentence names none. The latest disclosed year per counterparty is reported.",
+            "fiscal_year": "Fiscal year the disclosed share refers to, read from its sentence; null when the sentence names none. Per counterparty, a dated disclosure is preferred over an undated one and the latest dated year is reported.",
             "source_url": "EDGAR URL of the 10-K the row was extracted from; null for reference rows.",
             "source_mode": "SEC extraction or labelled reference fallback.",
         }
@@ -228,6 +228,15 @@ _NON_COUNTERPARTY = re.compile(
     re.IGNORECASE,
 )
 _FISCAL_YEAR = re.compile(r"fiscal\s+(?:year\s+)?(20\d{2})\b", re.IGNORECASE)
+# A label is a counterparty only when the name says so: customer/supplier-type wording
+# ("Contract supplier Zeta", "one direct customer") or a corporate designator ("Beta Corp").
+# A bare capitalised phrase ("Data Center") is a business unit or product line named
+# without a segment keyword, so it is dropped rather than labelled a customer.
+_COUNTERPARTY_EVIDENCE = re.compile(
+    r"\b(?:customers?|suppliers?|vendors?|distributors?|resellers?|retailers?"
+    r"|inc|corp|corporation|co|ltd|limited|llc|plc|gmbh|ag|holdings?)\b",
+    re.IGNORECASE,
+)
 
 
 def _clean_counterparty(raw: Any) -> str | None:
@@ -242,7 +251,7 @@ def _clean_counterparty(raw: Any) -> str | None:
     dropped rather than guessed.
     """
     segment = _CLAUSE_SPLIT.split(str(raw or "").strip())[-1].strip()
-    segment = _LEAD_SALES_PHRASE.sub("", segment).strip()
+    segment = _LEAD_SALES_PHRASE.sub("", segment).strip().rstrip(",;:").strip()
     if not segment or _NON_COUNTERPARTY.search(segment):
         return None
     m = _DIRECT_CUSTOMER.search(segment)
@@ -250,6 +259,8 @@ def _clean_counterparty(raw: Any) -> str | None:
         label = m.group(1)
         return label[0].upper() + label[1:].lower()
     if not segment[0].isupper() or len(segment) > _MAX_LABEL_CHARS:
+        return None
+    if not _COUNTERPARTY_EVIDENCE.search(segment):
         return None
     return segment
 
@@ -288,11 +299,11 @@ def _extract_concentration(
             for item in _concentration_items(window):
                 candidates.append((match.start(), item))
 
-    # One row per counterparty. Between two disclosures that both name a fiscal year,
-    # the later year wins, so a prior-year share listed earlier in the filing is not
-    # presented as current. A disclosure that names no year is not compared with a
-    # dated one (its year is unknown, so it may be the current share): the first
-    # disclosure in document order is kept, and the row keeps that mention's position.
+    # One row per counterparty. A share whose sentence names a fiscal year is preferred
+    # over one that names none, whatever the document order: the year makes its period
+    # verifiable, while an undated share may be any year. Between two dated shares the
+    # later year wins, so a prior-year share is not presented as current. Between two
+    # undated shares, or two of the same year, the first in document order is kept.
     chosen: dict[str, dict[str, Any]] = {}
     for _, item in sorted(candidates, key=lambda c: c[0]):
         name = _clean_counterparty(item.get("name"))
@@ -300,15 +311,15 @@ def _extract_concentration(
             continue
         row = {"name": name, "pct": float(item["pct"]), "fiscal_year": item["fiscal_year"]}
         prior = chosen.get(name.lower())
-        if prior is None:
-            chosen[name.lower()] = row
-        elif (
-            prior["fiscal_year"] is not None
-            and row["fiscal_year"] is not None
-            and row["fiscal_year"] > prior["fiscal_year"]
-        ):
+        if prior is None or _recency(row) > _recency(prior):
             chosen[name.lower()] = row
     return list(chosen.values())
+
+
+def _recency(row: dict[str, Any]) -> tuple[bool, int]:
+    """Sort key for competing shares of one counterparty: dated beats undated, later year beats earlier."""
+    year = row["fiscal_year"]
+    return (year is not None, year or 0)
 
 
 def _fiscal_year_for(window: str, pct_start: int) -> int | None:
