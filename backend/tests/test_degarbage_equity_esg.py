@@ -88,7 +88,7 @@ def test_build_rows_from_sustainability_maps_pillars():
     assert by_pillar["social"] == 7.42
     assert by_pillar["governance"] == 8.81
     assert by_pillar["controversy"] == 3.0
-    assert all(r["source_mode"] == "live_yfinance" for r in rows)
+    assert all(r["source_mode"] == "delayed_reference" for r in rows)
 
 
 def test_build_rows_none_when_no_pillar_value():

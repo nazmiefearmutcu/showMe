@@ -9,12 +9,14 @@ export interface PerformanceMetrics {
   max_drawdown: number;
   // Q4-audit risk metrics the backend already computes. Optional so the
   // leaderboard (which spreads metrics flat) and older payloads stay valid.
-  // `profit_factor` / `sharpe` / `sortino` can serialise as the string "inf"
+  // `profit_factor` / the t-stats can serialise as the string "inf"
   // (via the backend _safe_float guard) when there are no losses — the type
   // admits a string and the UI handles it without NaN.
+  // t_stat_per_trade = mean/std*sqrt(n) of trade pnl: a per-trade t-statistic,
+  // NOT an annualized Sharpe (the backend no longer reports "sharpe").
   net_pnl?: number;
-  sharpe?: number | string;
-  sortino?: number | string;
+  t_stat_per_trade?: number | string;
+  sortino_t_stat_per_trade?: number | string;
   profit_factor?: number | string;
   expectancy?: number;
   max_consecutive_losses?: number;

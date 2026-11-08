@@ -206,10 +206,12 @@ def test_api_fn_dapi_route_lists_routes(dapi_client: TestClient) -> None:
     paths = _paths(data["rows"])
     assert "/api/health" in paths
     assert "/api/bars" in paths
-    # The routed merge injects the desk news query; it must be reported, not
-    # applied (this is the exact "ROUTES 0/46" regression).
-    assert data["summary"]["ignored_filter"] == "bitcoin cryptocurrency"
-    assert body["warnings"], "routed default must be surfaced in warnings"
+    # The route no longer injects the agent's desk news query (route probe
+    # policy), so nothing is ignored and the full manifest is listed. The
+    # ignored-filter path for a legacy routed query is pinned by
+    # test_routed_default_query_never_empties_manifest.
+    assert data["summary"]["ignored_filter"] is None
+    assert "query" not in body["inputEcho"]
 
 
 def test_api_fn_dapi_route_honors_path_filter(dapi_client: TestClient) -> None:

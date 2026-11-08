@@ -37,7 +37,7 @@ def grab() -> FunctionManifest:
         category=Category.MISC,
         intent=(
             "Plan a screenshot of the current pane or URL and its email delivery. The plan is "
-            "draft only: nothing is captured to a shared location or emailed by this function."
+            "plan only: nothing is captured to a shared location, no draft is created, and nothing is emailed by this function."
         ),
         asset_classes=[],
         inputs=[
@@ -53,7 +53,7 @@ def grab() -> FunctionManifest:
                 label="Recipient",
                 control=ControlKind.TEXT,
                 required=False,
-                description="Email address the screenshot would be sent to. Only a draft is prepared.",
+                description="Email address the screenshot would be sent to. Only a plan is recorded; no draft is created.",
             ),
             InputSpec(
                 name="send",
@@ -62,7 +62,7 @@ def grab() -> FunctionManifest:
                 required=False,
                 description=(
                     "Requests delivery. Never executed here: the response records a warning and "
-                    "the email step stays draft_only or not_configured."
+                    "the email step stays planned or not_configured."
                 ),
             ),
         ],
@@ -101,7 +101,7 @@ def grab() -> FunctionManifest:
         methodology=(
             "GRAB is an auxiliary utility in the miscellaneous tray (low nav weight), not a finance "
             "function. It returns a capture plan with two steps. The capture step is a plan entry only: "
-            "no screenshot is taken by this function, and it does not transmit data. The email step is reported as draft_only when a recipient is given and "
+            "no screenshot is taken by this function, and it does not transmit data. The email step is reported as planned when a recipient is given and "
             "not_configured otherwise, and it always carries transmits_data=true as a flag. "
             "A send request is recorded as a warning; no mail is sent automatically, and sending "
             "requires a separately confirmed mail integration."
@@ -109,7 +109,7 @@ def grab() -> FunctionManifest:
         field_dict={
             "rows[].step": FieldDef(description="Capture or delivery phase.", source="computed"),
             "rows[].target": FieldDef(description="Pane, URL or recipient for the phase.", source="input"),
-            "rows[].status": FieldDef(description="planned, draft_only or not_configured.", source="computed"),
+            "rows[].status": FieldDef(description="planned or not_configured.", source="computed"),
             "rows[].transmits_data": FieldDef(description="Whether the phase would share user data outside the app.", source="computed"),
         },
         provenance=ProvenanceSpec(
@@ -123,7 +123,7 @@ def grab() -> FunctionManifest:
                 name="grab_send_request_never_transmits",
                 description="With send=true no mail is transmitted; a warning states that confirmation is required.",
                 inputs={"send": True, "recipient": "ops@example.com"},
-                assertions=["email_status_is_draft_only", "warning_states_send_not_executed"],
+                assertions=["email_status_is_planned", "warning_states_send_not_executed"],
             ),
             SemanticTest(
                 name="grab_email_without_recipient_is_not_configured",

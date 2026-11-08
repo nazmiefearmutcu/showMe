@@ -1,11 +1,12 @@
-"""BMC — Brand / marketing / community metrics ("build my custom").
+"""BMC — Market Concepts Education.
 
-BMC is a placeholder pane that lets the operator wire up custom KPI
-tiles (brand mention count, community sentiment, marketing pipeline,
-etc.) from arbitrary internal sources. It owns no provider on its own
-and is a strong relocation candidate — once any of the wired metrics
-becomes a first-class data type, those rows should be lifted into their
-own dedicated pane.
+BMC serves a static, local market-concepts curriculum (13 lessons across 6
+modules) from ``BMCFunction`` in ``engine/functions/misc/_extras.py``. It is
+reference content, not live data, and it has no provider. Lesson completion
+is kept in the browser by the pane; the backend carries no progress state.
+
+It is a relocation candidate: the curriculum is teaching material and could
+move to a learning-focused pane without changing its content.
 """
 from __future__ import annotations
 
@@ -35,36 +36,26 @@ from ..spec import (
 def bmc() -> FunctionManifest:
     return FunctionManifest(
         code="BMC",
-        name="Build My Custom (Brand / Marketing / Community)",
+        name="Market Concepts Education",
         category=Category.MISC,
         intent=(
-            "Operator-wired KPI tiles for brand / marketing / community metrics — a thin "
-            "internal aggregator with no external provider, intended as a relocation "
-            "candidate once individual metrics earn their own first-class panes."
+            "Static market-concepts curriculum: short lessons with a worked market example "
+            "and a self-check question. Reference content only, not live data."
         ),
         asset_classes=[],
+        # The handler reads this optional module filter. The pane loads the
+        # whole curriculum once and filters it on the client, so it sends none.
         inputs=[
             InputSpec(
-                name="layout",
-                label="Layout",
+                name="module",
+                label="Module",
                 control=ControlKind.SELECT,
-                required=True,
-                description="Tile layout preset.",
-                options=["compact", "comfortable", "wall"],
-            ),
-            InputSpec(
-                name="sources",
-                label="Sources",
-                control=ControlKind.MULTISELECT,
                 required=False,
-                description="Wired internal sources for the KPI tiles.",
-                options=["watchlist_count", "alert_count", "bot_pnl", "news_volume", "manual_kpi"],
+                description="Restrict the curriculum to one module (omit for all modules).",
+                options=["Equities", "Fixed Income", "FX", "Commodities", "Macro", "Alternatives"],
             ),
         ],
-        defaults={
-            "layout": "comfortable",
-            "sources": ["watchlist_count", "alert_count"],
-        },
+        defaults={},
         provider_chain=ProviderChain(
             primary="internal",
             fallbacks=[],
@@ -84,57 +75,58 @@ def bmc() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="key", label="Metric", kind="text"),
-                ColumnSpec(key="label", label="Label", kind="text"),
-                ColumnSpec(key="value", label="Value", kind="number", format="%.2f"),
-                ColumnSpec(key="unit", label="Unit", kind="tag"),
-                ColumnSpec(key="source", label="Source", kind="tag"),
+                ColumnSpec(key="module", label="Module", kind="tag"),
+                ColumnSpec(key="lesson_no", label="No.", kind="text"),
+                ColumnSpec(key="lesson", label="Lesson", kind="text"),
+                ColumnSpec(key="objective", label="Objective", kind="text"),
+                ColumnSpec(key="example", label="Example", kind="text"),
+                ColumnSpec(key="quiz", label="Self-check", kind="text"),
             ],
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="tile_count", label="Tiles", kind="kpi"),
-                CardSlot(key="layout", label="Layout", kind="badge"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="modules", label="Modules", kind="kpi"),
+                CardSlot(key="lessons", label="Lessons", kind="kpi"),
             ],
         ),
         methodology=(
-            "BMC is an operator-wired aggregator: it reads counts and aggregates from already-"
-            "registered ShowMe stores (WATCH counts, ALRT active count, BOT PnL, TOP item "
-            "volume) and renders them as configurable KPI tiles. There is no external "
-            "provider; data freshness mirrors the upstream source's TTL. BMC is a relocation "
-            "candidate — once a wired metric earns enough operator attention to deserve its "
-            "own pane (e.g. brand mention sentiment as a real news_intel function), those "
-            "tiles should be lifted into a dedicated MISC->NEWS_INTEL pane and removed here."
+            "BMC is a local market-concepts curriculum served by the backend: each row is a lesson with "
+            "a module, learning objective, worked market example, and self-check question. The content is "
+            "static reference material (source: showme_curriculum), not market data, so it carries no "
+            "as-of time or provider. Lesson completion is tracked in the browser only; the backend has no "
+            "progress state. BMC is a relocation candidate: the curriculum is teaching material that could "
+            "move to a learning-focused pane without changing its content."
         ),
         field_dict={
-            "rows[].key": FieldDef(description="Internal metric key.", source="store"),
-            "rows[].label": FieldDef(description="Operator-supplied tile label.", source="config"),
-            "rows[].value": FieldDef(description="Aggregated metric value at refresh time.", source="aggregator"),
-            "rows[].unit": FieldDef(description="Metric unit if applicable.", source="config"),
+            "rows[].module": FieldDef(description="Curriculum module.", source="curriculum"),
+            "rows[].lesson_no": FieldDef(description="Lesson number within its module.", source="curriculum"),
+            "rows[].lesson": FieldDef(description="Lesson title.", source="curriculum"),
+            "rows[].objective": FieldDef(description="What the lesson should make clear.", source="curriculum"),
+            "rows[].example": FieldDef(description="Market example used in the lesson.", source="curriculum"),
+            "rows[].quiz": FieldDef(description="Self-check question.", source="curriculum"),
         },
         provenance=ProvenanceSpec(
-            require_source_list=False,
-            require_as_of=True,
+            require_source_list=True,
+            require_as_of=False,
             require_latency_ms=False,
         ),
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="bmc_empty_sources_returns_empty_rows_not_error",
-                description="With sources=[] the aggregator returns rows=[] and tile_count=0 — never a synthetic placeholder tile.",
-                inputs={"sources": []},
+                name="bmc_rows_are_static_curriculum_without_progress",
+                description="Every row is a curriculum lesson; no row carries a constant progress field.",
+                inputs={},
                 assertions=[
-                    "rows_is_empty_array",
-                    "tile_count_equals_zero",
-                    "no_top_level_error",
+                    "rows_non_empty_array",
+                    "rows_have_no_progress_field",
+                    "lesson_count_equals_cards_lessons",
                 ],
             ),
             SemanticTest(
-                name="bmc_reads_through_to_existing_stores",
-                description="With sources=['watchlist_count'] the row's value matches the live WATCH store length.",
-                inputs={"sources": ["watchlist_count"]},
-                assertions=["watchlist_count_value_matches_watch_store"],
+                name="bmc_module_filter_narrows_rows",
+                description="With module set to one curriculum module, only that module's lessons are returned.",
+                inputs={"module": "Fixed Income"},
+                assertions=["all_rows_in_requested_module"],
             ),
         ],
     )

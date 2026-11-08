@@ -181,6 +181,35 @@ describe("WCRS pane — change honesty", () => {
   });
 });
 
+describe("WCRS pane — ECB daily fix is delayed, never live", () => {
+  it("labels the ECB daily fix 'ecb fix' (not live) and shows its date", () => {
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: {
+        status: "ok",
+        source_mode: "official_daily_fix",
+        as_of: "2026-11-06",
+        rows: [
+          { base: "USD", quote: "EUR", pair: "USDEUR", rate: 0.9, change_pct: null, as_of: "2026-11-06" },
+        ],
+        methodology: "test",
+      },
+      sources: ["frankfurter_ecb"],
+      warnings: [
+        "live cross-rate provider unavailable; showing the ECB daily reference fix dated 2026-11-06 (delayed, not live)",
+      ],
+      elapsed_ms: 3,
+    };
+    render(<WCRSPane code="WCRS" />);
+    expect(screen.queryByText("live")).toBeNull();
+    expect(screen.getByText("ecb fix")).toBeInTheDocument();
+    expect(screen.getByText("2026-11-06")).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: /data quality warning/i }),
+    ).toHaveTextContent(/delayed, not live/);
+  });
+});
+
 describe("WCRS pane — honesty + terminal fixes", () => {
   it("shows a reference pill (never live) on the reference fallback + renders warnings", () => {
     mockFn.state = "ok";
@@ -245,6 +274,16 @@ describe("WCRS pane — honesty + terminal fixes", () => {
     const rows = screen.getByRole("table").querySelectorAll("tbody tr");
     expect(within(rows[0] as HTMLElement).getByText("3.0")).toBeInTheDocument();
     expect(within(rows[1] as HTMLElement).getByText("2.0")).toBeInTheDocument();
+  });
+
+  it("shows n/a for spread when the payload has no real bid/ask (no invented spread)", () => {
+    mockFn.state = "ok";
+    mockFn.data = okData([
+      { base: "USD", quote: "TRY", pair: "USDTRY", rate: 32.2, bid: null, ask: null, spread_pips: null, change_pct: null },
+    ]);
+    render(<WCRSPane code="WCRS" />);
+    const row = screen.getByRole("table").querySelector("tbody tr")!;
+    expect(within(row as HTMLElement).getByText("n/a")).toBeInTheDocument();
   });
 
   it("names the cross-rate grid for assistive tech", () => {

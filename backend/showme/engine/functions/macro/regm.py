@@ -211,7 +211,22 @@ class REGMFunction(BaseFunction):
                           r.get("realized_vol_pct", 0),
                           r.get("drawdown_pct", 0)])
         feats_np = np.asarray(feats)
-        cluster = rgm.kmeans_lite(feats_np, k=int(params.get("k", 4)))
+        # REGM#4: z-score the three features first so volatility (0-50) does not
+        # swamp trend spread and drawdown. Centers are reported back in feature
+        # units, and the scaling used is returned with the cluster.
+        scaled_np, scaling = rgm.standardize_features(feats_np)
+        cluster = rgm.kmeans_lite(scaled_np, k=int(params.get("k", 4)))
+        if scaled_np.size:
+            std_arr = np.asarray(scaling["std"], dtype=float)
+            mean_arr = np.asarray(scaling["mean"], dtype=float)
+            cluster["centers_standardized"] = cluster["centers"]
+            cluster["centers"] = (np.asarray(cluster["centers"], dtype=float) * std_arr + mean_arr).tolist()
+        cluster["feature_scaling"] = {
+            "method": scaling["method"],
+            "features": ["ma50_vs_200_pct", "realized_vol_pct", "drawdown_pct"],
+            "mean": scaling["mean"],
+            "std": scaling["std"],
+        }
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -222,7 +237,9 @@ class REGMFunction(BaseFunction):
                 "rows": _component_rows(sym, current, sources),
                 "methodology": (
                     "History mode rolls the same rule-based classifier through time and adds a pure-numpy "
-                    "k-means cluster label over trend spread, realized volatility, and drawdown."
+                    "k-means cluster label over trend spread, realized volatility, and drawdown. "
+                    "The three features are z-scored before clustering (cluster.feature_scaling); "
+                    "cluster.centers are in feature units and cluster.centers_standardized in z-score units."
                 ),
             },
             sources=sources,

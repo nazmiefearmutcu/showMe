@@ -63,12 +63,15 @@ async def test_b4_full_synthetic_run_advertises_synthetic_source():
     adapter = _FakeYFinanceAdapter(frames={"AAPL": pd.DataFrame(), "MSFT": pd.DataFrame()})
     fn = BLAKFunction(deps=FunctionDeps(yfinance=adapter))
     result = await fn.execute(symbols=["AAPL", "MSFT"], live=True)
-    assert result.data["return_data_state"] == "synthetic_fallback"
-    assert "synthetic_fallback" in result.sources
+    # BLAK#6 / BLAK#3-RQ: no synthetic template is used any more. With no live
+    # history the run is refused with an explicit state and no prior.
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["return_data_state"] == "unavailable"
+    assert "synthetic_fallback" not in result.sources
+    assert "prior_covariance" not in result.data
     # Old behaviour would silently emit "yfinance" — make sure the regression
     # never sneaks back in.
     assert "yfinance" not in result.sources
-    assert any("synthetic" in w.lower() for w in result.warnings)
 
 
 async def test_b4_live_errors_are_logged_and_surfaced():
@@ -80,7 +83,9 @@ async def test_b4_live_errors_are_logged_and_surfaced():
     assert len(errors) == 2
     assert any("AAPL" in e for e in errors)
     assert any("MSFT" in e for e in errors)
-    assert result.data["return_data_state"] == "synthetic_fallback"
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["return_data_state"] == "unavailable"
+    assert "synthetic_fallback" not in result.sources
 
 
 async def test_b4_successful_live_keeps_yfinance_source():

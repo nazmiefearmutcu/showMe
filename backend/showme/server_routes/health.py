@@ -83,7 +83,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                     "mode": state.get("mode") or "paper",
                 }
         except Exception as exc:  # noqa: BLE001
-            out["warnings"].append(f"bot_service: {exc}")
+            out["warnings"].append(f"bot_service: {str(exc) or type(exc).__name__}")
         try:
             ps_mod = _safe_import("showme.engine.portfolio.state")
             if ps_mod and hasattr(ps_mod, "PortfolioState"):
@@ -97,7 +97,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 )
                 out["portfolio"]["market_value"] = mv
         except Exception as exc:  # noqa: BLE001
-            out["warnings"].append(f"portfolio: {exc}")
+            out["warnings"].append(f"portfolio: {str(exc) or type(exc).__name__}")
         try:
             ae = _safe_import("showme.engine.services.alert_engine")
             if ae and hasattr(ae, "list_alerts"):
@@ -107,7 +107,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                     1 for a in items if a.get("fired_today")
                 )
         except Exception as exc:  # noqa: BLE001
-            out["warnings"].append(f"alert_engine: {exc}")
+            out["warnings"].append(f"alert_engine: {str(exc) or type(exc).__name__}")
         return out
 
     app.include_router(router)

@@ -58,47 +58,16 @@ def boil() -> FunctionManifest:
                 options=["BZ=F", "CL=F"],
             ),
             InputSpec(
-                name="range",
-                label="Range",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Lookback window.",
-                options=["1M", "3M", "6M", "1Y", "5Y"],
-            ),
-            InputSpec(
-                name="interval",
-                label="Interval",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Bar interval.",
-                options=["1h", "1d", "1wk"],
-                depends_on=["range"],
-            ),
-            InputSpec(
                 name="show_spread",
                 label="Show Brent-WTI spread",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="Render the Brent-WTI differential as a comparison overlay.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Show the Brent-WTI differential card (BZ close minus CL close).",
             ),
         ],
         defaults={
             "contract": "BZ=F",
-            "range": "6M",
-            "interval": "1d",
             "show_spread": True,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="yfinance",
@@ -125,18 +94,14 @@ def boil() -> FunctionManifest:
             next_actions=True,
         ),
         chart_grammar=ChartGrammar(
-            kind=ChartKind.TIME_SERIES_CANDLES,
+            kind=ChartKind.TIME_SERIES_LINE,
             x_axis=AxisSpec(type="time", unit="ms", label="Time"),
-            y_axis=[
-                AxisSpec(type="numeric", unit="USD/bbl", label="Price"),
-                AxisSpec(type="numeric", unit="contracts", label="Volume"),
-            ],
+            y_axis=AxisSpec(type="numeric", unit="USD/bbl", label="Close"),
             panes=[
-                PaneGrammar(name="price", series_kind="candle", height_pct=70),
-                PaneGrammar(name="volume", series_kind="histogram", height_pct=30),
+                PaneGrammar(name="price", series_kind="line", height_pct=100),
             ],
-            overlay_support=True,
-            compare_support=True,
+            overlay_support=False,
+            compare_support=False,
         ),
         table_schema=TableSchema(
             columns=[
@@ -165,10 +130,10 @@ def boil() -> FunctionManifest:
             "BOIL pulls Brent (BZ=F) or WTI (CL=F) crude-oil futures from "
             "yfinance, resolves the active front-month expiry, and exposes "
             "contract_unit (USD/bbl) explicitly. When show_spread is on, the "
-            "handler fetches the sister contract and computes the Brent-WTI "
-            "differential bar-by-bar (spread = BZ.close - CL.close). The "
-            "spread is rendered as a comparison overlay and surfaced as a "
-            "single kpi card. No synthetic backfill: if either leg is "
+            "handler fetches the sister contract and reports the Brent-WTI "
+            "differential from the latest prints (spread = BZ.last - CL.last), "
+            "surfaced as a single kpi card; show_spread=false suppresses it. "
+            "No synthetic backfill: if either leg is "
             "missing for a given bar, the spread for that bar is null and "
             "a warning enumerates the missing dates."
         ),
@@ -208,7 +173,7 @@ def boil() -> FunctionManifest:
             SemanticTest(
                 name="boil_brent_unit_is_usd_per_bbl",
                 description="BOIL for BZ=F declares USD/bbl as the contract unit on the card.",
-                inputs={"contract": "BZ=F", "range": "6M", "interval": "1d"},
+                inputs={"contract": "BZ=F"},
                 assertions=[
                     "candles_non_empty",
                     "contract_unit_is_usd_per_bbl",

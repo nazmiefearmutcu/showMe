@@ -151,9 +151,14 @@ AGENT_LOCAL_SIGNAL_CODES = {
     "MOSS",
     "NALRT",
     "NI",
-    "PORT_OPT",
     "PVAR",
 }
+# PORT_OPT optimises a portfolio universe. A single agent candidate is not one,
+# so the agent never executes it and never derives optimum-like numbers for it.
+AGENT_PORT_OPT_NOT_APPLICABLE_REASON = (
+    "PORT_OPT optimises the weights of a portfolio universe, so it has no result for one "
+    "candidate symbol. It is not run per candidate and adds no signal to the ranking."
+)
 # These need measured return history. A local probe cannot supply it, so they
 # get the explicit missing-data state instead of profile-derived numbers.
 AGENT_UNMEASURED_PROBE_CODES = frozenset({"MLSIG", "RPAR"})
@@ -281,11 +286,19 @@ def _agent_profile(symbol: str, asset_class: str) -> dict[str, Any]:
     }
 
 
-def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str]) -> dict[str, Any]:
+def _agent_probe_base(entry: FunctionIndexEntry, candidate: dict[str, str]) -> dict[str, Any]:
+    """Generic agent-probe values for any function.
+
+    The agent probes many functions cheaply, so its profile asks for a small
+    result (limit 6), a short window (days 120 / range 3M), a 3 s fetch
+    budget, the symbol's peer group and a news query. These are probe
+    conveniences, not a caller's choice: the /api/fn route drops the
+    window, size and text keys (_PROBE_ONLY_KEYS) so a function's own
+    defaults apply.
+    """
     symbol = candidate["symbol"]
     asset_class = candidate["asset_class"]
     profile = _agent_profile(symbol, asset_class)
-    code = entry.code.upper()
     category = entry.category.lower()
     params: dict[str, Any] = {
         "symbol": symbol,
@@ -319,41 +332,57 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     if category == "news":
         params["timeout"] = 10
         params["news_timeout"] = 10
+    return params
+
+
+def _agent_code_params(
+    entry: FunctionIndexEntry, candidate: dict[str, str]
+) -> tuple[dict[str, Any], set[str]]:
+    """Per-code probe defaults: (values to set, generic keys to remove)."""
+    symbol = candidate["symbol"]
+    asset_class = candidate["asset_class"]
+    profile = _agent_profile(symbol, asset_class)
+    code = entry.code.upper()
+    category = entry.category.lower()
+    values: dict[str, Any] = {}
+    drop: set[str] = set()
     if code == "BQL":
-        params["query"] = (
+        values["query"] = (
             f"get(close, volume) for(['{profile['bql_symbol']}']) "
             "with(period='3mo', interval='1d') by(date)"
         )
     elif code == "EQS":
-        params.update({"query": "marketCap > 0", "universe": profile["universe"]})
+        values.update({"query": "marketCap > 0", "universe": profile["universe"]})
     elif code == "FTS":
-        params.update({"query": profile["news_query"], "form_type": "8-K"})
+        values.update({"query": profile["news_query"], "form_type": "8-K"})
     elif code == "FLDS":
-        params["query"] = "price"
+        values["query"] = "price"
     elif code == "ISIN":
-        params["query"] = profile["isin_query"]
-    elif code in {"NSE", "NI", "READ", "TOP"}:
-        params.update({"query": profile["news_query"], "limit": 6})
+        values["query"] = profile["isin_query"]
+    elif code in {"NSE", "NI", "TOP"}:
+        values.update({"query": profile["news_query"], "limit": 6})
     elif code == "CN":
-        params["limit"] = 6
+        values["limit"] = 6
     elif code == "TSAR":
-        params.update({"query": "revenue", "limit": 6})
+        values.update({"query": "revenue", "limit": 6})
     elif code == "TRQA":
-        params["questions"] = ["What changed?", "What are the risks?"]
+        values["questions"] = ["What changed?", "What are the risks?"]
     elif code == "TRDH":
-        params["exchange"] = profile["exchange"]
+        values["exchange"] = profile["exchange"]
     elif code == "ICX":
-        params["index"] = "SPX"
+        values["index"] = "SPX"
     elif code == "CSRC":
-        params.update({"query": 'sector = "Energy"', "universe": _csrc_default_universe()})
+        values.update({"query": 'sector = "Energy"', "universe": _csrc_default_universe()})
     elif code == "FSRC":
-        params.update({"query": "expenseRatio < 0.01 AND aum_usd > 10000000000", "universe": ["SPY", "VOO", "IVV", "QQQ", "VTI", "IWM", "EEM", "GLD", "TLT", "HYG"]})
+        # FSRC#2: no injected 10-name universe. The handler scans its full fund
+        # table; a caller universe still narrows it.
+        values.update({"query": "expenseRatio < 0.01"})
     elif code == "SRCH":
         # Full reference-curve universe (session-17 expansion: complete US
         # nominal curve + TIPS 5/10/30 + foreign 2Y & 10Y). The pane sends its
         # own query (default MATCH_ALL "yield >= 0") but no universe, so this
         # routed default used to silently pin the view to the old 8 tenors.
-        params.update({
+        values.update({
             "query": "yield >= 4 AND duration <= 10",
             "universe": [
                 "US3M", "US6M", "US1Y", "US2Y", "US3Y", "US5Y", "US7Y",
@@ -364,21 +393,21 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
             ],
         })
     elif code == "MICRO":
-        params.update({"exchange": profile["exchange"], "interval": "1m"})
+        values.update({"exchange": profile["exchange"], "interval": "1m"})
     elif code == "FRH":
-        params["exchange"] = profile["exchange"]
+        values["exchange"] = profile["exchange"]
     elif code == "SAT":
         # No routed bbox: a fixed box here overrode every AOI preset (the pane
         # sends ``aoi``), so each selection rendered San Francisco. The AOI
         # preset in sat.py drives the bbox unless the caller sends its own.
         today = datetime.now(timezone.utc).date()
-        params.update({
+        values.update({
             "days": 7,
             "date_from": (today - timedelta(days=7)).isoformat(),
             "date_to": today.isoformat(),
         })
     elif code in {"CDE", "ALRT", "LOTS"}:
-        params["action"] = "list"
+        values["action"] = "list"
     elif code == "POLY":
         # POLY's `query` is a strict AND-token topic filter over Polymarket
         # questions, not a news query. The routed crypto-news default
@@ -389,9 +418,9 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
         # The generic fetch defaults are dropped for the same reason: the
         # 3s timeout undercut the Gamma fetch and limit=6 starved the pane
         # (its own default is 25 markets).
-        params.pop("query", None)
-        params.pop("limit", None)
-        params.pop("timeout", None)
+        drop.add("query")
+        drop.add("limit")
+        drop.add("timeout")
     elif code == "WHAL":
         # WHAL chooses its own intraday Yahoo interval (1m/5m) and its public
         # HTTP budget (SEC tickers ~800 KB + Yahoo + filings). The generic
@@ -399,10 +428,10 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
         # equity flow to a single daily aggregate and undercut the SEC/Yahoo
         # fetches. Let WHAL's own defaults apply; explicit caller values are
         # re-merged afterwards.
-        params.pop("interval", None)
-        params.pop("timeout", None)
+        drop.add("interval")
+        drop.add("timeout")
     elif code == "PEOP":
-        params["query"] = "Satoshi Nakamoto" if asset_class == "CRYPTO" else symbol
+        values["query"] = "Satoshi Nakamoto" if asset_class == "CRYPTO" else symbol
     elif code == "MEET":
         # MEET is the world-events tracker: `query` is a TEXT FILTER over event
         # titles. The routed generic news query ("bitcoin cryptocurrency")
@@ -410,46 +439,64 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
         # and the 3s / limit=6 generic fetch defaults starved the calendar.
         # Drop the generic defaults; explicit caller params re-merge after
         # this point.
-        params.pop("query", None)
-        params.pop("limit", None)
-        params.pop("timeout", None)
-        params.pop("news_timeout", None)
-        params.pop("quote_timeout", None)
+        drop.add("query")
+        drop.add("limit")
+        drop.add("timeout")
+        drop.add("news_timeout")
+        drop.add("quote_timeout")
     elif code == "BTFW":
-        params.update({"strategy": "sma_crossover", "days": 120})
+        # BTFW#1: no injected 120-day window. Walk-forward folds on three months
+        # of bars give a headline Sharpe from a handful of trades; the handler
+        # default lookback applies unless the caller sends days.
+        values.update({"strategy": "sma_crossover"})
     elif code == "BMTX":
-        params.update({"strategies": ["sma_crossover", "rsi_meanrev", "buy_and_hold"], "days": 120})
+        # BMTX#5: send an explicit bounded window. The handler default (3 years of
+        # daily bars) costs more than the live budget on a universe, so it would
+        # always time out. oos_windows reports the test-slice size this yields.
+        values.update({"strategies": ["sma_crossover", "rsi_meanrev", "buy_and_hold"], "days": 120})
     elif code == "MLSIG":
-        params.update({"horizon": 1, "days": 365})
+        values.update({"horizon": 1, "days": 365})
     elif code == "BTUNE":
-        params.update({"strategy": "sma_crossover", "days": 120})
-    elif code == "MGN":
-        params["refresh_prices"] = False
+        values.update({"strategy": "sma_crossover", "days": 120})
     elif code == "DCFS":
-        params.update({"wacc_range": [0.07, 0.09, 0.11], "g_range": [0.02, 0.03]})
+        # DCFS#3/#4: no injected 3x2 grid. It ignored the caller WACC and growth
+        # and broke the 5x5 contract; the handler builds the grid around the
+        # effective inputs.
+        pass
     elif code == "DCF":
-        params.update({"growth_high": 0.08, "growth_terminal": 0.025})
+        values.update({"growth_high": 0.08, "growth_terminal": 0.025})
     elif code == "DDM":
-        params.update({"growth_rate": 0.03, "required_return": 0.08})
+        # No required_return here: a router-injected constant (was 0.08) made
+        # DDM value at a silent rate and skip the WACC model (WACC policy, T10).
+        # No growth_rate either (DDM#4): the handler and manifest own it.
+        pass
     elif code == "WACC":
-        params.update({"erp": 0.05, "beta_timeout": 2})
+        # wc1-g34 WACC#3: no erp here. A router-injected 0.05 bypassed the
+        # Damodaran lookup and reached the output with no source label.
+        values.update({"beta_timeout": 2})
     elif code == "REBA":
-        params["targets"] = profile["targets"]
+        values["targets"] = profile["targets"]
     elif code == "SECF":
-        params.update({"query": "technology"})
+        values.update({"query": "technology"})
     elif code == "GREEKS":
-        params["positions"] = [{
-            "symbol": symbol,
-            "option_type": "CALL",
-            "qty": 1,
-            "spot": 100,
-            "strike": 105,
-            "expiry": 0.25,
-            "vol": 0.35,
-            "rate": 0.04,
-        }]
+        # No injected demo book or contract: strike, expiry, quantity and type
+        # are the position itself, so an empty book is the honest
+        # input_required state (T10 offline audit, placeholder_value). Caller
+        # positions arrive later via defaults.update(merged) and still win.
+        drop.add("positions")
     elif category == "portfolio":
-        params.setdefault("symbols", profile["peer_symbols"])
+        # The base profile already carries the peer group for portfolio
+        # probes; the /api/fn route drops it (a peer list is not a book).
+        pass
+    return values, drop
+
+
+def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str]) -> dict[str, Any]:
+    params = _agent_probe_base(entry, candidate)
+    values, drop = _agent_code_params(entry, candidate)
+    for key in drop:
+        params.pop(key, None)
+    params.update(values)
     return params
 
 
@@ -529,28 +576,12 @@ def _route_uses_symbol(entry: FunctionIndexEntry) -> bool:
 def _standalone_function_defaults(code: str) -> dict[str, Any]:
     upper = code.upper()
     if upper == "OVME":
-        return {
-            "spot": 100,
-            "strike": 105,
-            "years_to_expiry": 0.25,
-            "vol": 0.28,
-            "rate": 0.045,
-            "type": "CALL",
-        }
-    if upper == "OSA":
-        return {
-            "spot": 100,
-            "strike": 100,
-            "short_strike": 110,
-            "years_to_expiry": 0.25,
-            "vol": 0.25,
-            "rate": 0.045,
-            "strategy": "CALL_SPREAD",
-            "legs": [
-                {"qty": 1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-                {"qty": -1, "strike": 110, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-            ],
-        }
+        # Only the contract type is defaulted. Spot, strike, expiry and vol
+        # are the option itself: a route must not price a made-up contract
+        # (OVME returns needs_input when they are absent).
+        return {"type": "CALL"}
+    # OSA: no injected spot or template legs (T10). The pane / caller supplies
+    # them; with none, the function returns an explicit needs_input state.
     return {}
 
 
@@ -596,7 +627,15 @@ def _function_usage(
                 "Run to read price, delta, gamma, theta, vega, rho, d1, d2, and a spot sensitivity curve.",
                 "Open Advanced only for optional model overrides such as Heston parameters.",
             ],
-            "example": {"spot": 100, "strike": 105, "years_to_expiry": 0.25, "vol": 0.28, "rate": 0.045, "type": "CALL"},
+            # Placeholders only: a copied example must not price a demo contract.
+            "example": {
+                "spot": "<underlying price>",
+                "strike": "<strike>",
+                "years_to_expiry": "<years to expiry>",
+                "vol": "<volatility as a decimal>",
+                "rate": "<optional rate as a decimal>",
+                "type": "CALL",
+            },
         }
     if upper == "OSA":
         return {
@@ -608,7 +647,20 @@ def _function_usage(
                 "Run to inspect the expiration payoff/P&L curve, net debit, and leg premium table.",
                 "Open Advanced only for custom legs arrays.",
             ],
-            "example": _standalone_function_defaults("OSA"),
+            # Shape only, not a priced case: no spot or strike is supplied by
+            # default (T10). Every <...> must be replaced with a real input.
+            "example": {
+                "underlying": "<TICKER>",
+                "strategy": "CALL_SPREAD",
+                "legs": [
+                    {"qty": 1, "strike": "<long strike>", "type": "CALL", "expiry": "<years>", "vol": "<implied vol>"},
+                    {"qty": -1, "strike": "<short strike>", "type": "CALL", "expiry": "<years>", "vol": "<implied vol>"},
+                ],
+            },
+            "example_note": (
+                "Shape only. Enter the spot, or the underlying ticker to take its live quote, "
+                "and every leg input; nothing is priced from defaults."
+            ),
         }
     if upper == "TOP":
         return {
@@ -806,13 +858,15 @@ def _function_usage(
         return {
             "purpose": "Black-Litterman market-prior and posterior expected-return weights for a selected universe.",
             "scope": "portfolio model",
-            "inputs": ["symbols", "range", "tau", "delta", "views"],
+            "inputs": ["symbols", "window", "tau", "delta", "views_text", "market_caps", "live"],
             "steps": [
-                "Edit the visible Universe field and Range, then Run.",
-                "Rows compare market weight, prior return, posterior return, and optimal weight by symbol.",
-                "Use Advanced only for custom views, tau, delta, or market-cap overrides.",
+                "Edit Universe, Window, Tau, Delta, Views and Market caps, then Run.",
+                "Views: SYMBOL:percent is an absolute annual return (AAPL:8); LONG>SHORT:percent is a relative view (AAPL>SPY:2).",
+                "Market caps: optional SYMBOL:USD overrides (AAPL:3900000000000) for the cap weights; blank uses provider market caps.",
+                "Rows compare market weight, prior return, posterior return, and the long-only optimal weight by symbol; optimal_weight_unconstrained shows the raw solution.",
+                "A malformed tau, delta, view or market cap is refused with input_error rather than replaced by a default.",
             ],
-            "example": {"symbols": ["AAPL", "MSFT", "NVDA"], "days": 365, "live": True},
+            "example": {"symbols": ["AAPL", "MSFT", "NVDA"], "window": "1Y", "views_text": "AAPL:8, AAPL>MSFT:2", "live": True},
         }
     if upper == "BMTX":
         return {
@@ -954,10 +1008,43 @@ def _canonical_route_symbol(symbol: Any, requested_asset_class: Any = None) -> s
     return raw.upper()
 
 
+# Awareness-backed functions: routed calls pass only caller-supplied query/limit/days/symbols/
+# universe/news_timeout (see _route_function_params), including per-code probe values.
 AWARENESS_CODES = frozenset({
     "TOP", "NI", "CN", "NALRT", "NSE", "SOSC", "MSENT",
     "ECO", "MEET", "EVTS", "DVD", "CACT", "TRDH", "ERN", "IPO",
 })
+# Route policy for /api/fn. The agent-probe base (_agent_probe_base) asks
+# for a small, fast, peer-group result. Those values are not the caller's
+# choice: on the route they must never replace a function's own default for
+# the window, result size, universe or text query (the audit found limit 6,
+# days 120, the peer list and the news query silently overriding GMM, SECF,
+# BQL, READ, FXH, PCAS, ICX and others). Per-code values set in
+# _agent_code_params and anything the caller sends still apply.
+_PROBE_ONLY_KEYS = ("limit", "days", "range", "interval", "query", "topic", "symbols")
+_PROBE_TIMEOUT_KEYS = (
+    "timeout", "quote_timeout", "news_timeout", "sec_timeout", "yfinance_timeout",
+    "finnhub_timeout", "fred_timeout", "damodaran_timeout",
+)
+# Functions that own their fetch budget: the generic 3 s probe cap undercut
+# GMM's 12 s World Bank budget (GMM#5) and dropped PCAS positions whose
+# history needed longer than 3 s (PCAS#1).
+_OWN_FETCH_BUDGET_CODES = frozenset({"GMM", "PCAS"})
+# Codes whose routed inputs keep the legacy probe values. Empty: the Awareness
+# news/calendar codes adopted this policy at the 2026-11-08 catch-up merge, and
+# AWARENESS_CODES below also drops their per-code probe query/limit values.
+_LEGACY_PROBE_ROUTE_CODES: frozenset[str] = frozenset()
+# Envelope keys the route derives for every call; they are reported through
+# __explicit_symbol / defaultedInputs, not as route defaults.
+_ROUTE_ENVELOPE_KEYS = frozenset({"symbol", "asset_class"})
+
+
+def _truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -975,13 +1062,47 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
     ).strip()
     symbol = _canonical_route_symbol(raw_symbol, merged.get("asset_class"))
     asset_class = default_asset_class_name(symbol, merged.get("asset_class"))
-    defaults = _agent_function_params(entry, {"symbol": symbol, "asset_class": asset_class})
+    candidate = {"symbol": symbol, "asset_class": asset_class}
+    defaults = _agent_probe_base(entry, candidate)
+    code_values, code_drop = _agent_code_params(entry, candidate)
+    for key in code_drop:
+        defaults.pop(key, None)
+    defaults.update(code_values)
+    upper_code = code.upper()
+    if upper_code not in _LEGACY_PROBE_ROUTE_CODES:
+        dropped = list(_PROBE_ONLY_KEYS)
+        if upper_code in _OWN_FETCH_BUDGET_CODES:
+            dropped.extend(_PROBE_TIMEOUT_KEYS)
+        for key in dropped:
+            if key not in merged and key not in code_values:
+                defaults.pop(key, None)
+    if _truthy_flag(merged.get("reference")) and "live" not in merged:
+        # CSRC#4: a caller asking for reference data must not be overruled by
+        # the probe's live=True.
+        defaults.pop("live", None)
     defaults.update(_standalone_function_defaults(code))
     defaults.update(merged)
+    if code.upper() == "PORT_OPT":
+        # The agent peer profile injects days=120, a peer universe, live=True
+        # and news-style keys. PORT_OPT must apply its own handler defaults
+        # (3-year lookback, ETF universe, live off), so only caller params pass.
+        defaults = dict(merged)
     if code.upper() in {"GP", "HP", "TECH", "CHGS"} and merged.get("range") and "days" not in merged:
         ranged_days = _days_from_range(merged.get("range"))
         if ranged_days is not None:
             defaults["days"] = ranged_days
+    if code.upper() == "TECH":
+        # wc1-g33 (TECH#4): the generic agent profile injects limit=6 and
+        # days=120 for every route. TECH reads limit as its visible-bar tail,
+        # so an injected 6 clamped the pane to 60 bars over 3 months, while
+        # its manifest window is 365 days and 1000 bars. Drop only the injected
+        # values; a caller-supplied limit/days/range still wins.
+        if "limit" not in merged:
+            defaults.pop("limit", None)
+        # An unrecognised caller range (no days mapping) must not keep the
+        # injected 120 days either; only a recognised range sets days.
+        if "days" not in merged and _days_from_range(merged.get("range")) is None:
+            defaults.pop("days", None)
     if code.upper() == "FRH" and "symbols" not in merged:
         defaults.pop("symbols", None)
     if code.upper() == "MOSS" and not (merged.get("universe") or merged.get("symbols")):
@@ -1011,13 +1132,41 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # nobody asked for — worst case ~32 s serial against the 14 s
         # function timeout. Drop it when the caller sent none.
         defaults.pop("symbols", None)
+    if code.upper() == "RPAR":
+        # RPAR reads its own lookback (``days``, default 504), its universe
+        # (``symbols`` or the manifest name ``universe``) and method/risk/live
+        # controls. The generic route injects a 120-day window, the agent peer
+        # group and news-style fields into every call; caller values win, but
+        # injected values must not replace RPAR's own defaults or the universe.
+        for key in ("query", "topic", "limit", "range", "interval"):
+            if key not in merged:
+                defaults.pop(key, None)
+        if "days" not in merged:
+            defaults.pop("days", None)
+        if not merged.get("symbols"):
+            defaults.pop("symbols", None)
+            if not merged.get("universe") and "symbol" not in merged:
+                defaults.pop("symbol", None)
     if code.upper() == "TLDR" and not merged.get("symbols"):
         # TLDR's ``symbols`` is the caller's watchlist. The generic agent peer
         # group (BTC/ETH/SOL for crypto routes) must not stand in for the
         # user's holdings: with no list sent, TLDR ranks PortfolioState itself.
         defaults.pop("symbols", None)
-    if code.upper() == "ICX" and defaults.get("query") and not merged.get("index"):
-        defaults["index"] = str(defaults["query"]).strip().upper()
+    if code.upper() == "BLAK" and "days" not in merged:
+        # BLAK#1: the generic agent profile injects a 120-day window (range 3M),
+        # which silently replaced the seeded 1Y lookback and left the prior on
+        # about 83 observations. BLAK owns its window (blak.py _WINDOW_DAYS), so
+        # the injected days is dropped unless the caller sent its own days; a
+        # caller ``window`` (the pane always sends one) then selects the lookback.
+        defaults.pop("days", None)
+        if "range" not in merged:
+            defaults.pop("range", None)
+    if code.upper() == "ICX" and not merged.get("index"):
+        # ICX#3: the probe's index default (SPX) sent every routed call down
+        # the index path, so a caller's sector (or a sector-name query) was
+        # never read. Without an explicit index the handler decides: a known
+        # index code in query selects the index, anything else is a sector.
+        defaults.pop("index", None)
     if code.upper() == "TRQA" and defaults.get("query") and not merged.get("questions"):
         defaults["questions"] = [str(defaults["query"]).strip()]
     if code.upper() == "SAT" and defaults.get("days") and not (merged.get("date_from") or merged.get("date_to")):
@@ -1047,7 +1196,20 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         defaults.pop("asset_class", None)
     if code.upper() == "MOST" and merged.get("asset_class"):
         defaults["asset_class"] = str(merged["asset_class"]).strip()
+    if code.upper() == "GRAB":
+        # GRAB reads only its own inputs (target/url, recipient/to, send) and
+        # takes its own defaults internally. The generic agent defaults (news
+        # query, peer symbols, limit, timeouts) must not reach it, or the
+        # envelope inputEcho shows values the handler never used (GRAB#3).
+        defaults = {key: value for key, value in defaults.items() if key in merged}
     defaults["__explicit_symbol"] = explicit_symbol
+    # Keys the route filled in that the caller did not send. The envelope
+    # reports them as routeDefaults and keeps them out of inputEcho, so the
+    # echo shows only what was asked for (SECF#2, ISIN#7, OVME#1).
+    defaults["__route_defaults"] = sorted(
+        key for key in defaults
+        if key not in merged and not key.startswith("__") and key not in _ROUTE_ENVELOPE_KEYS
+    )
     return defaults
 
 
@@ -1144,15 +1306,6 @@ def _agent_probe_data_for_code(
             "max_drawdown_pct": drawdown_pct,
             "signal": "positive_tuning" if sharpe > 0.25 else "neutral_tuning",
         }
-    if code == "PORT_OPT":
-        return {
-            **common,
-            "max_sharpe": sharpe + 0.12,
-            "expected_return": expected_return,
-            "volatility_pct": volatility_pct,
-            "upside_score": momentum_score,
-            "signal": "positive_optimizer_candidate" if sharpe > 0.2 else "neutral_optimizer_candidate",
-        }
     if code == "PVAR":
         return {
             **common,
@@ -1208,12 +1361,40 @@ def _agent_payload_score(code: str, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _port_opt_agent_payload(entry: FunctionIndexEntry, candidate: dict[str, str]) -> dict[str, Any]:
+    """Explicit not-applicable state for PORT_OPT on a single agent candidate."""
+    return {
+        "code": entry.code.upper(),
+        "instrument": {
+            "symbol": candidate["symbol"].upper(),
+            "asset_class": candidate["asset_class"].upper(),
+        },
+        "data": {
+            "status": "not_applicable",
+            "reason": AGENT_PORT_OPT_NOT_APPLICABLE_REASON,
+            "next_actions": ["Run PORT_OPT directly with symbols for a universe of at least two assets."],
+        },
+        "metadata": {
+            "fallback": True,
+            "degraded": True,
+            "agent_probe": True,
+            "not_applicable": True,
+        },
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "sources": [],
+        "warnings": [],
+        "elapsed_ms": None,
+    }
+
+
 def _agent_probe_payload(
     entry: FunctionIndexEntry,
     candidate: dict[str, str],
     params: dict[str, Any],
     native_asset_match: bool,
 ) -> dict[str, Any]:
+    if entry.code.upper() == "PORT_OPT":
+        return _port_opt_agent_payload(entry, candidate)
     if entry.code.upper() not in AGENT_LOCAL_SIGNAL_CODES or not native_asset_match:
         reason = (
             AGENT_UNMEASURED_PROBE_REASON
@@ -1368,7 +1549,12 @@ async def _run_best_symbol_agent(request: dict[str, Any]) -> dict[str, Any]:
             reason = ""
             payload: dict[str, Any]
             native_asset_match = _function_code_supports_asset(entry.code, candidate["asset_class"])
-            if execute_functions:
+            if entry.code.upper() == "PORT_OPT":
+                # Not applicable to one candidate: never executed, no score.
+                status = "not_applicable"
+                reason = AGENT_PORT_OPT_NOT_APPLICABLE_REASON
+                payload = _port_opt_agent_payload(entry, candidate)
+            elif execute_functions:
                 try:
                     result = await asyncio.wait_for(
                         _execute_showme_function(entry.code, params),
@@ -1404,7 +1590,7 @@ async def _run_best_symbol_agent(request: dict[str, Any]) -> dict[str, Any]:
                 fallback_count += 1
             if status == "pass":
                 pass_count += 1
-            else:
+            elif status == "fail":
                 fail_count += 1
             if score["signal_count"] > 0:
                 weight = 0.2 + min(int(score["signal_count"]), 8) * 0.1

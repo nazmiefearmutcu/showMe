@@ -18,6 +18,7 @@ from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
 from showme.engine.utils.throttle import throttle
+from showme.providers.base import get_redacted
 
 
 class AlphaVantageAdapter(BaseDataSource):
@@ -45,8 +46,9 @@ class AlphaVantageAdapter(BaseDataSource):
         if not self.api_key:
             raise DataSourceError("ALPHAVANTAGE_API_KEY not set")
         client = await self._client_()
-        r = await client.get(self.base_url, params={**params, "apikey": self.api_key})
-        r.raise_for_status()
+        r = await get_redacted(
+            client, self.base_url, params={**params, "apikey": self.api_key}, secrets=(self.api_key,),
+        )
         data = r.json()
         if "Note" in data or "Information" in data:
             raise DataSourceError(f"AlphaVantage rate-limited: {data.get('Note') or data.get('Information')}")

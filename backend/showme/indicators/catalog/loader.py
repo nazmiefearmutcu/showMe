@@ -137,7 +137,7 @@ def load_indicator_catalog(path: str | Path) -> IndicatorCatalog:
     try:
         raw_list = yaml.safe_load(p.read_text(encoding="utf-8")) or []
     except yaml.YAMLError as exc:
-        raise IndicatorCatalogError(f"YAML parse error: {exc}") from exc
+        raise IndicatorCatalogError(f"YAML parse error: {str(exc) or type(exc).__name__}") from exc
     if not isinstance(raw_list, list):
         raise IndicatorCatalogError("catalog must be a YAML list")
     return IndicatorCatalog(entries=tuple(_coerce_entry(r) for r in raw_list))

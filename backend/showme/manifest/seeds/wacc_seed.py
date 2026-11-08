@@ -54,8 +54,8 @@ def wacc() -> FunctionManifest:
                 name="market_premium",
                 label="Equity risk premium (ERP)",
                 control=ControlKind.MODEL_ASSUMPTION,
-                required=True,
-                description="Market premium over the risk-free rate.",
+                required=False,
+                description="Market premium over the risk-free rate. Leave empty to use the Damodaran ERP (erp_source reports where it came from); a value entered here is a user_input.",
                 min=0.02,
                 max=0.12,
                 step=0.0025,
@@ -66,19 +66,51 @@ def wacc() -> FunctionManifest:
                 label="Beta window",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=False,
-                description="Lookback window passed to BetaFunction.",
-                options=["60d", "126d", "252d", "504d", "756d"],
+                description="Preferred BETA window: 252d is the 1Y and 504d the 2Y regression. Leave empty for the default long-window order (5Y, then 2Y, then 1Y). The window actually used is echoed as beta_window and beta_window_applied.",
+                options=["252d", "504d"],
             ),
             InputSpec(
                 name="tax_rate_override",
                 label="Tax rate override",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=False,
-                description="Override the effective tax rate; default uses FA-derived T.",
+                description="Override the tax rate. Without it T is the issuer's effective rate from its latest annual income statement (tax_source issuer_effective), else the 21% US statutory rate for US issuers only (tax_source statutory_us_21pct). A non-US issuer with no effective rate needs this override.",
                 min=0.0,
                 max=0.45,
                 step=0.005,
                 unit="decimal",
+            ),
+            InputSpec(
+                name="rf",
+                label="Risk-free rate (rf)",
+                control=ControlKind.MODEL_ASSUMPTION,
+                required=False,
+                description="Risk-free rate override. Leave empty to use the FRED DGS10 yield (sources report fred_dgs10); a value entered here is a user_input.",
+                min=0.0,
+                max=0.2,
+                step=0.0025,
+                unit="decimal",
+            ),
+            InputSpec(
+                name="rd",
+                label="Pre-tax cost of debt (Rd)",
+                control=ControlKind.MODEL_ASSUMPTION,
+                required=False,
+                description="Pre-tax cost of debt override. Leave empty to use the issuer-implied rate, else the FRED BBB index (a labelled partial proxy); a value entered here is a user_input.",
+                min=0.0,
+                max=0.3,
+                step=0.0025,
+                unit="decimal",
+            ),
+            InputSpec(
+                name="beta",
+                label="Beta (β)",
+                control=ControlKind.MODEL_ASSUMPTION,
+                required=False,
+                description="Equity beta override. Leave empty to use BetaFunction at the beta window (beta_source reports the window); a value entered here is a user_input.",
+                min=0.0,
+                max=5.0,
+                step=0.01,
             ),
             InputSpec(
                 name="provider_mode",
@@ -94,8 +126,6 @@ def wacc() -> FunctionManifest:
             ),
         ],
         defaults={
-            "market_premium": 0.05,
-            "beta_window": "252d",
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
@@ -155,7 +185,8 @@ def wacc() -> FunctionManifest:
         methodology=(
             "WACC pulls rf from FRED (DGS10 by default), R_d from the FRED ICE BofA BBB corporate "
             "YIELD (BAMLC0A4CBBBEY, Aaa yield fallback; the option-adjusted spread is not used), "
-            "the effective tax rate T from FA (or override), and the market-value equity / debt "
+            "the tax rate T (the issuer's effective rate from its income statement when the provider supplies it, "
+            "else the 21% US statutory rate for US issuers only, labelled tax_source; or the override), and the market-value equity / debt "
             "split from FA / yfinance. β is computed by the shared BetaFunction at the requested "
             "window. R_e is the CAPM expression rf + β × ERP. WACC = (E/V) × R_e + (D/V) × R_d × "
             "(1 − T). The handler renders the β × R_d sensitivity surface (3 × 3) so the operator "
@@ -191,7 +222,7 @@ def wacc() -> FunctionManifest:
             "beta": FieldDef(description="Equity beta from BetaFunction.", source="internal"),
             "erp": FieldDef(unit="decimal", description="Equity risk premium (input or Damodaran).", source="input"),
             "rd": FieldDef(unit="decimal annualized", description="Pre-tax cost of debt.", source="fred"),
-            "tax_rate": FieldDef(unit="decimal", description="Effective tax rate (FA or override).", source="provider"),
+            "tax_rate": FieldDef(unit="decimal", description="Tax rate: override, issuer effective rate, or the 21% statutory default for US issuers (see tax_source); null when none applies.", source="provider"),
             "equity_weight": FieldDef(unit="decimal", description="E / (E+D).", source="computed"),
             "debt_weight": FieldDef(unit="decimal", description="D / (E+D).", source="computed"),
             "assumptions": FieldDef(description="Echoed inputs (market_premium, beta_window, tax_rate_override).", source="input"),

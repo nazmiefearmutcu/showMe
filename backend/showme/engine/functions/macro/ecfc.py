@@ -147,7 +147,8 @@ _FIELD_DICT: dict[str, str] = {
     "year": "Forecast calendar year (integer).",
     "forecast_value": "IMF WEO forecast value in the displayed unit.",
     "unit": "Display unit (% YoY, % of GDP, USD bn, ...).",
-    "vintage": "Forecast vintage label (imf_weo).",
+    "vintage": "Source family 'imf_weo' (IMF WEO via DataMapper). No WEO edition or release date is exposed, so the batch is not pinned.",
+    "as_of": "UTC time the IMF response was retrieved (a fetch time, not a WEO release date).",
     "source_mode": "Provider layer used for the row (imf_weo).",
 }
 
@@ -291,8 +292,15 @@ class ECFCFunction(BaseFunction):
             "status": "ok",
             "data_state": "live",
             "vintage": "imf_weo",
+            # The DataMapper exposes no WEO edition or release date, so the vintage
+            # names the source family only and as_of is the retrieval time.
+            "vintage_basis": (
+                "IMF WEO projection series from the DataMapper API. The API publishes no "
+                "WEO edition or release date, so the forecast batch is not pinned."
+            ),
             "source_mode": "imf_weo",
             "as_of": datetime.now(timezone.utc).isoformat(),
+            "as_of_basis": "UTC time the IMF response was retrieved (a fetch time, not a WEO release date).",
             "methodology": (
                 "ECFC builds the forecast table from the IMF World Economic Outlook "
                 "via the keyless IMF DataMapper API. For each requested WEO indicator "

@@ -15,6 +15,7 @@ import asyncio
 import itertools
 import random
 import statistics
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -73,19 +74,37 @@ class BTUNEFunction(BaseFunction):
     description = "Hyperparameter sweep over a strategy grid; rank by the train-slice Sharpe / total return / Calmar and report the out-of-sample value."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        # The seed's provenance requires latency_ms on every path. It is the
+        # measured wall time of this call, never an estimate.
+        started = time.perf_counter()
+        result = await self._execute(instrument, **params)
+        if isinstance(result.data, dict):
+            result.data["latency_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+        return result
+
+    async def _execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("BTUNE requires an instrument symbol")
         spec, error = _resolve_spec(params)
         if error is not None:
-            return _error_result(self.code, instrument, reason=error)
-        live = _truthy(params.get("live_backtest") or params.get("live"))
+            return _error_result(
+                self.code, instrument, reason=error,
+                requested_strategy=params.get("strategy_id") or params.get("strategy"),
+            )
+        # BTUNE#2: an explicit live_backtest (the pane's LIVE/MODEL toggle) wins;
+        # the generic live flag is only a fallback when it was not sent, so
+        # live_backtest=false is never overruled by live=true.
+        if params.get("live_backtest") not in (None, ""):
+            live = _truthy(params.get("live_backtest"))
+        else:
+            live = _truthy(params.get("live"))
         try:
             return await asyncio.wait_for(
                 self._execute_inner(instrument, spec, live),
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"BTUNE execution timed out: {exc}; no backtest metrics are reported"
+            reason = f"BTUNE execution timed out after 9 s ({type(exc).__name__}); no backtest metrics are reported"
             return _unavailable_result(
                 self.code, instrument, spec,
                 status="provider_unavailable", reason=reason,
@@ -115,7 +134,7 @@ class BTUNEFunction(BaseFunction):
                     extra={"timeout": 3.0},
                 ))
         except Exception as exc:
-            warnings.append(f"yfinance: {exc or type(exc).__name__}")
+            warnings.append(f"yfinance: {str(exc) or type(exc).__name__}")
         if df is None or df.empty or "close" not in df.columns:
             reason = "live OHLCV unavailable; no backtest was run and no metrics are reported"
             warnings.append(reason)
@@ -221,6 +240,10 @@ class BTUNEFunction(BaseFunction):
                 "param_grid": spec["grid"],
                 "combos_planned": len(full_grid),
                 "combos_tested": len(rows),
+                "evaluations_count": len(rows),
+                # Research-only sweep: it places no orders (seed paper_mode).
+                "paper_mode": True,
+                "data_mode": "live_yfinance",
                 "combos_skipped": len(skipped),
                 "overfit_warning": overfit["warning"],
                 "overfit_gap_median": overfit["median_gap"],
@@ -241,8 +264,8 @@ class BTUNEFunction(BaseFunction):
                     "Hyperparameter sweep with an out-of-sample split. Each parameter set is "
                     f"backtested on the first {spec['train_pct']:.0%} of the daily OHLCV history "
                     "(in-sample) and on the remainder (out-of-sample, with the train history kept "
-                    "as indicator warm-up). Configurations are ranked by the out-of-sample value of "
-                    f"'{spec['metric']}' on the train slice; the test slice is not used to choose "
+                    "as indicator warm-up). Configurations are ranked by the in-sample (train-slice) value of "
+                    f"'{spec['metric']}'; the test slice is not used to choose "
                     "parameters. best_metric_oos is the chosen set's own test-slice value. overfit_gap = "
                     f"in-sample minus out-of-sample; overfit_warning is set when the median gap across "
                     f"the top-N exceeds {OVERFIT_GAP_THRESHOLD}. The out-of-sample figure is still a "
@@ -374,18 +397,29 @@ def _label_cfg(cfg: dict[str, Any]) -> str:
     return ", ".join(f"{key}={value}" for key, value in cfg.items())
 
 
-def _error_result(code: str, instrument: Instrument, *, reason: str) -> FunctionResult:
+def _error_result(
+    code: str, instrument: Instrument, *, reason: str, requested_strategy: Any = None,
+) -> FunctionResult:
     return FunctionResult(
         code=code,
         instrument=instrument,
         data={
             "status": "input_error",
+            "as_of": datetime.now(timezone.utc).isoformat(),
             "reason": reason,
+            "strategy": requested_strategy,
+            "strategy_id": requested_strategy,
+            "symbol": instrument.symbol,
             "best_params": None,
+            "best_metric_oos": None,
             "rows": [],
             "top_n_results": [],
             "full_results": [],
+            "overfit_warning": None,
             "combos_tested": 0,
+            "evaluations_count": 0,
+            "paper_mode": True,
+            "data_mode": "unavailable",
             "next_actions": ["Correct the highlighted input and run the sweep again."],
         },
         warnings=[reason],
@@ -431,6 +465,13 @@ def _unavailable_result(
             "as_of": datetime.now(timezone.utc).isoformat(),
             "reason": reason,
             "strategy": strategy,
+            "strategy_id": strategy,
+            "symbol": instrument.symbol,
+            "metric": spec["metric"] if spec else None,
+            "search_mode": spec["search_mode"] if spec else None,
+            "paper_mode": True,
+            "data_mode": "unavailable",
+            "evaluations_count": 0,
             "best_params": None,
             "best_metric_oos": None,
             "rows": rows,

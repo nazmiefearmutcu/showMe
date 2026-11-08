@@ -70,23 +70,25 @@ def test_brief_offline_returns_dict_with_markdown_key() -> None:
 
 
 def test_blak_offline_returns_dict_with_posterior_keys() -> None:
+    """Offline (live off) BLAK no longer fabricates a posterior from a template.
+
+    BLAK#6 / BLAK#3-RQ: the old assertion pinned a posterior built on the sine
+    template. The honest offline answer is an explicit needs_input state with
+    the market-cap weights and no prior, posterior or optimal weights.
+    """
     from showme.engine.functions.portfolio.blak import BLAKFunction
 
     fn = BLAKFunction()
     with_symbols = asyncio.run(fn.execute(live=False, symbols=["AAPL", "MSFT", "GOOG", "META", "NVDA"]))
     assert isinstance(with_symbols.data, dict)
-    for key in (
-        "status",
-        "rows",
-        "market_weights",
-        "posterior_returns",
-        "implied_optimal_weights",
-        "samples",
-        "summary",
-    ):
-        assert key in with_symbols.data
-    assert with_symbols.data["samples"] >= 60
-    assert len(with_symbols.data["rows"]) == 5
+    assert with_symbols.data["status"] == "needs_input"
+    assert with_symbols.data["reason"]
+    assert with_symbols.data["next_actions"]
+    for key in ("posterior_returns", "implied_returns_prior", "implied_optimal_weights", "rows"):
+        assert key not in with_symbols.data
+    assert set(with_symbols.data["market_weights"]) == {"AAPL", "MSFT", "GOOG", "META", "NVDA"}
+    assert with_symbols.data["samples"] == 0
+    assert "synthetic_fallback" not in with_symbols.sources
 
     no_symbols = asyncio.run(fn.execute(live=False, symbols=[]))
     assert isinstance(no_symbols.data, dict)

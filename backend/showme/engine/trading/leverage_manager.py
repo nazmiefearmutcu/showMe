@@ -78,7 +78,7 @@ class LeverageManager:
                         # Fallback: use common known values
                         max_lev = self._get_known_max_leverage(symbol)
             except Exception as e:
-                logger.warning(f"Failed to fetch max leverage for {symbol}: {e}")
+                logger.warning(f"Failed to fetch max leverage for {symbol}: {str(e) or type(e).__name__}")
                 max_lev = self._get_known_max_leverage(symbol)
         else:
             max_lev = self._get_known_max_leverage(symbol)
@@ -107,7 +107,7 @@ class LeverageManager:
                     max_lev = bracket_list[0].get("initialLeverage", DEFAULT_MAX_LEVERAGE)
                     return int(max_lev)
         except Exception as e:
-            logger.debug(f"Leverage bracket API call failed for {symbol}: {e}")
+            logger.debug(f"Leverage bracket API call failed for {symbol}: {str(e) or type(e).__name__}")
         return None
 
     def _get_known_max_leverage(self, symbol: str) -> int:

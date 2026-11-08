@@ -1,8 +1,9 @@
-"""EREV — Earnings revision calendar.
+"""EREV — analyst recommendation momentum.
 
-Aggregates analyst EPS / revenue revisions from finnhub (recommendations
-buckets across time) + EPS estimate trend. Counts upgrades/downgrades by
-month and surfaces 4-week revision velocity.
+Scores the Finnhub analyst recommendation buckets (strongBuy..strongSell)
+per monthly period, counts net upgrades/downgrades between periods and
+reports the change in the average score vs the prior period. This is NOT an
+EPS or revenue estimate-revision series: no EPS estimate data is read.
 """
 
 from __future__ import annotations
@@ -21,10 +22,10 @@ _BUCKET_WEIGHTS = {
 @FunctionRegistry.register
 class EREVFunction(BaseFunction):
     code = "EREV"
-    name = "Earnings Revisions"
+    name = "Analyst Recommendation Momentum"
     asset_classes = (AssetClass.EQUITY,)
     category = "equity"
-    description = "Analyst recommendation buckets month-over-month + revision velocity."
+    description = "Analyst recommendation buckets month-over-month + momentum (no EPS estimate data)."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sym = (instrument.symbol if instrument else
@@ -87,14 +88,17 @@ class EREVFunction(BaseFunction):
         for r in rs:
             score = sum(int(r.get(k, 0) or 0) * w for k, w in _BUCKET_WEIGHTS.items())
             n_total = sum(int(r.get(k, 0) or 0) for k in _BUCKET_WEIGHTS)
-            avg = (score / n_total) if n_total else 0
+            # A period with no analysts has no consensus: null, never a neutral 0.
+            avg = (score / n_total) if n_total else None
             trend.append({
                 "period": r.get("period"),
                 "score": score, "n": n_total, "avg": avg,
                 **{k: int(r.get(k, 0) or 0) for k in _BUCKET_WEIGHTS},
             })
-        # 4-week velocity = latest avg − previous avg (approximation: last vs prev period)
-        velocity = (trend[-1]["avg"] - trend[-2]["avg"]) if len(trend) >= 2 else 0
+        # Momentum = latest avg − previous monthly avg; null unless both periods have coverage.
+        velocity = None
+        if len(trend) >= 2 and trend[-1]["avg"] is not None and trend[-2]["avg"] is not None:
+            velocity = trend[-1]["avg"] - trend[-2]["avg"]
         # Net upgrades/downgrades by period.
         revs: list[dict[str, Any]] = []
         for i in range(1, len(trend)):
@@ -102,16 +106,28 @@ class EREVFunction(BaseFunction):
             prev = trend[i - 1]
             net = (cur["strongBuy"] + cur["buy"]) - (prev["strongBuy"] + prev["buy"])
             net_neg = (cur["sell"] + cur["strongSell"]) - (prev["sell"] + prev["strongSell"])
+            delta = (
+                cur["avg"] - prev["avg"]
+                if cur["avg"] is not None and prev["avg"] is not None
+                else None
+            )
             revs.append({
                 "period": cur["period"],
                 "net_pos_change": net,
                 "net_neg_change": net_neg,
-                "delta_avg": cur["avg"] - prev["avg"],
+                "delta_avg": delta,
             })
+        has_coverage = any(t["n"] for t in trend)
+        status = "ok" if has_coverage else "empty"
+        empty_reason = (
+            None if has_coverage
+            else f"finnhub returned recommendation periods for {sym} with zero analysts in every period"
+        )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok",
+                "status": status,
+                "reason": empty_reason,
                 "symbol": sym,
                 "rows": trend,
                 "trend": trend,
@@ -122,19 +138,21 @@ class EREVFunction(BaseFunction):
                 "field_dictionary": _FIELD_DICTIONARY,
             },
             sources=["finnhub"],
-            metadata={"live": True, "data_mode": "live_official"},
+            warnings=[empty_reason] if empty_reason else [],
+            metadata={"live": has_coverage, "data_mode": "live_official" if has_coverage else "empty_coverage"},
         )
 
 
 _METHODOLOGY = (
-    "EREV converts analyst recommendation buckets into a weighted score: "
-    "Strong Buy=+2, Buy=+1, Hold=0, Sell=-1, Strong Sell=-2. Velocity is the "
-    "latest average-score change vs the prior period."
+    "EREV scores analyst recommendation buckets (not EPS or revenue estimates): "
+    "Strong Buy=+2, Buy=+1, Hold=0, Sell=-1, Strong Sell=-2, averaged per analyst. "
+    "Momentum is the latest monthly average-score change vs the prior month; "
+    "null when either month has no analysts."
 )
 
 _FIELD_DICTIONARY = {
     "score": "Weighted recommendation score for the period.",
-    "avg": "Score divided by analyst count.",
-    "velocity_avg": "Latest average-score change vs previous period.",
+    "avg": "Score divided by analyst count; null when the period has no analysts.",
+    "velocity_avg": "Latest monthly average-score change vs previous month; null with fewer than two covered months.",
     "net_pos_change": "Change in Strong Buy + Buy count.",
 }

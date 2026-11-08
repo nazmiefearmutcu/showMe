@@ -190,7 +190,7 @@ async def run_job(name: str) -> dict[str, Any]:
         try:
             with open(log_path, "ab") as fail_fh:
                 fail_fh.write(
-                    f"\n[job_runner] child process failed: {exc}\n".encode("utf-8")
+                    f"\n[job_runner] child process failed: {str(exc) or type(exc).__name__}\n".encode("utf-8")
                 )
         except OSError:
             pass

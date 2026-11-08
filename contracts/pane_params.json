@@ -40,6 +40,7 @@
     },
     "AV": {
       "keys": [
+        "limit",
         "query",
         "symbol"
       ],
@@ -79,8 +80,13 @@
     },
     "BLAK": {
       "keys": [
+        "delta",
         "live",
-        "symbols"
+        "market_caps",
+        "symbols",
+        "tau",
+        "views_text",
+        "window"
       ],
       "conditional": [],
       "dynamic": false,
@@ -139,7 +145,11 @@
     },
     "BTFW": {
       "keys": [
-        "live"
+        "live",
+        "strategy_id",
+        "train_pct",
+        "walk_steps",
+        "window_length"
       ],
       "conditional": [],
       "dynamic": false,
@@ -182,7 +192,8 @@
     },
     "CHGS": {
       "keys": [
-        "days"
+        "days",
+        "interval"
       ],
       "conditional": [],
       "dynamic": false,
@@ -372,7 +383,9 @@
     "ECST": {
       "keys": [
         "compare_with",
-        "series_id"
+        "date_range",
+        "series_id",
+        "transform"
       ],
       "conditional": [],
       "dynamic": false,
@@ -495,8 +508,7 @@
       "keys": [
         "callsign",
         "country",
-        "limit",
-        "live_flight"
+        "limit"
       ],
       "conditional": [],
       "dynamic": false,
@@ -549,6 +561,8 @@
     },
     "FTS": {
       "keys": [
+        "date_from",
+        "date_to",
         "forms",
         "limit",
         "live",
@@ -617,8 +631,8 @@
     },
     "GEX": {
       "keys": [
-        "live_options",
-        "max_expiries"
+        "expiry_filter",
+        "live_options"
       ],
       "conditional": [],
       "dynamic": false,
@@ -729,7 +743,8 @@
     },
     "ICX": {
       "keys": [
-        "index"
+        "index",
+        "sector"
       ],
       "conditional": [],
       "dynamic": false,
@@ -816,7 +831,8 @@
     "MARS": {
       "keys": [
         "reference",
-        "symbols"
+        "symbols",
+        "weights"
       ],
       "conditional": [],
       "dynamic": false,
@@ -845,7 +861,10 @@
       ]
     },
     "MGN": {
-      "keys": [],
+      "keys": [
+        "account",
+        "cash"
+      ],
       "conditional": [],
       "dynamic": false,
       "files": [
@@ -864,6 +883,7 @@
     },
     "MLSIG": {
       "keys": [
+        "label_horizon",
         "live_ml"
       ],
       "conditional": [],
@@ -876,7 +896,8 @@
       "keys": [
         "days",
         "limit",
-        "live"
+        "live",
+        "universe"
       ],
       "conditional": [],
       "dynamic": false,
@@ -971,7 +992,8 @@
         "legs",
         "rate",
         "spot",
-        "strategy"
+        "strategy",
+        "underlying"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1042,6 +1064,7 @@
     "POLY": {
       "keys": [
         "min_liquidity_usd",
+        "query",
         "status"
       ],
       "conditional": [],
@@ -1086,7 +1109,9 @@
     },
     "PSC": {
       "keys": [
-        "risk_pct"
+        "risk_pct",
+        "side",
+        "win_rate"
       ],
       "conditional": [],
       "dynamic": true,
@@ -1155,7 +1180,9 @@
       ]
     },
     "RV": {
-      "keys": [],
+      "keys": [
+        "peers"
+      ],
       "conditional": [],
       "dynamic": false,
       "files": [
@@ -1409,7 +1436,14 @@
       ]
     },
     "WACC": {
-      "keys": [],
+      "keys": [
+        "beta",
+        "beta_window",
+        "market_premium",
+        "rd",
+        "rf",
+        "tax_rate_override"
+      ],
       "conditional": [],
       "dynamic": false,
       "files": [
@@ -1453,7 +1487,8 @@
     "WETR": {
       "keys": [
         "days",
-        "location"
+        "location",
+        "provider_mode"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1489,6 +1524,8 @@
     "YAS": {
       "keys": [
         "asset_class",
+        "assume_decimal",
+        "benchmark",
         "benchmark_rate",
         "coupon",
         "freq",
@@ -1504,6 +1541,10 @@
   },
   "unresolved": [
     {
+      "where": "ui/src/functions/anr_pane/index.tsx:125",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
       "where": "ui/src/functions/awareness/StoryDrawer.tsx:49",
       "why": "code not resolvable to a registry entry"
     },
@@ -1512,19 +1553,19 @@
       "why": "code not resolvable to a registry entry"
     },
     {
-      "where": "ui/src/functions/CDE.tsx:79",
+      "where": "ui/src/functions/CDE.tsx:81",
       "why": "params expression not resolvable (AsExpression)"
     },
     {
-      "where": "ui/src/functions/commodity-spot.tsx:120",
+      "where": "ui/src/functions/commodity-spot.tsx:131",
       "why": "code not resolvable to a registry entry"
     },
     {
-      "where": "ui/src/functions/CRVF.tsx:86",
+      "where": "ui/src/functions/CRVF.tsx:97",
       "why": "params expression not resolvable (Identifier)"
     },
     {
-      "where": "ui/src/functions/DEBT.tsx:129",
+      "where": "ui/src/functions/DEBT.tsx:130",
       "why": "params expression not resolvable (ConditionalExpression)"
     },
     {
@@ -1544,7 +1585,7 @@
       "why": "code not resolvable to a registry entry"
     },
     {
-      "where": "ui/src/manifest/ManifestPane.tsx:139",
+      "where": "ui/src/manifest/ManifestPane.tsx:148",
       "why": "code not resolvable to a registry entry"
     },
     {

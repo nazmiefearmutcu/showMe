@@ -154,6 +154,24 @@ def classify(close: np.ndarray, *, spread_2s10s_bp: float | None = None) -> dict
     }
 
 
+def standardize_features(features: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
+    """Z-score each feature column before clustering (REGM#4).
+
+    Raw trend spread (%), realized vol (%) and drawdown (%) sit on different
+    scales, so unscaled k-means splits mainly on the widest one. A constant
+    column is only centred (std reported as 1.0) so it never divides by zero.
+    Returns the scaled matrix and the mean/std used, so callers can report it.
+    """
+    feats = np.asarray(features, dtype=float)
+    if feats.ndim != 2 or feats.size == 0:
+        return feats, {"method": "z_score", "mean": [], "std": []}
+    mean = feats.mean(axis=0)
+    std = feats.std(axis=0)
+    std = np.where(std > 0, std, 1.0)
+    scaled = (feats - mean) / std
+    return scaled, {"method": "z_score", "mean": mean.tolist(), "std": std.tolist()}
+
+
 def kmeans_lite(features: np.ndarray, k: int = 4, max_iter: int = 100,
                 seed: int = 42) -> dict[str, Any]:
     """Pure-numpy k-means for regime clustering."""

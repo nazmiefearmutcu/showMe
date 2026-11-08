@@ -32,6 +32,13 @@ import pandas as pd
 
 
 _ANN = 252
+# Projected-gradient step size used by the min-vol and max-Sharpe solvers.
+_PGD_LR_MINVOL = 0.05
+_PGD_LR_SHARPE = 0.02
+# A solution is stationary when one more projected step moves no weight by more
+# than this (0.01 percentage points). It certifies a stationary point of the
+# long-only problem, not a global optimum.
+_STATIONARY_TOL = 1e-4
 
 
 @dataclass
@@ -41,10 +48,12 @@ class PortfolioResult:
     volatility: float             # annualized
     sharpe: float
     samples: int
-    # Solver diagnostics. Only the risk-parity solver sets these; other modes
-    # leave them None.
+    # Solver diagnostics. risk_parity sets max_rc_error; min_volatility and
+    # max_sharpe set converged and solver_residual (largest weight move of one
+    # more projected step). Frontier points leave them None.
     converged: bool | None = None
     max_rc_error: float | None = None   # max_i |RC_i - 1/n| (share of total risk)
+    solver_residual: float | None = None
 
 
 def _annualize(mu: np.ndarray, cov: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -66,11 +75,39 @@ def _stats(w: np.ndarray, mu: np.ndarray, cov: np.ndarray, rf: float) -> tuple[f
     return ret, vol, sharpe
 
 
-def _project_simplex(w: np.ndarray) -> np.ndarray:
-    """Project onto the long-only unit simplex (Wang & Carreira-Perpiñán 2013)."""
+def _project_capped_simplex(w: np.ndarray, cap: float) -> np.ndarray:
+    """Project onto {sum(x)=1, 0 <= x_i <= cap}: x = clip(w - theta, 0, cap).
+
+    theta solves f(theta) = sum(clip(w - theta, 0, cap)) = 1. f is continuous,
+    non-increasing and piecewise linear with breakpoints at w_i and w_i - cap, so
+    it is solved exactly by locating the segment that crosses 1 (no iteration).
+    Raises ValueError when n * cap < 1, since no fully invested portfolio fits.
+    """
+    n = len(w)
+    if cap * n < 1.0 - 1e-12:
+        raise ValueError(f"max_weight {cap} cannot sum to 1 across {n} assets")
+    bps = np.unique(np.concatenate([w, w - cap]))          # ascending breakpoints
+    f = np.clip(w[None, :] - bps[:, None], 0.0, cap).sum(axis=1)   # non-increasing
+    # f(bps[0]) = n*cap >= 1 and f(bps[-1]) = 0 < 1, so a crossing segment exists.
+    k = int(np.nonzero(f >= 1.0)[0][-1])
+    if f[k] > 1.0 and k + 1 < len(bps):
+        theta = bps[k] + (f[k] - 1.0) / (f[k] - f[k + 1]) * (bps[k + 1] - bps[k])
+    else:
+        theta = bps[k]
+    return np.clip(w - theta, 0.0, cap)
+
+
+def _project_simplex(w: np.ndarray, cap: float | None = None) -> np.ndarray:
+    """Project onto the long-only unit simplex (Wang & Carreira-Perpiñán 2013).
+
+    With ``cap`` (per-asset maximum weight, below 1) the projection is onto the
+    capped simplex instead.
+    """
     n = len(w)
     if n == 0:
         return w
+    if cap is not None and cap < 1.0:
+        return _project_capped_simplex(w, cap)
     u = np.sort(w)[::-1]
     cssv = np.cumsum(u) - 1.0
     ind = np.arange(1, n + 1)
@@ -82,6 +119,16 @@ def _project_simplex(w: np.ndarray) -> np.ndarray:
     return np.maximum(w - theta, 0.0)
 
 
+def _pgd_residual(w: np.ndarray, direction: np.ndarray, step: float,
+                  cap: float | None = None) -> float:
+    """Largest weight move one more projected step along ``direction`` would make.
+
+    Zero (up to _STATIONARY_TOL) means the iterate is a fixed point of the
+    projected step, i.e. a stationary point of the long-only problem.
+    """
+    return float(np.max(np.abs(_project_simplex(w + step * direction, cap) - w)))
+
+
 def _solve_long_only(
     mu: np.ndarray,
     cov: np.ndarray,
@@ -89,6 +136,7 @@ def _solve_long_only(
     iters: int = 4000,
     lr: float = 0.05,
     seed: int = 0,
+    cap: float | None = None,
 ) -> np.ndarray:
     """Projected gradient descent on simplex (long-only).
 
@@ -106,6 +154,8 @@ def _solve_long_only(
     n = len(mu)
     rng = np.random.default_rng(seed)
     w = rng.dirichlet(np.ones(n))
+    if cap is not None:
+        w = _project_simplex(w, cap)
     lam = 0.0
     for _ in range(iters):
         grad_var = 2.0 * cov @ w
@@ -114,7 +164,7 @@ def _solve_long_only(
         else:
             grad = grad_var - lam * mu
         w = w - lr * grad
-        w = _project_simplex(w)
+        w = _project_simplex(w, cap)
         if target_return is not None:
             shortfall = target_return - float(w @ mu)
             # Adaptive dual: bump λ up while undershooting, decay otherwise.
@@ -143,7 +193,9 @@ def _solve_unconstrained(mu: np.ndarray, cov: np.ndarray,
 
 
 def min_volatility(returns: pd.DataFrame, *, allow_short: bool = False,
-                   risk_free: float = 0.0) -> PortfolioResult:
+                   risk_free: float = 0.0, max_weight: float | None = None) -> PortfolioResult:
+    """Minimum-variance weights. ``max_weight`` caps each weight (long-only only);
+    the closed-form short solution ignores it, so callers must not pass it with shorts."""
     mu = returns.mean().values
     cov = returns.cov().values
     mu_a, cov_a = _annualize(mu, cov)
@@ -151,13 +203,26 @@ def min_volatility(returns: pd.DataFrame, *, allow_short: bool = False,
         inv = np.linalg.pinv(cov_a)
         ones = np.ones(len(mu_a))
         w = inv @ ones / float(ones @ inv @ ones)
+        converged, residual = True, 0.0   # closed form
     else:
-        w = _solve_long_only(np.zeros_like(mu_a), cov_a)
+        w = _solve_long_only(np.zeros_like(mu_a), cov_a, lr=_PGD_LR_MINVOL, cap=max_weight)
+        # Objective w'Σw has gradient 2Σw, so the descent direction is -2Σw.
+        residual = _pgd_residual(w, -2.0 * cov_a @ w, _PGD_LR_MINVOL, cap=max_weight)
+        converged = residual < _STATIONARY_TOL
     ret, vol, sh = _stats(w, mu_a, cov_a, risk_free)
     return PortfolioResult(
         weights={c: float(wi) for c, wi in zip(returns.columns, w)},
         expected_return=ret, volatility=vol, sharpe=sh, samples=int(len(returns)),
+        converged=bool(converged), solver_residual=float(residual),
     )
+
+
+def _sharpe_gradient(w: np.ndarray, mu_a: np.ndarray, cov_a: np.ndarray, rf: float) -> np.ndarray:
+    """∇Sharpe(w) = (μ·σ − (w·μ − rf)·(Σw/σ)) / σ²  with σ = sqrt(w'Σw)."""
+    excess = float(w @ mu_a) - rf
+    var = float(w @ cov_a @ w)
+    vol = np.sqrt(max(var, 1e-12))
+    return (mu_a * vol - excess * (cov_a @ w) / vol) / max(var, 1e-12)
 
 
 def _max_sharpe_long_only_refine(
@@ -166,28 +231,24 @@ def _max_sharpe_long_only_refine(
     rf: float,
     w0: np.ndarray,
     iters: int = 1500,
-    lr: float = 0.02,
+    lr: float = _PGD_LR_SHARPE,
+    cap: float | None = None,
 ) -> np.ndarray:
     """Long-only Sharpe-maximizing refinement via projected gradient *ascent*.
 
     Sharpe(w) = (w·μ − rf) / sqrt(w'Σw)
-    ∇Sharpe   = (μ·σ − (w·μ − rf)·(Σw/σ)) / σ²    (chain rule)
-    where σ = sqrt(w'Σw).
     """
-    w = _project_simplex(w0)
+    w = _project_simplex(w0, cap)
     for _ in range(iters):
-        excess = float(w @ mu_a) - rf
         var = float(w @ cov_a @ w)
-        vol = np.sqrt(max(var, 1e-12))
-        if vol <= 0:
+        if np.sqrt(max(var, 1e-12)) <= 0:
             break
-        grad = (mu_a * vol - excess * (cov_a @ w) / vol) / max(var, 1e-12)
-        w = _project_simplex(w + lr * grad)
+        w = _project_simplex(w + lr * _sharpe_gradient(w, mu_a, cov_a, rf), cap)
     return w
 
 
 def max_sharpe(returns: pd.DataFrame, *, risk_free: float = 0.0,
-                allow_short: bool = False) -> PortfolioResult:
+                allow_short: bool = False, max_weight: float | None = None) -> PortfolioResult:
     mu = returns.mean().values
     cov = returns.cov().values
     mu_a, cov_a = _annualize(mu, cov)
@@ -197,6 +258,7 @@ def max_sharpe(returns: pd.DataFrame, *, risk_free: float = 0.0,
     if allow_short:
         s = float(np.sum(w_tan))
         w = w_tan / s if abs(s) > 1e-12 else _normalize(np.ones_like(mu_a), allow_short=True)
+        converged, residual = True, 0.0   # closed-form tangency
     else:
         # Audit Q3 #4: analytical tangency, clip negatives, renorm, then SLSQP-
         # equivalent projected-gradient ascent on Sharpe.
@@ -206,17 +268,22 @@ def max_sharpe(returns: pd.DataFrame, *, risk_free: float = 0.0,
             w_seed = w_seed / s
         else:
             w_seed = np.full_like(mu_a, 1.0 / max(len(mu_a), 1))
-        w = _max_sharpe_long_only_refine(mu_a, cov_a, risk_free, w_seed)
+        w = _max_sharpe_long_only_refine(mu_a, cov_a, risk_free, w_seed, cap=max_weight)
+        residual = _pgd_residual(w, _sharpe_gradient(w, mu_a, cov_a, risk_free), _PGD_LR_SHARPE,
+                                 cap=max_weight)
+        converged = residual < _STATIONARY_TOL
     ret, vol, sh = _stats(w, mu_a, cov_a, risk_free)
     return PortfolioResult(
         weights={c: float(wi) for c, wi in zip(returns.columns, w)},
         expected_return=ret, volatility=vol, sharpe=sh, samples=int(len(returns)),
+        converged=bool(converged), solver_residual=float(residual),
     )
 
 
 def efficient_frontier(returns: pd.DataFrame, *, points: int = 40,
                         allow_short: bool = False,
-                        risk_free: float = 0.0) -> list[PortfolioResult]:
+                        risk_free: float = 0.0,
+                        max_weight: float | None = None) -> list[PortfolioResult]:
     mu = returns.mean().values
     cov = returns.cov().values
     mu_a, cov_a = _annualize(mu, cov)
@@ -227,7 +294,7 @@ def efficient_frontier(returns: pd.DataFrame, *, points: int = 40,
             if allow_short:
                 w = _solve_unconstrained(mu_a, cov_a, t)
             else:
-                w = _solve_long_only(mu_a, cov_a, target_return=t)
+                w = _solve_long_only(mu_a, cov_a, target_return=t, cap=max_weight)
             ret, vol, sh = _stats(w, mu_a, cov_a, risk_free)
             out.append(PortfolioResult(
                 weights={c: float(wi) for c, wi in zip(returns.columns, w)},
@@ -236,7 +303,17 @@ def efficient_frontier(returns: pd.DataFrame, *, points: int = 40,
             ))
         except Exception:
             continue
-    return out
+    # Targets above the attainable return all map to the same corner portfolio;
+    # keep one point per distinct (vol, return) pair so the frontier is not padded.
+    unique: list[PortfolioResult] = []
+    seen: set[tuple[float, float]] = set()
+    for point in out:
+        key = (round(point.volatility, 10), round(point.expected_return, 10))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(point)
+    return unique
 
 
 _ERC_TOL = 1e-9   # max_i |RC_i - 1/n| below this counts as converged

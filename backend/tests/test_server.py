@@ -178,8 +178,10 @@ def test_route_params_do_not_inject_symbol_into_standalone_derivative(monkeypatc
     assert "symbol" not in params
     assert "topic" not in params
     assert "asset_class" not in params
-    assert params["spot"] == 100
-    assert params["strike"] == 105
+    # WC2-G06: the route no longer invents a demo option (spot/strike/expiry/vol);
+    # only the contract type is defaulted and the function reports needs_input.
+    for key in ("spot", "strike", "years_to_expiry", "vol"):
+        assert key not in params
     assert params["type"] == "CALL"
 
 
@@ -764,10 +766,14 @@ def test_icx_index_query_and_reference_rows(monkeypatch) -> None:
     )
 
     routed = server._route_function_params("ICX", {"query": "NDX", "limit": 50})
-    assert routed["index"] == "NDX"
+    # The handler, not the route, reads an index code out of query (ICX#3).
+    assert "index" not in routed and routed["query"] == "NDX"
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
     from showme.engine.functions.screen.icx import ICXFunction
+
+    by_query = asyncio.run(ICXFunction().execute(query="NDX", live=False, limit=50))
+    assert by_query.data["index"] == "NDX"
 
     out = asyncio.run(ICXFunction().execute(index="SPX", live=False, limit=50))
     assert out.data["status"] == "ok"
@@ -912,7 +918,9 @@ def test_av_media_rows_keep_playable_audio_url(monkeypatch) -> None:
     assert row["audio_url"] == "https://example.com/audio.mp3"
     assert row["url"] == "https://example.com/audio.mp3"
     assert row["source_url"] == "https://example.com/episode"
-    assert row["media_type"] == "audio/mpeg"
+    # AV#7: the enclosure MIME type is no longer the media_type; podcast rows
+    # carry the enumerated media type and keep the playable URL above.
+    assert row["media_type"] == "podcast"
     assert _matches_query(row, "market")
 
 

@@ -37,8 +37,10 @@ def appl() -> FunctionManifest:
         name="Applicable Info",
         category=Category.EQUITIES,
         intent=(
-            "Show applicable regulatory / classification info for a company: SIC, GICS sector & "
-            "industry, primary exchange, fiscal year end, CIK, and the latest filing pointers."
+            "Show applicable regulatory / classification info for a company: SIC, CIK, fiscal year "
+            "end and the latest 10-K/10-Q/8-K filing pointers from SEC EDGAR, plus the provider "
+            "sector, industry and primary exchange. A GICS/NAICS/ICB crosswalk is shown only for "
+            "symbols with a bundled reference profile; otherwise the payload says not_bundled."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[

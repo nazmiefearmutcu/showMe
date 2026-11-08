@@ -77,3 +77,25 @@ describe("WHAL pane — covered window in the footer (WHAL#1)", () => {
     expect(screen.queryByText(/of bars/)).toBeNull();
   });
 });
+
+describe("WHAL pane — covered unit follows the market (WHAL#2)", () => {
+  it("labels the crypto covered window as trades, not bars", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          market: "CRYPTO",
+          rows: [],
+          lookback_hours: 24,
+          window: { lookback_hours: 24, covered_hours: 0.14 },
+        },
+        sources: ["binance_spot_public"],
+      },
+      refetch: vi.fn(),
+    });
+    render(<WHALPane code="WHAL" symbol="BTCUSDT" />);
+    expect(screen.getByText("0.1h of trades")).toBeInTheDocument();
+    expect(screen.queryByText(/of bars/)).toBeNull();
+  });
+});

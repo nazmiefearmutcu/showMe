@@ -102,6 +102,18 @@ def _stub_binance_batch(rows: list[dict[str, Any]]):
     return _stub
 
 
+# wb1-g17 / MOST#3: the live-path stubs carry no provider quote time, so their
+# "live" label is only meaningful while the session is open. Pin the clock to a
+# Monday mid-session so these wiring tests do not depend on the day they run.
+_MOST_PINNED_OPEN_SESSION = datetime(2026, 11, 9, 15, 0, tzinfo=timezone.utc)
+
+
+def _pin_most_open_session(monkeypatch) -> None:
+    import showme.engine.functions.screen._funcs as funcs
+
+    monkeypatch.setattr(funcs, "_most_utc_now", lambda: _MOST_PINNED_OPEN_SESSION)
+
+
 def _fake_crypto_board(count: int = 60) -> list[dict[str, Any]]:
     board: list[dict[str, Any]] = []
     for index in range(count):
@@ -130,7 +142,8 @@ def _fake_crypto_board(count: int = 60) -> list[dict[str, Any]]:
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_most_fx_universe_has_g10_and_em_pairs_live() -> None:
+def test_most_fx_universe_has_g10_and_em_pairs_live(monkeypatch) -> None:
+    _pin_most_open_session(monkeypatch)
     from showme.engine.functions.screen._funcs import MOSTFunction
 
     provider = _AllQuotesProvider()
@@ -148,7 +161,8 @@ def test_most_fx_universe_has_g10_and_em_pairs_live() -> None:
     assert any(row["symbol"] == "USDTRY=X" for row in rows)
 
 
-def test_most_equities_tab_is_not_empty_live() -> None:
+def test_most_equities_tab_is_not_empty_live(monkeypatch) -> None:
+    _pin_most_open_session(monkeypatch)
     from showme.engine.functions.screen._funcs import MOSTFunction
 
     provider = _AllQuotesProvider()
@@ -207,7 +221,8 @@ def test_most_pending_rows_are_emitted_with_nulls_not_dropped(monkeypatch) -> No
     assert result.data["unavailable"] == universe_size
     assert result.data["resolved"] == 0
     assert result.data["status"] == "provider_unavailable"
-    assert result.metadata.get("live") is True
+    # wb1-g17 / MOST#3: no row carries a live quote, so the board is not live.
+    assert result.metadata.get("live") is False
 
 
 # ──────────────────────────────────────────────────────────────────────────

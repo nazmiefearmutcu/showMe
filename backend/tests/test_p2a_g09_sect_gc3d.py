@@ -54,8 +54,10 @@ def test_sect_model_mtd_has_no_fabricated_period_change() -> None:
     out = _run(SECTFunction(FunctionDeps()).execute(period="YTD"))
     assert out.data["status"] == "model"
     assert all(r["change_pct"] is None for r in out.data["rows"]), out.data["rows"][:2]
+    # WC2-G05: the 1D model constants were fabricated values too; model rows now
+    # carry no change in any window (see test_wc2_g05_sect_period.py).
     one_day = _run(SECTFunction(FunctionDeps()).execute(period="1D"))
-    assert all(r["change_pct"] is not None for r in one_day.data["rows"])
+    assert all(r["change_pct"] is None for r in one_day.data["rows"])
 
 
 # ── GC3D ────────────────────────────────────────────────────────────────

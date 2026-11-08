@@ -6,9 +6,10 @@
  * backend r×g sensitivity surface rendered as a compact grid with the
  * current-assumption cell highlighted.
  *
- * Honesty: the backend returns fair_value_per_share = 0 when no TTM dividend
- * is available (non-payer or feed down); the pane then hides the misleading
- * premium/discount figure and surfaces the provider warning verbatim. The
+ * Honesty: the backend returns status needs_input with fair_value_per_share =
+ * null when no positive TTM dividend is available (non-payer or feed down);
+ * the pane then shows no fair value or premium and surfaces the provider
+ * warning verbatim. The
  * r <= g error envelope is shown as a validation state, never as a number.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";

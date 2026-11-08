@@ -8,7 +8,7 @@ Tests every seed registers via load_seeds(), passes the shared
 shape-quality bar, and honours the spec's per-code semantic invariants:
 
   * ECFC must declare a `vintage_visible_in_payload` semantic test.
-  * GMM must render as a bar_ladder chart and use FRED as primary.
+  * GMM must render as a bar_ladder chart and use World Bank as primary.
   * REGM must lead with the internal model and expose at least one
     `model_assumption` control input.
   * TRDH must declare no chart grammar (table-only) and use `awareness`
@@ -135,10 +135,11 @@ def test_gmm_chart_is_bar_ladder() -> None:
     )
 
 
-def test_gmm_primary_provider_is_fred() -> None:
+def test_gmm_primary_provider_is_worldbank() -> None:
+    # GMM serves the World Bank matrix; FRED release surprises were never produced.
     gmm = REGISTRY.get("GMM")
-    assert gmm.provider_chain.primary == "fred", (
-        f"GMM primary provider must be 'fred', got {gmm.provider_chain.primary!r}"
+    assert gmm.provider_chain.primary == "worldbank", (
+        f"GMM primary provider must be 'worldbank', got {gmm.provider_chain.primary!r}"
     )
 
 

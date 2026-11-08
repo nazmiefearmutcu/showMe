@@ -15,7 +15,7 @@
  * `lastParams` capture.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { SRSKPane } from "./SRSK";
 import { downloadGridCsv } from "@/design-system/grid-csv";
 
@@ -373,5 +373,57 @@ describe("SRSK pane — grid CSV export", () => {
     render(<SRSKPane code="SRSK" />);
     expect(screen.getByTitle("Download CSV")).toBeDisabled();
     expect(downloadGridCsv).not.toHaveBeenCalled();
+  });
+});
+
+describe("SRSK pane — highest-risk KPI follows the highest-PD card", () => {
+  it("shows the backend highest-PD sovereign even when the score ranking differs", () => {
+    const rows = [
+      srskRow({ country: "TR", risk_score: 90.1, pd_1y_pct: 1.67 }),
+      srskRow({ country: "DE", risk_score: 30.2, pd_1y_pct: 16.67 }),
+    ];
+    const payload = livePayload(rows);
+    payload.data.data.cards = {
+      highest_pd_country: "DE",
+      highest_pd: 16.67,
+      recovery: 0.4,
+      data_mode: "live_official",
+      as_of: "2024",
+    };
+    setMockFn({ state: "ok", ...payload });
+    render(<SRSKPane code="SRSK" />);
+    expect(screen.getByText("1Y PD 16.67%")).toBeInTheDocument();
+    expect(screen.queryByText("1Y PD 1.67%")).toBeNull();
+  });
+});
+
+describe("SRSK pane — partial-leg composites", () => {
+  it("shows the leg coverage and does not rank a partial composite", () => {
+    const rows = [
+      srskRow({ country: "TR", risk_score: 90.1, pd_1y_pct: 26.9, legs_present: 4, legs_total: 4 }),
+      srskRow({ country: "DE", risk_score: 99.9, pd_1y_pct: 40.0, legs_present: 3, legs_total: 4 }),
+      srskRow({ country: "US", risk_score: 55.76, pd_1y_pct: 11.23, legs_present: 4, legs_total: 4 }),
+    ];
+    setMockFn({ state: "ok", ...livePayload(rows) });
+    render(<SRSKPane code="SRSK" />);
+    expect(screen.getByText("3/4")).toBeInTheDocument();
+    // DE has the top score but only 3 legs: it is not ranked #1 and gets no rank cell.
+    expect(screen.getByText(/1 partial legs/)).toBeInTheDocument();
+    const grid = screen.getByRole("table", { name: /SRSK ranked sovereign risk table/ });
+    const tr = within(grid).getAllByRole("row").find((r) => r.textContent?.includes("DE"));
+    expect(tr?.textContent).not.toMatch(/^\s*1/);
+    expect(within(grid).getAllByRole("row")[1].textContent).toContain("TR");
+  });
+});
+
+describe("SRSK pane — PD is labelled as an uncalibrated proxy", () => {
+  it("states that the PD is not a market-implied default probability", () => {
+    const payload = livePayload();
+    Object.assign(payload.data.data.summary, { pd_calibration: "uncalibrated" });
+    setMockFn({ state: "ok", ...payload });
+    render(<SRSKPane code="SRSK" />);
+    expect(
+      screen.getByText(/uncalibrated macro proxy, not a market-implied default probability/),
+    ).toBeInTheDocument();
   });
 });

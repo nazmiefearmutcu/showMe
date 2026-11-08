@@ -56,6 +56,57 @@ class PolymarketAdapter(BaseDataSource):
         return await self.search(q, limit=request.limit or 30)
 
 
+PUBLIC_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
+
+
+async def search_markets_by_topic(client: httpx.AsyncClient, query: str, *,
+                                  target: int = 100, active: bool | None = None,
+                                  closed: bool | None = None) -> list[dict[str, Any]]:
+    """Topic search through Polymarket's public-search endpoint.
+
+    Gamma's ``/markets`` endpoint ignores its ``search`` parameter (every topic
+    returns the same top-volume markets), so topic queries go to
+    ``/public-search``, which ranks events by relevance. Each event's nested
+    markets are flattened and de-duplicated.
+
+    public-search does not apply Gamma's ``active``/``closed`` flags, so they
+    are enforced here: ``active=True`` drops markets reporting ``active=false``,
+    and a boolean ``closed`` keeps only markets with that closed state. ``None``
+    applies no filter for that flag. The caller still applies the liquidity
+    and end-date filters, as it does for the browse path.
+    """
+    r = await client.get(PUBLIC_SEARCH_URL, params={
+        "q": query.strip(),
+        "limit_per_type": min(max(target, 10), 100),
+    })
+    r.raise_for_status()
+    payload = r.json() or {}
+    events = payload.get("events") if isinstance(payload, dict) else payload
+    if not isinstance(events, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        for market in event.get("markets") or []:
+            if not isinstance(market, dict):
+                continue
+            if active and market.get("active") is False:
+                continue
+            if closed is not None and market.get("closed") is not None and bool(market.get("closed")) != closed:
+                continue
+            key = str(market.get("id") or market.get("slug") or market.get("question"))
+            if key in seen:
+                continue
+            seen.add(key)
+            row = dict(market)
+            if not row.get("endDate"):
+                row["endDate"] = event.get("endDate")
+            rows.append(row)
+    return rows[:target]
+
+
 async def fetch_markets(client: httpx.AsyncClient, query: str | None = None, *,
                         active: bool | None = True, closed: bool | None = False,
                         limit: int = 100, tag_id: int | None = None,
@@ -63,9 +114,13 @@ async def fetch_markets(client: httpx.AsyncClient, query: str | None = None, *,
     """Filter before the provider limit, and page through its 100-row windows.
 
     ``closed=None`` sends no ``closed`` flag at all (status=all); Gamma treats
-    any explicit ``closed`` value as a hard filter.
+    any explicit ``closed`` value as a hard filter. A non-empty ``query`` is a
+    topic search and goes to ``/public-search`` (see search_markets_by_topic).
     """
     target = min(max(limit, 1), 400)
+    if query and str(query).strip():
+        return await search_markets_by_topic(client, str(query), target=target,
+                                             active=active, closed=closed)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     offset = 0
@@ -82,8 +137,6 @@ async def fetch_markets(client: httpx.AsyncClient, query: str | None = None, *,
             params["end_date_min"] = datetime.now(timezone.utc).isoformat()
         if tag_id:
             params["tag_id"] = tag_id
-        if query:
-            params["search"] = query
         r = await client.get("https://gamma-api.polymarket.com/markets", params=params)
         r.raise_for_status()
         page = r.json() or []

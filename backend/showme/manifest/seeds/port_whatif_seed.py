@@ -1,8 +1,10 @@
-"""PORT_WHATIF — Portfolio Scenario Calculator.
+"""PORT_WHATIF — Portfolio What-If (one hypothetical trade on the current book).
 
-What-if planner: apply a list of buy/sell/add/remove actions on top of
-the current PORT and re-compute weights, exposure, risk metrics, and
-estimated tax impact. Paper-safe — outputs are scenario projections.
+Applies one hypothetical buy or sell of a symbol, at the quantity and cost per
+share the user typed, on top of the current PORT book. Re-prices the book
+before and after, debits or credits cash at the typed cost, and reports the
+change in market value, unrealized P&L, total equity and position count.
+Paper-safe: scenario projections only, nothing is sent to a broker.
 """
 from __future__ import annotations
 
@@ -37,10 +39,9 @@ def port_whatif() -> FunctionManifest:
         name="Portfolio What-If",
         category=Category.PORTFOLIO,
         intent=(
-            "Apply a list of buy/sell/add/remove actions on top of the "
-            "current PORT and re-compute weights, exposure, risk metrics, "
-            "and estimated tax impact under the hypothetical post-trade "
-            "book. Strictly research — no live execution path."
+            "Price one hypothetical buy or sell of a symbol against the current "
+            "PORT book: the change in market value, unrealized P&L, total equity, "
+            "cash and position count. Strictly research, no live execution path."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -55,48 +56,28 @@ def port_whatif() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="credential_id",
-                label="Account",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Account whose current book is the baseline.",
-            ),
-            InputSpec(
-                name="scenario_actions",
-                label="Actions",
-                control=ControlKind.CONSTRAINT_SET,
+                name="quantity",
+                label="Quantity",
+                control=ControlKind.NUMBER,
                 required=True,
                 description=(
-                    "Ordered list of hypothetical actions: "
-                    "[{action: buy|sell|add|remove, symbol, qty, price?}, ...]. "
-                    "Applied sequentially to the baseline."
+                    "Shares to buy (positive) or sell (negative). Required and non-zero; "
+                    "no default is assumed."
                 ),
+                step=1,
             ),
             InputSpec(
-                name="cash_floor",
-                label="Cash floor",
+                name="cost",
+                label="Cost per share",
                 control=ControlKind.NUMBER,
-                required=False,
-                description="Reject scenarios that drive cash below this floor.",
+                required=True,
+                description=(
+                    "Price per share the trade is booked at. Required and positive; "
+                    "no default is assumed."
+                ),
                 min=0,
-                max=10000000,
-                step=100,
+                step=0.01,
                 unit="ccy",
-            ),
-            InputSpec(
-                name="recompute_risk",
-                label="Recompute risk",
-                control=ControlKind.BOOLEAN,
-                required=False,
-                description="Run a lightweight σ/VaR re-estimate on the post-trade book.",
-            ),
-            InputSpec(
-                name="ccy",
-                label="Display currency",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Reporting currency.",
-                options=["native", "USD", "EUR", "GBP", "TRY", "JPY"],
             ),
             InputSpec(
                 name="paper_mode",
@@ -105,24 +86,9 @@ def port_whatif() -> FunctionManifest:
                 required=True,
                 description="Research only. Scenario projections cannot fire orders.",
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for live quotes.",
-                options=[
-                    DataMode.LIVE_EXCHANGE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
-            "cash_floor": 0,
-            "recompute_risk": True,
-            "ccy": "native",
             "paper_mode": True,
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
@@ -136,12 +102,13 @@ def port_whatif() -> FunctionManifest:
         caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=False),
         output_contract=OutputContract(
             must_have=[
-                "as_of",
-                "baseline",
-                "scenario_actions_applied",
-                "projected",
-                "deltas",
-                "data_mode",
+                "hypothetical_added",
+                "before",
+                "after",
+                "delta",
+                "summary",
+                "rows",
+                "methodology",
             ],
             rows=True,
             series=False,
@@ -152,65 +119,66 @@ def port_whatif() -> FunctionManifest:
         chart_grammar=None,
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="symbol", label="Symbol", kind="text"),
-                ColumnSpec(key="qty_now", label="Qty now", kind="number", format="%.6g"),
-                ColumnSpec(key="qty_after", label="Qty after", kind="number", format="%.6g"),
-                ColumnSpec(key="weight_now", label="Weight now", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="weight_after", label="Weight after", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="delta_value", label="Δ value", kind="currency", unit="ccy", format="%.0f"),
-                ColumnSpec(key="realized_pnl", label="Realized PnL", kind="currency", unit="ccy", format="%.2f"),
+                ColumnSpec(key="metric", label="Metric", kind="text"),
+                ColumnSpec(key="before", label="Before", kind="number", format="%.2f"),
+                ColumnSpec(key="after", label="After", kind="number", format="%.2f"),
+                ColumnSpec(key="value", label="Change", kind="number", format="%.2f"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="projected_equity", label="Projected Equity", kind="big_number", unit="ccy"),
+                CardSlot(key="total_equity_delta", label="Total equity Δ", kind="big_number", unit="ccy"),
+                CardSlot(key="market_value_delta", label="Market value Δ", kind="kpi", unit="ccy"),
+                CardSlot(key="unrealized_pnl_delta", label="Unrealized P&L Δ", kind="kpi", unit="ccy"),
                 CardSlot(key="cash_delta", label="Cash Δ", kind="kpi", unit="ccy"),
-                CardSlot(key="exposure_delta_pct", label="Exposure Δ", kind="kpi", unit="%"),
-                CardSlot(key="vol_delta", label="σ Δ", kind="kpi", unit="%"),
-                CardSlot(key="realized_pnl_total", label="Realized PnL", kind="trend_pill", unit="ccy"),
-                CardSlot(key="estimated_tax_impact", label="Tax Δ", kind="kpi", unit="ccy"),
-                CardSlot(key="paper_mode", label="Mode", kind="badge"),
-                CardSlot(key="data_mode", label="Data", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "PORT_WHATIF starts from the credential's current PORT "
-            "snapshot, then applies scenario_actions sequentially: 'buy' "
-            "and 'add' increase qty (and decrement cash by qty × price); "
-            "'sell' and 'remove' decrement qty (and credit cash). 'price' "
-            "defaults to current last when omitted. After each action, "
-            "the projected book is re-aggregated: market_value, weights, "
-            "and (optionally) realized σ + VaR are re-estimated from the "
-            "historical Σ window. Realized PnL is computed FIFO against "
-            "current lots for accuracy; estimated_tax_impact uses the "
-            "term flag on each sold lot. cash_floor protects the user "
-            "from running cash negative — a violation surfaces as a "
-            "warning, not a hard rejection. Strictly research; the "
-            "scenario_actions payload never reaches a broker."
+            "PORT_WHATIF prices the current PORT book twice: once as it stands, "
+            "and once with one hypothetical trade applied. A buy merges into the "
+            "held lot of the same symbol at a weighted-average cost, or opens a "
+            "lot. A sell reduces the lot first-in-first-out and realizes P&L "
+            "against the lot cost. Cash is debited (buy) or credited (sell) at the "
+            "typed cost; a book that tracks no cash reports no equity change. A "
+            "sell larger than the holding is refused, because shorts are not "
+            "modelled. Quotes are fetched once and shared by both runs. Strictly "
+            "research; the trade never reaches a broker."
         ),
         formula_dict={
-            "QtyAfter": Formula(
-                expression=r"q_i^{after} = q_i^{base} + \sum_a \delta_{a,i}",
-                variables={"δ_a,i": "Action a's qty delta on symbol i (signed)"},
+            "CashDelta": Formula(
+                expression=r"\Delta C = -q \cdot c",
+                variables={
+                    "q": "Signed quantity (negative for a sell)",
+                    "c": "Cost per share",
+                },
+            ),
+            "WeightedCost": Formula(
+                expression=r"\bar{c}' = (q_0 \bar{c}_0 + q\,c) / (q_0 + q)",
+                variables={
+                    "q_0": "Quantity held in the lot before the buy",
+                    "\\bar{c}_0": "Lot average cost before the buy",
+                },
+                notes="Applies to a buy into a held lot.",
             ),
             "RealizedPnL": Formula(
-                expression=r"R = \sum_{sold} (p_{sell} - basis_{lot}) \cdot qty_{sold}",
+                expression=r"R = \sum_{sold} (c - \bar{c}_{lot}) \cdot q_{sold}",
                 variables={},
-                notes="FIFO lot matching for accuracy.",
+                notes="FIFO over lots of the same symbol and currency.",
             ),
-            "WeightAfter": Formula(
-                expression=r"w_i^{after} = q_i^{after} p_i / \sum_j q_j^{after} p_j",
+            "TotalEquityDelta": Formula(
+                expression=r"\Delta E = (MV^{after} + C^{after}) - (MV^{before} + C^{before})",
                 variables={},
+                notes="Withheld (None) when the book tracks no cash.",
             ),
         },
         field_dict={
-            "baseline": FieldDef(description="Snapshot of PORT before applying actions.", source="computed_from_broker"),
-            "scenario_actions_applied[]": FieldDef(description="Echo of actions with per-action result + warnings.", source="computed"),
-            "projected": FieldDef(description="Post-trade book under the scenario.", source="computed"),
-            "deltas": FieldDef(description="Equity, cash, exposure, σ deltas vs baseline.", source="computed"),
+            "hypothetical_added": FieldDef(description="The trade applied: symbol, quantity, cost per share.", source="computed"),
+            "before": FieldDef(description="PORT output for the current book.", source="computed"),
+            "after": FieldDef(description="PORT output for the book with the trade applied.", source="computed"),
+            "delta": FieldDef(description="Change in market value, unrealized P&L, position count and total equity.", source="computed"),
+            "summary": FieldDef(description="Trade cash effect, equity and P&L changes in the trade currency.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -226,22 +194,25 @@ def port_whatif() -> FunctionManifest:
                 assertions=["defaults.paper_mode == True"],
             ),
             SemanticTest(
-                name="port_whatif_empty_actions_no_delta",
-                description="Empty scenario_actions yields projected == baseline.",
-                inputs={"scenario_actions": []},
-                assertions=["projected == baseline", "deltas.all_zero"],
+                name="port_whatif_missing_cost_needs_input",
+                description="A missing cost is an explicit needs_input state, never a zero-cost gain.",
+                inputs={"quantity": 100},
+                assertions=["status == 'needs_input'", "'cost' in missing"],
             ),
             SemanticTest(
-                name="port_whatif_actions_applied_in_order",
-                description="Sequential actions accumulate; final qty matches running sum.",
-                inputs={},
-                assertions=["final_qty == baseline_qty + sum(action_deltas)"],
+                name="port_whatif_buy_debits_cash",
+                description="A buy debits cash at quantity x cost and moves equity by the price gain.",
+                inputs={"quantity": 100, "cost": 100},
+                assertions=[
+                    "summary.cash_delta == -quantity * cost",
+                    "summary.total_equity_delta == summary.market_value_delta + summary.cash_delta when cash is tracked",
+                ],
             ),
             SemanticTest(
-                name="port_whatif_cash_floor_violation_warns",
-                description="Scenario that drives cash below floor surfaces a warning.",
-                inputs={"cash_floor": 1000},
-                assertions=["warnings_non_empty when projected_cash < 1000"],
+                name="port_whatif_sell_beyond_holding_refused",
+                description="A sell larger than the holding is refused, never booked as a short.",
+                inputs={"quantity": -50},
+                assertions=["status == 'input_error' when fewer than 50 shares are held"],
             ),
             SemanticTest(
                 name="port_whatif_no_broker_calls_for_scenario",

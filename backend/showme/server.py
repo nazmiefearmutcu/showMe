@@ -691,15 +691,29 @@ async def _execute_price_history_alias(
     rows: list[dict[str, Any]] = []
     source_name = ""
     deep = _truthy_value(params.get("deep_history", params.get("deep", True)))
+    # GP-only: fetch a warm-up before the window so overlays are not computed
+    # from the window's first bar, and report the span actually returned.
+    gp_mode = str(code).upper() == "GP"
+    fetch_days, fetch_bars = (
+        _gp_fetch_extent(days, bars, interval) if gp_mode else (days, bars)
+    )
     try:
         history = await fetch_longest_history(
             symbol=getattr(instrument, "symbol", ""),
             asset_class=str(asset_class).upper(),
             interval=interval,
-            days=days,
-            bars=bars,
+            days=fetch_days,
+            bars=fetch_bars,
             deep_history=deep,
         )
+        overlay_payload: dict[str, Any] = {}
+        span_payload: dict[str, Any] = {}
+        if history.rows and gp_mode:
+            history, overlay_payload, span_payload = _gp_window_history(
+                history, code=code, days=days, bars=bars, interval=interval
+            )
+        elif history.rows:
+            overlay_payload = _price_history_overlays(code, history.rows)
         if history.rows:
             FunctionResult = registry_mod.FunctionResult
             return FunctionResult(
@@ -736,7 +750,8 @@ async def _execute_price_history_alias(
                     "winner_first_ts_ms": history.metadata.get(
                         "winner_first_ts_ms"
                     ),
-                    **_price_history_overlays(code, history.rows),
+                    **overlay_payload,
+                    **span_payload,
                 },
                 sources=[history.source],
                 warnings=history.warnings,
@@ -795,6 +810,116 @@ async def _execute_price_history_alias(
             "selection_reason": "adapter_fallback",
         },
     )
+
+
+GP_INDICATOR_WARMUP_BARS = 200
+# A returned span shorter than this share of the requested window is reported.
+GP_SPAN_TOLERANCE = 0.9
+
+
+def _gp_bar_seconds(interval: str) -> int:
+    # Local import keeps the shared chart_history import block in this module untouched.
+    from showme.chart_history import INTERVAL_SECONDS
+
+    return INTERVAL_SECONDS.get(interval, 86_400)
+
+
+def _gp_fetch_extent(days: int, bars: int, interval: str) -> tuple[int, int]:
+    """Widen the GP history request by a warm-up before the requested window.
+
+    The extra calendar days cover ``GP_INDICATOR_WARMUP_BARS`` bars at the
+    interval (5 trading days per 7 calendar days, plus a small margin).
+    """
+    seconds = _gp_bar_seconds(interval)
+    warm_days = (GP_INDICATOR_WARMUP_BARS * seconds * 7) // (86_400 * 5) + 2
+    return days + warm_days, bars + GP_INDICATOR_WARMUP_BARS
+
+
+def _gp_row_seconds(row: dict[str, Any]) -> float | None:
+    try:
+        value = float(row.get("time"))
+        return value / 1000 if value >= 10_000_000_000 else value
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(row.get("date")).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _gp_window_history(
+    history: Any, *, code: str, days: int, bars: int, interval: str
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """GP-only: clip the widened series to the requested window.
+
+    Overlays are computed on the full series (warm-up included) and then
+    clipped to the window. The returned span is the real first/last bar, and
+    a warning is added when it is shorter than the requested window.
+    """
+    full = list(history.rows)
+    window_start = datetime.now(tz=timezone.utc).timestamp() - days * 86_400
+    in_window = sum(
+        1
+        for row in full
+        if (_gp_row_seconds(row) or 0.0) >= window_start
+    )
+    window_rows = full[len(full) - in_window:] if in_window else full
+    display = window_rows[-bars:] if bars > 0 else window_rows
+    display_start = len(full) - len(display)
+    # Warm-up bars are only the rows fetched before the window start; rows that
+    # the bars cap trims from inside the window are not warm-up.
+    warmup_bars = len(full) - len(window_rows)
+
+    first_s = _gp_row_seconds(display[0]) if display else None
+    last_s = _gp_row_seconds(display[-1]) if display else None
+    span_days = (
+        round((last_s - first_s) / 86_400, 2)
+        if first_s is not None and last_s is not None
+        else None
+    )
+
+    overlay_payload: dict[str, Any] = {}
+    indicators = _price_history_overlays(code, full).get("indicators", {})
+    if first_s is not None and indicators:
+        clipped = {
+            name: [
+                point
+                for point in series
+                if isinstance(point.get("time"), (int, float))
+                and point["time"] >= first_s
+            ]
+            for name, series in indicators.items()
+        }
+        clipped = {name: series for name, series in clipped.items() if series}
+        if clipped:
+            overlay_payload = {"indicators": clipped}
+
+    warnings = list(history.warnings)
+    # first/last bar start times miss one bar of grain; a monthly series cannot
+    # span a 1M window any closer than that, so the grain is counted as covered.
+    bar_days = _gp_bar_seconds(interval) / 86_400
+    if span_days is not None and span_days + bar_days < days * GP_SPAN_TOLERANCE:
+        warnings.append(
+            f"Returned history spans {span_days:g} days, shorter than the requested "
+            f"{days}-day window (provider limit, bar cap or first available bar)."
+        )
+    history.rows = display
+    history.warnings = warnings
+
+    span_payload: dict[str, Any] = {
+        "span_days": span_days,
+        "requested_days": days,
+        "first_bar_time": int(first_s) if first_s is not None else None,
+        "last_bar_time": int(last_s) if last_s is not None else None,
+        "indicator_warmup_bars": warmup_bars,
+    }
+    if display_start > 0:
+        # Full warm-up series so the client's RSI/MACD/ATR rail reads the same history.
+        span_payload["indicator_ohlcv"] = full
+    return history, overlay_payload, span_payload
 
 
 def _price_history_overlays(code: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1860,6 +1985,19 @@ def enforce_live_or_label_synthetic(
         data_state = "provider_unavailable"
     elif source_would_be_live and not declares_not_live:
         data_state = "live"
+    elif any(
+        isinstance(container, dict)
+        and str(container.get("status") or "").strip().lower() in _FAILURE_DATA_STATUSES
+        for container in (payload.get("data"), payload)
+    ) and not any(
+        isinstance(container, dict) and (container.get("rows") or container.get("series"))
+        for container in (payload.get("data"), payload)
+    ):
+        # An explicit failure status with no source left to cite (the provider
+        # chain failed and no failed provider is listed - DES#2) carries no data
+        # at all: it is unavailable, not synthetic. "synthetic" below stays for
+        # fallback/template rows that do carry values.
+        data_state = "provider_unavailable"
     else:
         # H-1 fix (2026-09-08): an empty / all-sentinel source summary
         # cannot prove liveness. HVT/IVOL provider-failure templates
@@ -2003,14 +2141,20 @@ def unavailable_function_data(
         asset_class: str | None = default_asset_class_name(symbol, params.get("asset_class"))
     else:
         asset_class = None
+    # ISIN#7: values the /api/fn route filled in are not the caller's request.
+    injected = set(params.get("__route_defaults") or ())
+
+    def _asked(key: str) -> Any:
+        return None if key in injected else params.get(key)
+
     requested = {
         "symbol": symbol,
         "asset_class": asset_class,
-        "query": params.get("query"),
-        "topic": params.get("topic"),
-        "limit": params.get("limit") or params.get("top_n"),
-        "range": params.get("range"),
-        "days": params.get("days"),
+        "query": _asked("query"),
+        "topic": _asked("topic"),
+        "limit": _asked("limit") or _asked("top_n"),
+        "range": _asked("range"),
+        "days": _asked("days"),
     }
     data = {
         "symbol": symbol,

@@ -252,10 +252,11 @@ describe("DCF pane — model inputs", () => {
   it("sends no FCFE or shares by default so the provider supplies them", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<DCFPane code="DCF" symbol="AAPL" />);
+    // Defaults mirror the manifest (DCF#4): 8% stage-1 growth, 2.5% terminal, 10y.
     expect(lastParams).toMatchObject({
-      growth_high: 0.1,
+      growth_high: 0.08,
       growth_terminal: 0.025,
-      years: 5,
+      years: 10,
     });
     expect(lastParams).not.toHaveProperty("fcfe");
     expect(lastParams).not.toHaveProperty("shares_outstanding");
@@ -295,7 +296,7 @@ describe("DCF pane — model inputs", () => {
     render(<DCFPane code="DCF" symbol="AAPL" />);
     fireEvent.click(screen.getByText("7y"));
     expect(lastParams?.years).toBe(7);
-    expect(localStorage.getItem("showme.dcf.years")).toBe("7");
+    expect(localStorage.getItem("showme.dcf.projection_years")).toBe("7");
   });
 });
 

@@ -5,6 +5,7 @@
  * ribbon for hike/cut/hold tally, full-width policy-rate history chart,
  * sparkline column, sectioned filter strip, hover-lift rows.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   DataGrid,
@@ -305,8 +306,8 @@ export function BTMMPane({ code }: FunctionPaneProps) {
   // row's `source`) when it served the hardcoded snapshot. That is the clean
   // frontend signal — no backend change needed.
   const isFallback =
-    (data?.sources?.some((s) => s.toLowerCase().includes("fallback")) ?? false) ||
-    rawRows.some((r) => String(r.source ?? "").toLowerCase().includes("fallback"));
+    (data?.sources?.some((s) => foldSearchText(s).includes("fallback")) ?? false) ||
+    rawRows.some((r) => foldSearchText(String(r.source ?? "")).includes("fallback"));
   // P1.3 / P2.6: freshness honesty. "live" used to mean "the fetch succeeded"
   // even when serving a 6h cache or a 24-day-old fallback. Reflect REAL
   // freshness from `stale_seconds` (server-computed age of the freshest
@@ -698,21 +699,21 @@ function realTrendSeries(row: BTMMRow): number[] {
 }
 
 function filterRows(rows: BTMMRow[], search: string): BTMMRow[] {
-  const needle = search.trim().toLowerCase();
+  const needle = foldSearchText(search.trim());
   if (!needle) return rows;
   return rows.filter((row) =>
-    [
-      row.country_code,
-      row.bis_ref_area,
-      row.country,
-      row.central_bank,
-      row.currency,
-      row.region,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase()
-      .includes(needle),
+    foldSearchText(
+      [
+        row.country_code,
+        row.bis_ref_area,
+        row.country,
+        row.central_bank,
+        row.currency,
+        row.region,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    ).includes(needle),
   );
 }
 

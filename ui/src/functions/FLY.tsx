@@ -7,10 +7,10 @@
  * inferred) + a status table: callsign, country, altitude, speed, heading,
  * ground/airborne pill, last contact (UTC) + the in-pane alert history.
  *
- * Honesty: the backend only returns aircraft when `live_flight=true` AND
- * OpenSky answers; the pane always sends the flag and renders the
- * provider_unavailable payload's reason as an explicit empty state —
- * no sample aircraft are ever invented. Applied filters show as pills so
+ * Honesty: the backend returns aircraft only when OpenSky answers (the
+ * `reference` flag skips the feed and returns an explicit empty state); the
+ * pane renders the provider_unavailable payload's reason as an explicit empty
+ * state — no sample aircraft are ever invented. Applied filters show as pills so
  * an empty board is always attributable to a filter or an outage.
  *
  * Alerts (2026-09-16): client-side rules evaluated on every poll against
@@ -133,9 +133,6 @@ export function FLYPane({ code }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<FLYData>({
     code,
     params: {
-      // live_flight is the backend's explicit opt-in for the keyless
-      // OpenSky feed — without it the function refuses to run.
-      live_flight: true,
       callsign: applied.callsign || undefined,
       country: applied.country || undefined,
       limit,
@@ -397,7 +394,7 @@ export function FLYPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Flight Tracking"
-          subtitle={`${rows.length} aircraft · OpenSky live_flight`}
+          subtitle={`${rows.length} aircraft · OpenSky live feed`}
           trailing={
             <FunctionControlGroup>
               <input

@@ -138,7 +138,7 @@ class WSManager:
             except Exception as e:
                 self.health["reconnects"] += 1
                 logger.warning(
-                    f"WS shard #{shard_id} disconnected: {e}; backing off {backoff:.1f}s"
+                    f"WS shard #{shard_id} disconnected: {str(e) or type(e).__name__}; backing off {backoff:.1f}s"
                 )
                 try:
                     await asyncio.sleep(min(backoff, 60))

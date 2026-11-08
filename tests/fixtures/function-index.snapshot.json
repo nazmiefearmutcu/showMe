@@ -1661,14 +1661,14 @@
   },
   {
     "code": "FXFC",
-    "name": "FX Forecasts",
+    "name": "CIP FX Forward Path",
     "category": "fx",
     "description": "",
     "asset_classes": [
       "FX"
     ],
     "usage": {
-      "purpose": "FX Forecasts function.",
+      "purpose": "CIP FX Forward Path function.",
       "scope": "global",
       "asset_classes": [
         "FX"
@@ -2577,14 +2577,14 @@
   },
   {
     "code": "TRAN",
-    "name": "Earnings Call Transcripts",
+    "name": "Earnings Transcript or Release",
     "category": "news",
     "description": "",
     "asset_classes": [
       "EQUITY"
     ],
     "usage": {
-      "purpose": "Earnings Call Transcripts function.",
+      "purpose": "Earnings transcript or release function.",
       "scope": "symbol",
       "asset_classes": [
         "EQUITY"

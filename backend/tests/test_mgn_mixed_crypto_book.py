@@ -23,9 +23,10 @@ def _run(coro):
 
 
 def _book():
+    # A perpetual is held as asset_class CRYPTO (MGN#2-RQ), the real representation.
     return [
         {"symbol": "BTC-USD", "asset_class": "CRYPTO", "quantity": 0.5, "avg_cost": 95000, "last": 95000},
-        {"symbol": "BTC-PERP", "asset_class": "DERIVATIVE", "quantity": 0.1, "avg_cost": 95000, "last": 95000},
+        {"symbol": "BTC-PERP", "asset_class": "CRYPTO", "quantity": 0.1, "avg_cost": 95000, "last": 95000},
     ]
 
 
@@ -43,7 +44,7 @@ def test_spot_btc_with_btc_perp_is_margined_at_crypto_spot_rate_default_account(
     book = [
         PortfolioPosition(instrument=Instrument(symbol="BTC-USD", asset_class=AssetClass.CRYPTO),
                           quantity=0.5, avg_cost=95000),
-        PortfolioPosition(instrument=Instrument(symbol="BTC-PERP", asset_class=AssetClass.DERIVATIVE),
+        PortfolioPosition(instrument=Instrument(symbol="BTC-PERP", asset_class=AssetClass.CRYPTO),
                           quantity=0.1, avg_cost=95000),
     ]
 
@@ -104,9 +105,11 @@ def test_inferred_margin_type_is_refreshed_when_book_changes(monkeypatch):
     monkeypatch.setattr(me, "PortfolioState", _State)
     monkeypatch.setattr(me, "_save_config", _save)
     monkeypatch.setattr(me, "_load_config", _load)
-    me.calc_all_accounts(prices={"BTC-USD": 95000.0, "BTC-PERP": 95000.0})
-    assert stored["accounts"]["main"]["margin_type"] == "crypto_futures"
+    # MGN#6: a calculation is read-only, so the inferred type is read from the returned result.
+    res = me.calc_all_accounts(prices={"BTC-USD": 95000.0, "BTC-PERP": 95000.0})
+    assert res["accounts"][0]["margin_type"] == "crypto_futures"
     # The perp is closed: the book is now spot BTC only.
     book.pop()
-    me.calc_all_accounts(prices={"BTC-USD": 95000.0})
-    assert stored["accounts"]["main"]["margin_type"] == "crypto_spot"
+    res = me.calc_all_accounts(prices={"BTC-USD": 95000.0})
+    assert res["accounts"][0]["margin_type"] == "crypto_spot"
+    assert stored == {}

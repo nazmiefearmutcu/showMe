@@ -7,7 +7,7 @@
  *  - loading skeleton, error, and ok branches render;
  *  - a provider_unavailable payload (no live bars) renders the honest
  *    "no execution plan" state instead of fabricated slices;
- *  - slice rows carry the benchmark VWAP / slippage columns;
+ *  - slice rows carry the benchmark px (bar typical price) / slippage columns;
  *  - bps tints follow backend COST semantics (positive IS = paid more on
  *    BUY; slip tints flip with the side);
  *  - one interaction: switching the SIDE control to SELL activates it.
@@ -57,11 +57,10 @@ const okPayload = {
       qty: 8.33333333,
       cum_qty: 8.33333333,
       bar_close: 321.88,
-      interval_vwap: 321.76333618,
       benchmark_px: 321.76333618,
       slip_bps: 3.63,
       is_bps: 59.69,
-      pace_pct: 8.33,
+      schedule_pct: 8.33,
     },
     {
       slice_idx: 1,
@@ -70,11 +69,10 @@ const okPayload = {
       qty: 8.33333333,
       cum_qty: 16.66666667,
       bar_close: 321.5,
-      interval_vwap: 321.61,
       benchmark_px: 321.61,
       slip_bps: -3.42,
       is_bps: 11.2,
-      pace_pct: 16.67,
+      schedule_pct: 16.67,
     },
   ],
   orders: [
@@ -84,11 +82,12 @@ const okPayload = {
       side: "BUY",
       algo: "TWAP",
       target_qty: 100,
-      filled_qty: 100,
+      filled_qty: 0,
+      scheduled_qty: 100,
       avg_fill_px: 321.7,
       arrival_price: 321.5,
       is_bps: 36.88,
-      pace_pct: 100,
+      schedule_pct: 100,
       status: "planned",
     },
   ],
@@ -150,7 +149,7 @@ describe("EXEC pane — load states", () => {
     expect(
       screen.getByText(/no intraday bars returned for AAPL/i),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Benchmark VWAP/i)).toBeNull();
+    expect(screen.queryByText(/Benchmark px/i)).toBeNull();
   });
 
   it("renders slice rows + headline cards when ok", () => {
@@ -178,9 +177,25 @@ describe("EXEC pane — load states", () => {
       screen.getByText(/PLANNED · AVG IMPLEMENTATION SHORTFALL/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/PLANNED · WORST SLICE VS INTERVAL VWAP/i),
+      screen.getByText(/PLANNED · WORST SLICE VS BAR TYPICAL PRICE/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/SIMULATED AVG FILL/i)).toBeInTheDocument();
+  });
+
+  it("shows schedule progress, not a pace or fill, for an unexecuted plan (EXEC#8)", () => {
+    setMockFn({ state: "ok", ...okResult() });
+    render(<EXECPane code="EXEC" symbol="AAPL" />);
+    expect(screen.getByText(/Final schedule/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Final pace/i)).toBeNull();
+    expect(screen.queryByText(/^Pace$/)).toBeNull();
+  });
+
+  it("does not label the bar typical-price benchmark as a VWAP (EXEC#5)", () => {
+    setMockFn({ state: "ok", ...okResult() });
+    const { container } = render(<EXECPane code="EXEC" symbol="AAPL" />);
+    expect(screen.getByText("Benchmark px")).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/Benchmark VWAP/i);
+    expect(container.textContent).not.toMatch(/INTERVAL VWAP/);
   });
 });
 
@@ -191,7 +206,7 @@ describe("EXEC pane — cost-tone semantics", () => {
     const negative = container.querySelector(".stat-card--negative");
     expect(negative).not.toBeNull();
     expect(negative?.textContent).toContain("+36.9");
-    // Negative slip on BUY = filled below the interval VWAP = favourable.
+    // Negative slip on BUY = filled below the bar typical price = favourable.
     const positive = container.querySelector(".stat-card--positive");
     expect(positive?.textContent).toContain("-8.0");
   });

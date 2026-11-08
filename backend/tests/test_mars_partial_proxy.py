@@ -81,8 +81,10 @@ def test_mars_partial_proxy_coverage_is_labelled_not_live():
     metadata = result.metadata or {}
     assert metadata.get("live") is False, "partial proxy coverage must not claim live"
     assert metadata.get("fallback") is True
-    assert metadata.get("data_mode") == "modeled"
-    assert result.sources == ["multi_asset_risk_model"]
+    # MARS#3-RQ: the five live proxies and the live leg feed the regression, so
+    # the result is partial_live and yfinance is attributed (not a model).
+    assert metadata.get("data_mode") == "partial_live"
+    assert result.sources == ["yfinance"]
     # The warning names the missing factor and the survivors.
     joined = " ".join(result.warnings).lower()
     assert "bab" in joined, f"warning must name the missing factor, got: {result.warnings}"
@@ -101,7 +103,14 @@ def test_mars_full_proxy_coverage_stays_live():
     assert result.sources == ["yfinance"]
     loaded = metadata.get("factor_proxies_loaded")
     assert isinstance(loaded, list) and sorted(loaded) == sorted(_ALL_FACTORS)
-    assert not result.warnings, "full live coverage must not carry proxy warnings"
+    # This fixture serves the same series for every symbol, so the proxies are
+    # perfectly collinear and MARS#2 correctly warns about that. Full coverage
+    # must carry the collinearity warning and the equal-weight disclosure (no
+    # weights are passed) and nothing else: no coverage shortfall, no other warning.
+    assert any("collinear" in w.lower() for w in result.warnings), result.warnings
+    expected = ("collinear", "equal-weight basket")
+    unexpected = [w for w in result.warnings if not any(k in w.lower() for k in expected)]
+    assert not unexpected, f"full live coverage must carry only the expected disclosures: {unexpected}"
 
 
 def test_mars_sanitizer_never_grants_live_on_shortfall():

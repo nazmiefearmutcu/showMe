@@ -7,7 +7,7 @@
  * (range/interval) that feeds the header strip, key-level rail and footer,
  * plus the resizable frame, the 52-week rail and the honest transport pills.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useLiveQuote } from "@/lib/market-data";
 import type { TransportState } from "@/lib/market-data";
 import {
@@ -36,7 +36,10 @@ import {
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 import { Chart } from "@/chart/Chart";
+import { loadLayout } from "@/chart/chart-layout";
+import { timeframeById } from "@/chart/timeframes";
 import { formatPrice } from "@/lib/format";
+import { safeHref } from "@/lib/safe-href";
 
 interface OHLCRow {
   date?: string;
@@ -77,10 +80,57 @@ const INTERVALS = [
 type IntervalId = (typeof INTERVALS)[number]["id"];
 const INTERVAL_IDS = INTERVALS.map((i) => i.id);
 
-// GP's historical default fetch depth for the rail payload. The BARS chips
-// are gone (the engine fetches its own bars), so the payload pins the pane's
-// previous default instead of a persisted preference.
+// Floor for the bars requested from the engine. The engine caps history at
+// 20k bars; `barsForWindow` raises the request so a window is not cut short.
 const DEFAULT_BARS = 1000;
+const MAX_REQUEST_BARS = 20_000;
+// Below this share of the requested window the subtitle states the real span.
+const SPAN_TOLERANCE = 0.9;
+
+const INTERVAL_SECONDS: Record<IntervalId, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+  "4h": 14_400,
+  "1d": 86_400,
+  "1w": 604_800,
+};
+
+/**
+ * Bars to request for a window: the window's span at the interval, five
+ * trading days in seven, with DEFAULT_BARS as the floor. Provider limits
+ * (e.g. Yahoo's 7-day 1m history) are still reported by the engine.
+ */
+export function barsForWindow(days: number, interval: string): number {
+  // GP#5: the timeframe may be any chart id; unknown ones use the chart catalog's seconds.
+  const known: Partial<Record<string, number>> = INTERVAL_SECONDS;
+  const seconds = known[interval] ?? timeframeById(interval)?.seconds ?? 86_400;
+  const needed = Math.ceil(((days * 86_400) / seconds) * (5 / 7)) + 10;
+  return Math.min(MAX_REQUEST_BARS, Math.max(DEFAULT_BARS, needed));
+}
+
+/** Epoch seconds of a candle, or null when its time is unknown. */
+function candleSeconds(row: OHLCRow): number | null {
+  const raw = row.time ?? row.date ?? row.ts;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return raw >= 10_000_000_000 ? raw / 1000 : raw;
+  }
+  if (typeof raw === "string" && raw.length) {
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed / 1000 : null;
+  }
+  return null;
+}
+
+/** Calendar days between the first and last candle, or null when unknown. */
+function spanDaysOf(rows: OHLCRow[]): number | null {
+  if (rows.length < 2) return null;
+  const first = candleSeconds(rows[0]);
+  const last = candleSeconds(rows[rows.length - 1]);
+  if (first == null || last == null) return null;
+  return (last - first) / 86_400;
+}
 
 type ChartStyle = "candle" | "line" | "area";
 
@@ -93,6 +143,31 @@ function mapInterval(interval: IntervalId): string {
   if (interval === "1d") return "1D";
   if (interval === "1w") return "1W";
   return interval;
+}
+
+/**
+ * GP#5: the price engine's interval id for a chart timeframe id, or null when
+ * the engine serves no such history. Never a substitute: the engine's
+ * normaliser turns an unknown id into daily bars and "1M" (month) into "1m"
+ * (minute), so an unmapped id must withhold the rail instead of being sent.
+ * 2h and 3m are left out on purpose: the engine's Yahoo leg has no such
+ * interval and falls back to daily bars without saying so.
+ */
+const ENGINE_INTERVAL_BY_CHART_ID: Readonly<Record<string, string>> = {
+  "1m": "1m",
+  "5m": "5m",
+  "15m": "15m",
+  "30m": "30m",
+  "1h": "1h",
+  "4h": "4h",
+  "1D": "1d",
+  "1W": "1w",
+  "1M": "1mo",
+};
+function payloadIntervalFor(chartId: string): string | null {
+  return Object.prototype.hasOwnProperty.call(ENGINE_INTERVAL_BY_CHART_ID, chartId)
+    ? ENGINE_INTERVAL_BY_CHART_ID[chartId]
+    : null;
 }
 
 /** GP's historical default chart style, mapped to the engine vocabulary. */
@@ -110,14 +185,20 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
     RANGE_IDS,
     "1Y",
   );
-  // The engine owns the live timeframe picker; GP keeps the persisted
-  // interval only to seed the engine and to serve the payload's resolution
-  // (the rail stats derive from the candles it returns).
-  const [interval] = usePersistentOption<IntervalId>(
+  // GP#5: the chart owns the live timeframe. The persisted GP interval only
+  // seeds the chart's default; the timeframe in use is the chart's own saved
+  // layout for this surface, or what the chart reports on mount and on change.
+  const [persistedInterval] = usePersistentOption<IntervalId>(
     `showme.${code.toLowerCase()}-interval`,
     INTERVAL_IDS,
     "1d",
   );
+  const [interval, setChartInterval] = useState<string>(
+    () =>
+      loadLayout(effectiveSymbol, undefined, code.toUpperCase())?.interval ??
+      mapInterval(persistedInterval),
+  );
+  const payloadInterval = payloadIntervalFor(interval);
   const days = useMemo(
     () => RANGES.find((r) => r.id === range)?.days ?? 365,
     [range],
@@ -125,11 +206,47 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<GPData>({
     code,
     symbol: effectiveSymbol,
-    enabled: !!effectiveSymbol,
-    params: { days, range, interval, bars: DEFAULT_BARS },
+    // GP#5: a timeframe the engine does not serve is not requested at all.
+    enabled: !!effectiveSymbol && payloadInterval != null,
+    params: {
+      days,
+      range,
+      interval: payloadInterval ?? "",
+      bars: barsForWindow(days, interval),
+    },
   });
 
-  const ohlc = useMemo(() => normalizeOHLC(data?.data?.ohlcv), [data]);
+  // GP#5: the engine states the interval it actually served; a different one
+  // means the rail would be computed from another timeframe, so it is withheld.
+  const engineReported = (data as { metadata?: { interval?: unknown } } | undefined)
+    ?.metadata?.interval;
+  const engineMismatch =
+    payloadInterval != null &&
+    typeof engineReported === "string" &&
+    engineReported !== payloadInterval
+      ? engineReported
+      : null;
+  const engineUnavailable = payloadInterval == null || engineMismatch != null;
+
+  const ohlc = useMemo(
+    () => (engineMismatch ? [] : normalizeOHLC(data?.data?.ohlcv)),
+    [data, engineMismatch],
+  );
+  // Full series incl. the indicator warm-up before the window; the rail's
+  // RSI/MACD/ATR read it so they are not computed from the window's first bar.
+  const warmupOhlc = useMemo(
+    () =>
+      engineMismatch
+        ? []
+        : normalizeOHLC(
+            (data?.data as { indicator_ohlcv?: GPData["ohlcv"] } | undefined)
+              ?.indicator_ohlcv,
+          ),
+    [data, engineMismatch],
+  );
+  const spanDays = useMemo(() => spanDaysOf(ohlc), [ohlc]);
+  const spanShort =
+    spanDays != null && spanDays < days * SPAN_TOLERANCE;
 
   const last = ohlc[ohlc.length - 1];
   const prev = ohlc[ohlc.length - 2];
@@ -147,7 +264,10 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
       .filter((v) => Number.isFinite(v));
   }, [ohlc]);
 
-  const computed = useMemo(() => computeIndicators(ohlc), [ohlc]);
+  const computed = useMemo(
+    () => computeIndicators(warmupOhlc.length ? warmupOhlc : ohlc),
+    [warmupOhlc, ohlc],
+  );
   const stats = useMemo(() => {
     if (!ohlc.length) return null;
     const highs = ohlc.map((c) => Number(c.high));
@@ -211,13 +331,40 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
   const snapshotOnly = state === "ok" && ohlc.length === 0 && !!liveQuote.snapshot;
   const liveTickPrice = liveQuote.lastTick?.price ?? null;
 
+  const chartFrame = (
+    <ResizableChartFrame
+      storageId={`${code.toUpperCase()}.price`}
+      defaultHeight={{ vh: 0.34, max: 420, min: 240 }}
+      minWidth={420}
+      minHeight={280}
+      maxHeight={1200}
+      style={chartSurfaceStyle}
+      ariaLabel="Resize chart"
+    >
+      <Chart
+        symbol={effectiveSymbol}
+        fill
+        layoutScope={code.toUpperCase()}
+        initialInterval={mapInterval(persistedInterval)}
+        onIntervalChange={setChartInterval}
+        initialType={mapStyle(GP_CHART_STYLE)}
+      />
+    </ResizableChartFrame>
+  );
+
   return (
     <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
           title={`Price${effectiveSymbol ? ` — ${effectiveSymbol}` : ""}`}
-          subtitle={`${range} · ${interval} · ${ohlc.length} candles`}
+          subtitle={`${range} · ${interval} · ${
+            engineUnavailable ? "rail withheld" : `${ohlc.length} candles`
+          }${
+            spanShort && spanDays != null
+              ? ` · shows ${spanDays.toFixed(1)} days of ${range}`
+              : ""
+          }`}
           trailing={
             <FunctionControlGroup>
               <LoadStatePill state={state} />
@@ -241,7 +388,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
             >
               <span style={tickerStyle}>{symbol}</span>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {interval.toUpperCase()}
+                {timeframeById(interval)?.label ?? interval.toUpperCase()}
               </Pill>
               {state === "ok" && transportState === "live" && (
                 <span data-testid="gp-transport-pill" data-state="live">
@@ -383,6 +530,22 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
         <PaneBody className="u-p-0 u-flex u-min-h-0">
           {!effectiveSymbol ? (
             <Empty title="Pick a symbol" body="GP needs a ticker." icon="⌖" />
+          ) : engineUnavailable ? (
+            <div style={chartLayoutStyle}>
+              <div style={chartCanvasWrapStyle}>{chartFrame}</div>
+              <Empty
+                title={
+                  engineMismatch
+                    ? "Rail withheld"
+                    : `No ${timeframeById(interval)?.label ?? interval} price history`
+                }
+                body={
+                  engineMismatch
+                    ? `GP asked the price engine for ${payloadInterval} bars and it reported ${engineMismatch}. Header statistics and indicators are withheld rather than computed from another interval.`
+                    : `The price engine serves no ${timeframeById(interval)?.label ?? interval} history, so header statistics and indicators are withheld instead of computed from another interval. The chart still shows its own bars.`
+                }
+              />
+            </div>
           ) : state === "loading" || state === "idle" ? (
             <div className="u-p-14 u-flex-1">
               <Skeleton height={400} />
@@ -403,23 +566,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
           ) : (
             <div style={chartLayoutStyle}>
               <div style={chartCanvasWrapStyle}>
-                <ResizableChartFrame
-                  storageId={`${code.toUpperCase()}.price`}
-                  defaultHeight={{ vh: 0.34, max: 420, min: 240 }}
-                  minWidth={420}
-                  minHeight={280}
-                  maxHeight={1200}
-                  style={chartSurfaceStyle}
-                  ariaLabel="Resize chart"
-                >
-                  <Chart
-                    symbol={effectiveSymbol}
-                    fill
-                    layoutScope={code.toUpperCase()}
-                    initialInterval={mapInterval(interval)}
-                    initialType={mapStyle(GP_CHART_STYLE)}
-                  />
-                </ResizableChartFrame>
+                {chartFrame}
               </div>
               <RightRail
                 stats={stats}
@@ -529,8 +676,18 @@ function RightRail({
   return (
     <aside style={rightRailStyle}>
       <RailSection title="Key levels">
-        <RailKv label="Support" value={fmtNum(support)} tone="positive" />
-        <RailKv label="Resistance" value={fmtNum(resist)} tone="negative" />
+        <RailKv
+          label="Fib 23.6%"
+          title="Fibonacci 23.6% retracement of the selected window's low-high range. A ratio, not a pivot or swing level."
+          value={fmtNum(support)}
+          tone="positive"
+        />
+        <RailKv
+          label="Fib 78.6%"
+          title="Fibonacci 78.6% retracement of the selected window's low-high range. A ratio, not a pivot or swing level."
+          value={fmtNum(resist)}
+          tone="negative"
+        />
         <RailKv
           label={highLabel}
           value={fmtNum(week52?.high ?? stats?.high)}
@@ -581,9 +738,9 @@ function RightRail({
           {newsState === "ok" && news.length > 0 ? (
             news.map((item, idx) => (
               <div key={idx} style={newsItemStyle}>
-                {item.url ? (
+                {safeHref(item.url) ? (
                   <a
-                    href={item.url}
+                    href={safeHref(item.url)}
                     target="_blank"
                     rel="noreferrer"
                     style={newsHeadlineStyle}
@@ -630,10 +787,12 @@ function RailKv({
   label,
   value,
   tone = "neutral",
+  title,
 }: {
   label: string;
   value: string;
   tone?: "positive" | "negative" | "neutral" | "accent";
+  title?: string;
 }) {
   const color =
     tone === "positive"
@@ -644,7 +803,7 @@ function RailKv({
           ? "var(--accent)"
           : "var(--text-primary)";
   return (
-    <div style={railKvRowStyle}>
+    <div style={railKvRowStyle} title={title}>
       <span style={railKvLabelStyle}>{label}</span>
       <span style={{ ...railKvValueStyle, color }}>{value}</span>
     </div>
@@ -718,24 +877,19 @@ function fmtVolume(v: number | undefined | null): string {
   return v.toFixed(0);
 }
 
-function ema(values: number[], period: number): (number | null)[] {
+/**
+ * EMA with alpha = 2/(period+1), seeded on the first observation (pandas
+ * ewm(span, adjust=False)). This is the convention of the backend TECH
+ * function, so the same window gives the same MACD in both places.
+ */
+export function ema(values: number[], period: number): (number | null)[] {
   const out: (number | null)[] = [];
+  if (period <= 0) return values.map(() => null);
   const k = 2 / (period + 1);
   let prev: number | null = null;
-  for (let i = 0; i < values.length; i++) {
-    if (prev == null) {
-      if (i >= period - 1) {
-        let s = 0;
-        for (let j = i - period + 1; j <= i; j++) s += values[j];
-        prev = s / period;
-        out.push(prev);
-      } else {
-        out.push(null);
-      }
-    } else {
-      prev = values[i] * k + prev * (1 - k);
-      out.push(prev);
-    }
+  for (const value of values) {
+    prev = prev == null ? value : value * k + prev * (1 - k);
+    out.push(prev);
   }
   return out;
 }

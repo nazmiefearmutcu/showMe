@@ -73,7 +73,7 @@ function sectorRow(over: Record<string, unknown> = {}) {
 function countryRow(over: Record<string, unknown> = {}) {
   return {
     country: "US",
-    etf: "SPY",
+    etf: "EUSA",
     last: 530.25,
     change_pct: 0.84,
     period: "1D",
@@ -120,12 +120,12 @@ describe("MarketHeatmap — interactive labelled tiles (A1)", () => {
     // Scope to the heatmap grid (the same row also appears in the legend rail).
     const grid = screen.getByRole("region", { name: /ETF performance heatmap/i });
     const tile = within(grid).getByRole("button", {
-      name: /US \(SPY\) \+0\.84% 1D/,
+      name: /US \(EUSA\) \+0\.84% 1D/,
     });
     expect(tile.tagName).toBe("BUTTON");
     fireEvent.click(tile);
-    expect(navigateSpy).toHaveBeenCalledWith("/symbol/SPY/DES");
-    expect(setFocusedTargetSpy).toHaveBeenCalledWith("DES", "SPY");
+    expect(navigateSpy).toHaveBeenCalledWith("/symbol/EUSA/DES");
+    expect(setFocusedTargetSpy).toHaveBeenCalledWith("DES", "EUSA");
   });
 
   it("marks synthetic tiles as model in the aria-label", () => {
@@ -136,7 +136,7 @@ describe("MarketHeatmap — interactive labelled tiles (A1)", () => {
     render(<MarketHeatmapPane code="MAP" />);
     const grid = screen.getByRole("region", { name: /ETF performance heatmap/i });
     expect(
-      within(grid).getByRole("button", { name: /US \(SPY\).*model/i }),
+      within(grid).getByRole("button", { name: /US \(EUSA\).*model/i }),
     ).toBeInTheDocument();
   });
 });
@@ -306,7 +306,7 @@ describe("MarketHeatmap — legend movers (A2)", () => {
     mockOk({
       period: "1D",
       rows: [
-        countryRow({ country: "US", etf: "SPY", change_pct: 2.1 }),
+        countryRow({ country: "US", etf: "EUSA", change_pct: 2.1 }),
         countryRow({ country: "JP", etf: "EWJ", change_pct: -1.4 }),
       ],
     });
@@ -329,7 +329,7 @@ describe("MarketHeatmap — missing change honesty (F8)", () => {
     mockOk({
       period: "1D",
       rows: [
-        countryRow({ country: "US", etf: "SPY", change_pct: 0.84 }),
+        countryRow({ country: "US", etf: "EUSA", change_pct: 0.84 }),
         countryRow({ country: "JP", etf: "EWJ", change_pct: null }),
       ],
     });
@@ -348,7 +348,7 @@ describe("MarketHeatmap — missing change honesty (F8)", () => {
     mockOk({
       period: "1D",
       rows: [
-        countryRow({ country: "US", etf: "SPY", change_pct: 0.84 }),
+        countryRow({ country: "US", etf: "EUSA", change_pct: 0.84 }),
         countryRow({ country: "JP", etf: "EWJ", change_pct: -1.4 }),
         countryRow({ country: "DE", etf: "EWG", change_pct: null }),
       ],
@@ -387,7 +387,7 @@ describe("MarketHeatmap — missing change honesty (F8)", () => {
     mockOk({
       period: "1D",
       rows: [
-        countryRow({ country: "US", etf: "SPY", change_pct: 0.84 }),
+        countryRow({ country: "US", etf: "EUSA", change_pct: 0.84 }),
         countryRow({ country: "JP", etf: "EWJ", change_pct: -1.4 }),
         countryRow({ country: "DE", etf: "EWG", change_pct: null }),
       ],
@@ -438,7 +438,7 @@ describe("MarketHeatmap — per-cell flash (live adoption)", () => {
       const { rerender } = render(<MarketHeatmapPane code="MAP" />);
       const tileNow = () =>
         within(screen.getByRole("region", { name: /ETF performance heatmap/i }))
-          .getByRole("button", { name: /US \(SPY\)/ });
+          .getByRole("button", { name: /US \(EUSA\)/ });
       expect(tileNow().className).not.toMatch(/flash/);
 
       mockOk({ period: "1D", rows: [countryRow({ change_pct: 1.75 })] });
@@ -447,5 +447,25 @@ describe("MarketHeatmap — per-cell flash (live adoption)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/* ── MAP#3: model rows carry no price or change ───────────────────────── */
+
+describe("MarketHeatmap — model rows without numbers (MAP#3)", () => {
+  it("renders a model tile with an em-dash, never a number or a flat 0.00%", () => {
+    mockOk({
+      status: "model",
+      period: "1D",
+      rows: [countryRow({ quote_type: "model", last: null, change_pct: null })],
+    });
+    const { container } = render(<MarketHeatmapPane code="MAP" />);
+    const tile = within(screen.getByRole("region", { name: /ETF performance heatmap/i }))
+      .getByRole("button", { name: /US \(EUSA\)/ });
+    expect(tile.getAttribute("aria-label")).toMatch(/—/);
+    expect(tile.getAttribute("aria-label")).toMatch(/model/);
+    expect(tile.getAttribute("aria-label")).not.toMatch(/0\.00/);
+    expect(container.textContent ?? "").not.toMatch(/NaN/);
+    expect(screen.getByTestId("map-model-badge")).toBeInTheDocument();
   });
 });

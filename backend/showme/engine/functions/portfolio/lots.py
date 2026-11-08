@@ -6,6 +6,7 @@ Param 'action' = "list" | "open" | "sell" | "summary"
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -33,6 +34,44 @@ def _number(raw: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
+
+
+def _parse_acquired_at(raw: Any) -> tuple[datetime | None, str | None]:
+    """Acquisition date for action=open: (moment, problem).
+
+    Accepts an ISO date (YYYY-MM-DD, taken as UTC midnight) or an ISO datetime.
+    An empty value means "not supplied" (no problem). A future or unparseable
+    date is a problem: the lot must not be written with a wrong holding period.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None, None
+    text = str(raw).strip()
+    try:
+        if len(text) == 10:
+            moment = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        else:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            moment = moment.astimezone(timezone.utc)
+    except ValueError:
+        return None, "acquired_at must be an ISO date (YYYY-MM-DD) or datetime"
+    if moment > datetime.now(timezone.utc):
+        return None, "acquired_at cannot be in the future"
+    return moment, None
+
+
+def _lot_ids(raw: Any) -> list[str]:
+    """lot_ids as a list: accepts a list/tuple or a comma-separated string."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items: list[Any] = raw.split(",")
+    elif isinstance(raw, (list, tuple, set)):
+        items = list(raw)
+    else:
+        items = [raw]
+    return [str(item).strip() for item in items if str(item).strip()]
 
 
 def _input_error(reason: str, missing: list[str]) -> FunctionResult:
@@ -97,23 +136,68 @@ class LOTSFunction(BaseFunction):
                     invalid,
                 )
         if action == "open":
+            # LOTS#3: the acquisition date drives holding_days and the short/long
+            # term split, so the caller must be able to set it. A date that is
+            # in the future or unparseable is rejected before any write.
+            raw_acquired = params.get("acquired_at")
+            if raw_acquired in (None, ""):
+                raw_acquired = params.get("opened_at")
+            acquired, problem = _parse_acquired_at(raw_acquired)
+            if problem:
+                return _input_error(f"open: {problem}; no lot was written.", ["acquired_at"])
+            stamp = acquired or datetime.now(timezone.utc)
             lot_id = tax_lots.open_lot(
                 symbol=symbol,
                 quantity=quantity,
                 price=price,
+                opened_at=stamp,
                 account=params.get("account") or "main",
             )
-            return FunctionResult(code=self.code, instrument=None,
-                                  data={"lot_id": lot_id, "action": "open", "symbol": symbol})
+            data: dict[str, Any] = {
+                "lot_id": lot_id,
+                "action": "open",
+                "symbol": symbol,
+                "acquired_at": stamp.isoformat(),
+                "acquired_at_source": "supplied" if acquired else "entry_time",
+                "warnings": [],
+            }
+            if acquired is None:
+                data["warnings"] = [
+                    "acquired_at was not supplied: the lot is stamped with the entry time, "
+                    "so its holding period and short/long term are not historical until it is set."
+                ]
+            return FunctionResult(code=self.code, instrument=None, data=data,
+                                  sources=["local_tax_lot_ledger"])
         if action == "sell":
+            # LOTS#4: named lot_ids select exactly those lots. The service only
+            # honours them under method=SPECIFIC, so naming lots switches to
+            # SPECIFIC; otherwise FIFO would silently ignore the caller's choice.
+            lot_ids = _lot_ids(params.get("lot_ids"))
+            method = "SPECIFIC" if lot_ids else params.get("method", "FIFO")
+            # LOTS#6: the short/long cutoff is an input; an invalid value is
+            # rejected rather than silently replaced by the default.
+            raw_threshold = params.get("long_term_threshold_days")
+            if raw_threshold in (None, ""):
+                threshold = tax_lots.DEFAULT_LONG_TERM_DAYS
+            else:
+                parsed = _number(raw_threshold)
+                if parsed is None or parsed < 1 or parsed != int(parsed):
+                    return _input_error(
+                        "sell needs long_term_threshold_days as a whole number of days >= 1; no lot was sold.",
+                        ["long_term_threshold_days"],
+                    )
+                threshold = int(parsed)
             res = tax_lots.sell(
                 symbol=symbol,
                 quantity=quantity,
                 price=price,
-                method=params.get("method", "FIFO"),
+                method=method,
                 account=params.get("account"),
-                specific_lot_ids=params.get("lot_ids"),
+                specific_lot_ids=lot_ids or None,
+                long_term_days=threshold,
             )
+            if lot_ids:
+                res["method_note"] = "lot_ids were given, so the lots were selected by id (SPECIFIC); the method input was not used."
             return FunctionResult(code=self.code, instrument=None, data=res)
         if action == "summary":
             year = params.get("year")

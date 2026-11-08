@@ -268,18 +268,14 @@ def test_ivol_default_path_returns_live_surface():
     assert {point["t"] for point in data["series"]} <= set(data["expiries"])
 
 
-def test_ivol_reference_flag_still_available():
+def test_ivol_reference_flag_is_retired_no_template():
     handler = _build(IVOLFunction, yf=_FakeYF())
     result = asyncio.run(handler.execute(_instrument("AAPL"), reference=True))
-    assert result.data["status"] == "reference"
-    assert result.metadata.get("mode") == "reference"
-    # Reference cells feed the same derived stats (no constants): the pane
-    # KPI ribbon renders computed values with the reference label, not "—".
-    summary = result.data["summary"]
-    assert summary["source_mode"] == "reference"
-    assert summary["atm_iv_front"] is not None
-    assert summary["atm_iv_back"] is not None
-    assert result.data["series"]
+    # T10: the constant-IV reference template is never served, even with a live spot.
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["surface"] == [] and result.data["series"] == []
+    assert "calls_grid" not in result.data and "puts_grid" not in result.data
+    assert result.metadata.get("mode") != "reference"
 
 
 def test_ivol_no_adapter_falls_back_gracefully():

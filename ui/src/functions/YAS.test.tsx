@@ -174,6 +174,13 @@ describe("YAS pane — headline cards", () => {
     expect(screen.getByText("78.6")).toBeInTheDocument();
   });
 
+  it("labels convexity with its years-squared unit", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<YASPane code="YAS" />);
+    expect(container.textContent).toContain("YEARS²");
+    expect(container.textContent).not.toContain("PRICE SENS.");
+  });
+
   it("renders the ±100bp shock ladder with price deltas", () => {
     setMockFn({ state: "ok", ...livePayload() });
     const { container } = render(<YASPane code="YAS" />);
@@ -233,6 +240,44 @@ describe("YAS pane — inputs are optional overrides", () => {
       target: { value: "4" },
     });
     expect(lastParams?.benchmark_rate).toBe(0.04);
+  });
+
+  it("sends the chosen UST benchmark tenor and labels the spread caption with the series used", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<YASPane code="YAS" />);
+    fireEvent.click(screen.getByTitle("Spread vs the UST 2Y CMT"));
+    expect(lastParams?.benchmark).toBe("UST2Y");
+    expect(lastParams).not.toHaveProperty("benchmark_rate");
+  });
+
+  it("shows which benchmark the spread uses, not a bare BENCH percentage", () => {
+    const base = livePayload();
+    setMockFn({
+      state: "ok",
+      ...base,
+      data: {
+        ...base.data,
+        data: {
+          ...base.data.data,
+          summary: {
+            ...base.data.data.summary,
+            benchmark_label: "UST10Y (default) · FRED DGS10",
+          },
+        },
+      },
+    });
+    render(<YASPane code="YAS" />);
+    expect(screen.getByText(/UST10Y \(default\) · FRED DGS10/)).toBeInTheDocument();
+  });
+
+  it("states the decimal unit when a rate override is sent, so a 25% coupon is not read as ambiguous", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<YASPane code="YAS" />);
+    fireEvent.change(screen.getByLabelText("Coupon percent"), {
+      target: { value: "25" },
+    });
+    expect(lastParams?.coupon).toBe(0.25);
+    expect(lastParams?.assume_decimal).toBe(true);
   });
 
   it("switches coupon frequency via the segmented control and persists it", () => {

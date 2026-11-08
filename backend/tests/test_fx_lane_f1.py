@@ -98,19 +98,18 @@ def test_fxh_forward_branch_also_echoes_assumptions() -> None:
 # ── WCRS: JPY-aware spread pips ────────────────────────────────────────
 
 
-def test_wcrs_spread_pips_uses_jpy_aware_pip_factor() -> None:
-    """USDJPY pips use factor 100; other quotes use 10000. The pane's old
-    local math (spread*10000) rendered USDJPY 100x wide."""
+def test_wcrs_spread_pips_is_null_without_a_real_bid_ask() -> None:
+    """Updated (wb1-g10 WCRS#2): this test used to assert a spread built from
+    mid*0.9999 / mid*1.0001, the same 0.02% for every pair. No keyless bid/ask
+    source exists, so spread_pips must be null; the JPY-aware pip factor now
+    applies only to real bid/ask in the pane fallback (WCRS.test.tsx)."""
     result = _run(WCRSFunction(deps=FunctionDeps()).execute(live=False))
     rows = {(row["base"], row["quote"]): row for row in result.data["rows"]}
 
-    usdjpy = rows[("USD", "JPY")]
-    expected_jpy = (usdjpy["ask"] - usdjpy["bid"]) * 100
-    assert usdjpy["spread_pips"] == pytest.approx(expected_jpy, abs=1e-3)
-
-    eurusd = rows[("EUR", "USD")]
-    expected_major = (eurusd["ask"] - eurusd["bid"]) * 10000
-    assert eurusd["spread_pips"] == pytest.approx(expected_major, abs=1e-3)
+    for key in (("USD", "JPY"), ("EUR", "USD")):
+        assert rows[key]["bid"] is None
+        assert rows[key]["ask"] is None
+        assert rows[key]["spread_pips"] is None
 
 
 # ── OVDV: series[].atm_vol_pct contract ────────────────────────────────
@@ -156,7 +155,9 @@ def test_fxfc_manifest_name_and_contract_match_the_handler() -> None:
     from showme.engine.functions.fx._funcs import FXFCFunction
     from showme.manifest.seeds.fxfc_seed import fxfc
 
-    assert fxfc.name == "FX Forecasts"
+    # FXFC#2-RQ: the output is a CIP forward path, not a forecast; the name must not claim one.
+    assert fxfc.name == "CIP FX Forward Path"
+    assert "forecast" not in fxfc.name.lower()
     assert fxfc.name == FXFCFunction.name
     assert fxfc.chart_grammar.kind.value == "tenor_curve"
 

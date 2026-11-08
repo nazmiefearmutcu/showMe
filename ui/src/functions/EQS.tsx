@@ -34,6 +34,7 @@ import {
   FunctionCallError,
   type FunctionCallResult,
 } from "@/lib/functions";
+import { formatPercent } from "@/lib/format";
 import { navigate } from "@/lib/router";
 import {
   FunctionControlGroup,
@@ -82,9 +83,15 @@ const PERCENT_LIKE_KEYS = new Set([
   "change_percent",
   "returnPercent",
   "yield",
-  "dividendYield",
   "growth",
 ]);
+
+/**
+ * UI-6: decimal fractions (0.0123 = 1.23%), per the EQS/DES backend contract
+ * (`rows[].dividend_yield` is unit "ratio"). Rendered through fromFraction so
+ * they are not shown as a bare decimal or as 0.01%.
+ */
+const FRACTION_PERCENT_KEYS = new Set(["dividend_yield", "dividendYield"]);
 
 function deterministicTrend(seed: string, n = 20): number[] {
   let h = 0;
@@ -295,7 +302,7 @@ export function EQSPane({ code }: FunctionPaneProps) {
     }
     return keys.map((key) => ({
       key,
-      header: key,
+      header: FRACTION_PERCENT_KEYS.has(key) ? `${key} (%)` : key,
       numeric: typeof sample[key] === "number",
       render: (r) => {
         const v = r[key];
@@ -323,6 +330,13 @@ export function EQSPane({ code }: FunctionPaneProps) {
           );
         }
         if (typeof v === "number" && Number.isFinite(v)) {
+          if (FRACTION_PERCENT_KEYS.has(key)) {
+            return (
+              <span className="fa-cell-numeric">
+                {formatPercent(v, { fromFraction: true, digits: 2 })}
+              </span>
+            );
+          }
           if (PERCENT_LIKE_KEYS.has(key)) {
             return <DeltaChip value={v} format="percent" fractionDigits={2} />;
           }

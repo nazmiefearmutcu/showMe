@@ -86,10 +86,13 @@ async def _fetch_transcript_text(
 @FunctionRegistry.register
 class TRQAFunction(BaseFunction):
     code = "TRQA"
-    name = "Transcript Q&A"
+    name = "Transcript & Press Release Q&A"
     asset_classes = (AssetClass.EQUITY,)
     category = "news"
-    description = "Run a list of questions against an earnings call transcript / audio."
+    description = (
+        "Run a list of questions against an earnings transcript, an audio transcript, or the latest "
+        "8-K earnings press release (labelled by document_type)."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sym = (getattr(instrument, "symbol", None) or params.get("symbol") or "AAPL").upper()
@@ -132,7 +135,7 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "whisper_audio"
             except Exception as exc:  # noqa: BLE001
-                transcribe_errors.append(f"transcribe_url: {exc}")
+                transcribe_errors.append(f"transcribe_url: {str(exc) or type(exc).__name__}")
 
         if not transcript and params.get("audio_path"):
             try:
@@ -149,7 +152,7 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "whisper_audio"
             except Exception as exc:  # noqa: BLE001
-                transcribe_errors.append(f"transcribe: {exc}")
+                transcribe_errors.append(f"transcribe: {str(exc) or type(exc).__name__}")
 
         # 2) keyless SEC 8-K Exhibit 99.1 fallback when nothing else produced text
         #    and no audio path was requested (audio requests stay on their own
@@ -160,14 +163,17 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "sec_8k_ex99"
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"sec: {exc}")
+                warnings.append(f"sec: {str(exc) or type(exc).__name__}")
 
         # ---- honest "no transcript" envelope --------------------------------
         if not transcript:
             reason = (
-                "Transcript Q&A could not transcribe the provided audio; check provider_errors."
+                "The provided audio could not be transcribed; check provider_errors."
                 if attempted_transcribe and transcribe_errors
-                else f"No earnings transcript found for {sym} via SEC 8-K and none was pasted."
+                else (
+                    f"No earnings transcript or 8-K earnings press release was found for {sym}, "
+                    "and no text was pasted."
+                )
             )
             return FunctionResult(
                 code=self.code,
@@ -331,7 +337,7 @@ async def _answer_questions(
                     "transcript when possible. If unknown, say 'not stated'."
                 ),
                 user=f"TRANSCRIPT:\n{text[:30000]}\n\nQUESTION: {q}",
-                max_tokens=500,
+                max_tokens=_max_tokens_per_answer(params),
                 temperature=0.1,
                 expected_complexity="med",
             )
@@ -352,7 +358,7 @@ async def _answer_questions(
             return {
                 "q": q,
                 "a": text_answer,
-                "stated": not text_answer.lower().startswith("not stated"),
+                "stated": not _is_not_stated_answer(text_answer),
                 "model": model,
                 "cost_usd": getattr(r, "cost_usd", 0),
                 "tokens": getattr(r, "tokens_in", 0) + getattr(r, "tokens_out", 0),
@@ -367,6 +373,49 @@ async def _answer_questions(
             }
 
     return list(await asyncio.gather(*(_answer(q) for q in questions)))
+
+
+_NOT_STATED_PATTERNS = (
+    re.compile(r"\b(?:does|do|did)\s+not\s+(?:\w+\s+){0,3}?(?:mention|state|say|specify|disclose|discuss|provide|address|include|cover|contain)\b"),
+    re.compile(r"\b(?:doesn't|don't|didn't)\s+(?:\w+\s+){0,3}?(?:mention|state|say|specify|disclose|discuss|provide|address|include|cover|contain)\b"),
+    re.compile(r"\bno\s+(?:mention|information|reference|statement|disclosure)\b"),
+    re.compile(r"\bnot\s+(?:mentioned|stated|disclosed|discussed|specified|provided|addressed|included|covered)\b"),
+)
+
+
+def _is_not_stated_answer(text: str) -> bool:
+    """True when an LLM answer says the document does not support the question.
+
+    Only the first sentence is inspected, so a supported answer that merely
+    mentions a missing detail later on is not reclassified.
+    """
+    cleaned = (text or "").strip().lower()
+    if not cleaned:
+        return False
+    first = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0]
+    if first.startswith("not stated"):
+        return True
+    return any(pattern.search(first) for pattern in _NOT_STATED_PATTERNS)
+
+
+_DEFAULT_MAX_TOKENS_PER_ANSWER = 512
+_MIN_MAX_TOKENS_PER_ANSWER = 64
+_MAX_MAX_TOKENS_PER_ANSWER = 2048
+
+
+def _max_tokens_per_answer(params: dict[str, Any]) -> int:
+    """LLM answer-length cap from the declared input, clamped to its 64..2048 range.
+
+    An absent or unparseable value falls back to the seed default (512).
+    """
+    raw = params.get("max_tokens_per_answer")
+    if raw is None or raw == "":
+        return _DEFAULT_MAX_TOKENS_PER_ANSWER
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_TOKENS_PER_ANSWER
+    return max(_MIN_MAX_TOKENS_PER_ANSWER, min(_MAX_MAX_TOKENS_PER_ANSWER, value))
 
 
 def _coerce_questions(value: Any, query: Any = None) -> list[str]:
@@ -395,7 +444,10 @@ _METHODOLOGY = (
 _FIELD_DICT = {
     "answer": "Primary answer grounded in the transcript (abstractive if an LLM is wired, else the best-matching passage).",
     "answers": "Per-question answers; model='local_extractive' marks the keyless fallback.",
-    "evidence": "Transcript passages ranked by relevance to the question.",
+    "evidence": (
+        "Passages from the source document (transcript, audio transcript or 8-K press release) "
+        "ranked by relevance to the question."
+    ),
     "score": "Fraction of query terms matched in the passage.",
 }
 

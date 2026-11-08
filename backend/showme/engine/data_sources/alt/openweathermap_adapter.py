@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRequest, DataSourceError
+from showme.providers.base import get_redacted
 
 
 class OpenWeatherMapAdapter(BaseDataSource):
@@ -32,10 +33,9 @@ class OpenWeatherMapAdapter(BaseDataSource):
         if not self.api_key:
             raise DataSourceError("OPENWEATHERMAP_API_KEY not set")
         client = await self._client_()
-        r = await client.get("/onecall", params={
+        r = await get_redacted(client, "/onecall", params={
             "lat": lat, "lon": lon, "appid": self.api_key, "units": "metric",
-        })
-        r.raise_for_status()
+        }, secrets=(self.api_key,))
         return r.json()
 
     async def fetch(self, request: DataRequest) -> Any:

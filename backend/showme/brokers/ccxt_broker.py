@@ -135,7 +135,7 @@ class CcxtBroker(BaseBroker):
         try:
             rows = await self._ex.fetch_positions()
         except Exception as exc:  # noqa: BLE001
-            raise BrokerError(f"fetch_positions failed: {exc}") from exc
+            raise BrokerError(f"fetch_positions failed: {str(exc) or type(exc).__name__}") from exc
         out: list[Position] = []
         for r in rows or []:
             contracts = float(r.get("contracts") or r.get("contractSize") or 0)
@@ -156,7 +156,7 @@ class CcxtBroker(BaseBroker):
         except NotSupported:
             raise
         except Exception as exc:  # noqa: BLE001
-            raise BrokerError(f"list_orders failed: {exc}") from exc
+            raise BrokerError(f"list_orders failed: {str(exc) or type(exc).__name__}") from exc
         return [self._to_order(r) for r in (rows or [])]
 
     async def submit_order(
@@ -193,7 +193,7 @@ class CcxtBroker(BaseBroker):
                 params=params,
             )
         except Exception as exc:  # noqa: BLE001
-            raise BrokerError(f"create_order failed: {exc}") from exc
+            raise BrokerError(f"create_order failed: {str(exc) or type(exc).__name__}") from exc
         return self._to_order(raw)
 
     async def cancel_order(self, order_id: str) -> bool:

@@ -56,6 +56,8 @@ interface SRSKRow {
   source_mode?: string;
   as_of?: string | null;
   note?: string | null;
+  legs_present?: number | null;
+  legs_total?: number | null;
 }
 
 interface SRSKCards {
@@ -79,6 +81,7 @@ interface SRSKData {
     worldbank_countries?: number;
     unscored_countries?: number;
     highest_risk_country?: string | null;
+    pd_calibration?: string;
   };
   methodology?: string;
   field_dictionary?: Record<string, unknown>;
@@ -178,6 +181,7 @@ export function SRSKPane({ code }: FunctionPaneProps) {
         value: (r) => r.source_mode ?? "",
       },
       { key: "note", header: "Note", value: (r) => r.note ?? "" },
+      { key: "legs", header: "Legs", value: (r) => legsLabel(r) ?? "" },
     ],
     [],
   );
@@ -195,7 +199,7 @@ export function SRSKPane({ code }: FunctionPaneProps) {
         width: 44,
         render: (r) => (
           <span style={monoMutedStyle}>
-            {r.risk_score == null ? "—" : String(r.__rank ?? "")}
+            {r.risk_score == null || isPartial(r) ? "—" : String(r.__rank ?? "")}
           </span>
         ),
       },
@@ -295,6 +299,26 @@ export function SRSKPane({ code }: FunctionPaneProps) {
         ),
       },
       {
+        key: "legs",
+        header: "Legs",
+        width: 64,
+        render: (r) => {
+          const label = legsLabel(r);
+          if (label == null) return <span className="u-text-mute">—</span>;
+          return (
+            <span
+              style={{
+                ...monoMutedStyle,
+                color: isPartial(r) ? "var(--warning, var(--text-mute))" : monoMutedStyle.color,
+              }}
+              title={isPartial(r) ? "Partial composite: fewer than all macro legs returned data" : undefined}
+            >
+              {label}
+            </span>
+          );
+        },
+      },
+      {
         key: "source_mode",
         header: "Source",
         width: 180,
@@ -362,7 +386,7 @@ export function SRSKPane({ code }: FunctionPaneProps) {
           }
           body={
             payload?.reason ??
-            "World Bank returned no fundamentals and no FRED key is configured."
+            "World Bank returned no fundamentals and FRED priced no 10Y differential."
           }
           icon="∅"
           action={
@@ -385,7 +409,9 @@ export function SRSKPane({ code }: FunctionPaneProps) {
           <StatCard
             label="Ranked countries"
             value={String(stats.rankedCount)}
-            caption={`${stats.totalCount} requested · ${stats.unscoredCount} unscored`}
+            caption={`${stats.totalCount} requested · ${stats.unscoredCount} unscored${
+              stats.partialCount > 0 ? ` · ${stats.partialCount} partial legs` : ""
+            }`}
             tone="neutral"
           />
           <StatCard
@@ -414,7 +440,12 @@ export function SRSKPane({ code }: FunctionPaneProps) {
           density="compact"
           ariaLabel="SRSK ranked sovereign risk table"
         />
-        <div style={methodologyStyle}>{payload?.summary?.formula ?? ""}</div>
+        <div style={methodologyStyle}>
+          {payload?.summary?.formula ?? ""}
+          {payload?.summary?.pd_calibration === "uncalibrated"
+            ? " · PD is an uncalibrated macro proxy, not a market-implied default probability: read it as a relative ranking."
+            : ""}
+        </div>
       </div>
     );
 
@@ -484,33 +515,54 @@ interface RankedRow extends SRSKRow {
   __rank?: number;
 }
 
-/** Worst-first by risk_score; rows without a score sink, unranked, to the end. */
-function rankRows(rows: SRSKRow[]): RankedRow[] {
-  const scored = rows
-    .filter((r) => typeof r.risk_score === "number")
-    .sort((a, b) => (b.risk_score ?? 0) - (a.risk_score ?? 0));
-  const unscored = rows.filter(
-    (r) => typeof r.risk_score !== "number",
+/** A composite built from fewer than all macro legs is not comparable with a full one. */
+function isPartial(r: SRSKRow): boolean {
+  return (
+    typeof r.legs_present === "number" &&
+    typeof r.legs_total === "number" &&
+    r.legs_present < r.legs_total
   );
-  return [...scored, ...unscored];
+}
+
+function legsLabel(r: SRSKRow): string | null {
+  if (typeof r.legs_present !== "number" || typeof r.legs_total !== "number") return null;
+  return `${r.legs_present}/${r.legs_total}`;
+}
+
+/**
+ * Worst-first by risk_score among full-coverage rows, then partial-coverage
+ * rows (shown, never ranked against full ones), then rows without a score.
+ */
+function rankRows(rows: SRSKRow[]): RankedRow[] {
+  const byScoreDesc = (a: SRSKRow, b: SRSKRow) =>
+    (b.risk_score ?? 0) - (a.risk_score ?? 0);
+  const scored = rows.filter((r) => typeof r.risk_score === "number");
+  const full = scored.filter((r) => !isPartial(r)).sort(byScoreDesc);
+  const partial = scored.filter((r) => isPartial(r)).sort(byScoreDesc);
+  const unscored = rows.filter((r) => typeof r.risk_score !== "number");
+  return [...full, ...partial, ...unscored];
 }
 
 function withRanks(rows: RankedRow[]): RankedRow[] {
   let rank = 0;
   return rows.map((r) =>
-    typeof r.risk_score === "number" ? { ...r, __rank: ++rank } : r,
+    typeof r.risk_score === "number" && !isPartial(r) ? { ...r, __rank: ++rank } : r,
   );
 }
 
 function deriveStats(rows: RankedRow[], cards?: SRSKCards) {
-  const worst = rows.find((r) => typeof r.risk_score === "number");
+  // The backend's card is the highest PD, which can differ from the top
+  // composite score once FRED spreads refine PD; prefer it over the table order.
+  const worst = rows.find((r) => typeof r.risk_score === "number" && !isPartial(r));
   return {
-    worstCountry: worst?.country ?? cards?.highest_pd_country ?? null,
-    worstPd: worst?.pd_1y_pct ?? cards?.highest_pd ?? null,
-    rankedCount: rows.filter((r) => typeof r.risk_score === "number").length,
+    worstCountry: cards?.highest_pd_country ?? worst?.country ?? null,
+    worstPd: cards?.highest_pd ?? worst?.pd_1y_pct ?? null,
+    rankedCount: rows.filter((r) => typeof r.risk_score === "number" && !isPartial(r)).length,
     totalCount: rows.length,
     // Rows with no risk score stay unranked, even when a FRED differential prices them.
     unscoredCount: rows.filter((r) => typeof r.risk_score !== "number").length,
+    // Partial composites (fewer than all four legs) are shown but not ranked.
+    partialCount: rows.filter((r) => typeof r.risk_score === "number" && isPartial(r)).length,
     recovery: cards?.recovery ?? rows[0]?.recovery ?? null,
     asOf: cards?.as_of ?? rows.find((r) => r.as_of)?.as_of ?? null,
   };

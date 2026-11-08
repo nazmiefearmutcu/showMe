@@ -47,6 +47,7 @@ import {
 } from "./styles";
 import { DistributionBlock } from "./cards";
 import { StatGrid } from "./tables";
+import { safeHref } from "@/lib/safe-href";
 
 export function VeryfinderAnalysisCard({
   enabled,
@@ -319,8 +320,8 @@ function TweetEvidenceRow({ post }: { post: VeryfinderPost }) {
         <span>rel {formatPct(Number(post.relevance ?? 0) * 100)}</span>
         <span>eng {formatInt(post.engagement)}</span>
         <span>{post.created_at ? formatDateTime(post.created_at) : "time —"}</span>
-        {post.url ? (
-          <a href={post.url} target="_blank" rel="noopener noreferrer" className="u-text-accent">
+        {safeHref(post.url) ? (
+          <a href={safeHref(post.url)} target="_blank" rel="noopener noreferrer" className="u-text-accent">
             open ↗
           </a>
         ) : null}

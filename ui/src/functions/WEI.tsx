@@ -130,7 +130,13 @@ export function WEIPane({ code }: FunctionPaneProps) {
   const asOf = useMemo(() => extractAsOf(data?.data), [data]);
   const clockStamp = useUtcStamp(tick);
   const utcStamp = asOf ?? clockStamp;
-  const isLive = state === "ok" && !notice && !isModel;
+  // "live" needs the provider to report a live session state on the rows.
+  // The quote provider reports none by default (market_state "unknown"), so a
+  // healthy snapshot reads as "snapshot", never as a live claim it cannot back.
+  const providerLive = rows.some((r) =>
+    ["live", "regular"].includes((r.market_state ?? "").toLowerCase()),
+  );
+  const isLive = state === "ok" && !notice && !isModel && providerLive;
 
   function onSort(key: string) {
     setSort((prev) => {
@@ -311,13 +317,22 @@ export function WEIPane({ code }: FunctionPaneProps) {
                 {rows.length} idx
               </Pill>
               <Pill tone="accent" variant="soft" withDot={false}>
+                {asOf ? "" : isModel ? "model " : "fetched "}
                 {utcStamp} UTC
               </Pill>
               <Pill
                 tone={isLive ? "positive" : isModel || notice ? "warn" : "muted"}
                 variant="soft"
               >
-                {isLive ? "live" : isModel ? "model" : notice ? "stale" : state}
+                {isLive
+                  ? "live"
+                  : isModel
+                    ? "model"
+                    : notice
+                      ? "stale"
+                      : state === "ok"
+                        ? "snapshot"
+                        : state}
               </Pill>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
@@ -639,6 +654,9 @@ function statusNotice(
   if (!payload || typeof payload !== "object") return null;
   const o = payload as Record<string, unknown>;
   const status = String(o.status ?? "").toLowerCase();
+  // A deterministic model envelope is labelled by ModelDataBadge + the model
+  // pill; it is not a degraded provider outage, so no outage banner.
+  if (status === "model") return null;
   const degraded = Boolean(metadata?.fallback || metadata?.degraded);
   // Honesty fix: a healthy live snapshot (status "ok"/"" and not degraded)
   // must NOT raise a "Degraded WEI snapshot" notice. Only surface the

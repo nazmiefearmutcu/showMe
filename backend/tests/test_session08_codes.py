@@ -157,9 +157,10 @@ def test_ivol_non_live_marks_reference_and_live_false() -> None:
     assert res.data["status"] == "provider_unavailable"
     assert res.metadata is not None and res.metadata.get("live") is False
 
-    # Explicit opt-in reference surface stays the canonical "reference" shape.
+    # Explicit reference opt-in is retired (T10): no constant-IV template, honest unavailable state.
     ref = asyncio.run(fn.execute(instrument=inst, reference=True))
-    assert ref.data["status"] == "reference"
+    assert ref.data["status"] == "provider_unavailable"
+    assert ref.data["surface"] == [] and ref.data["rows"] == []
     assert ref.metadata is not None and ref.metadata.get("live") is False
 
 

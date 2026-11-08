@@ -177,15 +177,64 @@ _FIELD_DICTIONARY = {
 }
 
 _METHODOLOGY = (
-    "Resolve the requested GICS sector to its member tickers from a bundled "
-    "curated classification table (canonical sector membership for these "
-    "large caps), then attach a best-effort live quote snapshot (last price "
-    "and day change) per name from the keyless quote service (yfinance and "
-    "public fallbacks). S&P 500 membership ships as a bundled 503-name "
-    "constituent list; the other index tables are curated reference subsets, "
-    "not complete indexes. Prices are left null when the quote provider is "
-    "unavailable rather than fabricated. No HTML scraping."
+    "A GICS sector resolves to every S&P 500 name whose sector label is in the "
+    "bundled security master (generated from the S&P 500 company dataset; the "
+    "master label 'Technology' is shown as Information Technology). Sub-industry "
+    "is shown where the curated reference table has it. Index codes resolve to a "
+    "bundled member table: SPX is the bundled 503-name S&P 500 list and DJIA is "
+    "the full 30-name roster; NDX, DAX, CAC, FTSE, STOXX and BIST tables are "
+    "curated subsets. A subset is returned with status 'partial' and coverage "
+    "(listed vs official count) rather than as the full index. A best-effort live "
+    "quote snapshot (last price and day change) is attached per name from the "
+    "keyless quote service (yfinance and public fallbacks). Prices are left null "
+    "when the quote provider is unavailable rather than fabricated. No HTML scraping."
 )
+
+# Official constituent counts of each index. A bundled table holding fewer names
+# is a partial roster and is reported with status 'partial'.
+_INDEX_OFFICIAL_COUNT: dict[str, int] = {
+    "SPX": 503,   # S&P 500 has 503 listed names (dual-class share structure)
+    "NDX": 100,
+    "DJIA": 30,
+    "DAX": 40,
+    "CAC": 40,
+    "FTSE": 100,
+    "STOXX": 50,
+    "BIST": 100,
+}
+
+# Security-master sector labels that differ from the GICS names used here.
+_MASTER_SECTOR_LABELS: dict[str, str] = {"Technology": "Information Technology"}
+
+
+def _sector_members(sector: str) -> list[tuple[str, str, str | None]] | None:
+    """Every S&P 500 name in ``sector`` from the bundled security master.
+
+    Returns None unless every bundled S&P 500 symbol is found in the master. The
+    master loader silently substitutes a 13-row fallback when the generated file
+    is missing, so a partial match is treated as "master unavailable" and the
+    caller labels the curated fallback as partial instead.
+    """
+    from showme.engine.functions.screen._funcs import _load_security_master
+
+    symbols = _load_sp500_symbols()
+    if not symbols:
+        return None
+    master = {str(row.get("symbol") or "").upper(): row for row in _load_security_master()}
+    if not master or any(symbol not in master for symbol in symbols):
+        return None
+    curated = {symbol: (company, sub) for symbol, company, sub in _SECTOR_CONSTITUENTS[sector]}
+    members: list[tuple[str, str, str | None]] = []
+    for symbol in symbols:
+        row = master.get(symbol)
+        if row is None:
+            continue
+        label = str(row.get("sector") or "")
+        if _MASTER_SECTOR_LABELS.get(label, label) != sector:
+            continue
+        company, sub_industry = curated.get(symbol, (None, None))
+        members.append((symbol, company or str(row.get("name") or symbol), sub_industry))
+    return members
 
 
 def _canonical_sector(raw: str) -> str | None:
@@ -515,10 +564,16 @@ class ICXFunction(BaseFunction):
         quote_timeout = max(0.5, min(req_timeout, 4.0))
 
         # INDEX path: when addressed by an index code (SPX/NDX/DAX/...), resolve
-        # to the curated index-member table. This honours the agent router which
-        # maps ICX's query to an ``index`` key, and keeps the region-correct
+        # to the curated index-member table (an explicit ``index``, or a
+        # ``query`` that names a known index code), keeping the region-correct
         # ticker contract (a DAX query never leaks SPX names).
         raw_index = params.get("index")
+        if not raw_index and not (params.get("sector") or params.get("parent")):
+            # ICX#3: ``query`` is either an index code or a sector name. A known
+            # index code selects the index table; anything else stays a sector.
+            query = str(params.get("query") or "").strip()
+            if query and _canonical_index(query):
+                raw_index = query
         if raw_index:
             return await self._execute_index(
                 instrument, str(raw_index).strip(), attach_quotes, quote_timeout
@@ -558,7 +613,19 @@ class ICXFunction(BaseFunction):
                 warnings=[f"unknown sector {raw_sector!r}"],
             )
 
-        members = _SECTOR_CONSTITUENTS[sector]
+        full_members = _sector_members(sector)
+        if full_members is None:
+            # Master or S&P list unreadable: the curated sample is the only data,
+            # so it is returned as a partial roster, never as the sector.
+            members = list(_SECTOR_CONSTITUENTS[sector])
+            sector_source = "showme_gics_reference"
+            sector_coverage: dict[str, Any] | None = {
+                "listed": len(members), "official": None, "complete": False,
+            }
+        else:
+            members = full_members
+            sector_source = "showme_security_master"
+            sector_coverage = None
 
         # Best-effort live quote snapshot. Constituent rows are real regardless;
         # prices are attached when the quote provider answers, otherwise left
@@ -600,25 +667,34 @@ class ICXFunction(BaseFunction):
         elif not attach_quotes:
             warnings.append("live quotes disabled by request")
 
-        sources = ["showme_gics_reference"]
+        sources = [sector_source]
         if quotes_ok:
             sources.append("yfinance")
 
+        data: dict[str, Any] = {
+            "status": "ok",
+            "rows": rows,
+            "methodology": _METHODOLOGY,
+            "field_dictionary": _FIELD_DICTIONARY,
+            "summary": {
+                "sector": sector,
+                "constituent_count": len(rows),
+                "source": sector_source + ("+yfinance" if quotes_ok else ""),
+            },
+        }
+        if sector_coverage is not None:
+            data["status"] = "partial"
+            data["coverage"] = sector_coverage
+            data["summary"]["coverage"] = sector_coverage
+            data["reason"] = (
+                f"Only {len(rows)} curated {sector} names are bundled; the S&P 500 "
+                "sector list is unavailable, so this is not the full sector."
+            )
+            warnings.append(data["reason"])
         return FunctionResult(
             code=self.code,
             instrument=instrument,
-            data={
-                "status": "ok",
-                "rows": rows,
-                "methodology": _METHODOLOGY,
-                "field_dictionary": _FIELD_DICTIONARY,
-                "summary": {
-                    "sector": sector,
-                    "constituent_count": len(rows),
-                    "source": "showme_gics_reference"
-                    + ("+yfinance" if quotes_ok else ""),
-                },
-            },
+            data=data,
             sources=sources,
             warnings=warnings,
         )
@@ -702,23 +778,38 @@ class ICXFunction(BaseFunction):
         if quotes_ok:
             sources.append("yfinance")
 
+        official = _INDEX_OFFICIAL_COUNT.get(code)
+        coverage = {
+            "listed": len(rows),
+            "official": official,
+            "complete": official is None or len(rows) >= official,
+        }
+        data: dict[str, Any] = {
+            "status": "ok" if coverage["complete"] else "partial",
+            "index": code,
+            "constituents": len(rows),
+            "coverage": coverage,
+            "rows": rows,
+            "methodology": _METHODOLOGY,
+            "field_dictionary": _FIELD_DICTIONARY,
+            "summary": {
+                "index": code,
+                "constituent_count": len(rows),
+                "coverage": coverage,
+                "source": "showme_index_reference"
+                + ("+yfinance" if quotes_ok else ""),
+            },
+        }
+        if not coverage["complete"]:
+            data["reason"] = (
+                f"Showing {len(rows)} of {official} {code} members from a curated "
+                "subset table; the full roster is not bundled."
+            )
+            warnings.append(data["reason"])
         return FunctionResult(
             code=self.code,
             instrument=instrument,
-            data={
-                "status": "ok",
-                "index": code,
-                "constituents": len(rows),
-                "rows": rows,
-                "methodology": _METHODOLOGY,
-                "field_dictionary": _FIELD_DICTIONARY,
-                "summary": {
-                    "index": code,
-                    "constituent_count": len(rows),
-                    "source": "showme_index_reference"
-                    + ("+yfinance" if quotes_ok else ""),
-                },
-            },
+            data=data,
             sources=sources,
             warnings=warnings,
         )

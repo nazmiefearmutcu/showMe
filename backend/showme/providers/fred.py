@@ -10,7 +10,7 @@ import os
 import time
 from typing import Any, ClassVar, Literal
 
-from .base import AdapterError, DataMode, ProviderAdapter
+from .base import AdapterError, DataMode, ProviderAdapter, get_redacted, redact_secrets
 from ._http import get_client
 
 __all__ = ["FredAdapter"]
@@ -56,12 +56,11 @@ class FredAdapter(ProviderAdapter):
         client = await get_client()
         started = time.monotonic()
         try:
-            r = await client.get(url, params=merged)
-            r.raise_for_status()
+            r = await get_redacted(client, url, params=merged, secrets=(key,))
             data = r.json()
         except Exception as exc:  # noqa: BLE001 — record-and-reraise
             self._record_failure(exc)
-            raise AdapterError(f"fred GET {url} failed: {exc}") from exc
+            raise AdapterError(f"fred GET {url} failed: {redact_secrets(exc, key)}") from exc
         self._record_success(int((time.monotonic() - started) * 1000))
         return data
 

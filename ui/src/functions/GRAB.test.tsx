@@ -51,28 +51,28 @@ vi.mock("@/lib/store", () => ({
 function draftPayload() {
   return {
     data: {
-      status: "draft_only",
+      status: "planned",
       target: "current_pane",
       recipient: "trader@example.com",
       rows: [
         {
           step: "capture",
           target: "current_pane",
-          status: "ready",
-          output: "local screenshot artifact",
+          status: "planned",
+          output: "capture plan only: no screenshot is taken by this function",
           transmits_data: false,
         },
         {
           step: "email",
           target: "trader@example.com",
-          status: "draft_only",
+          status: "planned",
           output: "requires user-confirmed mail integration",
           transmits_data: true,
         },
       ],
       cards: [
         { label: "Capture", value: "local" },
-        { label: "Email", value: "draft only" },
+        { label: "Email", value: "plan only" },
       ],
       next_actions: ["Confirm the recipient before sending any screenshot."],
     },
@@ -96,9 +96,10 @@ describe("GRAB pane — idle + running states", () => {
     expect(runFunctionMock).not.toHaveBeenCalled();
   });
 
-  it("shows the draft-only pill from the start", () => {
+  it("shows the plan-only pill from the start and never a draft claim", () => {
     render(<GRABPane code="GRAB" />);
-    expect(screen.getAllByText(/draft only/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/plan only/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/draft only/i)).toBeNull();
   });
 });
 

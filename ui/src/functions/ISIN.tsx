@@ -183,6 +183,16 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
   const [lookup, setLookup] = useState(() => (symbol || "").trim() || DEFAULT_INPUT);
   const [history, setHistory] = useState<string[]>(readHistory);
   const [idType, setIdType] = useState<IdTypeChoice>("AUTO");
+
+  // UI-7: follow the terminal symbol when the link changes; the search box overrides it.
+  useEffect(() => {
+    const s = (symbol || "").trim();
+    if (s) {
+      setInput(s);
+      setLookup(s);
+    }
+  }, [symbol]);
+
   const { state, data, error, refetch } = useFunction<ISINData>({
     code,
     params:

@@ -128,10 +128,15 @@ def _parse_primary(tokens: list[tuple[str, str]], pos: int) -> tuple[Any, int]:
     return Cond(field=field, op=op, value=val), pos
 
 
+def _is_missing(value: Any) -> bool:
+    """None and NaN both mean "no value"; NaN must not compare as unequal."""
+    return value is None or (isinstance(value, float) and value != value)
+
+
 def _eval(node: Any, row: dict[str, Any]) -> bool:
     if isinstance(node, Cond):
         v = row.get(node.field)
-        if v is None:
+        if _is_missing(v):
             return False
         try:
             if node.op in ("=", "=="): return v == node.value
@@ -277,6 +282,8 @@ class EQSFunction(BaseFunction):
         if not rows:
             rows = _screen_template_rows(instrument, universe)
         df = pd.DataFrame(rows)
+        coverage = _enrichment_coverage(df)
+        coverage_warnings = _coverage_warnings(coverage) if live else []
         try:
             filtered = filter_dataframe(df, query)
         except Exception as e:
@@ -321,6 +328,7 @@ class EQSFunction(BaseFunction):
                     "scanned": int(len(df)),
                 },
                 sources=["yfinance"] if live else ["equity_screener_model"],
+                warnings=list(coverage_warnings),
                 metadata={
                     "query": query,
                     "matched": 0,
@@ -330,30 +338,38 @@ class EQSFunction(BaseFunction):
                     "data_mode": "delayed_reference" if live else "modeled",
                     "universe": universe_label,
                     "universe_size": len(universe),
+                    "enrichment_coverage": coverage,
                 },
             )
         # S05 BUGHUNT B6: surface the actual universe label + size so the UI
         # cannot continue to claim "SP500" coverage when only the mega-cap
         # stub was scanned. `universe_label` flows up untouched.
-        warnings: list[str] = []
+        warnings: list[str] = list(coverage_warnings)
         if template_mode:
             warnings.append(
                 "Template mode: rows are model fixtures, not live market data."
             )
+        # EQS#1: the pane's row limit caps the returned rows; ``matched`` keeps
+        # the full count so the UI can say "N matched, showing M".
+        row_limit = _row_limit(params)
+        returned = filtered.head(row_limit) if row_limit is not None else filtered
         return FunctionResult(
             code=self.code, instrument=None,
-            data=filtered.reset_index(drop=True),
+            data=returned.reset_index(drop=True),
             sources=["yfinance"] if live else ["equity_screener_model"],
             warnings=warnings,
             metadata={
                 "query": query,
                 "matched": int(len(filtered)),
+                "returned": int(len(returned)),
+                "limit": row_limit,
                 "scanned": int(len(df)),
                 "live": live,
                 "template": template_mode,
                 "data_mode": "delayed_reference" if live else "modeled",
                 "universe": universe_label,
                 "universe_size": len(universe),
+                "enrichment_coverage": coverage,
             },
         )
 
@@ -369,8 +385,8 @@ class EQSFunction(BaseFunction):
         500+ symbol universe instead of the ~11 symbols that used to slip
         inside the per-symbol, rate-limited budget. ``beta``/``industry``/
         ``ps`` are not part of the batch payload, so a bounded rotated REFDATA
-        slice refreshes them into a process cache whenever the active query
-        actually references them. Without batch support (or when it hard
+        slice refreshes them into a process cache on every live batch scan,
+        whatever the query text. Without batch support (or when it hard
         fails) the legacy per-symbol REFDATA fan-out runs unchanged.
         """
         provider = self.deps.yfinance
@@ -393,9 +409,7 @@ class EQSFunction(BaseFunction):
                     _batch_cache_write(fresh)
                     batch_rows.update(fresh)
         if batch_rows:
-            await self._refresh_refdata_slice(
-                universe, str(params.get("query") or ""), params
-            )
+            await self._refresh_refdata_slice(universe, params)
             master = _security_master_by_symbol()
             rows: list[dict[str, Any]] = []
             for sym in universe:
@@ -460,23 +474,29 @@ class EQSFunction(BaseFunction):
     async def _refresh_refdata_slice(
         self,
         universe: list[str],
-        query: str,
         params: dict[str, Any],
     ) -> None:
         """Cache REFDATA-only fields (beta/industry/ps) in rotated slices.
 
-        The batch endpoint covers marketCap/PE/PB/yield but not beta; queries
-        that reference those fields would otherwise run with unknown values
-        forever. Each call refreshes a bounded slice of uncached symbols into a
-        process-local cache, so repeated runs progressively cover the universe
-        without ever inventing a number.
+        The batch endpoint documents marketCap, trailingPE, priceToBook and
+        dividendYield (``fetch_refdata_batch``). beta, P/S and industry are read
+        from the batch record when Yahoo returns them (``_compose_live_row``); the
+        per-symbol REFDATA payload fills what the batch does not carry. Nothing in
+        this repo has verified that the v7 quote returns beta, P/S or industry, so
+        their coverage is reported, not assumed. Every live batch scan refreshes a
+        bounded slice of uncached symbols into a process-local cache. The slice
+        used to run only when the query text named one of those fields, which made
+        the same universe show different columns depending on the previous query.
+        Coverage is reported by ``_enrichment_coverage``; no value is ever invented.
+
+        Throughput: the slice shares Yahoo's token bucket (2 calls/s, burst 5).
+        Within the default 3s slice about 5 + 2 * 3 = 11 calls finish; the rest are
+        cancelled and stay first in line for the next scan. ``refdata_screen_timeout``
+        may be raised to its 5s maximum (about 15 calls) at the cost of scan latency.
+        Commit 80d84d7a routed the slice through that bucket instead of bypassing
+        it, so REFDATA coverage per scan is lower than the earlier unthrottled slice.
+        That is the accepted trade-off against unthrottled public Yahoo requests.
         """
-        normalized = normalize_query_aliases(query or "").lower()
-        if not any(
-            re.search(rf"\b{token}\b", normalized)
-            for token in ("beta", "industry", "ps")
-        ):
-            return
         budget = int(max(0.0, min(_param_float(params, "refdata_budget", 24.0), 64.0)))
         if budget <= 0:
             return
@@ -486,10 +506,22 @@ class EQSFunction(BaseFunction):
         ]
         if not pending:
             return
+        # EQS#2 follow-up: the slice can only finish about 5 + rate * slice
+        # seconds of calls (shared bucket, default 2/s with burst 5, 3s cap),
+        # so most of a 24-symbol window is cancelled. The window is therefore
+        # picked least-recently-attempted first, and a cancelled symbol keeps
+        # its place at the front of the queue. Rotating a fixed index over a
+        # shrinking list skipped the cancelled symbols until the index wrapped.
         global _EQS_REFDATA_CURSOR
-        start = _EQS_REFDATA_CURSOR % len(pending)
-        window = pending[start:start + budget]
-        _EQS_REFDATA_CURSOR = (start + budget) % max(1, len(pending))
+        count = len(pending)
+        cursor = _EQS_REFDATA_CURSOR % count
+        tie_rank = {symbol: (index - cursor) % count for index, symbol in enumerate(pending)}
+        ordered = sorted(
+            pending,
+            key=lambda s: (_EQS_REFDATA_ATTEMPTED.get(s, float("-inf")), tie_rank[s]),
+        )
+        window = ordered[:budget]
+        _EQS_REFDATA_CURSOR = (cursor + len(window)) % count
         per_timeout = max(1.0, min(_param_float(params, "refdata_timeout", 2.0), 3.0))
         slice_timeout = max(1.0, min(_param_float(params, "refdata_screen_timeout", 3.0), 5.0))
         semaphore = asyncio.Semaphore(6)
@@ -503,16 +535,24 @@ class EQSFunction(BaseFunction):
                         asset_class=AssetClass.EQUITY,
                         exchange="NASDAQ",
                     ),
-                    extra={"timeout": per_timeout, "bypass_rate_limit": True},
+                    # The slice goes through the adapter's shared token bucket like
+                    # every other Yahoo call; bypassing it let each scan add up to
+                    # `budget` unthrottled public requests. The slice timeout below
+                    # caps the wall-clock wait a scan can spend here.
+                    extra={"timeout": per_timeout},
                 ))
 
-        tasks = [asyncio.create_task(_one(symbol)) for symbol in window]
-        done, pending_tasks = await asyncio.wait(tasks, timeout=slice_timeout)
+        task_symbol = {asyncio.create_task(_one(symbol)): symbol for symbol in window}
+        done, pending_tasks = await asyncio.wait(list(task_symbol), timeout=slice_timeout)
         for task in pending_tasks:
             task.cancel()
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
+        now = time.monotonic()
         for task in done:
+            # A symbol whose call finished (even if it failed) has been attempted;
+            # a cancelled one has not, so it stays first in line for the next scan.
+            _EQS_REFDATA_ATTEMPTED[task_symbol[task]] = now
             try:
                 symbol, refdata = task.result()
             except Exception:  # noqa: BLE001
@@ -529,6 +569,8 @@ _EQS_REFDATA_CACHE_TTL_S = 6 * 3600.0
 _EQS_BATCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _EQS_REFDATA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _EQS_REFDATA_CURSOR = 0
+# Last monotonic time a REFDATA call for the symbol finished (EQS#2 follow-up).
+_EQS_REFDATA_ATTEMPTED: dict[str, float] = {}
 _SECURITY_MASTER_INDEX: dict[str, dict[str, Any]] | None = None
 
 
@@ -614,9 +656,15 @@ def _compose_live_row(
     dividend_yield = _normalize_dividend_yield(batch.get("dividendYield"))
     if dividend_yield is None:
         dividend_yield = ref.get("dividend_yield")
+    # beta and P/S: REFDATA first, then the batch record when it carries them
+    # (EQS#2 follow-up). The batch adapter keeps the raw v7 record, so a field the
+    # quote carries is used; an absent field stays None, never an invented value.
     beta = ref.get("beta")
     if beta is None:
         beta = _to_float(batch.get("beta"))
+    ps = ref.get("ps")
+    if ps is None:
+        ps = _to_float(batch.get("priceToSalesTrailing12Months"))
     return {
         "symbol": symbol,
         "sector": (
@@ -628,11 +676,37 @@ def _compose_live_row(
         "marketCap": market_cap,
         "pe": pe,
         "pb": pb,
-        "ps": ref.get("ps"),
+        "ps": ps,
         "dividend_yield": dividend_yield,
         "beta": beta,
         "country": ref.get("country") or master.get("country") or batch.get("country"),
     }
+
+
+_ENRICHMENT_FIELDS = ("beta", "ps", "industry")
+
+
+def _enrichment_coverage(df: pd.DataFrame) -> dict[str, dict[str, int]]:
+    """Per-field count of scanned rows that carry a real value (not a gap)."""
+    total = int(len(df))
+    out: dict[str, dict[str, int]] = {}
+    for field in _ENRICHMENT_FIELDS:
+        populated = int(df[field].notna().sum()) if field in df.columns else 0
+        out[field] = {"populated": populated, "of": total}
+    return out
+
+
+def _coverage_warnings(coverage: dict[str, dict[str, int]]) -> list[str]:
+    warnings: list[str] = []
+    for field, counts in coverage.items():
+        gaps = counts["of"] - counts["populated"]
+        if counts["of"] and gaps > 0:
+            warnings.append(
+                f"{field} is empty for {gaps} of {counts['of']} scanned rows: no REFDATA "
+                "value is cached for them yet, so predicates on it skip those rows. "
+                "Coverage grows across runs (rotating REFDATA refresh)."
+            )
+    return warnings
 
 
 def _batch_cache_read(symbols: list[str]) -> dict[str, dict[str, Any]]:
@@ -721,6 +795,21 @@ def _resolve_universe(value: Any) -> tuple[list[str], str]:
         if token:
             return [token], f"single ({token})"
     return _UNIVERSE_PRESETS["MEGA15"], "MEGA15"
+
+
+def _row_limit(params: dict[str, Any]) -> int | None:
+    """Positive integer row cap from the pane's ``limit``; None means no cap."""
+    raw = params.get("limit")
+    if raw is None or isinstance(raw, bool) or raw == "":
+        return None
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        return None
+    # inf/-inf/nan cannot be converted to int (OverflowError/ValueError): no cap.
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return int(number) if number >= 1 else None
 
 
 def _truthy(value: Any) -> bool:

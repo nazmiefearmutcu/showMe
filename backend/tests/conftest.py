@@ -20,6 +20,9 @@ import tempfile
 _TEST_HOME = tempfile.mkdtemp(prefix="showme-test-home-")
 os.environ["SHOWME_HOME"] = _TEST_HOME
 os.environ.setdefault("SHOWME_DISABLE_BOTS", "1")
+# The in-memory credential backend is plaintext and needs this explicit opt-in
+# (SEC-6). Tests only; test_credential_plaintext_guard.py clears it itself.
+os.environ.setdefault("SHOWME_ALLOW_PLAINTEXT_VAULT", "1")
 
 
 def pytest_unconfigure(config):  # noqa: ARG001 - pytest hook signature

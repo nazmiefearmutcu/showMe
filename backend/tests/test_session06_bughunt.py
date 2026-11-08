@@ -63,7 +63,8 @@ def test_form4_gift_and_other_codes_are_neutral_not_buys() -> None:
     assert form4_mod._infer_direction({"transactionCode": "j"}) == 0
     # Real purchases / sales keep their signs.
     assert form4_mod._infer_direction({"acquiredDisposedCode": "P"}) == 1
-    assert form4_mod._infer_direction({"acquiredDisposedCode": "A"}) == 1
+    # FORM4#3: SEC code A is a grant/award, not an open-market purchase (neutral).
+    assert form4_mod._infer_direction({"acquiredDisposedCode": "A"}) == 0
     assert form4_mod._infer_direction({"acquiredDisposedCode": "S"}) == -1
     # And the net summary must not move on a pure gift.
     gift_rows = [

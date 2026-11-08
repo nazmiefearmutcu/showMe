@@ -152,7 +152,8 @@ def test_des_execute_flattens_reference_data_extras_raw() -> None:
         "trailingPE": 30.5,
         "forwardPE": 28.1,
         "beta": 1.24,
-        "dividendYield": 0.0050,
+        # Decimal field (0.5%); dividendYield is percent-form and is not used here.
+        "trailingAnnualDividendYield": 0.0050,
         "fiftyTwoWeekHigh": 290.5,
         "fiftyTwoWeekLow": 165.0,
         "regularMarketPrice": 282.62,
@@ -245,7 +246,8 @@ def test_des_execute_returns_provider_unavailable_when_no_source_responds() -> N
     assert data["status"] == "provider_unavailable"
     assert "next_actions" in data and data["next_actions"]
     assert data["description"] is None
-    assert result.sources == ["yfinance", "finnhub", "sec_edgar"]
+    # No provider answered, so none is listed as a source (DES#2).
+    assert result.sources == []
 
 
 def test_des_execute_provider_error_surfaces_in_data() -> None:
@@ -381,7 +383,7 @@ def test_des_crypto_provider_unavailable_when_all_fail() -> None:
     result = _run(fn.execute(_btc_instrument()))
     data = result.data
     assert data["status"] == "provider_unavailable"
-    assert result.sources == ["coingecko", "cryptocompare", "yfinance"]
+    assert result.sources == []  # DES#2: no answering provider, so no source
 
 
 # ── CoinGecko ID-mismatch guard ───────────────────────────────────────────

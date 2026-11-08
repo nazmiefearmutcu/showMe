@@ -52,18 +52,18 @@ def dcf() -> FunctionManifest:
                 description="Equity ticker.",
             ),
             InputSpec(
-                name="discount_rate",
+                name="wacc",
                 label="Discount rate (WACC)",
                 control=ControlKind.MODEL_ASSUMPTION,
-                required=True,
-                description="Cost of capital used to discount each future cash flow.",
+                required=False,
+                description="Cost of capital used to discount each future cash flow. Empty uses the WACC model; a constant is never substituted.",
                 min=0.01,
                 max=0.30,
                 step=0.005,
                 unit="decimal",
             ),
             InputSpec(
-                name="growth_rate",
+                name="growth_high",
                 label="Stage-1 growth",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
@@ -74,7 +74,7 @@ def dcf() -> FunctionManifest:
                 unit="decimal",
             ),
             InputSpec(
-                name="terminal_growth",
+                name="growth_terminal",
                 label="Terminal growth",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
@@ -85,7 +85,7 @@ def dcf() -> FunctionManifest:
                 unit="decimal",
             ),
             InputSpec(
-                name="projection_years",
+                name="years",
                 label="Projection years",
                 control=ControlKind.NUMBER,
                 required=False,
@@ -95,25 +95,11 @@ def dcf() -> FunctionManifest:
                 step=1,
                 unit="years",
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred mode for the FCF history pull.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
-            "discount_rate": 0.09,
-            "growth_rate": 0.08,
-            "terminal_growth": 0.025,
-            "projection_years": 10,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
+            "growth_high": 0.08,
+            "growth_terminal": 0.025,
+            "years": 10,
         },
         provider_chain=ProviderChain(
             primary="internal",
@@ -129,11 +115,13 @@ def dcf() -> FunctionManifest:
         caching=CachingPolicy(ttl_seconds=3600, scope="per_input", persist=True),
         output_contract=OutputContract(
             must_have=[
-                "symbol",
                 "status",
-                "intrinsic_value_per_share",
-                "enterprise_value",
-                "projection",
+                "wacc",
+                "starting_fcfe",
+                "fair_value_per_share",
+                "equity_value",
+                "rows",
+                "bridge",
                 "assumptions",
             ],
             rows=True,
@@ -145,34 +133,32 @@ def dcf() -> FunctionManifest:
         table_schema=TableSchema(
             columns=[
                 ColumnSpec(key="year", label="Year", kind="number"),
-                ColumnSpec(key="fcf", label="FCF", kind="number", unit="quote_ccy", format="%.0f"),
+                ColumnSpec(key="fcfe", label="FCFE", kind="number", unit="quote_ccy", format="%.0f"),
                 ColumnSpec(key="discount_factor", label="DF", kind="number", format="%.4f"),
-                ColumnSpec(key="present_value", label="PV", kind="number", unit="quote_ccy", format="%.0f"),
+                ColumnSpec(key="pv", label="PV", kind="number", unit="quote_ccy", format="%.0f"),
             ],
             sortable=False,
             filterable=False,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="intrinsic_value_per_share", label="Intrinsic / share", kind="big_number", unit="quote_ccy"),
-                CardSlot(key="enterprise_value", label="EV", kind="kpi", unit="quote_ccy"),
+                CardSlot(key="fair_value_per_share", label="Fair value / share", kind="big_number", unit="quote_ccy"),
+                CardSlot(key="equity_value", label="Equity value", kind="kpi", unit="quote_ccy"),
                 CardSlot(key="terminal_value", label="Terminal", kind="kpi", unit="quote_ccy"),
-                CardSlot(key="upside_pct", label="Upside vs price", kind="trend_pill", unit="%"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "DCF takes the most-recent free cash flow (CFO − |Capex|) from the FA service and "
-            "projects it forward at `growth_rate` for `projection_years`. Each year's FCF is "
-            "discounted at (1+discount_rate)^t. The terminal value uses the Gordon growth model "
-            "TV = FCF_{n+1} / (discount_rate − terminal_growth) and is discounted to year 0. "
-            "Enterprise value is the sum of PVs + PV(terminal); intrinsic value per share = "
-            "(EV − net debt) / shares outstanding. The handler echoes the assumptions dict so the "
-            "consumer can audit which model produced the number, and warns when terminal_growth "
-            "is not strictly less than discount_rate."
+            "Two-stage FCFE DCF. Starting FCFE is the caller's fcfe (a labelled manual override) or "
+            "the yfinance freeCashflow provider value. FCFE is projected at growth_high for years, each "
+            "year is discounted at (1+wacc)^t, and the terminal value TV = FCFE_n * (1+growth_terminal) / "
+            "(wacc - growth_terminal) is discounted to year 0. Equity value = PV(explicit) + PV(terminal); "
+            "fair value per share = equity value / shares outstanding (caller override or provider). "
+            "wacc is the caller value or the WACC model and is never a constant. A wacc at or below "
+            "growth_terminal returns a model error."
         ),
-        formula_dict={
+            formula_dict={
             "DCF": Formula(
                 expression=r"PV = \sum_{t=1}^{n} \frac{CF_t}{(1+r)^t} + \frac{TV}{(1+r)^n}",
                 variables={
@@ -192,17 +178,19 @@ def dcf() -> FunctionManifest:
                 notes="Gordon growth model; requires r > g for convergence.",
             ),
             "IntrinsicValue": Formula(
-                expression=r"P_0 = \frac{EV - Net\_Debt}{Shares\_Out}",
-                variables={"EV": "Enterprise value (sum of PVs)", "Net_Debt": "Total debt − cash"},
+                expression=r"P_0 = \frac{Equity\_Value}{Shares\_Out}",
+                variables={
+                    "Equity_Value": "PV of explicit FCFE + PV of terminal value (FCFE is already after debt)",
+                    "Shares_Out": "Shares outstanding (caller override or provider)",
+                },
             ),
         },
         field_dict={
-            "intrinsic_value_per_share": FieldDef(unit="quote_ccy", description="DCF intrinsic value divided by shares outstanding.", source="computed"),
-            "enterprise_value": FieldDef(unit="quote_ccy", description="Sum of discounted projected FCFs + discounted terminal value.", source="computed"),
+            "fair_value_per_share": FieldDef(unit="quote_ccy", description="Equity value divided by shares outstanding.", source="computed"),
+            "equity_value": FieldDef(unit="quote_ccy", description="Sum of discounted projected FCFE + discounted terminal value.", source="computed"),
             "terminal_value": FieldDef(unit="quote_ccy", description="Undiscounted terminal value at year n.", source="computed"),
-            "projection": FieldDef(description="Per-year FCF / discount factor / present value rows.", source="computed"),
-            "assumptions": FieldDef(description="Echoed inputs (discount_rate, growth_rate, terminal_growth, projection_years).", source="input"),
-            "upside_pct": FieldDef(unit="%", description="(intrinsic − price) / price.", source="computed"),
+            "rows": FieldDef(description="Per-year FCFE / discount factor / present value rows.", source="computed"),
+            "bridge": FieldDef(description="PV explicit + PV terminal = equity value, then fair value per share.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -213,28 +201,28 @@ def dcf() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="dcf_aapl_default_assumptions_returns_finite_intrinsic",
-                description="DCF for AAPL with default assumptions returns a finite intrinsic_value_per_share > 0.",
+                description="DCF for AAPL with default assumptions returns a finite fair_value_per_share > 0.",
                 inputs={"symbol": "AAPL"},
                 assertions=[
                     "status_in_ok_set",
-                    "intrinsic_value_per_share_is_positive_number",
-                    "projection_length_equals_projection_years",
+                    "fair_value_per_share_is_positive_number",
+                    "rows_length_equals_years",
                 ],
             ),
             SemanticTest(
                 name="dcf_assumptions_visible_in_output",
-                description="The output echoes the discount/growth/terminal assumptions so the consumer can audit.",
-                inputs={"symbol": "AAPL", "discount_rate": 0.10, "growth_rate": 0.05, "terminal_growth": 0.02},
+                description="The output echoes wacc, growth_high and growth_terminal in assumptions so the consumer can audit.",
+                inputs={"symbol": "AAPL", "wacc": 0.10, "growth_high": 0.05, "growth_terminal": 0.02},
                 assertions=[
                     "assumptions_visible_in_output",
-                    "assumptions_discount_rate_equals_input",
-                    "assumptions_growth_rate_equals_input",
+                    "assumptions_wacc_equals_input",
+                    "assumptions_growth_high_equals_input",
                 ],
             ),
             SemanticTest(
                 name="dcf_terminal_growth_ge_discount_warns_or_errors",
-                description="When terminal_growth >= discount_rate the function warns (Gordon model diverges).",
-                inputs={"symbol": "AAPL", "discount_rate": 0.04, "terminal_growth": 0.05},
+                description="When growth_terminal >= wacc the function warns (Gordon model diverges).",
+                inputs={"symbol": "AAPL", "wacc": 0.04, "growth_terminal": 0.05},
                 assertions=[
                     "warnings_non_empty",
                 ],

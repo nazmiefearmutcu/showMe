@@ -1,7 +1,8 @@
 """NGAS — Natural Gas (Henry Hub) futures monitor.
 
-Tracks the Henry Hub natural gas futures contract (NG=F) and its
-European TTF cousin as a price-action pane. Contract unit
+Tracks the Henry Hub natural gas futures contract (NG=F) as a
+price-action pane; other contracts such as TTF=F are reported as
+unsupported, never substituted. Contract unit
 (USD/MMBtu) and front-month expiry are declared explicitly so the
 viewer never confuses a $/MMBtu print for a per-therm or per-mcf
 price.
@@ -44,9 +45,9 @@ def ngas() -> FunctionManifest:
         name="Natural Gas Futures",
         category=Category.COMMODITIES,
         intent=(
-            "Monitor the Henry Hub natural-gas futures benchmark (and TTF "
-            "European cousin) with explicit USD/MMBtu unit, front-month "
-            "expiry, and seasonal context."
+            "Monitor the Henry Hub natural-gas futures benchmark (NG=F) with "
+            "explicit USD/MMBtu unit, front-month expiry, and seasonal context. "
+            "TTF is not served."
         ),
         asset_classes=[AssetClass.COMMODITY, AssetClass.FUTURE],
         inputs=[
@@ -55,25 +56,8 @@ def ngas() -> FunctionManifest:
                 label="Contract",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Benchmark natural-gas contract.",
-                options=["NG=F", "TTF=F"],
-            ),
-            InputSpec(
-                name="range",
-                label="Range",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Lookback window.",
-                options=["1M", "3M", "6M", "1Y", "5Y"],
-            ),
-            InputSpec(
-                name="interval",
-                label="Interval",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Bar interval.",
-                options=["1h", "1d", "1wk"],
-                depends_on=["range"],
+                description="Benchmark natural-gas contract (Henry Hub only; TTF is not served).",
+                options=["NG=F"],
             ),
             InputSpec(
                 name="provider_mode",
@@ -89,8 +73,6 @@ def ngas() -> FunctionManifest:
         ],
         defaults={
             "contract": "NG=F",
-            "range": "6M",
-            "interval": "1d",
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
@@ -155,8 +137,9 @@ def ngas() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "NGAS pulls Henry Hub natural-gas (NG=F) or TTF (TTF=F) futures "
-            "candles from yfinance, resolves the active front-month expiry, "
+            "NGAS pulls Henry Hub natural-gas (NG=F) futures candles from "
+            "yfinance and reports any other contract (including TTF=F) as "
+            "unsupported rather than substituting Henry Hub rows. It resolves the active front-month expiry, "
             "and exposes contract_unit (USD/MMBtu) and expiry_month on the "
             "card row. Seasonality matters: NG has strong winter-heating and "
             "summer-cooling demand signatures; the methodology footer notes "
@@ -176,8 +159,8 @@ def ngas() -> FunctionManifest:
             ),
         },
         field_dict={
-            "contract": FieldDef(description="Natural-gas futures ticker (NG=F or TTF=F).", source="input"),
-            "contract_unit": FieldDef(description="Quoted unit (USD/MMBtu for both NG and TTF).", source="curated"),
+            "contract": FieldDef(description="Natural-gas futures ticker (NG=F, Henry Hub).", source="input"),
+            "contract_unit": FieldDef(description="Quoted unit (USD/MMBtu, Henry Hub NG=F).", source="curated"),
             "expiry_month": FieldDef(description="Front-month delivery (e.g. 2026-06).", source="provider"),
             "candles[].c": FieldDef(unit="USD/MMBtu", description="Close price.", source="provider"),
             "open_interest": FieldDef(unit="contracts", description="Listed open interest.", source="provider"),

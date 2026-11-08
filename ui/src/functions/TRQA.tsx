@@ -166,7 +166,7 @@ export function TRQAPane({ code }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title="Transcript Q&A"
+          title="Transcript & Press Release Q&A"
           subtitle={`${answers.length} answers · ${payload.text_chars ?? text.length} chars · cost $${(payload.total_cost_usd ?? 0).toFixed(4)}`}
           trailing={
             <FunctionControlGroup>

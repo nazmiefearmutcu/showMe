@@ -23,19 +23,17 @@ from showme.engine.services.black_litterman import (
 LOG = logging.getLogger("showme.blak")
 
 
-def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
-    periods = max(60, min(days, 504))
-    index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
-    periods = len(index)
-    t = np.arange(periods, dtype=float)
-    rows = {}
-    for i, sym in enumerate(symbols):
-        rows[sym] = 0.00025 + i * 0.00003 + np.sin((t + i * 7) / (11 + i)) * (0.006 + i * 0.001)
-    return pd.DataFrame(rows, index=index)
-
-
 _PRIOR_COV_ESTIMATORS = ("sample_cov", "ledoit_wolf", "exp_cov")
 _EXP_COV_SPAN = 180  # EWMA span in trading days (PyPortfolioOpt convention)
+# BLAK#1: the seeded lookback window (blak_seed.py "window", default 1Y) is the
+# history used to estimate the prior. Values are calendar days, the unit the
+# yfinance OHLCV start date uses.
+_WINDOW_DAYS = {"180d": 180, "1Y": 365, "2Y": 730, "5Y": 1825}
+_DEFAULT_WINDOW = "1Y"
+# BLAK#4: the REFDATA budget must cover a cold yfinance info call (about 4.4 s
+# for SPY measured live). The old 4 s cap cancelled it, so the ETF totalAssets
+# proxy never arrived and every default ETF prior fell back to equal weight.
+_REFDATA_TIMEOUT_S = 8
 
 
 def _ledoit_wolf_covariance(x: np.ndarray) -> tuple[np.ndarray, float]:
@@ -88,6 +86,123 @@ def _prior_covariance(df: pd.DataFrame, estimator: str) -> tuple[np.ndarray, flo
     return _exp_weighted_covariance(x, _EXP_COV_SPAN), None
 
 
+def _mcap_coverage(symbols: list[str], mcap_lookup: dict[str, float]) -> tuple[list[str], list[str]]:
+    """Requested symbols with a resolved market value, and those without one."""
+    resolved = [s for s in symbols if float(mcap_lookup.get(s) or 0.0) > 0]
+    missing = [s for s in symbols if s not in resolved]
+    return resolved, missing
+
+
+def _market_weights(
+    names: list[str], mcap_lookup: dict[str, float], mcap_data_state: str,
+) -> tuple[np.ndarray, str]:
+    """Market prior weights and the state they carry.
+
+    BLAK#2: partial coverage used to keep the "real" label while the unresolved
+    names got weight 0. Any partial or empty coverage sends the whole prior to
+    the labelled equal-weight fallback and reports ``approximate``.
+    """
+    mcaps = np.array([float(mcap_lookup.get(n) or 0.0) for n in names])
+    state = mcap_data_state
+    if mcap_data_state == "partial" or mcaps.sum() <= 0:
+        mcaps = np.ones(len(names))
+        state = "approximate"
+    return mcaps / mcaps.sum(), state
+
+
+def _market_cap_warnings(
+    mcap_data_state: str,
+    symbols: list[str],
+    resolved: list[str],
+    missing: list[str],
+    proxied: list[str],
+) -> list[str]:
+    if mcap_data_state == "partial":
+        return [
+            f"market cap resolved for {len(resolved)}/{len(symbols)} symbols; "
+            f"no market value for {', '.join(missing)}; equal-weight prior used "
+            "for the whole universe"
+        ]
+    if mcap_data_state == "approximate":
+        return ["market_weight set to equal-weight prior; real market cap unavailable"]
+    if mcap_data_state == "proxy":
+        return [
+            "fund AUM (totalAssets) used as market-value proxy for "
+            + ", ".join(proxied)
+            + "; not a market capitalization"
+        ]
+    return []
+
+
+def _no_prior_result(
+    code: str,
+    symbols: list[str],
+    *,
+    live: bool,
+    mcap_lookup: dict[str, float],
+    mcap_data_state: str,
+    mcap_sources: list[str],
+    mcap_proxied: list[str],
+    live_fetch_errors: list[str],
+    live_fetch_ok_symbols: list[str],
+) -> FunctionResult:
+    """Explicit state for a run without a market return history.
+
+    BLAK#6 / BLAK#3-RQ: the DATA POLICY forbids a prior built from invented
+    returns. With fewer than 10 aligned live return rows (or live off) there is
+    no prior, covariance, posterior or optimal weight. The resolved market-cap
+    weights are still reported, labelled by their own provenance.
+    """
+    resolved, missing = _mcap_coverage(symbols, mcap_lookup)
+    warnings = _market_cap_warnings(mcap_data_state, symbols, resolved, missing, mcap_proxied)
+    w_mkt, final_state = _market_weights(symbols, mcap_lookup, mcap_data_state)
+    if live:
+        status = "provider_unavailable"
+        reason = (
+            "No live return history with at least 10 aligned days was available, "
+            "so no prior covariance, prior return or posterior was computed."
+        )
+        next_actions = [
+            "Retry the run; live_fetch_errors lists the symbols whose history failed.",
+            "Drop symbols with no price history, or use a shorter common window.",
+        ]
+    else:
+        status = "needs_input"
+        reason = (
+            "Live market data is off. The Black-Litterman prior needs historical "
+            "returns, and MODEL mode has only a deterministic template, which is not "
+            "market data, so no prior was computed."
+        )
+        next_actions = ["Turn Live on and run again to compute the prior from market returns."]
+    warnings.append(f"no prior computed: status {status}")
+    if live and live_fetch_errors:
+        warnings.append(
+            f"{len(live_fetch_errors)} live fetch error(s); see live_fetch_errors for details"
+        )
+    return FunctionResult(
+        code=code, instrument=None,
+        data={
+            "status": status,
+            "reason": reason,
+            "next_actions": next_actions,
+            "symbols": list(symbols),
+            "market_weights": dict(zip(symbols, w_mkt.tolist())),
+            "market_cap_data_state": final_state,
+            "market_cap_coverage": {
+                "resolved": len(resolved),
+                "requested": len(symbols),
+                "missing": missing,
+            },
+            "return_data_state": "unavailable",
+            "samples": 0,
+            "live_fetch_errors": list(live_fetch_errors),
+            "live_fetch_ok_symbols": sorted(set(live_fetch_ok_symbols)),
+        },
+        sources=list(mcap_sources),
+        warnings=warnings,
+    )
+
+
 @FunctionRegistry.register
 class BLAKFunction(BaseFunction):
     code = "BLAK"
@@ -116,11 +231,79 @@ class BLAKFunction(BaseFunction):
                 },
                 warnings=[f"unsupported prior_covariance: {estimator}"],
             )
-        days = int(params.get("days", 504))
-        delta = float(params.get("delta", 2.5))
-        tau = float(params.get("tau", 0.05))
+        window = str(params.get("window") or _DEFAULT_WINDOW).strip()
+        if window not in _WINDOW_DAYS:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (f"window {window!r} is not supported; "
+                               f"use one of {', '.join(_WINDOW_DAYS)}"),
+                    "next_actions": ["Choose 180d, 1Y, 2Y or 5Y."],
+                },
+                warnings=[f"unsupported window: {window}"],
+            )
+        # An explicit calendar-day count wins; otherwise the seeded window applies.
+        explicit_days = params.get("days")
+        if explicit_days in (None, ""):
+            days = _WINDOW_DAYS[window]
+            window_label = window
+        else:
+            days = int(explicit_days)
+            window_label = f"{days}d"
+        # BLAK#5: tau, delta and typed views come from the pane as text. A malformed
+        # value is refused with a reason; it is never replaced by a default.
+        try:
+            delta = float(params.get("delta", 2.5))
+            tau = float(params.get("tau", 0.05))
+        except (TypeError, ValueError):
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": "tau and delta must be numbers (tau in (0, 1], delta > 0)",
+                    "next_actions": ["Enter a numeric tau such as 0.05 and a numeric delta such as 2.5."],
+                },
+                warnings=["tau or delta is not a number"],
+            )
+        if not (0.0 < tau <= 1.0) or not (delta > 0.0) or not np.isfinite(delta) or not np.isfinite(tau):
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"tau must be in (0, 1] and delta > 0; got tau={tau}, delta={delta}",
+                    "next_actions": ["Use tau between 0.001 and 1 and a positive delta."],
+                },
+                warnings=["tau or delta out of range"],
+            )
         market_caps = params.get("market_caps") or {}  # symbol → mcap
-        views = params.get("views") or []
+        if isinstance(market_caps, str):
+            # BLAK#5: the pane sends the overrides as "SYMBOL:USD, ..." text.
+            market_caps, caps_error = _parse_market_cap_text(market_caps)
+            if caps_error:
+                return FunctionResult(
+                    code=self.code, instrument=None,
+                    data={
+                        "status": "input_error",
+                        "reason": caps_error,
+                        "next_actions": ["Write market caps as SYMBOL:USD, for example AAPL:3900000000000, or leave blank."],
+                    },
+                    warnings=[f"unparsable market cap: {caps_error}"],
+                )
+        views = list(params.get("views") or [])
+        if params.get("views_text") is not None:
+            parsed_views, view_error = _parse_view_text(params.get("views_text"))
+            if view_error:
+                return FunctionResult(
+                    code=self.code, instrument=None,
+                    data={
+                        "status": "input_error",
+                        "reason": view_error,
+                        "next_actions": ["Write views as SYMBOL:percent or LONG>SHORT:percent, for example AAPL:8, AAPL>SPY:2."],
+                    },
+                    warnings=[f"unparsable view: {view_error}"],
+                )
+            views.extend(parsed_views)
         live = _truthy(params.get("live_returns") or params.get("live"))
         # B4: Do NOT pre-claim ``yfinance`` as the source. We only know what
         # was actually used after the live fetch decides whether it has
@@ -135,11 +318,13 @@ class BLAKFunction(BaseFunction):
         # other classes we use a yfinance REFDATA pass. Anything we cannot
         # resolve falls back to an equal-weight prior with data_state set to
         # ``approximate`` so the UI can surface the degradation.
-        mcap_lookup, mcap_data_state, mcap_sources, mcap_proxied = (
-            await _resolve_market_caps_detail(self.deps, symbols, market_caps)
+        # BLAK#4: market caps and return history are fetched concurrently, so the
+        # REFDATA budget does not add to the OHLCV budget.
+        mcap_task = asyncio.ensure_future(
+            _resolve_market_caps_detail(self.deps, symbols, market_caps)
         )
 
-        async def _ret(sym: str) -> tuple[str, pd.Series, float]:
+        async def _ret(sym: str) -> tuple[str, pd.Series]:
             # B4: narrow the catch to expected provider failures so genuine
             # bugs (NameError, type errors, etc.) surface at the call site
             # instead of being papered over with an empty series.
@@ -158,44 +343,43 @@ class BLAKFunction(BaseFunction):
                     timeout=8,
                 )
                 rets = close_to_daily_returns(df)
-                mcap = float(mcap_lookup.get(sym) or 0.0)
                 if rets is not None and not rets.empty:
                     live_fetch_ok_symbols.append(sym)
-                return sym, rets, mcap
+                return sym, rets
             except asyncio.CancelledError:
                 raise
             except (asyncio.TimeoutError, DataSourceError) as exc:
                 LOG.warning("BLAK live fetch failed for %s: %s", sym, exc)
                 live_fetch_errors.append(f"{sym}: {type(exc).__name__}: {exc}")
-                return sym, pd.Series(dtype=float), float(mcap_lookup.get(sym) or 0.0)
+                return sym, pd.Series(dtype=float)
             except Exception as exc:  # noqa: BLE001
                 # Last-resort catch for unexpected provider quirks (httpx
                 # transport errors, yfinance JSONDecode, etc). Still surface
                 # the message so the response is honest about what failed.
                 LOG.warning("BLAK live fetch unexpected error for %s: %s", sym, exc)
                 live_fetch_errors.append(f"{sym}: {type(exc).__name__}: {exc}")
-                return sym, pd.Series(dtype=float), float(mcap_lookup.get(sym) or 0.0)
+                return sym, pd.Series(dtype=float)
         if live and self.deps.yfinance:
             results = await asyncio.gather(*(_ret(s) for s in symbols))
             # Audit Q3 #7: pairwise covariance for mixed universes.
             df = align_return_series(
-                ((s, r) for s, r, _ in results), policy="pairwise"
+                ((s, r) for s, r in results), policy="pairwise"
             )
         else:
-            results = [(s, pd.Series(dtype=float), 1.0) for s in symbols]
             df = pd.DataFrame()
-        used_synthetic = False
+        mcap_lookup, mcap_data_state, mcap_sources, mcap_proxied = await mcap_task
         if df.shape[0] < 10:
-            df = _template_returns(symbols, days)
-            # Keep the resolved mcap lookup; we still want real weights even
-            # when the return series falls back to the deterministic template.
-            results = [(s, pd.Series(dtype=float), float(mcap_lookup.get(s, 0.0))) for s in symbols]
-            used_synthetic = True
-            # B4: be honest about the source. Only flag synthetic when we
-            # actually fell back; partial-success live runs keep yfinance.
-            sources = ["synthetic_fallback"]
-        else:
-            sources = ["yfinance"] if live else ["computed_return_model"]
+            # BLAK#6 / BLAK#3-RQ: the former deterministic sine template is not
+            # market data, so no prior, covariance or posterior is built from it
+            # (live or MODEL). The resolved market-cap weights are still shown,
+            # together with an explicit state that says why no prior exists.
+            return _no_prior_result(
+                self.code, symbols, live=live, mcap_lookup=mcap_lookup,
+                mcap_data_state=mcap_data_state, mcap_sources=mcap_sources,
+                mcap_proxied=mcap_proxied, live_fetch_errors=live_fetch_errors,
+                live_fetch_ok_symbols=live_fetch_ok_symbols,
+            )
+        sources = ["yfinance"]
         # BLAK#3 follow-up: the 10-row guard above counts pairwise rows, but the
         # prior needs complete common history. Fewer than 10 overlapping days
         # gave a NaN covariance (SVD failure) or a T=1 Ledoit-Wolf division by
@@ -216,17 +400,14 @@ class BLAKFunction(BaseFunction):
         cov_daily, shrinkage_delta = _prior_covariance(df, estimator)
         cov = cov_daily * 252
         cols = list(df.columns)
-        mcaps = np.array([next((m for s, _, m in results if s == c), 0.0) for c in cols])
         # BLAK#2: partial coverage used to keep the "real" label while the
         # unresolved names got weight 0. Any requested name without a market
         # value now sends the whole prior to the labelled equal-weight fallback.
-        mcap_resolved = [s for s in symbols if float(mcap_lookup.get(s) or 0.0) > 0]
-        mcap_missing = [s for s in symbols if s not in mcap_resolved]
-        mcap_partial = mcap_data_state == "partial"
-        if mcap_partial or mcaps.sum() <= 0:
-            mcaps = np.ones(len(cols))
-            mcap_data_state = "approximate"
-        w_mkt = mcaps / mcaps.sum()
+        mcap_resolved, mcap_missing = _mcap_coverage(symbols, mcap_lookup)
+        mcap_warnings = _market_cap_warnings(
+            mcap_data_state, symbols, mcap_resolved, mcap_missing, mcap_proxied,
+        )
+        w_mkt, mcap_data_state = _market_weights(cols, mcap_lookup, mcap_data_state)
         pi = implied_returns(cov, w_mkt, delta=delta)
         # Build P / Q from views.
         # Audit Q3 #23 — `view_type` explicit:
@@ -261,6 +442,12 @@ class BLAKFunction(BaseFunction):
                         P_rows.append(row)
                         Q.append(expected)
             else:
+                # A spread with a leg outside the aligned universe is not the view
+                # the user typed: applying the remaining leg alone would silently
+                # turn it into a one-sided view. The whole view is skipped and the
+                # symbol is named in the unmatched-views warning below.
+                if any(s not in cols for s in longs + shorts):
+                    continue
                 row = [0.0] * len(cols)
                 for s in longs:
                     if s in cols:
@@ -275,6 +462,10 @@ class BLAKFunction(BaseFunction):
         Qv = np.asarray(Q) if Q else None
         pi_bl, sigma_bl = posterior(cov, w_mkt, P, Qv, delta=delta, tau=tau)
         w_opt = implied_optimal_weights(pi_bl, sigma_bl, delta=delta)
+        # BLAK#7: optimal_weight is long-only (negatives clipped, then renormalized
+        # to sum 1). The raw solution is reported beside it so the transformation
+        # is visible rather than hidden.
+        w_raw = np.linalg.pinv(delta * sigma_bl) @ pi_bl
         rows = [
             {
                 "symbol": sym,
@@ -282,6 +473,7 @@ class BLAKFunction(BaseFunction):
                 "prior_return": float(pi[idx]),
                 "posterior_return": float(pi_bl[idx]),
                 "optimal_weight": float(w_opt[idx]),
+                "optimal_weight_unconstrained": float(w_raw[idx]),
                 "view_active": any(row[idx] != 0 for row in P_rows),
             }
             for idx, sym in enumerate(cols)
@@ -290,22 +482,13 @@ class BLAKFunction(BaseFunction):
         for src in mcap_sources:
             if src not in sources:
                 sources.append(src)
-        warnings: list[str] = []
-        if mcap_partial:
+        warnings: list[str] = list(mcap_warnings)
+        requested_upper = {str(s).upper() for s in symbols}
+        ignored_caps = sorted(str(s) for s in market_caps if str(s).upper() not in requested_upper)
+        if ignored_caps:
             warnings.append(
-                f"market cap resolved for {len(mcap_resolved)}/{len(symbols)} symbols; "
-                f"no market value for {', '.join(mcap_missing)}; equal-weight prior used "
-                "for the whole universe"
-            )
-        elif mcap_data_state == "approximate":
-            warnings.append(
-                "market_weight set to equal-weight prior; real market cap unavailable"
-            )
-        elif mcap_data_state == "proxy":
-            warnings.append(
-                "fund AUM (totalAssets) used as market-value proxy for "
-                + ", ".join(mcap_proxied)
-                + "; not a market capitalization"
+                "market cap override for " + ", ".join(ignored_caps)
+                + " ignored: symbol not in the requested universe"
             )
         excluded_no_returns = [s for s in symbols if s not in cols]
         if excluded_no_returns:
@@ -313,10 +496,17 @@ class BLAKFunction(BaseFunction):
                 "symbols excluded from the prior (no aligned return rows): "
                 + ", ".join(excluded_no_returns)
             )
-        if used_synthetic and live:
+        # BLAK#5: a view on a symbol outside the aligned universe used to be dropped
+        # without a word. Name it so the user sees the view did not apply.
+        view_symbols = {
+            s for v in views
+            for s in list(v.get("long", []) or []) + list(v.get("short", []) or [])
+        }
+        unmatched_views = sorted(s for s in view_symbols if s not in cols)
+        if unmatched_views:
             warnings.append(
-                "live return fetch produced fewer than 10 aligned rows; "
-                "synthetic deterministic returns used"
+                "views on " + ", ".join(unmatched_views)
+                + " ignored: symbol not in the aligned return universe"
             )
         if live and live_fetch_errors:
             warnings.append(
@@ -332,6 +522,8 @@ class BLAKFunction(BaseFunction):
                 "implied_returns_prior": dict(zip(cols, pi.tolist())),
                 "posterior_returns": dict(zip(cols, pi_bl.tolist())),
                 "implied_optimal_weights": dict(zip(cols, w_opt.tolist())),
+                "implied_optimal_weights_unconstrained": dict(zip(cols, w_raw.tolist())),
+                "optimal_weight_raw_sum": float(w_raw.sum()),
                 "market_cap_data_state": mcap_data_state,
                 "market_cap_coverage": {
                     "resolved": len(mcap_resolved),
@@ -347,33 +539,49 @@ class BLAKFunction(BaseFunction):
                 # B4 surfaced fields so the UI can flag the synthetic fallback.
                 "live_fetch_errors": list(live_fetch_errors),
                 "live_fetch_ok_symbols": sorted(set(live_fetch_ok_symbols)),
-                "return_data_state": (
-                    "synthetic_fallback" if used_synthetic
-                    else ("live" if live else "computed")
-                ),
-                "partial_live": bool(live and live_fetch_ok_symbols and used_synthetic),
+                "return_data_state": "live",
                 "delta": delta, "tau": tau,
                 "n_views": len(P_rows),
+                # BLAK#5: the views the run received, so the pane can echo them.
+                "views_applied": views,
                 "samples": int(df.shape[0]),
+                # BLAK#1: the effective lookback is disclosed, not implied.
+                "window": window_label,
+                "lookback_days": days,
                 "summary": {
                     "symbols": len(cols),
                     "n_views": len(P_rows),
                     "samples": int(df.shape[0]),
+                    "window": window_label,
+                    "lookback_days": days,
                     "tau": tau,
                     "delta": delta,
                     "market_cap_data_state": mcap_data_state,
                 },
                 "methodology": (
                     "Black-Litterman starts with market-cap implied equilibrium returns pi = delta * covariance * market_weights, "
-                    "then blends optional investor views through posterior returns using tau-scaled covariance."
+                    "then blends optional investor views through posterior returns using tau-scaled covariance. "
+                    "optimal_weight is long-only: the unconstrained mean-variance solution (optimal_weight_unconstrained) "
+                    "is clipped at zero and renormalized to sum to 1."
                 ),
                 "field_dictionary": {
                     "market_weight": "Market-cap weight used as the prior portfolio (circulating supply x price; equal-weight fallback when unavailable).",
                     "prior_return": "Implied equilibrium return before applying views.",
                     "posterior_return": "Black-Litterman expected return after blending views.",
-                    "optimal_weight": "Mean-variance implied weight from posterior return and covariance.",
+                    "optimal_weight": (
+                        "Long-only implied weight: the posterior mean-variance solution with negatives clipped to zero "
+                        "and renormalized to sum to 1. With no active views it equals the market weight."
+                    ),
+                    "optimal_weight_unconstrained": (
+                        "Posterior mean-variance solution before clipping and renormalization; may be negative. "
+                        "Its sum is optimal_weight_raw_sum (equal to 1/(1+tau) when no views are active)."
+                    ),
                     "view_active": "Whether the symbol participates in at least one submitted view row.",
-                    "market_cap_data_state": "'real' when every requested symbol has a market value, 'partial' or 'approximate' when the equal-weight fallback fires.",
+                    "market_cap_data_state": (
+                        "'real' when every requested symbol has a market value (provider or user override), "
+                        "'proxy' when every symbol has a value but an ETF or fund uses its totalAssets (AUM) as the "
+                        "market-value proxy, 'partial' or 'approximate' when the equal-weight fallback fires."
+                    ),
                     "prior_covariance_estimator": "Estimator applied to the return series: sample_cov, ledoit_wolf (Ledoit-Wolf 2004 shrinkage toward mu*I) or exp_cov (EWMA, span 180 days).",
                     "shrinkage_intensity": "Ledoit-Wolf weight on the mu*I target (0 to 1); null for sample_cov and exp_cov.",
                     "prior_covariance": "Annualized prior covariance matrix actually used for pi and the posterior.",
@@ -382,6 +590,77 @@ class BLAKFunction(BaseFunction):
             sources=sources,
             warnings=warnings,
         )
+
+
+_VIEW_FORMAT_REASON = (
+    "must be SYMBOL:percent (absolute) or LONG>SHORT:percent (relative), "
+    "for example AAPL:8 or AAPL>SPY:2"
+)
+
+
+def _parse_view_text(text: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """BLAK#5: parse the pane's views, comma-separated.
+
+    ``SYMBOL:percent`` is an absolute view: the expected annual return (AAPL:8
+    means 8% a year). ``LONG>SHORT:percent`` is a relative view: LONG is expected
+    to beat SHORT by that many percent a year, a spread row (long minus short).
+    Returns ``(views, None)`` or ``([], reason)`` for the first malformed token.
+    """
+    views: list[dict[str, Any]] = []
+    for token in str(text or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        parts = [p.strip() for p in token.split(":")]
+        if len(parts) != 2:
+            return [], f"view {token!r} {_VIEW_FORMAT_REASON}"
+        legs = [leg.strip().upper() for leg in parts[0].split(">")]
+        if len(legs) > 2 or not all(legs):
+            return [], f"view {token!r} {_VIEW_FORMAT_REASON}"
+        if len(legs) == 2 and legs[0] == legs[1]:
+            return [], f"view {token!r} names the same symbol on both sides"
+        try:
+            pct = float(parts[1])
+        except ValueError:
+            return [], f"view {token!r} has a non-numeric expected return"
+        if not np.isfinite(pct):
+            return [], f"view {token!r} has a non-finite expected return"
+        if len(legs) == 1:
+            views.append({
+                "long": [legs[0]], "short": [], "expected": pct / 100.0,
+                "view_type": "absolute",
+            })
+        else:
+            views.append({
+                "long": [legs[0]], "short": [legs[1]], "expected": pct / 100.0,
+                "view_type": "spread",
+            })
+    return views, None
+
+
+def _parse_market_cap_text(text: Any) -> tuple[dict[str, float], str | None]:
+    """BLAK#5: the pane's market-cap overrides, "SYMBOL:USD" comma-separated.
+
+    Values are USD market values (AAPL:3.9e12 is accepted). Returns
+    ``(caps, None)`` or ``({}, reason)`` for the first malformed or non-positive
+    token. A blank text means no overrides.
+    """
+    caps: dict[str, float] = {}
+    for token in str(text or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        parts = [p.strip() for p in token.split(":")]
+        if len(parts) != 2 or not parts[0]:
+            return {}, f"market cap {token!r} must be SYMBOL:USD, for example AAPL:3900000000000"
+        try:
+            value = float(parts[1])
+        except ValueError:
+            return {}, f"market cap {token!r} has a non-numeric value"
+        if not np.isfinite(value) or value <= 0:
+            return {}, f"market cap {token!r} must be a positive USD value"
+        caps[parts[0].upper()] = value
+    return caps, None
 
 
 def _truthy(value: Any) -> bool:
@@ -454,7 +733,7 @@ async def _market_cap_from_yfinance(deps: Any, symbol: str) -> tuple[float, str 
                 inst = r
         meta = await asyncio.wait_for(
             yfin.fetch(DataRequest(kind=DataKind.REFDATA, instrument=inst)),
-            timeout=4,
+            timeout=_REFDATA_TIMEOUT_S,
         )
     except Exception:
         return 0.0, None

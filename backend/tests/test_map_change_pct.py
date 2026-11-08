@@ -35,20 +35,20 @@ def _stub_quotes(
 async def test_map_handles_missing_last_price_as_none(monkeypatch: Any) -> None:
     """If the provider has ``prev`` but ``last`` is missing, change_pct must be
     None — not -100% (i.e. the old ``(None or 0) / prev - 1`` bug)."""
-    _stub_quotes(monkeypatch, {"SPY": (None, 450.0), "VGK": (60.0, 60.0)})
+    _stub_quotes(monkeypatch, {"EUSA": (None, 450.0), "EWU": (60.0, 60.0)})
     fn = MAPFunction(FunctionDeps())
     res = await fn.execute(live=True, screen_timeout=3)
-    # Live path with at least one valid (VGK) row.
+    # Live path with at least one valid (EWU) row.
     assert res.data["status"] == "ok"
     rows = {row["etf"]: row for row in res.data["rows"]}
-    assert "VGK" in rows
-    assert rows["VGK"]["change_pct"] == 0.0
-    # SPY had ``last=None``: the row stays in the list as an explicit
+    assert "EWU" in rows
+    assert rows["EWU"]["change_pct"] == 0.0
+    # EUSA had ``last=None``: the row stays in the list as an explicit
     # ``unavailable`` row with a null change — never silently dropped and
     # never computed as -100%.
-    assert rows["SPY"]["quote_type"] == "unavailable"
-    assert rows["SPY"]["last"] is None
-    assert rows["SPY"]["change_pct"] is None
+    assert rows["EUSA"]["quote_type"] == "unavailable"
+    assert rows["EUSA"]["last"] is None
+    assert rows["EUSA"]["change_pct"] is None
     # The full market map still renders (no silent shrink).
     assert len(res.data["rows"]) == len(wmap._COUNTRY_ETFS)
 
@@ -56,7 +56,7 @@ async def test_map_handles_missing_last_price_as_none(monkeypatch: Any) -> None:
 async def test_map_change_pct_never_phantom_negative_full_drop(monkeypatch: Any) -> None:
     """No usable live row → the deterministic template fallback (unchanged
     shape) and never a -100% bar anywhere."""
-    _stub_quotes(monkeypatch, {"SPY": (None, 450.0)})
+    _stub_quotes(monkeypatch, {"EUSA": (None, 450.0)})
     fn = MAPFunction(FunctionDeps())
     res = await fn.execute(live=True, screen_timeout=3)
     assert res.data["status"] == "provider_unavailable"

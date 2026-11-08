@@ -53,7 +53,8 @@ interface FAData {
   methodology?: string;
   field_dictionary?: Record<string, unknown>;
   currency?: string;
-  filing_date?: string;
+  filing_date?: string | null;
+  period_end?: string | null;
   [key: string]: unknown;
 }
 
@@ -108,9 +109,10 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
   // ever merged (error + stale-data + in-flight), Retry would self-disable.
   const isFetching: boolean = state === "loading" || state === "refreshing";
   const currency = (payload?.currency as string | undefined) ?? "USD";
-  const filingDate =
-    (payload?.filing_date as string | undefined) ??
-    (typeof payload?.last_updated === "string" ? (payload.last_updated as string) : undefined);
+  // filing_date is the SEC filed date (null when the source did not supply one);
+  // period_end is the statement data date. Neither is substituted for the other.
+  const filingDate = typeof payload?.filing_date === "string" ? payload.filing_date : undefined;
+  const periodEnd = typeof payload?.period_end === "string" ? payload.period_end : undefined;
 
   const heroRatios = useMemo(() => deriveHeroRatios(payload?.ratios), [payload?.ratios]);
 
@@ -194,6 +196,7 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
           <span data-testid="function-source">
             sources · {data?.sources?.join(", ") || "—"}
           </span>
+          {periodEnd ? <span>period end · {periodEnd}</span> : null}
           {filingDate ? <span>filing · {filingDate}</span> : null}
           {data?.warnings?.length ? <span>{data.warnings.length} warnings</span> : null}
         </PaneFooter>

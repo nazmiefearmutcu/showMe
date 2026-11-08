@@ -73,7 +73,7 @@ function forecastRow(
     lower_band: forecast - band,
     upper_band: forecast + band,
     forward_points: forecast - spot,
-    confidence: 78 - years * 9,
+    vol_annualized: 0.085,
     source_mode: sourceMode,
   };
 }
@@ -154,6 +154,20 @@ describe("FXFC pane — load states", () => {
 });
 
 describe("FXFC pane — data honesty", () => {
+  it("labels a yfinance spot whose quote is stale as stale, not live", () => {
+    const payload = livePayload();
+    setMockFn({
+      state: "ok",
+      data: {
+        ...payload,
+        data: { ...payload.data, spot_quote_status: "stale" },
+      },
+    });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.getByText("stale spot")).toBeInTheDocument();
+    expect(screen.queryByText("live spot")).toBeNull();
+  });
+
   it("shows the live-spot pill and no warning for a live payload", () => {
     setMockFn({ state: "ok", data: livePayload() });
     render(<FXFCPane code="FXFC" symbol="USDJPY" />);
@@ -165,9 +179,10 @@ describe("FXFC pane — data honesty", () => {
     expect(screen.getAllByText(/live_yfinance_quote/i).length).toBe(5);
   });
 
-  it("treats the keyless ECB/Frankfurter tiers as live, not reference", () => {
+  it("labels the keyless ECB/Frankfurter tiers as a daily fix, not reference", () => {
     // The default-on keyless spot chain ships live_official (Frankfurter) /
-    // live_ecb_reference; only reference_model is the labelled fallback.
+    // live_ecb_reference: real ECB data, but a once-a-day fixing (FXFC#4-RQ),
+    // so it is neither "live spot" nor the reference_model fallback.
     const payload = livePayload();
     payload.data.forecast = payload.data.forecast.map((r) => ({
       ...r,
@@ -175,12 +190,13 @@ describe("FXFC pane — data honesty", () => {
     }));
     setMockFn({ state: "ok", data: payload });
     render(<FXFCPane code="FXFC" symbol="USDJPY" />);
-    expect(screen.getByText("live spot")).toBeInTheDocument();
+    expect(screen.getByText("ECB daily fix")).toBeInTheDocument();
+    expect(screen.queryByText("live spot")).toBeNull();
     expect(screen.queryByText("reference spot")).toBeNull();
     expect(
       screen.queryByRole("status", { name: /data quality warning/i }),
     ).toBeNull();
-    expect(screen.getByText(/LIVE SPOT · live_official/i)).toBeInTheDocument();
+    expect(screen.getByText(/ECB DAILY FIX · live_official/i)).toBeInTheDocument();
   });
 
   it("downgrades to reference spot + warning banner for reference payloads", () => {
@@ -209,8 +225,67 @@ describe("FXFC pane — data honesty", () => {
     setMockFn({ state: "ok", data: payload });
     render(<FXFCPane code="FXFC" symbol="USDJPY" />);
     // Without a 3M row the pane used rows[1]; it must say "6M", not "3M".
-    expect(screen.getByText("6M forecast")).toBeInTheDocument();
-    expect(screen.queryByText("3M forecast")).toBeNull();
+    expect(screen.getByText("6M CIP forward")).toBeInTheDocument();
+    expect(screen.queryByText("3M CIP forward")).toBeNull();
+  });
+
+  it("labels the forward levels as CIP forwards, not forecasts", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    // Column header and the curve legend both say CIP forward.
+    expect(screen.getAllByText("CIP forward").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Forecast")).toBeNull();
+    expect(screen.queryByText(/3M forecast/)).toBeNull();
+  });
+
+  it("does not show a 0.00% rate differential when the rates were not supplied", () => {
+    const payload = livePayload();
+    payload.data.base_rate = null as unknown as number;
+    payload.data.quote_rate = null as unknown as number;
+    payload.data.forecast = payload.data.forecast.map((r) => ({
+      ...r,
+      forecast: null as unknown as number,
+    }));
+    setMockFn({ state: "ok", data: payload });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.queryByText("0.00%")).toBeNull();
+    expect(screen.getByText(/rates not supplied/i)).toBeInTheDocument();
+  });
+
+  it("drops the tenor-only confidence column", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.queryByText("Conf.")).toBeNull();
+  });
+
+  it("shows an unavailable band vol instead of a fabricated percent", () => {
+    const payload = livePayload();
+    payload.data.vol_annualized = null as unknown as number;
+    payload.data.forecast = payload.data.forecast.map((r) => ({
+      ...r,
+      lower_band: null as unknown as number,
+      upper_band: null as unknown as number,
+      vol_annualized: null as unknown as number,
+    }));
+    setMockFn({ state: "ok", data: payload });
+    const { container } = render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.getByText("NO VOL SOURCE · BANDS UNAVAILABLE")).toBeInTheDocument();
+    // A null vol must render as a dash, never as "—%" or "0.00%".
+    expect(container.textContent).not.toMatch(/—%/);
+    expect(container.textContent).not.toMatch(/0\.00%/);
+  });
+
+  it("captions the band vol as live realized when the backend says so", () => {
+    const base = livePayload();
+    const payload = {
+      ...base,
+      data: { ...base.data, vol_source: "live_realized_vol" },
+    };
+    setMockFn({ state: "ok", data: payload });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(
+      screen.getByText("LIVE REALIZED VOL · MODEL BANDS (spot·vol·√T)"),
+    ).toBeInTheDocument();
   });
 
   it("never claims vendor analyst forecasts (model note)", () => {

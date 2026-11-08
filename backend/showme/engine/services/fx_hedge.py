@@ -10,7 +10,7 @@ Coverage analysis:
 - expected_carry_pnl (interest rate differential × notional × time)
 - pnl scenario at +x% USD strengthen / weaken
 
-Forward rate via covered interest parity:
+Forward rate via covered interest parity, T = days/360 (ACT/360):
     F = S × (1 + r_quote × T) / (1 + r_base × T)
 where:
     base = the currency you're hedging FROM
@@ -19,6 +19,7 @@ where:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,16 +45,50 @@ def side_sign(side: str) -> float:
     return SIDE_SIGN[side]
 
 
+#: Rate inputs are decimal annual rates (3.5 % = 0.035). Anything above this
+#: magnitude is almost certainly a percent entry and is refused (XCON-6).
+RATE_DECIMAL_LIMIT = 1.0
+
+
+def decimal_rate_error(label: str, value: Any) -> str | None:
+    """Reason a rate input is unusable, or None when it is a usable decimal.
+
+    A blank value is not an error here (callers decide whether it is required).
+    """
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return f"{label}={value!r} is not a number; rates are decimal annual (3.5 % = 0.035)."
+    if not math.isfinite(number):
+        return f"{label}={value!r} is not finite; rates are decimal annual (3.5 % = 0.035)."
+    if abs(number) > RATE_DECIMAL_LIMIT:
+        # Format the parsed number: a string input such as "3.5" has no 'g' format.
+        return (
+            f"{label}={number:g} is above {RATE_DECIMAL_LIMIT:g}: rates are decimal annual "
+            "(3.5 % = 0.035), not percent. Enter the decimal rate."
+        )
+    return None
+
+
+#: Day-count for both rate legs: ACT/360, the house convention shared with FRD
+#: and FXFC (USD and EUR money-market quotes are ACT/360). XCON-4: FXH used
+#: days/365 here, so the same pair and tenor priced differently across panes.
+DAY_COUNT_BASIS = 360.0
+
+
 def forward_rate(*, spot: float, home_rate: float, base_rate: float,
-                 days: int) -> float:
-    T = days / 365.0
+                 days: float) -> float:
+    """CIP forward, simple interest on ACT/360: F = S(1 + r_quote T)/(1 + r_base T)."""
+    T = days / DAY_COUNT_BASIS
     return spot * (1 + home_rate * T) / (1 + base_rate * T)
 
 
 def hedge_one(
     exp: FXExposure, *,
     hedge_ratio: float = 1.0,
-    days: int = 90,
+    days: float = 90,
     usd_shock_pct: float = 0.05,
 ) -> dict[str, Any]:
     fwd = forward_rate(spot=exp.spot_rate, home_rate=exp.home_rate,
@@ -99,7 +134,7 @@ def hedge_one(
 def hedge_book(
     exposures: list[FXExposure], *,
     hedge_ratio: float = 1.0,
-    days: int = 90,
+    days: float = 90,
     usd_shock_pct: float = 0.05,
 ) -> dict[str, Any]:
     rows = [hedge_one(e, hedge_ratio=hedge_ratio, days=days,

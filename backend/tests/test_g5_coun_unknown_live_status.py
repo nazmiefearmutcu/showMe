@@ -43,7 +43,7 @@ class _BtmmLive:
         class _Out:
             data = {
                 "rows": [
-                    {"policy_rate": 5.0, "as_of": "2026-06-01", "source": "BTMM"}
+                    {"policy_rate": 5.0, "as_of": "2026-06-01", "source": "BTMM", "freshness": "fresh"}
                 ]
             }
 

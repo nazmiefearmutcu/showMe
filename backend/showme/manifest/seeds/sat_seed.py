@@ -69,8 +69,8 @@ def sat() -> FunctionManifest:
                 required=True,
                 description=(
                     "NASA GIBS visualisation layer: true_color (MODIS Terra corrected reflectance), "
-                    "ndvi (MODIS 8-day NDVI composite), moisture and swir (both MODIS Terra bands 7-2-1 "
-                    "composite), thermal (MODIS land surface temperature, day)."
+                    "ndvi (MODIS 8-day NDVI composite), moisture (MODIS Terra bands 7-2-1 composite), "
+                    "thermal (MODIS land surface temperature, day), swir (VIIRS SNPP SWIR-NIR-red composite)."
                 ),
                 options=["true_color", "ndvi", "moisture", "thermal", "swir"],
             ),
@@ -120,7 +120,7 @@ def sat() -> FunctionManifest:
             slots=[
                 CardSlot(key="aoi", label="AOI", kind="badge"),
                 CardSlot(key="latest_capture", label="Capture day (UTC)", kind="timestamp"),
-                CardSlot(key="cloud_pct", label="Cloud cover (Open-Meteo)", kind="kpi", unit="%"),
+                CardSlot(key="cloud_pct", label="Modelled cloud cover (Open-Meteo)", kind="kpi", unit="%"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],

@@ -52,8 +52,12 @@ class DCFSensitivityFunction(BaseFunction):
             "shares_outstanding": base_data.get("shares_outstanding"),
         }
         shared = {k: v for k, v in shared.items() if v is not None}
+        base_fv = base_data.get("fair_value_per_share")
+        # DCFS#1: a negative base value is not a valuation, so the grid is
+        # withheld rather than published as a sensitivity surface of negatives.
+        grid_withheld = base_fv is not None and base_fv < 0
         grid: list[dict[str, Any]] = []
-        for w in wacc_range:
+        for w in ([] if grid_withheld else wacc_range):
             for g in g_range:
                 try:
                     grid_params = {
@@ -76,7 +80,6 @@ class DCFSensitivityFunction(BaseFunction):
                                   "fair_value_per_share": None,
                                   "bucket": f"WACC {float(w):.1%} / g {float(g):.1%}"})
         # Tornado: which input has biggest effect at ±20% perturbation
-        base_fv = base_data.get("fair_value_per_share")
         tornado: list[dict[str, Any]] = []
         if base_fv is not None and base_fv > 0:
             # HNT-04 fix: the DCF payload publishes ``g_terminal``/``g_high``
@@ -134,10 +137,38 @@ class DCFSensitivityFunction(BaseFunction):
                 ),
                 reverse=True,
             )
+        # DCFS#1: the status must describe the base value. A negative or zero
+        # fair value is not a live valuation, and the upstream DCF warnings
+        # (negative free cash flow, missing shares) must reach the caller.
+        warnings = list(base_res.warnings or [])
+        if base_fv is None or base_fv == 0:
+            status = "needs_input"
+        elif base_fv < 0:
+            status = "negative_value"
+            warnings.append(
+                "base_fair_value: the DCF implies a negative value per share at these inputs; "
+                "no sensitivity grid or tornado is reported for it."
+            )
+        elif base_data.get("status", "ok") != "ok":
+            status = "needs_input"
+        else:
+            status = "ok"
+        # DCFS#5: echo the base assumptions the grid and tornado were computed from.
+        assumptions = {
+            "wacc": base_data.get("wacc"),
+            "g_terminal": base_data.get("g_terminal"),
+            "g_high": base_data.get("g_high"),
+            "years": base_data.get("years"),
+            "starting_fcfe": base_data.get("starting_fcfe"),
+            "shares_outstanding": base_data.get("shares_outstanding"),
+            "wacc_override": "wacc" in base_params,
+            "fcfe_override": "fcfe" in base_params,
+        }
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok" if base_fv is not None else "needs_input",
+                "status": status,
+                "assumptions": assumptions,
                 "base_fair_value": base_fv,
                 "wacc_range": wacc_range, "g_range": g_range,
                 "surface": grid,
@@ -152,4 +183,5 @@ class DCFSensitivityFunction(BaseFunction):
                 },
             },
             sources=base_res.sources,
+            warnings=warnings,
         )

@@ -11,6 +11,7 @@
  * (synthetic random-walk preview — disclosed in the UI), all via
  * `@/lib/strategy-store`.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import {
   useEffect, useState,
   type CSSProperties, type KeyboardEvent, type ReactNode,
@@ -941,7 +942,7 @@ function dedupeOperands(operands: string[]): string[] {
  * future real-OHLCV source (e.g. "exchange_ohlcv") does NOT trip the warning.
  */
 function isSyntheticSource(source: string | undefined): boolean {
-  return typeof source === "string" && source.toLowerCase().includes("synthetic");
+  return typeof source === "string" && foldSearchText(source).includes("synthetic");
 }
 
 /**

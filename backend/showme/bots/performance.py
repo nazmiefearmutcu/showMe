@@ -16,7 +16,8 @@ V1.1 changes:
 Q4 audit 2026-05-24:
 * ``compute_pnl`` callers now subtract commission via ``compute_commission``;
   ``Trade`` carries gross + net.
-* ``compute_metrics`` adds Sharpe, Sortino, profit_factor, expectancy_R,
+* ``compute_metrics`` adds per-trade t-statistics (t_stat_per_trade,
+  sortino_t_stat_per_trade), profit_factor, expectancy_R,
   max_consecutive_losses.
 * ``compute_equity_curve`` compounds running equity (was a flat 10k).
 """
@@ -199,8 +200,9 @@ def _safe_float(x: float) -> float | str:
 def compute_metrics(trades: list[Trade]) -> dict[str, Any]:
     """Aggregate metrics over a list of Trade. Empty input → zeros.
 
-    Q4 audit H20 fix: now reports Sharpe, Sortino, profit_factor,
-    expectancy, max_consecutive_losses, and net_pnl alongside the
+    Q4 audit H20 fix: now reports per-trade t-statistics (not annualized
+    Sharpe/Sortino), profit_factor, expectancy, max_consecutive_losses, and
+    net_pnl alongside the
     pre-existing total_pnl / win_rate / max_drawdown.
     """
     n = len(trades)
@@ -212,8 +214,8 @@ def compute_metrics(trades: list[Trade]) -> dict[str, Any]:
             "trade_count": 0,
             "avg_pnl": 0.0,
             "max_drawdown": 0.0,
-            "sharpe": 0.0,
-            "sortino": 0.0,
+            "t_stat_per_trade": 0.0,
+            "sortino_t_stat_per_trade": 0.0,
             "profit_factor": 0.0,
             "expectancy": 0.0,
             "max_consecutive_losses": 0,
@@ -253,22 +255,25 @@ def compute_metrics(trades: list[Trade]) -> dict[str, Any]:
         else (float("inf") if gross_wins > 0 else 0.0)
     )
 
-    # Sharpe / Sortino on per-trade pnl.
+    # Per-trade t-statistic of the net pnl: mean / std * sqrt(n), where n is
+    # the number of trades. This is NOT an annualized Sharpe (no per-bar or
+    # per-day return series, no risk-free rate), and it grows with the trade
+    # count for a fixed edge, so it is exposed under its own name (XCON-8).
     if n > 1:
         mean_r = float(np.mean(net_pnls))
         std_r = float(np.std(net_pnls, ddof=1))
-        sharpe = (mean_r / std_r * math.sqrt(n)) if std_r > 0 else 0.0
+        t_stat = (mean_r / std_r * math.sqrt(n)) if std_r > 0 else 0.0
         if losses_arr:
             down_std = (
                 float(np.std(losses_arr, ddof=1)) if len(losses_arr) > 1
                 else abs(losses_arr[0])
             )
-            sortino = (mean_r / down_std * math.sqrt(n)) if down_std > 0 else 0.0
+            sortino_t = (mean_r / down_std * math.sqrt(n)) if down_std > 0 else 0.0
         else:
-            sortino = float("inf") if mean_r > 0 else 0.0
+            sortino_t = float("inf") if mean_r > 0 else 0.0
     else:
-        sharpe = 0.0
-        sortino = 0.0
+        t_stat = 0.0
+        sortino_t = 0.0
 
     # Expectancy.
     avg_win = (gross_wins / len(wins_arr)) if wins_arr else 0.0
@@ -292,8 +297,8 @@ def compute_metrics(trades: list[Trade]) -> dict[str, Any]:
         "trade_count": n,
         "avg_pnl": round(avg, 4),
         "max_drawdown": round(max_dd, 4),
-        "sharpe": _safe_float(sharpe),
-        "sortino": _safe_float(sortino),
+        "t_stat_per_trade": _safe_float(t_stat),
+        "sortino_t_stat_per_trade": _safe_float(sortino_t),
         "profit_factor": _safe_float(profit_factor),
         "expectancy": round(expectancy, 4),
         "max_consecutive_losses": int(max_cons),

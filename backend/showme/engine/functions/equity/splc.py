@@ -89,9 +89,9 @@ class SPLCFunction(BaseFunction):
                                         suppliers = _extract_concentration(
                                             text, TENK_SUPPLIER_PATTERNS, headings)
                             except Exception as e:
-                                warnings.append(f"10-K fetch: {e}")
+                                warnings.append(f"10-K fetch: {str(e) or type(e).__name__}")
         except Exception as e:
-            warnings.append(f"sec_edgar: {e}")
+            warnings.append(f"sec_edgar: {str(e) or type(e).__name__}")
         data: dict[str, Any] = {
             "status": "ok" if customers or suppliers else "reference_relationships",
             "filings": filings,
@@ -110,11 +110,11 @@ class SPLCFunction(BaseFunction):
         if not customers and not suppliers:
             ref = reference_profile(instrument.symbol)
             ref_rows = [
-                {"symbol": instrument.symbol, "source_url": None, **item, "disclosed_pct": None, "source_mode": "reference_supply_chain_10k_language"}
+                {"symbol": instrument.symbol, "source_url": None, **item, "disclosed_pct": None, "source_mode": "reference_supply_chain_static"}
                 for item in [*ref.get("customers", []), *ref.get("suppliers", [])]
             ]
             comp_rows = [
-                {"symbol": instrument.symbol, "relationship": "competitor", "counterparty": str(p).strip().upper(), "ticker": str(p).strip().upper(), "confidence": 0.35, "disclosed_pct": None, "source_url": None, "source_mode": "reference_sector_peer_list"}
+                {"symbol": instrument.symbol, "relationship": "competitor", "counterparty": str(p).strip().upper(), "ticker": str(p).strip().upper(), "confidence": None, "disclosed_pct": None, "source_url": None, "source_mode": "reference_sector_peer_list"}
                 for p in (ref.get("peers") or [])
             ]
             if ref_rows or comp_rows:
@@ -169,6 +169,7 @@ class SPLCFunction(BaseFunction):
             "counterparty": "Named or summarized relationship counterparty.",
             "confidence": "Extraction confidence; lower values indicate approximate/reference rows.",
             "disclosed_pct": "Share of revenue or inputs stated in the 10-K, in percent (22.0 = 22%); null when not disclosed.",
+            "fiscal_year": "Fiscal year the disclosed share refers to, read from its sentence; null when the sentence names none. Per counterparty, a dated disclosure is preferred over an undated one and the latest dated year is reported.",
             "source_url": "EDGAR URL of the 10-K the row was extracted from; null for reference rows.",
             "source_mode": "SEC extraction or labelled reference fallback.",
         }
@@ -218,6 +219,24 @@ _REVENUE_CONCENTRATION = re.compile(r"concentration\s+of\s+(?:revenues?|sales)\b
 # several thousand characters after its heading; 20,000 covers the disclosed
 # concentration blocks while still stopping at an unrelated section.
 _CONCENTRATION_WINDOW_CHARS = 20000
+# A business segment, product line, region or revenue line is a share of revenue,
+# not a counterparty: "Compute and Networking segment accounted for 80% of total
+# revenue" after a "Major customers" heading must not become a customer.
+_NON_COUNTERPARTY = re.compile(
+    r"\b(?:segments?|reportable|geograph\w*|regions?|product\s+lines?|business\s+units?|divisions?)\b"
+    r"|^(?:total\s+|net\s+|consolidated\s+)?(?:revenues?|sales)$",
+    re.IGNORECASE,
+)
+_FISCAL_YEAR = re.compile(r"fiscal\s+(?:year\s+)?(20\d{2})\b", re.IGNORECASE)
+# A label is a counterparty only when the name says so: customer/supplier-type wording
+# ("Contract supplier Zeta", "one direct customer") or a corporate designator ("Beta Corp").
+# A bare capitalised phrase ("Data Center") is a business unit or product line named
+# without a segment keyword, so it is dropped rather than labelled a customer.
+_COUNTERPARTY_EVIDENCE = re.compile(
+    r"\b(?:customers?|suppliers?|vendors?|distributors?|resellers?|retailers?"
+    r"|inc|corp|corporation|co|ltd|limited|llc|plc|gmbh|ag|holdings?)\b",
+    re.IGNORECASE,
+)
 
 
 def _clean_counterparty(raw: Any) -> str | None:
@@ -232,14 +251,16 @@ def _clean_counterparty(raw: Any) -> str | None:
     dropped rather than guessed.
     """
     segment = _CLAUSE_SPLIT.split(str(raw or "").strip())[-1].strip()
-    segment = _LEAD_SALES_PHRASE.sub("", segment).strip()
-    if not segment:
+    segment = _LEAD_SALES_PHRASE.sub("", segment).strip().rstrip(",;:").strip()
+    if not segment or _NON_COUNTERPARTY.search(segment):
         return None
     m = _DIRECT_CUSTOMER.search(segment)
     if m:
         label = m.group(1)
         return label[0].upper() + label[1:].lower()
     if not segment[0].isupper() or len(segment) > _MAX_LABEL_CHARS:
+        return None
+    if not _COUNTERPARTY_EVIDENCE.search(segment):
         return None
     return segment
 
@@ -267,8 +288,6 @@ def _extract_concentration(
     with the first disclosure found, so a later fiscal year's repeat of the same
     label does not appear as a second current share.
     """
-    from showme.engine.core.sec_taxonomy import extract_customer_concentration
-
     candidates: list[tuple[int, dict[str, Any]]] = []
     for pattern in patterns:
         for match in pattern.finditer(text):
@@ -277,18 +296,62 @@ def _extract_concentration(
             if following:
                 end = min(end, following[0])
             window = text[match.start():end]
-            for item in extract_customer_concentration(window):
+            for item in _concentration_items(window):
                 candidates.append((match.start(), item))
 
-    out: list[dict[str, Any]] = []
-    seen_labels: set[str] = set()
+    # One row per counterparty. A share whose sentence names a fiscal year is preferred
+    # over one that names none, whatever the document order: the year makes its period
+    # verifiable, while an undated share may be any year. Between two dated shares the
+    # later year wins, so a prior-year share is not presented as current. Between two
+    # undated shares, or two of the same year, the first in document order is kept.
+    chosen: dict[str, dict[str, Any]] = {}
     for _, item in sorted(candidates, key=lambda c: c[0]):
         name = _clean_counterparty(item.get("name"))
-        if name is None or name.lower() in seen_labels:
+        if name is None:
             continue
-        seen_labels.add(name.lower())
-        out.append({"name": name, "pct": float(item["pct"])})
-    return out
+        row = {"name": name, "pct": float(item["pct"]), "fiscal_year": item["fiscal_year"]}
+        prior = chosen.get(name.lower())
+        if prior is None or _recency(row) > _recency(prior):
+            chosen[name.lower()] = row
+    return list(chosen.values())
+
+
+def _recency(row: dict[str, Any]) -> tuple[bool, int]:
+    """Sort key for competing shares of one counterparty: dated beats undated, later year beats earlier."""
+    year = row["fiscal_year"]
+    return (year is not None, year or 0)
+
+
+def _fiscal_year_for(window: str, pct_start: int) -> int | None:
+    """Fiscal year named in the sentence holding a percentage (before it, else after it).
+
+    None when the sentence names no fiscal year: the share is then reported
+    without an as-of year rather than assigned one.
+    """
+    sentence_start = max(window.rfind(". ", 0, pct_start), window.rfind("; ", 0, pct_start)) + 1
+    before = _FISCAL_YEAR.findall(window[sentence_start:pct_start])
+    if before:
+        return int(before[-1])
+    sentence_end = window.find(". ", pct_start)
+    after_text = window[pct_start: sentence_end if sentence_end != -1 else len(window)]
+    after = _FISCAL_YEAR.findall(after_text)
+    return int(after[0]) if after else None
+
+
+def _concentration_items(window: str) -> list[dict[str, Any]]:
+    """Name, share and fiscal year of each "X represented N%" sentence in a window."""
+    # Same sentence pattern as sec_taxonomy.extract_customer_concentration, kept
+    # with offsets so each share can be tied to its own sentence's fiscal year.
+    from showme.engine.core.sec_taxonomy import _NAME_NEAR_PCT
+
+    return [
+        {
+            "name": m.group(1).strip(),
+            "pct": float(m.group(2)),
+            "fiscal_year": _fiscal_year_for(window, m.start(2)),
+        }
+        for m in _NAME_NEAR_PCT.finditer(window)
+    ]
 
 
 def _as_relationship_rows(items: list[dict[str, Any]], relationship: str) -> list[dict[str, Any]]:
@@ -346,15 +409,15 @@ def _relationship_rows(
 ) -> list[dict[str, Any]]:
     rows = []
     for item in customers:
-        rows.append({"symbol": symbol, "relationship": "customer", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence", 0.55), "disclosed_pct": item.get("pct"), "source_url": filing_url, "source_mode": "sec_10k_customer_extraction"})
+        rows.append({"symbol": symbol, "relationship": "customer", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence"), "disclosed_pct": item.get("pct"), "fiscal_year": item.get("fiscal_year"), "source_url": filing_url, "source_mode": "sec_10k_customer_extraction"})
     for item in suppliers:
-        rows.append({"symbol": symbol, "relationship": "supplier", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence", 0.55), "disclosed_pct": item.get("pct"), "source_url": filing_url, "source_mode": "sec_10k_supplier_extraction"})
+        rows.append({"symbol": symbol, "relationship": "supplier", "counterparty": item.get("name") or item.get("counterparty") or item.get("text"), "confidence": item.get("confidence"), "disclosed_pct": item.get("pct"), "fiscal_year": item.get("fiscal_year"), "source_url": filing_url, "source_mode": "sec_10k_supplier_extraction"})
     # Competitor rows come from the labelled reference sector peer list (ticker
     # when the peer entry is a ticker); 10-K concentration mining does not
     # extract competitors, so these rows stay explicitly reference-sourced.
     for peer in peers or []:
         ticker = str(peer).strip().upper()
-        rows.append({"symbol": symbol, "relationship": "competitor", "counterparty": ticker, "ticker": ticker, "confidence": 0.35, "disclosed_pct": None, "source_url": None, "source_mode": "reference_sector_peer_list"})
+        rows.append({"symbol": symbol, "relationship": "competitor", "counterparty": ticker, "ticker": ticker, "confidence": None, "disclosed_pct": None, "source_url": None, "source_mode": "reference_sector_peer_list"})
     if not rows:
         for item in frame_rows(filings, limit=3):
             rows.append({"symbol": symbol, "relationship": "evidence_filing", "counterparty": item.get("form"), "filingDate": item.get("filingDate"), "confidence": 0.2, "disclosed_pct": None, "source_url": filing_url, "source_mode": "sec_10k_filing_evidence"})

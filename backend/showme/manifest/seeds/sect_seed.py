@@ -3,11 +3,11 @@
 Bloomberg ``SECT<GO>`` analogue: the eleven SPDR sector ETFs rendered as a
 ranked heat grid colored by the delivered change, with 1D/MTD/QTD/YTD
 window controls and an explicit live-vs-model source mode. UI hangs off
-the shared MarketHeatmapPane (same component as MAP). Live mode only
-delivers intraday 1D quotes from the quote provider, so the handler
-stamps ``change_pct_period`` and emits a warning when the requested
-window differs — the pane labels every change value with the delivered
-period. ``chart_grammar.kind`` stays BAR_LADDER per the wave-2 contract
+the shared MarketHeatmapPane (same component as MAP). Live 1D changes
+come from the quote's previous close; MTD/QTD/YTD changes are the live
+last price against the last daily close before the window opens. A
+window whose base close is missing yields a null change and a warning —
+the pane labels every change value with the delivered period. ``chart_grammar.kind`` stays BAR_LADDER per the wave-2 contract
 (ranked sector return ladder over the same rows).
 """
 from __future__ import annotations
@@ -47,9 +47,9 @@ def sect() -> FunctionManifest:
         intent=(
             "Rank the eleven S&P 500 sector ETFs (XLK, XLF, XLE, XLV, XLI, XLP, XLY, XLU, XLB, "
             "XLRE, XLC) by performance over the selected 1D/MTD/QTD/YTD window so an operator can "
-            "read sector rotation at a glance. Live mode uses intraday quote changes only and "
-            "discloses the delivered period; model mode returns a deterministic, labelled sector "
-            "template — never a fabricated live print."
+            "read sector rotation at a glance. Live mode computes each window from quotes and daily "
+            "history and discloses any window it cannot compute; model mode lists the sectors with "
+            "no price or change values — never a fabricated print."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
@@ -58,7 +58,7 @@ def sect() -> FunctionManifest:
                 label="Window",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Requested performance horizon (live mode delivers 1D only).",
+                description="Performance window: 1D quote change, or MTD/QTD/YTD from daily closes.",
                 options=["1D", "MTD", "QTD", "YTD"],
             ),
             InputSpec(
@@ -143,11 +143,12 @@ def sect() -> FunctionManifest:
         methodology=(
             "SECT maps the canonical GICS sector set to its SPDR sector ETF (XLK, XLF, XLE, XLV, "
             "XLI, XLP, XLY, XLU, XLB, XLRE, XLC). In live mode each ETF is quoted through the "
-            "provider and the intraday change_pct is computed from last vs previous close; the "
-            "handler stamps change_pct_period='1D' and, when the requested `period` differs, emits "
-            "a warning so the values are never relabelled as MTD/QTD/YTD. In model mode (or when "
-            "every live quote fails) rows carry quote_type='model' + status='model' and the pane "
-            "shows a prominent MODEL banner. Rows are ranked by change_pct and the pane derives "
+            "provider. For 1D, change_pct is last vs previous close. For MTD/QTD/YTD it is last vs "
+            "the last daily close on or before the prior month-, quarter- or year-end; the handler "
+            "stamps change_pct_period with the window it computed, and a row whose base close is "
+            "missing keeps a null change plus a warning. In model mode (or when every live quote "
+            "fails) rows carry quote_type='model' and no price or change values, with status='model' "
+            "or 'provider_unavailable', and the pane shows a prominent MODEL banner. Rows are ranked by change_pct and the pane derives "
             "breadth and best/worst from finite changes only — a missing change renders as an "
             "explicit em-dash, never 0.00%."
         ),
@@ -156,7 +157,7 @@ def sect() -> FunctionManifest:
             "rows[].etf": FieldDef(description="SPDR sector ETF ticker (XLK, XLF, …).", source="curated"),
             "rows[].last": FieldDef(unit="quote_ccy", description="Latest quoted ETF price.", source="yfinance"),
             "rows[].change_pct": FieldDef(unit="%", description="Change over the delivered period; null when unavailable.", source="yfinance"),
-            "rows[].change_pct_period": FieldDef(description="Period the live change actually covers (live mode = 1D).", source="computed"),
+            "rows[].change_pct_period": FieldDef(description="Window the change covers (1D, MTD, QTD or YTD); null when no change.", source="computed"),
             "rows[].period": FieldDef(description="Window the caller requested.", source="config"),
             "rows[].quote_type": FieldDef(description="live | model | unavailable provenance flag.", source="computed"),
         },
@@ -176,18 +177,19 @@ def sect() -> FunctionManifest:
             SemanticTest(
                 name="sect_live_period_mismatch_is_disclosed",
                 description=(
-                    "When the requested period differs from the delivered live period, the payload "
-                    "carries a warning naming both — the values are never relabelled as the request."
+                    "When a requested window's base close is missing for some sector ETFs, those rows "
+                    "carry a null change and the payload warns naming the window — the change is never "
+                    "relabelled as another window."
                 ),
                 inputs={"period": "MTD", "live": True},
                 assertions=[
-                    "change_pct_period == '1D'",
+                    "rows_missing_base_have_null_change_pct",
                     "warning_mentions_requested_period",
                 ],
             ),
             SemanticTest(
                 name="sect_model_fallback_is_labelled_not_live",
-                description="Model mode / all-quotes-failed rows carry quote_type='model' (or status model/provider_unavailable) and never claim a live print.",
+                description="Model mode / all-quotes-failed rows carry quote_type='model' (or status model/provider_unavailable), no price or change values, and never claim a live print.",
                 inputs={"live": False},
                 assertions=[
                     "rows_quote_type_model",

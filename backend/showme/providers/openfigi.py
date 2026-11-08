@@ -61,7 +61,7 @@ class OpenFigiAdapter(ProviderAdapter):
             data = r.json()
         except Exception as exc:  # noqa: BLE001 — record-and-reraise
             self._record_failure(exc)
-            raise AdapterError(f"openfigi mapping failed: {exc}") from exc
+            raise AdapterError(f"openfigi mapping failed: {str(exc) or type(exc).__name__}") from exc
         self._record_success(int((time.monotonic() - started) * 1000))
         if not isinstance(data, list):
             self._record_failure(AdapterError("openfigi: response was not a list"))

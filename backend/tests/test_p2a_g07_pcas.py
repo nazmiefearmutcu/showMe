@@ -252,3 +252,68 @@ def test_pcas_pc_index_alone_runs_the_single_component_stress(monkeypatch):
     assert d["multi_factor"] is False
     assert d["n_factors"] == 1
     assert [c["component"] for c in d["components"]] == ["PC2"]
+
+
+# ---------------------------------------------------------------- PCAS#4 follow-up: provenance stamp
+
+
+class _DatedYFinance:
+    """Deterministic OHLCV history that ends on a fixed past bar date."""
+
+    LAST_BAR = "2026-09-14"
+
+    async def fetch(self, req):
+        import numpy as np
+
+        n = 200
+        symbol = req.instrument.symbol
+        seed = sum(ord(c) for c in symbol)
+        rng = np.random.default_rng(seed)
+        vol = 0.008 + (seed % 7) * 0.002
+        closes = 100.0 * np.exp(np.cumsum(rng.normal(0.0003, vol, size=n)))
+        index = pd.date_range(end=self.LAST_BAR, periods=n, freq="D")
+        return pd.DataFrame({"close": closes}, index=index)
+
+
+def test_pcas_as_of_is_the_last_price_bar_not_the_request_clock(monkeypatch):
+    # PCAS#4 follow-up: as_of labels the vintage of the returns used. The fetch
+    # time belongs in fetched_at; as_of must be the last bar date.
+    monkeypatch.setattr(pcas_mod, "PortfolioState", lambda *a, **k: _FakeBook(("AAA", "BBB", "CCC", "DDD")))
+    fn = pcas_mod.PCASFunction(FunctionDeps(yfinance=_DatedYFinance()))
+    res = _pcas_run(fn, live="true", live_prices="true", n_factors=2)
+    assert res.data["status"] == "ok", res.data.get("reason")
+    assert res.data["as_of"] == _DatedYFinance.LAST_BAR, res.data["as_of"]
+    assert res.data.get("fetched_at"), "retrieval time must be labelled fetched_at"
+
+
+# ---------------------------------------------------------------- PCAS#4 reviewer follow-up: pc_index honoured in multi-factor
+
+
+def test_pcas_multi_factor_window_starts_at_pc_index(monkeypatch):
+    # The multi-factor run shocks N consecutive components starting at pc_index.
+    # Every reported field must refer to that same window, not PC1..PCn.
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", live_prices="true",
+                    n_factors=2, pc_index=1, k_sigma=2.0)
+    d = res.data
+    assert d["status"] == "ok", d.get("reason")
+    assert d["pc_index"] == 1
+    assert [c["pc_index"] for c in d["components"]] == [1, 2]
+    assert [c["component"] for c in d["components"]] == ["PC2", "PC3"]
+    assert [s["pc_index"] for s in d["shock_impacts"]] == [1, 2]
+    assert all(row["pc_index"] == 1 for row in d["loadings"])
+    assert d["top_loadings"] == d["components"][0]["top_loadings"]
+
+
+def test_pcas_multi_factor_window_past_available_components_is_an_input_error(monkeypatch):
+    # Four assets support four components: a window at PC4 with two factors needs PC5.
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", live_prices="true",
+                    n_factors=2, pc_index=3)
+    assert res.data["status"] == "input_error"
+    assert "5 principal components" in res.data["reason"]
+
+
+def test_pcas_negative_pc_index_is_an_input_error_not_the_last_component(monkeypatch):
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", live_prices="true",
+                    pc_index=-1, k_sigma=2.0)
+    assert res.data["status"] == "input_error"
+    assert "pc_index" in res.data["reason"]

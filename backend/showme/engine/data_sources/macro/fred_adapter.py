@@ -24,6 +24,7 @@ from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
 from showme.engine.utils.throttle import throttle
+from showme.providers.base import get_redacted
 
 LOG = logging.getLogger("showme.engine.data_sources.fred")
 
@@ -87,8 +88,7 @@ class FREDAdapter(BaseDataSource):
             params["frequency"] = frequency
         if vintage and vintage != "latest":
             params["vintage_dates"] = vintage
-        r = await client.get("/series/observations", params=params)
-        r.raise_for_status()
+        r = await get_redacted(client, "/series/observations", params=params, secrets=(self.api_key,))
         data = r.json().get("observations") or []
         if not data:
             return pd.DataFrame(columns=["value"])
@@ -101,11 +101,12 @@ class FREDAdapter(BaseDataSource):
     @throttle(rps=5.0)
     async def info(self, series_id: str) -> dict[str, Any]:
         client = await self._client_()
-        r = await client.get(
+        r = await get_redacted(
+            client,
             "/series",
             params={"series_id": series_id, "api_key": self.api_key, "file_type": "json"},
+            secrets=(self.api_key,),
         )
-        r.raise_for_status()
         s = r.json().get("seriess") or []
         return s[0] if s else {}
 

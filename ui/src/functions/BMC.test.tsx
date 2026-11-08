@@ -52,7 +52,6 @@ function okPayload() {
         objective: "Compare price-weighted and market-cap-weighted indices.",
         example: "S&P 500 vs Dow Jones weighting",
         quiz: "Why can one large-cap stock move a cap-weighted index?",
-        progress: "not_started",
       },
       {
         module: "Equities",
@@ -61,7 +60,6 @@ function okPayload() {
         objective: "Read P/E, EV/EBITDA, and sales multiples without mixing denominators.",
         example: "High-growth software vs mature utilities",
         quiz: "When is EV/Sales more useful than P/E?",
-        progress: "not_started",
       },
       {
         module: "Fixed Income",
@@ -70,7 +68,6 @@ function okPayload() {
         objective: "Estimate price sensitivity from yield changes.",
         example: "10Y Treasury duration shock",
         quiz: "What happens to price when yield rises?",
-        progress: "not_started",
       },
     ],
     cards: [
@@ -113,9 +110,11 @@ describe("BMC pane — curriculum body", () => {
     // Lesson list with progress pills (titles also appear in the reader).
     expect(screen.getAllByText("Equity index construction").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByTitle("Open lesson: Yield and duration")).toBeInTheDocument();
-    // Backend rows ship not_started — the pane never invents a completed row.
-    expect(container.textContent).toContain("not_started");
+    // Backend rows carry no progress field; the pane labels untracked lessons
+    // from its own local state and never invents a completed row.
     const lessonList = screen.getByLabelText("BMC lessons");
+    expect(within(lessonList).getAllByText("not started")).toHaveLength(3);
+    expect(container.textContent).not.toContain("not_started");
     expect(within(lessonList).queryByText(/^completed$/i)).toBeNull();
     // Reader shows the first lesson's fields.
     expect(container.textContent).toContain("Compare price-weighted and market-cap-weighted indices.");
@@ -146,7 +145,7 @@ describe("BMC pane — curriculum body", () => {
     setMockFn({ state: "ok", data: { data: okPayload() } });
     render(<BMCPane code="BMC" />);
     const kpi = screen.getByLabelText("BMC summary");
-    // Backend rows are all not_started, so the KPI starts at a real 0 (it used
+    // No lesson is completed yet, so the KPI starts at a real 0 (it used
     // to be hardwired to 0 forever because the backend never emits completed).
     expect(within(kpi).getByText("Completed")).toBeInTheDocument();
     expect(within(kpi).getByText("0")).toBeInTheDocument();

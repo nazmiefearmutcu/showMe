@@ -114,7 +114,7 @@ def _json_decode(payload: bytes) -> dict:
     try:
         obj = json.loads(bytes(payload).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"malformed JSON payload: {exc}") from exc
+        raise ValueError(f"malformed JSON payload: {str(exc) or type(exc).__name__}") from exc
     if not isinstance(obj, dict):
         raise ValueError("cold JSON payload must be an object")  # noqa: TRY004 — ValueError taxonomy is the wire contract
     return obj
@@ -331,7 +331,7 @@ def _require(d: dict, keys: tuple[str, ...], cls: type) -> object:
     try:
         return cls(**{k: d[k] for k in keys})  # type: ignore[arg-type]
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"malformed {cls.__name__} payload: {exc}") from exc
+        raise ValueError(f"malformed {cls.__name__} payload: {str(exc) or type(exc).__name__}") from exc
 
 
 def _cold_hello(d: dict) -> events.Hello:
@@ -345,7 +345,7 @@ def _cold_hello(d: dict) -> events.Hello:
             norm_seed=float(d["norm_seed"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"malformed Hello payload: {exc}") from exc
+        raise ValueError(f"malformed Hello payload: {str(exc) or type(exc).__name__}") from exc
 
 
 def _cold_epoch_start(d: dict) -> events.EpochStart:
@@ -355,7 +355,7 @@ def _cold_epoch_start(d: dict) -> events.EpochStart:
             epoch_params=events.EpochParams.from_json_dict(d["epoch_params"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"malformed EpochStart payload: {exc}") from exc
+        raise ValueError(f"malformed EpochStart payload: {str(exc) or type(exc).__name__}") from exc
 
 
 def _cold_marker(d: dict) -> events.Marker:
@@ -368,7 +368,7 @@ def _cold_marker(d: dict) -> events.Marker:
             size=None if d.get("size") is None else float(d["size"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"malformed Marker payload: {exc}") from exc
+        raise ValueError(f"malformed Marker payload: {str(exc) or type(exc).__name__}") from exc
 
 
 def _cold_status(d: dict) -> events.Status:
@@ -381,7 +381,7 @@ def _cold_status(d: dict) -> events.Status:
             next_open_ts=None if d.get("next_open_ts") is None else int(d["next_open_ts"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"malformed Status payload: {exc}") from exc
+        raise ValueError(f"malformed Status payload: {str(exc) or type(exc).__name__}") from exc
 
 
 # --- registries (table-driven dispatch) -----------------------------------------
@@ -467,7 +467,7 @@ def decode(buf, offset: int = 0):
     try:
         return hot(buf, payload_off, plen), next_offset
     except (struct.error, IndexError, UnicodeDecodeError) as exc:
-        raise ValueError(f"malformed 0x{msg_type:02X} payload: {exc}") from exc
+        raise ValueError(f"malformed 0x{msg_type:02X} payload: {str(exc) or type(exc).__name__}") from exc
 
 
 def payload_f32_offset(buf, offset: int = 0) -> int:

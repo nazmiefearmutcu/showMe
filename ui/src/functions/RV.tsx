@@ -12,7 +12,7 @@
  * single null row; the pane renders an explicit provider-unavailable state
  * listing the resolved peer set instead of an empty comp sheet.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -61,6 +61,8 @@ interface RVData {
   status?: string;
   rows?: RVRow[];
   peers?: string[];
+  peer_source?: string;
+  reason?: string;
   methodology?: string;
   field_dictionary?: Record<string, unknown>;
 }
@@ -83,7 +85,7 @@ const METRICS: MetricDef[] = [
   { key: "ev_ebitda", header: "EV/EBITDA", better: "low", fmt: (v) => fmtMult(v) },
   { key: "roe", header: "ROE", better: "high", fmt: (v) => fmtRatioPct(v) },
   { key: "roa", header: "ROA", better: "high", fmt: (v) => fmtRatioPct(v) },
-  { key: "debt_equity", header: "D/E", better: "low", fmt: (v) => fmtDePct(v) },
+  { key: "debt_equity", header: "D/E", better: "low", fmt: (v) => fmtDeRatio(v) },
   { key: "div_yield", header: "Div yld", better: "high", fmt: (v) => fmtYieldPct(v) },
 ];
 
@@ -93,10 +95,15 @@ export function RVPane({ code, symbol }: FunctionPaneProps) {
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY"]);
   // DES cross-link (B2): each comp-sheet ticker opens its profile.
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
+  // Peers draft is edited in the header; the list is applied on Enter or blur
+  // so each keystroke does not refetch. Blank means the backend auto-resolves.
+  const [peersDraft, setPeersDraft] = useState("");
+  const [peersApplied, setPeersApplied] = useState("");
+  const peerList = useMemo(() => parsePeerList(peersApplied), [peersApplied]);
   const { state, data, error, refetch } = useFunction<RVData>({
     code,
     symbol: effectiveSymbol,
-    params: {},
+    params: peerList.length ? { peers: peerList } : {},
     enabled: !!effectiveSymbol,
   });
 
@@ -262,9 +269,11 @@ export function RVPane({ code, symbol }: FunctionPaneProps) {
     <Empty
       title="Provider unavailable"
       body={
-        payload?.peers?.length
-          ? `Peer set resolved (${payload.peers.join(", ")}) but multiples could not be fetched. Retry when the refdata provider recovers.`
-          : "No peer multiples were returned for this symbol."
+        payload?.reason
+          ? payload.reason
+          : payload?.peers?.length
+            ? `Peer set resolved (${payload.peers.join(", ")}) but multiples could not be fetched. Retry when the refdata provider recovers.`
+            : "No peer multiples were returned for this symbol."
       }
       action={
         <button onClick={refetch} className="btn">
@@ -323,6 +332,21 @@ export function RVPane({ code, symbol }: FunctionPaneProps) {
           subtitle={`${effectiveSymbol || "—"} vs ${rows.filter((r) => !r.is_target).length} peers`}
           trailing={
             <FunctionControlGroup>
+              <label className="portfolio-control-field" htmlFor={`rv-${code}-peers`}>
+                <span>Peers</span>
+                <input
+                  id={`rv-${code}-peers`}
+                  value={peersDraft}
+                  placeholder="auto"
+                  spellCheck={false}
+                  onChange={(event) => setPeersDraft(event.target.value.toUpperCase())}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") setPeersApplied(peersDraft);
+                  }}
+                  onBlur={() => setPeersApplied(peersDraft)}
+                  title="Comma-separated peer tickers (max 8). Blank uses the Finnhub or reference peer set."
+                />
+              </label>
               <Pill tone="muted" variant="soft" withDot={false}>
                 {rows.length} names
               </Pill>
@@ -348,6 +372,8 @@ export function RVPane({ code, symbol }: FunctionPaneProps) {
             label="sources"
             value={data?.sources?.join(", ") || "—"}
           />
+          <StatusDivider />
+          <StatusSection label="peers" value={payload?.peer_source ?? "—"} />
           <StatusDivider />
           <StatusSection label="status" value={status} />
           <StatusDivider />
@@ -418,12 +444,11 @@ function fmtMult(v: unknown): string {
   return n == null ? "—" : n.toFixed(2);
 }
 
-/** ROE/ROA/yield arrive as fractions (0.25 = 25%); normalize honestly. */
+/** ROE/ROA are always fractions from the backend (0.25 = 25%); no magnitude guess. */
 function fmtRatioPct(v: unknown): string {
   const n = finite(v);
   if (n == null) return "—";
-  const pct = Math.abs(n) <= 3 ? n * 100 : n;
-  return `${pct.toFixed(1)}%`;
+  return `${(n * 100).toFixed(1)}%`;
 }
 
 /** Dividend yield is always a decimal fraction from the backend (0.0032 = 0.32%). */
@@ -433,12 +458,18 @@ function fmtYieldPct(v: unknown): string {
   return `${(n * 100).toFixed(2)}%`;
 }
 
-/** yfinance debtToEquity is percent-like (145 = 145%); normalize. */
-function fmtDePct(v: unknown): string {
-  const n = finite(v);
-  if (n == null) return "—";
-  const pct = Math.abs(n) <= 15 ? n * 100 : n;
-  return `${pct.toFixed(1)}%`;
+/** Debt/equity is a ratio from the backend (0.84 = 0.84x); shown as a multiple. */
+function fmtDeRatio(v: unknown): string {
+  return fmtMult(v);
+}
+
+/** Comma/space separated tickers from the Peers control; empty means auto-resolve. */
+function parsePeerList(text: string): string[] {
+  const tickers = text
+    .split(/[\s,]+/)
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  return Array.from(new Set(tickers)).slice(0, 8);
 }
 
 function fmtCompact(v: unknown): string {

@@ -86,7 +86,7 @@ function okPayload() {
           {
             symbol: "ZC=F",
             name: "Corn",
-            sector: "Agriculture",
+            sector: "Grains",
             exchange: "CBOT",
             contract_unit: "5,000 bushels",
             volume: 205000,
@@ -135,11 +135,11 @@ describe("CSRC pane — load states", () => {
       data: {
         data: {
           status: "empty",
-          query: 'sector = "Agriculture"',
+          query: 'sector = "Livestock"',
           rows: [],
           matched: 0,
           scanned: 6,
-          reason: 'No rows matched filter `sector = "Agriculture"`.',
+          reason: 'No rows matched filter `sector = "Livestock"`.',
           next_actions: ["Broaden the filter or clear it."],
         },
       },
@@ -199,6 +199,22 @@ describe("CSRC pane — sector filter", () => {
     // The composed DSL echo updates in the footer + note.
     const echoes = screen.getAllByText(/sector = "Energy"/);
     expect(echoes.length).toBeGreaterThan(0);
+  });
+
+  it("offers every backend commodity sector and never the unmatched Agriculture label", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<CSRCPane code="CSRC" />);
+    for (const sector of ["Energy", "Metals", "Grains", "Softs", "Livestock"]) {
+      expect(screen.getByTitle(`Sector ${sector}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByTitle("Sector Agriculture")).toBeNull();
+  });
+
+  it("composes the server-side query for a Grains selection", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<CSRCPane code="CSRC" />);
+    fireEvent.click(screen.getByTitle("Sector Grains"));
+    expect(screen.getAllByText(/sector = "Grains"/).length).toBeGreaterThan(0);
   });
 
   it("returns to the permissive match-all query on ALL", () => {

@@ -34,8 +34,8 @@ class MLSIGFunction(BaseFunction):
                 asset_class=AssetClass(str(params.get("asset_class") or "CRYPTO").upper()),
             )
         days = int(params.get("days", 365 * 5))
-        horizon = int(params.get("horizon", 1))
-        live = _truthy(params.get("live_ml") or params.get("live_returns") or params.get("live"))
+        horizon = _label_horizon(params)
+        live = _requested_live(params)
         if not live:
             return FunctionResult(
                 code=self.code,
@@ -52,6 +52,7 @@ class MLSIGFunction(BaseFunction):
                 sources=[],
                 metadata={"days": days, "horizon": horizon, "rows": 0, "live": False, "fallback": False},
             )
+        interval = params.get("interval", "1d")
         try:
             if not self.deps.yfinance:
                 raise RuntimeError("no yfinance")
@@ -59,7 +60,7 @@ class MLSIGFunction(BaseFunction):
                 self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=instrument,
                     start=datetime.now(timezone.utc) - timedelta(days=days),
-                    interval=params.get("interval", "1d"),
+                    interval=interval,
                 )),
                 timeout=float(params.get("quote_timeout", 8)),
             )
@@ -108,6 +109,7 @@ class MLSIGFunction(BaseFunction):
             source_mode="live_yfinance",
             samples=labelled_rows,
         )
+        report["ignored_options"] = _ignored_options(params, report, interval)
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=report, sources=sources,
@@ -121,6 +123,93 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _present(value: Any) -> bool:
+    return value is not None and value != "" and value != []
+
+
+def _requested_live(params: dict[str, Any]) -> bool:
+    """The first live flag the caller actually sent wins, explicit false included.
+
+    The routed agent defaults inject ``live=True``; an explicit ``live_ml=false``
+    from the pane must not be overridden by that default.
+    """
+    for key in ("live_ml", "live_returns", "live"):
+        value = params.get(key)
+        if _present(value):
+            return _truthy(value)
+    return False
+
+
+def _label_horizon(params: dict[str, Any]) -> int:
+    """Label horizon in bars: the seed's ``label_horizon`` input, else legacy ``horizon``.
+
+    Clamped to the declared 1..60 range; an unparseable value falls back to 1.
+    """
+    raw = params.get("label_horizon")
+    if not _present(raw):
+        raw = params.get("horizon", 1)
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(60, value))
+
+
+def _ignored_options(params: dict[str, Any], report: dict[str, Any], interval: Any) -> list[dict[str, Any]]:
+    """Declared inputs the caller sent that the run did not honour, with what ran instead.
+
+    The backend chain is LightGBM, XGBoost, then a NumPy linear-probability fit.
+    Only the sign-of-return label and a fixed built-in feature set are implemented.
+    """
+    rows: list[dict[str, Any]] = []
+    backend = report.get("backend")
+    family = params.get("model_family")
+    if _present(family) and str(family).strip() != backend:
+        rows.append({
+            "option": "model_family",
+            "requested": str(family).strip(),
+            "used": backend,
+            "reason": "The requested model family did not run; the backend shown is the model that ran.",
+        })
+    label_type = params.get("label_type")
+    if _present(label_type) and str(label_type).strip() != "binary_updown":
+        rows.append({
+            "option": "label_type",
+            "requested": str(label_type).strip(),
+            "used": "binary_updown",
+            "reason": "Only the sign-of-forward-return label is implemented.",
+        })
+    if _present(params.get("feature_set")):
+        rows.append({
+            "option": "feature_set",
+            "requested": params.get("feature_set"),
+            "used": "fixed built-in feature set",
+            "reason": "Per-run feature selection is not implemented; the built-in feature set was used.",
+        })
+    train_pct = params.get("train_pct")
+    if _present(train_pct):
+        try:
+            requested_pct = float(train_pct)
+        except (TypeError, ValueError):
+            requested_pct = None
+        if requested_pct is None or abs(requested_pct - 0.7) > 1e-9:
+            rows.append({
+                "option": "train_pct",
+                "requested": train_pct,
+                "used": 0.7,
+                "reason": "The train/test split is fixed at 70/30.",
+            })
+    frequency = params.get("frequency")
+    if _present(frequency) and str(frequency).strip() != str(interval):
+        rows.append({
+            "option": "frequency",
+            "requested": str(frequency).strip(),
+            "used": str(interval),
+            "reason": "The bar size used is the interval input.",
+        })
+    return rows
 
 
 def _feature_rows(feature_importance: dict[str, Any]) -> list[dict[str, Any]]:
@@ -187,6 +276,10 @@ def _enrich_report(
         "rows": rows,
         "summary": {
             "test_accuracy": accuracy,
+            "test_baseline_always_long_accuracy": report.get("test_baseline_always_long_accuracy"),
+            "test_accuracy_ci95": report.get("test_accuracy_ci95"),
+            "scored_samples": report.get("scored_samples", 0),
+            "test_samples": report.get("test_samples", 0),
             "strategy_sharpe": sharpe,
             "signal": signal,
             "backend": report.get("backend"),
@@ -212,6 +305,15 @@ def _enrich_report(
                 "unless a live latest-bar prediction exists; test accuracy never sets it."
             ),
             "horizon_days": "Forward return horizon used to build the target label.",
+            "scored_samples": "Test rows with a non-zero label; accuracy is computed over these.",
+            "test_baseline_always_long_accuracy": (
+                "Accuracy of always predicting up on the same scored test rows (the share of up labels). "
+                "Compare test_accuracy against it."
+            ),
+            "test_accuracy_ci95": (
+                "95% Wilson score interval for test_accuracy over scored_samples. With a small test set "
+                "the interval is wide."
+            ),
         },
     }
     if reason:
@@ -239,6 +341,9 @@ def _no_measured_result(
         "backend": None,
         "test_accuracy": None,
         "test_samples": 0,
+        "scored_samples": 0,
+        "test_baseline_always_long_accuracy": None,
+        "test_accuracy_ci95": None,
         "feature_importance": {},
         "strategy_sharpe": None,
         "latest_prediction": None,

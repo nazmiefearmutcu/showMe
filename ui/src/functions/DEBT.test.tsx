@@ -2,14 +2,14 @@
  * DEBT pane — honesty + a11y + display contract tests.
  *
  * DEBT is a macro sovereign-debt board: a horizontal debt-to-GDP ranking by
- * country, a local-currency-share column (a published REFERENCE, not a live
- * series), and a portfolio-weight overlay that is pinned 0 in the baseline.
+ * country, a local-currency-share column (no sourced series is wired, so it is
+ * always null — DEBT#3), and a portfolio-weight overlay that is pinned 0 in the baseline.
  * These tests pin the HONESTY-FIRST upgrade:
  *
  *  - the provider/methodology no longer claims FRED (backend seed fix);
  *  - per-row observation `year` is surfaced so the data VINTAGE is distinct
  *    from the fetch timestamp (as_of);
- *  - the local-currency column is labelled a REFERENCE (not a live series);
+ *  - the local-currency column says no sourced series is wired (never a constant);
  *  - when summary.portfolio_linked is false the board is unmistakably macro-only,
  *    and a null portfolio weight renders the missing sentinel ("—") while a real
  *    0 renders "0.00%";
@@ -75,7 +75,7 @@ const rows = [
     name: "Japan",
     region: "asia",
     debt_to_gdp: 255.12,
-    local_currency_share: 92.0,
+    local_currency_share: null,
     portfolio_weight_pct: 0.0,
     change: 3.4,
     year: "2023",
@@ -86,7 +86,7 @@ const rows = [
     name: "United States",
     region: "americas",
     debt_to_gdp: 125.67,
-    local_currency_share: 99.0,
+    local_currency_share: null,
     portfolio_weight_pct: 0.0,
     change: -1.2,
     year: "2023",
@@ -97,7 +97,7 @@ const rows = [
     name: "Germany",
     region: "europe",
     debt_to_gdp: 63.4,
-    local_currency_share: 96.0,
+    local_currency_share: null,
     // missing portfolio weight → must render the em-dash sentinel, not 0.00%
     portfolio_weight_pct: null,
     change: -0.8,
@@ -122,9 +122,9 @@ function okPayload(extra: Record<string, unknown> = {}, summaryExtra: Record<str
         data_mode: "live_official",
         methodology:
           "DEBT pulls live general-government debt-to-GDP from the World Bank indicator API. " +
-          "local_currency_share is a published reference, not a live World Bank series.",
+          "local_currency_share is null: no free sourced series is wired.",
         warnings: [
-          "local_currency_share is a published reference, not a live World Bank series.",
+          "local_currency_share is null for every row: no free sourced series is wired.",
         ],
         as_of: AS_OF,
         ...extra,
@@ -224,13 +224,12 @@ describe("DEBT pane — freshness honesty (observation year)", () => {
   });
 });
 
-describe("DEBT pane — local-currency REFERENCE disclosure", () => {
-  it("labels the local-ccy column as a reference (not a live series)", () => {
+describe("DEBT pane — local-currency no-source disclosure", () => {
+  it("says the local-ccy column has no sourced series (no constant shown)", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<DEBTPane code="DEBT" />);
-    // A "reference" disclosure must be visible alongside the local-ccy column.
-    // (Renamed from the Turkish "referans" — pinned selector updated.)
-    expect(screen.getAllByText(/reference/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/no sourced series/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText("REFERENCE")).toBeNull();
     expect(screen.queryByText(/referans/i)).toBeNull();
   });
 });

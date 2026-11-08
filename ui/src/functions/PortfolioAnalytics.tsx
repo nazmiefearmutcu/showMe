@@ -31,6 +31,7 @@ import {
   SegmentedControl,
 } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { StrsPriceBasis } from "./strs-basis";
 
 type Row = Record<string, unknown>;
 
@@ -69,6 +70,10 @@ interface ToolConfig {
   defaultSymbol?: string;
   usesUniverse?: boolean;
   usesSymbol?: boolean;
+  /** Shows a bar-count horizon input that is sent as the backend's label_horizon. */
+  usesHorizon?: boolean;
+  /** true: the pane will not run until the universe has at least one symbol. */
+  requiresUniverse?: boolean;
   /** false: never forward the dock/linked symbol (portfolio-wide tools whose
    *  backend treats a symbol as a filter, e.g. LOTS list). */
   sendsDockSymbol?: boolean;
@@ -103,11 +108,10 @@ const PORTFOLIO_TOOLS = [
   "MLSIG",
 ] as const;
 
+// ACCT and TRA stay in the toolbar strip but are served by their own panes
+// (registry: AcctPane, TotalReturnPane), so they have no config here
+// (ACCT#4, TRA#5: the dead entries claimed cash/margin and a LIVE toggle).
 const TOOL_CONFIG: Record<string, ToolConfig> = {
-  ACCT: {
-    title: "Account Overview",
-    subtitle: "Cash, margin, exposure, and account state",
-  },
   BLAK: {
     title: "Black-Litterman",
     subtitle: "Prior, posterior return, and implied allocation",
@@ -116,14 +120,14 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     supportsLive: true,
   },
   BMTX: {
-    title: "Behavior Matrix",
-    subtitle: "Portfolio behavior diagnostics",
+    title: "Backtest Matrix",
+    subtitle: "Strategy by symbol backtests, in-sample ranking with holdout check",
     usesUniverse: true,
     supportsLive: true,
   },
   BTFW: {
-    title: "Backtest Forward",
-    subtitle: "Forward-looking portfolio template run",
+    title: "Walk-Forward Backtest",
+    subtitle: "Historical out-of-sample folds; equity curve requires live mode",
     defaultSymbol: "AAPL",
     usesSymbol: true,
     supportsLive: true,
@@ -138,22 +142,29 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   LOTS: {
     sendsDockSymbol: false,
     title: "Tax Lots",
-    subtitle: "Lot-level basis and harvest candidates",
+    subtitle: "Local tax-lot ledger: open lots, sells and realized P&L",
   },
   MARS: {
     title: "Multi-Asset Risk",
     subtitle: "Factor loadings, VaR, and residual risk",
-    defaultSymbols: "SPY,TLT,GLD,BTCUSDT",
+    defaultSymbols: "SPY,TLT,GLD",
     usesUniverse: true,
-    supportsLive: true,
+    // MARS is live by default in the backend (ETF proxies). This pane's default
+    // live flag is false, so exposing the toggle here would silently serve the
+    // template; the MultiAssetRisk pane owns the MODEL toggle for MARS.
+    supportsLive: false,
   },
   MGN: {
     title: "Margin",
-    subtitle: "Borrow, maintenance, and liquidation diagnostics",
+    subtitle: "Modeled initial and maintenance margin, excess equity, and buying power",
   },
   MLSIG: {
+    // XPORT-R1: the handler classifies ONE instrument. It gets its own
+    // symbol control instead of silently taking the linked dock symbol.
+    usesSymbol: true,
     title: "ML Signals",
-    subtitle: "Portfolio signal ranking",
+    subtitle: "Next-day direction classifier for one symbol, scored against always-long",
+    usesHorizon: true,
     supportsLive: true,
   },
   PCAS: {
@@ -200,12 +211,18 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     supportsLive: true,
   },
   RPAR: {
+    // XPORT-R1: the universe is the symbols input; the dock symbol must not
+    // replace an empty universe with a single-asset one.
+    sendsDockSymbol: false,
     title: "Risk Parity",
-    subtitle: "Inverse-vol and equal-risk-contribution allocation",
+    subtitle: "Equal-risk-contribution (default) and inverse-vol allocation",
     defaultSymbols: "AAPL,MSFT,BTCUSDT,EURUSD,GC=F",
     usesUniverse: true,
+    requiresUniverse: true,
     supportsLive: true,
-    modes: ["inverse_vol", "erc"],
+    // ERC is the first (default) mode: inverse-vol is only an approximation,
+    // and the default view must match the Risk Parity title.
+    modes: ["erc", "inverse_vol"],
   },
   STRS: {
     title: "Stress Test",
@@ -217,13 +234,6 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     title: "Tax-Loss Harvesting",
     subtitle: "Harvest candidates and wash-sale risk",
   },
-  TRA: {
-    title: "Total Return",
-    subtitle: "TWR, IRR, CAGR, and dividend return",
-    defaultSymbol: "AAPL",
-    usesSymbol: true,
-    supportsLive: true,
-  },
 };
 
 export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
@@ -234,9 +244,17 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   };
   const [symbols, setSymbols] = useState(config.defaultSymbols ?? "SPY,QQQ,TLT,GLD");
   const [targetText, setTargetText] = useState("SPY:40, QQQ:25, TLT:20, GLD:15");
-  const [symbolInput, setSymbolInput] = useState(symbol ?? config.defaultSymbol ?? "AAPL");
+  // XPORT-R1: the typed Symbol control wins once the user has typed in it.
+  // Until then the linked dock symbol (or the tool's own default) is shown
+  // and used, so the control never shows one value while another is sent.
+  const [symbolInput, setSymbolInput] = useState("");
+  const [symbolTouched, setSymbolTouched] = useState(false);
+  const symbolDisplay = symbolTouched ? symbolInput : (symbol || config.defaultSymbol || "");
   const [live, setLive] = useState(false);
   const [mode, setMode] = useState(config.modes?.[0] ?? "all");
+  // MLSIG label horizon in bars (sent as label_horizon). Default matches the
+  // routed run (1 bar).
+  const [horizon, setHorizon] = useState("1");
   // REBA capital: the rebalance order deltas are computed against this
   // notional, so it must be an explicit user input (was hardcoded 100000).
   const [capital, setCapital] = useState("100000");
@@ -253,12 +271,45 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   const [entry, setEntry] = useState(() => (isPsc || isWhatIf ? "" : "100"));
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
+  // BLAK#5: the prior's inputs were only reachable through the API. Window,
+  // tau, delta and views are sent as typed; the backend validates them and
+  // answers input_error for a malformed value instead of a silent default.
+  const [blak, setBlak] = useState<BlakInputs>({
+    window: "1Y",
+    tau: "0.05",
+    delta: "2.5",
+    views: "",
+    marketCaps: "",
+  });
+  // MGN#5: cash and the account it belongs to, for the saved-book margin calculation.
+  // Blank means "not stated": the backend then uses the recorded or PORT cash.
+  const [cash, setCash] = useState("");
+  const [cashAccount, setCashAccount] = useState("");
+  // PSC direction and sizing assumptions. Side defaults to LONG (the backend
+  // default). Risk is typed in percent and sent as a fraction. Win rate is
+  // typed in percent and starts blank: no Kelly fraction is invented.
+  const [side, setSide] = useState("LONG");
+  const [riskPct, setRiskPct] = useState("1");
+  const [winRate, setWinRate] = useState("");
+  // BTFW#3: strategy, history window, train share and walk steps. The defaults are
+  // the handler defaults; a typed value is sent as typed and validated by the backend.
+  const [btfw, setBtfw] = useState<BtfwInputs>({
+    strategy: "sma_crossover",
+    window: "3Y",
+    trainPct: "0.7",
+    walkSteps: "5",
+  });
 
   const effectiveSymbol = config.usesSymbol
-    ? (symbol || symbolInput || config.defaultSymbol)
+    ? (symbolDisplay.trim() || undefined)
     : config.sendsDockSymbol === false
       ? undefined
       : symbol;
+  // A blank input must not fall through to a backend default (MLSIG would
+  // analyse BTCUSDT, RPAR a built-in five-name list): the pane waits instead.
+  const missingInput = config.usesSymbol
+    ? !effectiveSymbol
+    : Boolean(config.requiresUniverse) && splitSymbols(symbols).length === 0;
   const params = useMemo(
     () =>
       buildParams(upper, {
@@ -271,13 +322,22 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         entry,
         stop,
         target,
+        blak,
+        cash,
+        cashAccount,
+        horizon,
+        side,
+        riskPct,
+        winRate,
+        btfw,
       }),
-    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target],
+    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak, cash, cashAccount, horizon, side, riskPct, winRate, btfw],
   );
   const { state, data, error, refetch } = useFunction<PortfolioPayload>({
     code: upper,
     symbol: effectiveSymbol,
     params,
+    enabled: !missingInput,
   });
 
   const payload = data?.data;
@@ -297,8 +357,15 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
     [payload, data?.metadata, data?.sources],
   );
 
-  const body =
-    state === "loading" || state === "idle" ? (
+  const body = missingInput ? (
+    <div role="status">
+      <Empty
+        title="Input Required"
+        body={config.usesSymbol ? "Enter a symbol to run this analysis." : "Enter at least one symbol in the universe."}
+        icon="⌖"
+      />
+    </div>
+  ) : state === "loading" || state === "idle" ? (
       <div className="portfolio-analytics-loading">
         <Skeleton height={70} />
         <Skeleton height={180} />
@@ -376,8 +443,11 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setSymbols={setSymbols}
             targetText={targetText}
             setTargetText={setTargetText}
-            symbolInput={symbolInput}
-            setSymbolInput={setSymbolInput}
+            symbolInput={symbolDisplay}
+            setSymbolInput={(value: string) => {
+              setSymbolTouched(true);
+              setSymbolInput(value);
+            }}
             account={account}
             setAccount={setAccount}
             capital={capital}
@@ -388,6 +458,22 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setStop={setStop}
             target={target}
             setTarget={setTarget}
+            blak={blak}
+            setBlak={setBlak}
+            cash={cash}
+            setCash={setCash}
+            cashAccount={cashAccount}
+            setCashAccount={setCashAccount}
+            horizon={horizon}
+            setHorizon={setHorizon}
+            side={side}
+            setSide={setSide}
+            riskPct={riskPct}
+            setRiskPct={setRiskPct}
+            winRate={winRate}
+            setWinRate={setWinRate}
+            btfw={btfw}
+            setBtfw={setBtfw}
           />
           {body}
         </PaneBody>
@@ -439,6 +525,22 @@ function PortfolioControls({
   setStop,
   target,
   setTarget,
+  blak,
+  setBlak,
+  cash,
+  setCash,
+  cashAccount,
+  setCashAccount,
+  horizon,
+  setHorizon,
+  side,
+  setSide,
+  riskPct,
+  setRiskPct,
+  winRate,
+  setWinRate,
+  btfw,
+  setBtfw,
 }: {
   config: ToolConfig;
   code: string;
@@ -458,8 +560,24 @@ function PortfolioControls({
   setStop: (value: string) => void;
   target: string;
   setTarget: (value: string) => void;
+  blak: BlakInputs;
+  setBlak: (value: BlakInputs) => void;
+  cash: string;
+  setCash: (value: string) => void;
+  cashAccount: string;
+  setCashAccount: (value: string) => void;
+  horizon: string;
+  setHorizon: (value: string) => void;
+  side: string;
+  setSide: (value: string) => void;
+  riskPct: string;
+  setRiskPct: (value: string) => void;
+  winRate: string;
+  setWinRate: (value: string) => void;
+  btfw: BtfwInputs;
+  setBtfw: (value: BtfwInputs) => void;
 }) {
-  if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC") {
+  if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC" && code !== "MGN") {
     return null;
   }
   // A1: each field binds <label htmlFor> ↔ input id so the control is
@@ -491,6 +609,125 @@ function PortfolioControls({
           />
         </label>
       ) : null}
+      {code === "BLAK" ? (
+        <>
+          <label className="portfolio-control-field" htmlFor={fid("window")}>
+            <span>Window</span>
+            <select
+              id={fid("window")}
+              value={blak.window}
+              onChange={(e) => setBlak({ ...blak, window: e.target.value })}
+            >
+              {BLAK_WINDOWS.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("tau")}>
+            <span>Tau</span>
+            <input
+              id={fid("tau")}
+              value={blak.tau}
+              onChange={(e) => setBlak({ ...blak, tau: e.target.value })}
+              inputMode="decimal"
+            />
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("delta")}>
+            <span>Risk aversion (δ)</span>
+            <input
+              id={fid("delta")}
+              value={blak.delta}
+              onChange={(e) => setBlak({ ...blak, delta: e.target.value })}
+              inputMode="decimal"
+            />
+          </label>
+          <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("views")}>
+            <span>Views</span>
+            <input
+              id={fid("views")}
+              value={blak.views}
+              placeholder="AAPL:8, AAPL>SPY:2 (annual %; > = relative)"
+              onChange={(e) => setBlak({ ...blak, views: e.target.value.toUpperCase() })}
+              spellCheck={false}
+            />
+          </label>
+          <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("market-caps")}>
+            <span>Market caps</span>
+            <input
+              id={fid("market-caps")}
+              value={blak.marketCaps}
+              placeholder="SPY:7.9e11, QQQ:3e11 (USD, optional)"
+              onChange={(e) => setBlak({ ...blak, marketCaps: e.target.value })}
+              spellCheck={false}
+            />
+          </label>
+        </>
+      ) : null}
+      {config.usesHorizon ? (
+        <label className="portfolio-control-field" htmlFor={fid("horizon")}>
+          <span>Horizon (bars)</span>
+          <input
+            id={fid("horizon")}
+            value={horizon}
+            onChange={(e) => setHorizon(e.target.value.replace(/[^0-9]/g, ""))}
+            inputMode="numeric"
+          />
+        </label>
+      ) : null}
+      {code === "BTFW" ? (
+        <>
+          <label className="portfolio-control-field" htmlFor={fid("strategy")}>
+            <span>Strategy</span>
+            <select
+              id={fid("strategy")}
+              value={btfw.strategy}
+              onChange={(e) => setBtfw({ ...btfw, strategy: e.target.value })}
+            >
+              {BTFW_STRATEGIES.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("window")}>
+            <span>History</span>
+            <select
+              id={fid("window")}
+              value={btfw.window}
+              onChange={(e) => setBtfw({ ...btfw, window: e.target.value })}
+            >
+              {BTFW_WINDOWS.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("train-pct")}>
+            <span>Train share (fraction)</span>
+            <input
+              id={fid("train-pct")}
+              value={btfw.trainPct}
+              onChange={(e) => setBtfw({ ...btfw, trainPct: e.target.value })}
+              inputMode="decimal"
+              placeholder="0.1 to 0.95"
+            />
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("walk-steps")}>
+            <span>Walk steps</span>
+            <input
+              id={fid("walk-steps")}
+              value={btfw.walkSteps}
+              onChange={(e) => setBtfw({ ...btfw, walkSteps: e.target.value })}
+              inputMode="numeric"
+              placeholder="2 or more"
+            />
+          </label>
+        </>
+      ) : null}
       {code === "REBA" ? (
         <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("targets")}>
           <span>Targets</span>
@@ -510,6 +747,31 @@ function PortfolioControls({
             inputMode="decimal"
           />
         </label>
+      ) : null}
+      {code === "MGN" ? (
+        // MGN#5: the pane had no cash input, so buying power ignored the user's cash. Blank
+        // keeps the recorded or PORT cash; a stated cash applies to the named account only.
+        <>
+          <label className="portfolio-control-field" htmlFor={fid("cash")}>
+            <span>Cash</span>
+            <input
+              id={fid("cash")}
+              value={cash}
+              onChange={(e) => setCash(e.target.value)}
+              inputMode="decimal"
+              placeholder="recorded cash"
+            />
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("cash-account")}>
+            <span>Cash account</span>
+            <input
+              id={fid("cash-account")}
+              value={cashAccount}
+              onChange={(e) => setCashAccount(e.target.value)}
+              placeholder="single account"
+            />
+          </label>
+        </>
       ) : null}
       {code === "PSC" || code === "PORT_WHATIF" ? (
         <>
@@ -558,6 +820,32 @@ function PortfolioControls({
                   placeholder="optional"
                 />
               </label>
+              <label className="portfolio-control-field" htmlFor={fid("side")}>
+                <span>Side</span>
+                <select id={fid("side")} value={side} onChange={(e) => setSide(e.target.value)}>
+                  <option value="LONG">LONG</option>
+                  <option value="SHORT">SHORT</option>
+                </select>
+              </label>
+              <label className="portfolio-control-field" htmlFor={fid("risk")}>
+                <span>Risk per trade (%)</span>
+                <input
+                  id={fid("risk")}
+                  value={riskPct}
+                  onChange={(e) => setRiskPct(e.target.value)}
+                  inputMode="decimal"
+                />
+              </label>
+              <label className="portfolio-control-field" htmlFor={fid("winrate")}>
+                <span>Win rate (%)</span>
+                <input
+                  id={fid("winrate")}
+                  value={winRate}
+                  onChange={(e) => setWinRate(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="optional (Kelly)"
+                />
+              </label>
             </>
           ) : null}
         </>
@@ -587,11 +875,13 @@ function PortfolioAnalyticsView({
 }) {
   const nextActions = payload?.next_actions ?? [];
   const emptyReason = payload?.reason ?? nextActions[0];
+  const accuracyContext = accuracyContextLines(payload);
 
   const isStatusEmptyOrError =
     payload?.status === "ready_no_positions" ||
     payload?.status === "input_error" ||
     payload?.status === "input_required" ||
+    payload?.status === "needs_input" ||
     payload?.status === "empty" ||
     payload?.status === "empty_portfolio" ||
     payload?.status === "not_configured" ||
@@ -628,7 +918,7 @@ function PortfolioAnalyticsView({
       title = "Invalid Parameters";
       icon = "!";
       body = emptyReason ?? "Please check the input parameters and try again.";
-    } else if (payload?.status === "input_required") {
+    } else if (payload?.status === "input_required" || payload?.status === "needs_input") {
       title = "Input Required";
       icon = "⌖";
       body = emptyReason ?? "This function requires additional inputs to run.";
@@ -693,6 +983,14 @@ function PortfolioAnalyticsView({
             </div>
           ))}
         </div>
+        {accuracyContext.length ? (
+          // MLSIG#7: the baseline, interval and sample count sit beside the accuracy.
+          <p className="portfolio-analytics-accuracy-context" data-testid="mlsig-accuracy-context">
+            {accuracyContext.map((line) => (
+              <span key={line}>{line}</span>
+            ))}
+          </p>
+        ) : null}
       </section>
 
       {warnings.length ? (
@@ -710,6 +1008,8 @@ function PortfolioAnalyticsView({
           ))}
         </div>
       ) : null}
+
+      {code === "STRS" ? <StrsPriceBasis payload={payload} /> : null}
 
       <div className="portfolio-analytics-grid">
         <section className="portfolio-table-panel">
@@ -972,6 +1272,36 @@ function extractRows(payload: PortfolioPayload | undefined): Row[] {
   return [];
 }
 
+/**
+ * MLSIG#7: the always-long baseline, the 95% interval around test accuracy and
+ * the scored row count, as readable lines. Only lines whose inputs the backend
+ * really sent are returned; a missing-data state yields none.
+ */
+function accuracyContextLines(payload: PortfolioPayload | undefined): string[] {
+  if (!payload) return [];
+  const lines: string[] = [];
+  const baseline = numberValue(payload.test_baseline_always_long_accuracy);
+  if (baseline != null) {
+    lines.push(`Always-long baseline ${formatPercent(baseline, { fromFraction: true })}`);
+  }
+  const interval = Array.isArray(payload.test_accuracy_ci95) ? (payload.test_accuracy_ci95 as unknown[]) : null;
+  if (interval && interval.length === 2) {
+    const low = numberValue(interval[0]);
+    const high = numberValue(interval[1]);
+    if (low != null && high != null) {
+      lines.push(
+        `95% CI ${formatPercent(low, { fromFraction: true })} to ${formatPercent(high, { fromFraction: true })}`,
+      );
+    }
+  }
+  const scored = numberValue(payload.scored_samples);
+  const tested = numberValue(payload.test_samples);
+  if (scored != null && tested != null) {
+    lines.push(`Scored ${scored} of ${tested} test rows`);
+  }
+  return lines;
+}
+
 function deriveMetrics(payload: PortfolioPayload | undefined): Array<{ key: string; label: string; value: unknown }> {
   if (!payload) return [];
   const merged = {
@@ -1000,14 +1330,42 @@ function buildParams(
     entry: string;
     stop: string;
     target: string;
+    blak: BlakInputs;
+    cash: string;
+    cashAccount: string;
+    horizon: string;
+    side: string;
+    riskPct: string;
+    winRate: string;
+    btfw: BtfwInputs;
   },
 ): Record<string, unknown> {
   const symbols = splitSymbols(state.symbols);
   switch (code) {
+    case "MGN": {
+      // MGN#5: only what the user typed is sent; blanks keep the backend's recorded/PORT cash.
+      const out: Record<string, unknown> = {};
+      const amount = optionalNumber(state.cash);
+      if (amount !== undefined) out.cash = amount;
+      const account = state.cashAccount.trim();
+      if (account) out.account = account;
+      return out;
+    }
     case "BLAK":
-      return { symbols, live: state.live };
+      return {
+        symbols,
+        live: state.live,
+        window: state.blak.window,
+        tau: state.blak.tau,
+        delta: state.blak.delta,
+        views_text: state.blak.views,
+        // BLAK#5: optional SYMBOL:USD overrides; the engine parses the text and
+        // refuses a malformed value, a blank field means provider market caps.
+        market_caps: state.blak.marketCaps,
+      };
     case "MARS":
-      return { symbols, live: state.live };
+      // No live key: the backend defaults to live ETF proxies (see supportsLive above).
+      return { symbols };
     case "BMTX":
       // Live backtest matrix — without this the backend always served the
       // reference template (`_matrix_template`) and the live path was dead.
@@ -1016,8 +1374,9 @@ function buildParams(
       // Live parameter sweep — same dead-path issue as BMTX.
       return { live_backtest: state.live };
     case "MLSIG":
-      // Live yfinance-trained classifier (backend reads live_ml).
-      return { live_ml: state.live };
+      // MODEL sends live_ml=false (no live fit, the backend says so); LIVE trains
+      // on live OHLCV. label_horizon is the bar count the target is built from.
+      return { live_ml: state.live, label_horizon: num(state.horizon, 1) };
     case "PORT_OPT":
       return { symbols, mode: state.mode, live: state.live, days: 756 };
     case "RPAR":
@@ -1025,7 +1384,8 @@ function buildParams(
     case "REBA":
       return {
         targets: parseTargets(state.targetText),
-        max_notional: num(state.capital, 100000),
+        // A blank or invalid capital is omitted, never replaced by a silent 100000.
+        max_notional: optionalNumber(state.capital),
         // G3: wire the MODEL/LIVE toggle to reba.py's live_portfolio mode.
         // Explicit `false` keeps the model path (unchanged default).
         live_portfolio: state.live,
@@ -1039,12 +1399,17 @@ function buildParams(
     case "PSC": {
       // Only what the user typed is sent; blanks fall to the backend's real
       // defaults (live price / portfolio value) or its input request (stop).
-      const out: Record<string, unknown> = { risk_pct: 0.01 };
+      // Risk and win rate are typed in percent and sent as fractions.
+      const out: Record<string, unknown> = { side: state.side === "SHORT" ? "SHORT" : "LONG" };
+      const risk = pscTyped(state.riskPct);
+      if (risk !== undefined) out.risk_pct = typeof risk === "number" ? risk / 100 : risk;
       const fields = { account: state.account, entry: state.entry, stop: state.stop, target: state.target };
       for (const [key, raw] of Object.entries(fields)) {
-        const value = optionalNumber(raw);
+        const value = pscTyped(raw);
         if (value !== undefined) out[key] = value;
       }
+      const winRate = pscTyped(state.winRate);
+      if (winRate !== undefined) out.win_rate = typeof winRate === "number" ? winRate / 100 : winRate;
       return out;
     }
     case "PORT_WHATIF": {
@@ -1057,10 +1422,17 @@ function buildParams(
       if (cost !== undefined) out.cost = cost;
       return out;
     }
-    case "TRA":
-      return { years: 5, live_return: state.live };
-    case "BTFW":
-      return { live: state.live };
+    case "BTFW": {
+      // BTFW#3: only what the user typed is sent (blank keeps the handler default). A typed
+      // value that does not parse is sent as the trimmed text, so the backend names it.
+      const out: Record<string, unknown> = { live: state.live, strategy_id: state.btfw.strategy };
+      out.window_length = state.btfw.window;
+      const trainPct = pscTyped(state.btfw.trainPct);
+      if (trainPct !== undefined) out.train_pct = trainPct;
+      const walkSteps = pscTyped(state.btfw.walkSteps);
+      if (walkSteps !== undefined) out.walk_steps = walkSteps;
+      return out;
+    }
     default:
       return {};
   }
@@ -1072,6 +1444,28 @@ function splitSymbols(raw: string): string[] {
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
 }
+
+/** BLAK#5: the pane's typed prior inputs (strings until the backend validates them). */
+interface BlakInputs {
+  window: string;
+  tau: string;
+  delta: string;
+  views: string;
+  marketCaps: string;
+}
+
+/** Lookback windows the BLAK seed declares (calendar days in blak.py). */
+const BLAK_WINDOWS = ["180d", "1Y", "2Y", "5Y"] as const;
+
+/** BTFW#3: typed walk-forward controls. Values mirror the manifest options. */
+interface BtfwInputs {
+  strategy: string;
+  window: string;
+  trainPct: string;
+  walkSteps: string;
+}
+const BTFW_STRATEGIES = ["sma_crossover", "rsi_meanrev", "buy_and_hold"] as const;
+const BTFW_WINDOWS = ["30d", "90d", "180d", "1Y", "2Y", "3Y"] as const;
 
 function parseTargets(raw: string): Record<string, number> {
   const out: Record<string, number> = {};
@@ -1149,8 +1543,12 @@ function formatSmart(key: string, value: unknown): string {
     if (iso) return iso;
   }
   if (k.includes("pct") || k.includes("percent")) return formatPercent(value);
+  // UI-4: a bare weight has no declared unit (a fraction in rpar / pcas /
+  // port_opt, percent x100 in pvar under the same key), so it is never guessed
+  // from magnitude. It shows the raw number; percent comes from the explicit
+  // *_pct siblings (weight_pct, target_weight_pct, ...).
   if (k === "weight" || k.endsWith("_weight") || k.includes("fraction")) {
-    return formatPercent(value, { fromFraction: Math.abs(value) <= 1 });
+    return value.toFixed(4);
   }
   // HNT-04: the return/vol/rate/alpha family is a FRACTION by backend
   // contract (bmtx/btune total_return = final equity / initial − 1, rpar
@@ -1256,6 +1654,17 @@ export function optionalNumber(raw: string): number | undefined {
   if (raw.trim() === "") return undefined;
   const value = Number(raw);
   return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * A PSC field as typed: a number when it parses, the trimmed text when it does
+ * not (the backend then names the field as not a number), undefined when blank.
+ * A typed value is never dropped or replaced by a default.
+ */
+function pscTyped(raw: string): number | string | undefined {
+  if (raw.trim() === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : raw.trim();
 }
 
 function num(raw: string, fallback: number): number {

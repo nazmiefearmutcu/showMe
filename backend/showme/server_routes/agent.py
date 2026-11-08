@@ -23,7 +23,7 @@ def _as_int(value: Any, default: int, *, low: int, high: int) -> int:
         out = int(value) if value not in (None, "") else default
     except (TypeError, ValueError) as exc:
         raise HTTPException(
-            status_code=400, detail=f"invalid integer value: {value!r} ({exc})"
+            status_code=400, detail=f"invalid integer value: {value!r} ({str(exc) or type(exc).__name__})"
         ) from exc
     return max(low, min(high, out))
 
@@ -33,7 +33,7 @@ def _as_float(value: Any, default: float, *, low: float, high: float) -> float:
         out = float(value) if value not in (None, "") else default
     except (TypeError, ValueError) as exc:
         raise HTTPException(
-            status_code=400, detail=f"invalid number value: {value!r} ({exc})"
+            status_code=400, detail=f"invalid number value: {value!r} ({str(exc) or type(exc).__name__})"
         ) from exc
     return max(low, min(high, out))
 

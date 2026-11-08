@@ -262,7 +262,7 @@ export function EMSXPane({ code, symbol }: FunctionPaneProps) {
                 tone={
                   status === "submitted" || status === "filled"
                     ? "positive"
-                    : status === "input_required"
+                    : status === "input_required" || status === "input_error"
                       ? "warn"
                       : status === "preview"
                         ? "accent"
@@ -559,6 +559,33 @@ function PreviewSummary({
   const status = p?.status ?? result.status ?? "—";
   const nextActions = Array.isArray(p?.next_actions) ? p.next_actions : [];
   const isLiveResult = lastSubmit && (status === "submitted" || status === "filled");
+  // EMSX#1 follow-up (mirrors TSOX#4): an invalid ticket is an input error and
+  // must never be painted as a ready preview with its invalid fields echoed.
+  if (status === "input_error") {
+    return (
+      <section style={summaryStyle} aria-label="Ticket preview">
+        <span style={sectionTitleStyle}>Input error</span>
+        <Empty
+          title="Ticket is invalid"
+          body={String(
+            p?.reason ??
+              "The ticket has an invalid field. Nothing was sent to a broker.",
+          )}
+          icon="!"
+        />
+        {nextActions.length > 0 && (
+          <div style={nextActionsBoxStyle}>
+            <span style={sectionTitleStyle}>Next actions</span>
+            <ul style={nextActionsListStyle}>
+              {nextActions.map((a, i) => (
+                <li key={i}>{a}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+    );
+  }
   return (
     <section style={summaryStyle} aria-label="Ticket preview">
       <span style={sectionTitleStyle}>

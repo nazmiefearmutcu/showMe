@@ -233,6 +233,30 @@ export function formatTime(
   }
 }
 
+/** Date and 24-hour time in the app timezone, e.g. "22 May 2026, 06:00:00". */
+export function formatDateTime(
+  value: Date | string | number | null | undefined,
+  opts: { tz?: string } = {},
+): string {
+  const d = safeDate(value);
+  if (!d) return "-";
+  const tz = opts.tz ?? readTimezone();
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZone: tz,
+    }).format(d);
+  } catch {
+    return d.toISOString().slice(0, 10) + " " + d.toISOString().slice(11, 19);
+  }
+}
+
 export function formatDate(
   value: Date | string | number | null | undefined,
   opts: { tz?: string; weekday?: boolean } = {},

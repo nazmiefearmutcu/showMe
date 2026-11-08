@@ -118,6 +118,7 @@ class PEOPFunction(BaseFunction):
         source_mode = "local_directory"
         live_sources: list[str] = []
         provider_error: str | None = None
+        live_scan: dict[str, Any] = {}
         if not items:
             # HNT-01: search_people is synchronous (sync httpx + up to 1 req/s
             # throttle sleep + ThreadPoolExecutor fan-out); calling it inline
@@ -127,6 +128,10 @@ class PEOPFunction(BaseFunction):
                 items = live["items"]
                 live_sources = list(live.get("sources") or [])
                 source_mode = "wikipedia_live"
+                live_scan = {
+                    "candidates_scanned": live.get("candidates_scanned"),
+                    "candidate_cap": live.get("candidate_cap"),
+                }
             else:
                 if not live.get("ok"):
                     provider_error = str(
@@ -151,6 +156,14 @@ class PEOPFunction(BaseFunction):
             sources = []
 
         warnings: list[str] = [provider_error] if provider_error else []
+        cap = live_scan.get("candidate_cap")
+        scanned = live_scan.get("candidates_scanned")
+        # PEOP#6: say so when the candidate cap, not the caller's limit, bounded the list.
+        if cap and scanned is not None and scanned >= cap and limit > cap:
+            warnings.append(
+                f"Only the first {cap} Wikipedia search candidates were checked "
+                f"(candidate cap {cap}, requested limit {limit}); more matching people may exist."
+            )
         reference_as_of: str | None = None
         if source_mode == "public_reference":
             # PEOP#2: rows from the bundled snapshot are never a live answer.
@@ -194,6 +207,8 @@ class PEOPFunction(BaseFunction):
                                   "rows": items,
                                   "source_mode": source_mode,
                                   "reference_as_of": reference_as_of,
+                                  "candidates_scanned": scanned,
+                                  "candidate_cap": cap,
                                   "connection_status": [
                                       {"source": "local_people_directory", "status": "used" if source_mode == "local_directory" else "checked"},
                                       {"source": "wikipedia", "status": "used" if source_mode == "wikipedia_live" else ("failed" if provider_error else "checked")},

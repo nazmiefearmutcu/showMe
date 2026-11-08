@@ -77,7 +77,7 @@ class POLYFunction(BaseFunction):
                     timeout=timeout,
                 )
             except Exception as e:  # noqa: BLE001 - fall through to keyless HTTP
-                provider_errors.append(f"polymarket_adapter: {e}")
+                provider_errors.append(f"polymarket_adapter: {str(e) or type(e).__name__}")
                 raw_rows = None
 
         # 2) DEFAULT keyless path: fetch the public Gamma markets directly.
@@ -97,13 +97,14 @@ class POLYFunction(BaseFunction):
                     warnings=[
                         "Polymarket Gamma feed unavailable; showing no markets rather than fabricated odds."
                     ],
-                    metadata={"provider_errors": provider_errors + [f"gamma: {e}"], "query": query},
+                    metadata={"provider_errors": provider_errors + [f"gamma: {str(e) or type(e).__name__}"], "query": query},
                 )
 
         compact: list[dict[str, Any]] = []
         for r in raw_rows:
             row = _shape_market(r)
-            if status == "open" and (r.get("closed") is True or _is_past(row.get("end_date"))):
+            if status == "open" and (r.get("closed") is True or r.get("active") is False
+                                     or _is_past(row.get("end_date"))):
                 continue
             if status == "closed" and r.get("closed") is not True:
                 continue
@@ -112,8 +113,8 @@ class POLYFunction(BaseFunction):
                 continue
             if min_liq and (row.get("liquidity") is None or row["liquidity"] < min_liq):
                 continue
-            if query and not _matches_query(r, query):
-                continue
+            # Topic relevance is decided by Polymarket's own search (public-search),
+            # so no client-side all-words filter is applied here.
             compact.append({**row, "question": r.get("question")})
 
         compact.sort(key=lambda x: (x.get("volume") or 0.0), reverse=True)
@@ -135,7 +136,7 @@ class POLYFunction(BaseFunction):
             result_warnings.append(f"adapter fell back to keyless Gamma: {provider_errors[0]}")
         if not compact and query:
             result_warnings.append(
-                f"Gamma returned open markets, but none matched the topic filter {str(query)!r}."
+                f"Polymarket search returned no markets for {str(query)!r} under the selected status and filters."
             )
         if not compact and status == "resolved" and raw_rows:
             result_warnings.append(
@@ -183,7 +184,9 @@ class POLYFunction(BaseFunction):
                 "market_count": len(compact),
                 "total_liquidity_usd": total_liquidity,
                 "methodology": (
-                    "POLY reads the keyless Polymarket Gamma /markets endpoint. status=open keeps active, "
+                    "POLY reads the keyless Polymarket Gamma API: browse uses /markets, while a topic query "
+                    "uses the public-search endpoint, which ranks by relevance (/markets ignores its search "
+                    "parameter). status=open keeps active, "
                     "unclosed, not-past-end markets; status=closed keeps Gamma closed=true markets; "
                     "status=resolved keeps closed markets whose umaResolutionStatus is 'resolved' (closed is "
                     "not the same as resolved); status=all sends no closed filter. It parses raw "
@@ -224,6 +227,7 @@ async def _fetch_gamma_markets(
 
 
 def _matches_query(row: dict[str, Any], query: Any) -> bool:
+    """All-words text match. Not applied to search results (see execute)."""
     q = str(query or "").strip().lower()
     if not q:
         return True

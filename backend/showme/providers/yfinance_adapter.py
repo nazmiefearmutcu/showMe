@@ -65,7 +65,7 @@ class YfinanceAdapter(ProviderAdapter):
             )
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"yfinance call failed: {exc}") from exc
+            raise AdapterError(f"yfinance call failed: {str(exc) or type(exc).__name__}") from exc
         self._record_success(int((time.perf_counter() - t0) * 1000))
         return result
 

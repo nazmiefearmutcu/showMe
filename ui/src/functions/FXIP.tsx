@@ -49,6 +49,8 @@ interface FXIPHistoryRow {
 
 interface FXIPData {
   status?: string;
+  reason?: string;
+  next_actions?: string[];
   pair?: string;
   base?: string;
   quote?: string;
@@ -56,9 +58,10 @@ interface FXIPData {
   daily_change_pct?: number;
   one_month_forward?: number;
   three_month_forward?: number;
-  implied_vol_atm_1m?: number;
+  assumed_vol_atm_1m_pct?: number;
   carry_annualized?: number;
   source_mode?: string;
+  rate_basis?: { base?: string; quote?: string };
   rows?: FXIPMetricRow[];
   history?: FXIPHistoryRow[];
   methodology?: string;
@@ -120,6 +123,25 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
   const sourceMode = payload?.source_mode ?? "—";
   const isLive = sourceMode.startsWith("live");
   const isReference = sourceMode === "reference_model";
+  // FXIP#2: policy rates are dated reference constants unless the caller
+  // supplied them; any non-user_input basis must say so on the pane.
+  const rateBasis = [payload?.rate_basis?.base, payload?.rate_basis?.quote];
+  const ratesAreReference = rateBasis.some(
+    (src) => typeof src === "string" && src.startsWith("reference_policy_rate"),
+  );
+  const rateVintage =
+    rateBasis
+      .map((src) => (typeof src === "string" ? src.match(/\d{4}-\d{2}/)?.[0] : undefined))
+      .find((v) => v != null) ?? "undated";
+  // FXIP#2 follow-up: name only the currencies whose rate is a reference constant.
+  const referenceCurrencies = [
+    [payload?.base, rateBasis[0]],
+    [payload?.quote, rateBasis[1]],
+  ]
+    .filter(
+      ([, src]) => typeof src === "string" && src.startsWith("reference_policy_rate"),
+    )
+    .map(([ccy]) => ccy ?? "?");
 
   const trend = useMemo(() => {
     const closes = (payload?.history ?? [])
@@ -205,12 +227,39 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
     />
   ) : (
     <div className="u-grid-gap-14">
+      {status === "needs_input" ? (
+        <div role="note" style={warnStyle} aria-label="FXIP needs input notice">
+          <strong>Needs input.</strong>{" "}
+          {payload.reason ?? "A policy rate is missing; forwards and carry are unavailable."}
+          {(payload.next_actions ?? []).length > 0 ? (
+            <ul style={nextActionsStyle}>
+              {(payload.next_actions ?? []).map((action) => (
+                <li key={action}>{action}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {isReference ? (
         <div role="note" style={warnStyle} aria-label="FXIP reference notice">
           <strong>Reference spot.</strong> Live spot is unavailable for{" "}
           {payload.pair ?? effectivePair} — the level shown is a labelled
           reference value, NOT a live quote. Forwards and carry computed from
           it are illustrative.
+        </div>
+      ) : null}
+      {ratesAreReference ? (
+        <div role="note" style={warnStyle} aria-label="FXIP rate vintage notice">
+          <strong>
+            Reference policy rate{referenceCurrencies.length > 1 ? "s" : ""}.
+          </strong>{" "}
+          {referenceCurrencies.join(" and ")}{" "}
+          {referenceCurrencies.length > 1
+            ? "rates are dated reference constants"
+            : "rate is a dated reference constant"}{" "}
+          ({rateVintage}), NOT current policy rate
+          {referenceCurrencies.length > 1 ? "s" : ""}. Forwards and carry use{" "}
+          {referenceCurrencies.length > 1 ? "them" : "it"}.
         </div>
       ) : null}
       <section style={kpiGridStyle} aria-label="FXIP portal summary">
@@ -244,18 +293,16 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
           tone="neutral"
         />
         <StatCard
-          label="ATM vol 1M"
-          value={fmtPct(payload.implied_vol_atm_1m)}
+          label="Assumed ATM vol 1M"
+          value={fmtPct(payload.assumed_vol_atm_1m_pct)}
           caption="ASSUMPTION — NOT A QUOTE"
           tone="neutral"
         />
         <StatCard
           label="Carry (annualized)"
-          value={fmtSignedPct((payload.carry_annualized ?? 0) * 100)}
-          caption="QUOTE RATE − BASE RATE"
-          tone={
-            (payload.carry_annualized ?? 0) >= 0 ? "positive" : "negative"
-          }
+          value={carryText(payload.carry_annualized)}
+          caption="QUOTE − BASE RATE · LONG BASE EARNS IF NEGATIVE"
+          tone="neutral"
         />
       </section>
       <div>
@@ -344,6 +391,16 @@ function fmtRate(v: number | null | undefined): string {
   return Math.abs(v) >= 20 ? v.toFixed(3) : v.toFixed(4);
 }
 
+/* UI-10: a missing carry is shown as missing, never as a real +0.000%. */
+function carryPctOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v * 100 : null;
+}
+
+function carryText(v: unknown): string {
+  const pct = carryPctOrNull(v);
+  return pct == null ? "—" : fmtSignedPct(pct);
+}
+
 function fmtPct(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return `${v.toFixed(3)}%`;
@@ -395,6 +452,12 @@ const warnStyle: CSSProperties = {
   padding: "8px 10px",
   fontSize: "var(--font-size-md)",
   color: "var(--text-primary)",
+};
+
+const nextActionsStyle: CSSProperties = {
+  margin: "6px 0 0",
+  paddingLeft: 18,
+  color: "var(--text-mute)",
 };
 
 const bodyStyle: CSSProperties = {

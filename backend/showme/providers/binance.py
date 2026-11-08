@@ -87,7 +87,7 @@ class BinanceAdapter(ProviderAdapter):
             payload = resp.json()
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"binance klines failed: {exc}") from exc
+            raise AdapterError(f"binance klines failed: {str(exc) or type(exc).__name__}") from exc
         if not isinstance(payload, list):
             err = AdapterError(f"binance klines returned non-list: {type(payload).__name__}")
             self._record_failure(err)
@@ -111,7 +111,7 @@ class BinanceAdapter(ProviderAdapter):
             payload = resp.json()
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"binance ticker_24h failed: {exc}") from exc
+            raise AdapterError(f"binance ticker_24h failed: {str(exc) or type(exc).__name__}") from exc
         if not isinstance(payload, dict):
             err = AdapterError(
                 f"binance ticker_24h returned non-dict: {type(payload).__name__}"
@@ -135,7 +135,7 @@ class BinanceAdapter(ProviderAdapter):
             payload = resp.json()
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"binance exchange_info failed: {exc}") from exc
+            raise AdapterError(f"binance exchange_info failed: {str(exc) or type(exc).__name__}") from exc
         if not isinstance(payload, dict):
             err = AdapterError(
                 f"binance exchange_info returned non-dict: {type(payload).__name__}"

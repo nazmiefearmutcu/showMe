@@ -86,7 +86,9 @@ def test_failed_quote_is_not_marked_at_cost(monkeypatch: pytest.MonkeyPatch) -> 
     assert res.data["status"] == "partial"
     assert res.data["summary"]["total_market_value_complete"] is False
     assert any("TLT" in w for w in res.warnings)
-    assert res.metadata["stale_marks"] == ["TLT"]
+    # ACCT-R1: a symbol with no mark is unpriced, not stale (no as-of value exists).
+    assert res.metadata["unpriced_symbols"] == ["TLT"]
+    assert "stale_marks" not in res.metadata
 
 
 def test_routed_default_timeout_still_gets_live_mark(monkeypatch: pytest.MonkeyPatch) -> None:

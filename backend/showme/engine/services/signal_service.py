@@ -122,7 +122,7 @@ class SignalService:
                     f"  {indicator.name}: {result.signal.value} (score={result.score}) - {result.reason}"
                 )
             except Exception as e:
-                logger.error(f"Indicator {indicator.name} failed: {e}")
+                logger.error(f"Indicator {indicator.name} failed: {str(e) or type(e).__name__}")
                 from showme.engine.indicators.base import Signal
                 fallback = IndicatorResult(
                     name=indicator.name,

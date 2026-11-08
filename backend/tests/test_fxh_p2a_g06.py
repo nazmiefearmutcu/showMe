@@ -280,3 +280,25 @@ def test_fxh2_multi_currency_book_top_level_notionals_are_none_not_summed() -> N
     assert len(result.data["rows"]) == 2
     total_cost = sum(r["hedge_cost"] for r in result.data["rows"])
     assert result.data["hedge_cost"] == pytest.approx(total_cost)
+
+
+# ── FXH#4: a maturity nobody chose is echoed as an assumption ─────────────
+
+
+def test_fxh4_default_maturity_is_an_echoed_assumption() -> None:
+    result = _run(_fn().execute(action="calc", pair="EURUSD", spot_rate=1.08))
+    assert "days" in result.data["assumed_defaults"]
+    assert result.data["assumed_values"]["days"] == 90
+
+
+def test_fxh4_tenor_or_days_is_not_an_assumption() -> None:
+    for extra in ({"tenor": "3M"}, {"days": 30}):
+        result = _run(_fn().execute(action="calc", pair="EURUSD", spot_rate=1.08, **extra))
+        assert "days" not in result.data["assumed_defaults"], extra
+
+
+def test_fxh4_route_does_not_inject_120_days() -> None:
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("FXH", {"pair": "EURUSD", "spot_rate": 1.08})
+    assert "days" not in routed

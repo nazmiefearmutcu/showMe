@@ -82,14 +82,18 @@ def test_es_in_mixed_crypto_book_keeps_futures_rate_and_spot_btc_stays_at_crypto
 
 
 def test_btc_perp_in_crypto_book_keeps_crypto_futures_rate():
-    """A crypto perpetual (suffix -PERP/-SWAP) keeps the 10% crypto_futures rule."""
-    perp = {"symbol": "BTC-PERP", "asset_class": "DERIVATIVE", "quantity": 0.1, "avg_cost": 95000, "last": 95000}
+    """A crypto perpetual (suffix -PERP/-SWAP) keeps the 10% crypto_futures rule.
+
+    A perpetual is held as asset_class CRYPTO (the real representation, MGN#2-RQ), not DERIVATIVE.
+    """
+    perp = {"symbol": "BTC-PERP", "asset_class": "CRYPTO", "quantity": 0.1, "avg_cost": 95000, "last": 95000}
     res = _run(MGNFunction(FunctionDeps()).execute(positions=[_btc_line(), perp]))
     by_symbol = {p["symbol"]: p for p in res.data["accounts"][0]["positions"]}
     assert by_symbol["BTC-PERP"]["initial_margin"] == pytest.approx(950.0)
 
 
-def test_explicit_crypto_futures_account_keeps_crypto_rule_for_derivative_lines():
-    """A user-chosen crypto_futures account keeps its account rule (explicit choice)."""
+def test_explicit_crypto_futures_account_prices_es_at_futures_rule():
+    """A user-chosen crypto_futures account still prices ES at the futures per-contract rule
+    (MGN#2-RQ): the 10% crypto rate is not a rule for an index future, explicit or not."""
     res = _run(MGNFunction(FunctionDeps()).execute(positions=[_es_line()], margin_type="crypto_futures"))
-    assert res.data["accounts"][0]["initial_margin"] == pytest.approx(1000.0)
+    assert res.data["accounts"][0]["initial_margin"] == pytest.approx(24000.0)

@@ -1,4 +1,4 @@
-"""TRAN — Earnings Call Transcript Viewer (keyless, SEC EDGAR primary).
+"""TRAN — Earnings Transcript or Release Viewer (keyless, SEC EDGAR primary).
 
 Reader pane for earnings-call / investor-event transcripts. The DEFAULT path
 fetches REAL, keyless data — there is no synthetic happy-path:
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -35,7 +36,17 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _ARCHIVE_BASE = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/{doc}"
 _FILING_INDEX = "https://www.sec.gov/cgi-bin/browse-edgar"
-_UA = {"User-Agent": "showMe research contact@example.com"}
+_SEC_UA_ENV = "SEC_EDGAR_USER_AGENT"
+
+
+def _sec_headers() -> dict[str, str]:
+    """SEC fair-access User-Agent: the operator's real contact, never a placeholder.
+
+    The contact comes from ``SEC_EDGAR_USER_AGENT``. When it is unset the request
+    still goes out with a bare product name and the run reports the missing contact.
+    """
+    contact = os.environ.get(_SEC_UA_ENV, "").strip()
+    return {"User-Agent": contact or "showMe research"}
 
 _METHODOLOGY = (
     "TRAN serves earnings-call / investor-event transcript text from real, keyless "
@@ -58,7 +69,7 @@ _METHODOLOGY = (
 _FIELD_DICT = {
     "symbol": "Echoed input symbol.",
     "status": "ok / empty / not_configured / provider_unavailable.",
-    "event": "Earnings event metadata (quarter, event_date, form, accession, source_url).",
+    "event": "Earnings event metadata (quarter, quarter_basis, event_date, form, accession, source_url).",
     "utterances[].position": "1-based order of the utterance within the document.",
     "document_type": "transcript (pasted, archived or audio) or earnings_press_release (SEC 8-K EX-99.x).",
     "utterances[].section": "prepared_remarks / qa for transcripts; document for an earnings release.",
@@ -96,7 +107,7 @@ _OK_STATUSES = {"ok", "empty"}
 @FunctionRegistry.register
 class TRANFunction(BaseFunction):
     code = "TRAN"
-    name = "Earnings Call Transcripts"
+    name = "Earnings Transcript or Release"
     asset_classes = (AssetClass.EQUITY, AssetClass.ETF)
     category = "news"
 
@@ -112,8 +123,39 @@ class TRANFunction(BaseFunction):
         section_filter = str(params.get("section") or "all").strip().lower()
         speaker_filter = _as_list(params.get("speaker_filter"))
 
+        # The requested quarter selects the filing / archive row. An unreadable
+        # label is an input error, never silently replaced by the latest filing.
+        requested_quarter: str | None = None
+        quarter_raw = str(params.get("quarter") or "").strip()
+        if quarter_raw:
+            requested_quarter = _normalize_quarter(quarter_raw)
+            if requested_quarter is None:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        "symbol": symbol,
+                        "status": "input_error",
+                        "event": {"symbol": symbol, "quarter": None},
+                        "utterances": [],
+                        "rows": [],
+                        "whisper": None,
+                        "data_mode": "not_configured",
+                        "methodology": _METHODOLOGY,
+                        "field_dictionary": _FIELD_DICT,
+                        "next_actions": [
+                            "Use a quarter label such as Q3 FY26 (Q1-Q4, FY, and a two- or "
+                            "four-digit year), or leave the quarter empty for the latest filing.",
+                        ],
+                        "cards": _cards(symbol, {}, 0, 0, "not_configured"),
+                    },
+                    sources=["no_live_source"],
+                    warnings=[f"quarter '{quarter_raw}' is not a recognised quarter label"],
+                    metadata={"data_state": "input_error", "data_mode": "not_configured"},
+                )
+
         utterances: list[dict[str, Any]] = []
-        event: dict[str, Any] = {"symbol": symbol, "quarter": params.get("quarter") or None}
+        event: dict[str, Any] = {"symbol": symbol, "quarter": requested_quarter}
         data_mode = "not_configured"
         document_type = "transcript"
 
@@ -134,7 +176,14 @@ class TRANFunction(BaseFunction):
                 # transcripts_archive exposes list_for_symbol (not list_events);
                 # the old name raised AttributeError and silently killed this
                 # cached-transcript source via the broad except below.
-                events = archive.list_for_symbol(symbol, limit=1)
+                if requested_quarter:
+                    archived = archive.list_for_symbol(symbol, limit=50)
+                    events = [
+                        e for e in archived
+                        if _normalize_quarter(str(e.get("quarter") or "")) == requested_quarter
+                    ][:1]
+                else:
+                    events = archive.list_for_symbol(symbol, limit=1)
                 if events:
                     ev = events[0]
                     utterances = _coerce_archive_utterances(ev)
@@ -145,6 +194,7 @@ class TRANFunction(BaseFunction):
                             "title": ev.get("title"),
                             "event_date": ev.get("event_date"),
                             "quarter": ev.get("quarter") or event.get("quarter"),
+                            "quarter_basis": "archive label as ingested; the fiscal basis was not verified",
                             "source": "transcripts_archive",
                             "event_id": ev.get("event_id"),
                         })
@@ -153,10 +203,19 @@ class TRANFunction(BaseFunction):
 
         # 3) DEFAULT keyless live source — SEC EDGAR 8-K earnings exhibit.
         sec_error: str | None = None
+        sec_unreachable = False
         if not utterances:
+            if not os.environ.get(_SEC_UA_ENV, "").strip():
+                warnings.append(
+                    f"sec_edgar: {_SEC_UA_ENV} is not set; SEC fair-access asks for a real "
+                    "contact address in the User-Agent."
+                )
+            # Only pass the quarter when one was asked for, so the lookup keeps its
+            # default (newest filing) signature otherwise.
+            sec_kwargs: dict[str, Any] = {"quarter": requested_quarter} if requested_quarter else {}
             try:
                 ev_meta, body = await asyncio.wait_for(
-                    _fetch_sec_earnings_press_release(symbol, deps=self.deps),
+                    _fetch_sec_earnings_press_release(symbol, deps=self.deps, **sec_kwargs),
                     timeout=float(params.get("sec_timeout", 15) or 15),
                 )
                 if body:
@@ -171,10 +230,13 @@ class TRANFunction(BaseFunction):
                         warnings.append(_RELEASE_WARNING)
             except asyncio.TimeoutError:
                 sec_error = "SEC EDGAR request timed out"
+                sec_unreachable = True
             except _SecLookupError as e:
+                # The filing is not there (unknown ticker, quarter with no 8-K): not an outage.
                 sec_error = str(e)
             except Exception as e:  # noqa: BLE001 - record network failure honestly
                 sec_error = f"{type(e).__name__}: {e}"
+                sec_unreachable = True
         if sec_error:
             warnings.append(f"sec_edgar: {sec_error}")
 
@@ -231,13 +293,18 @@ class TRANFunction(BaseFunction):
 
         # No real source produced anything → honest provider_unavailable.
         if not rows:
-            network_failed = bool(sec_error)
+            network_failed = sec_unreachable
             status = "provider_unavailable" if network_failed else "empty"
-            reason = (
-                f"No earnings press release / transcript could be retrieved for {symbol}."
-                if not network_failed else
-                f"SEC EDGAR was unreachable for {symbol}: {sec_error}."
-            )
+            if network_failed:
+                reason = f"SEC EDGAR was unreachable for {symbol}: {sec_error}."
+            else:
+                quarter_note = f" for quarter {requested_quarter}" if requested_quarter else ""
+                reason = (
+                    f"No earnings press release / transcript could be retrieved for "
+                    f"{symbol}{quarter_note}."
+                )
+                if sec_error:
+                    reason = f"{reason} {sec_error}"
             next_actions = [
                 "Paste an earnings-call transcript via transcript_text to render it here.",
                 "Provide audio_url or audio_path so Whisper can transcribe the call.",
@@ -260,6 +327,7 @@ class TRANFunction(BaseFunction):
                     "rows": [],
                     "whisper": whisper_result,
                     "data_mode": "provider_unavailable" if network_failed else "not_configured",
+                    "reason": reason,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICT,
                     "next_actions": next_actions,
@@ -331,7 +399,7 @@ async def _resolve_cik(symbol: str, deps: Any) -> str:
     if symbol in _TICKER_CIK_CACHE:
         return _TICKER_CIK_CACHE[symbol]
     client = await _http_client()
-    resp = await client.get(_TICKERS_URL, headers=_UA)
+    resp = await client.get(_TICKERS_URL, headers=_sec_headers())
     resp.raise_for_status()
     payload = resp.json()
     iterable = payload.values() if isinstance(payload, dict) else payload
@@ -349,14 +417,30 @@ async def _resolve_cik(symbol: str, deps: Any) -> str:
     return cik
 
 
-async def _fetch_sec_earnings_press_release(symbol: str, deps: Any) -> tuple[dict[str, Any], str]:
-    """Return (event_meta, press_release_text) for the latest 8-K earnings exhibit."""
+async def _fetch_sec_earnings_press_release(
+    symbol: str, deps: Any, quarter: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Return (event_meta, press_release_text) for an 8-K earnings exhibit.
+
+    Without ``quarter`` this is the newest earnings 8-K. With ``quarter`` (a
+    normalised fiscal label such as ``Q1 FY26``) only 8-Ks whose report date
+    releases that fiscal quarter are considered, using the SEC fiscal year end.
+    No match is a lookup error, not the latest filing; no fiscal year end is a
+    lookup error too, since the requested period cannot be placed.
+    """
     cik = await _resolve_cik(symbol, deps)
     cik_nozero = str(int(cik))
     client = await _http_client()
-    resp = await client.get(_SUBMISSIONS_URL.format(cik=cik), headers=_UA)
+    resp = await client.get(_SUBMISSIONS_URL.format(cik=cik), headers=_sec_headers())
     resp.raise_for_status()
     sub = resp.json()
+    fiscal_year_end = (sub or {}).get("fiscalYearEnd")
+    fiscal_known = _parse_fye_month(fiscal_year_end) is not None
+    if quarter and not fiscal_known:
+        raise _SecLookupError(
+            f"SEC submissions for {symbol} (CIK {cik}) carry no fiscal year end, so fiscal "
+            f"quarter {quarter} cannot be matched to an 8-K report date."
+        )
     recent = ((sub or {}).get("filings") or {}).get("recent") or {}
     forms = recent.get("form") or []
     accessions = recent.get("accessionNumber") or []
@@ -375,6 +459,16 @@ async def _fetch_sec_earnings_press_release(symbol: str, deps: Any) -> tuple[dic
             score = 2 if "2.02" in item_str else 1
             candidates.append((score, i))  # type: ignore[arg-type]
     candidates.sort(key=lambda x: (-x[0], x[1]))  # type: ignore[index]
+    if quarter:
+        candidates = [
+            c for c in candidates  # type: ignore[misc]
+            if _fiscal_quarter(dates[c[1]] if c[1] < len(dates) else None, fiscal_year_end) == quarter
+        ]
+        if not candidates:
+            raise _SecLookupError(
+                f"No 8-K filing for {symbol} reports fiscal quarter {quarter} among the recent "
+                f"filings (CIK {cik})."
+            )
     if not candidates:
         raise _SecLookupError(f"No recent 8-K filing found for {symbol} (CIK {cik}).")
 
@@ -389,7 +483,8 @@ async def _fetch_sec_earnings_press_release(symbol: str, deps: Any) -> tuple[dic
             "accession": accession,
             "event_date": (dates[idx] if idx < len(dates) and dates[idx] else (fdates[idx] if idx < len(fdates) else None)),
             "filing_date": fdates[idx] if idx < len(fdates) else None,
-            "quarter": _infer_quarter(dates[idx] if idx < len(dates) else None),
+            "quarter": _fiscal_quarter(dates[idx] if idx < len(dates) else None, fiscal_year_end),
+            "quarter_basis": _QUARTER_BASIS if fiscal_known else _NO_FISCAL_BASIS,
             "source": "sec_edgar",
             "title": f"{symbol} {str(forms[idx])} earnings press release",
         }
@@ -412,7 +507,7 @@ async def _fetch_exhibit_text(client: Any, cik_nozero: str, acc_nodash: str, acc
     )
     doc_name: str | None = None
     try:
-        ir = await client.get(index_url, headers=_UA)
+        ir = await client.get(index_url, headers=_sec_headers())
         if ir.status_code == 200:
             j = ir.json()
             entries = ((j or {}).get("directory") or {}).get("item") or []
@@ -435,7 +530,7 @@ async def _fetch_exhibit_text(client: Any, cik_nozero: str, acc_nodash: str, acc
         # Fallback: read the plain directory listing (no auth needed).
         listing_url = f"https://www.sec.gov/Archives/edgar/data/{cik_nozero}/{acc_nodash}/"
         try:
-            lr = await client.get(listing_url, headers=_UA)
+            lr = await client.get(listing_url, headers=_sec_headers())
             if lr.status_code == 200:
                 names = re.findall(r'href="([^"]+\.(?:htm|html|txt))"', lr.text, flags=re.I)
                 ex = [n for n in names if re.search(r"ex.?-?99", n, re.I)]
@@ -449,7 +544,7 @@ async def _fetch_exhibit_text(client: Any, cik_nozero: str, acc_nodash: str, acc
         return ""
 
     doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik_nozero}/{acc_nodash}/{doc_name}"
-    dr = await client.get(doc_url, headers=_UA)
+    dr = await client.get(doc_url, headers=_sec_headers())
     if dr.status_code != 200:
         return ""
     return _html_to_text(dr.text)
@@ -625,15 +720,63 @@ def _html_to_text(raw: str) -> str:
     return text.strip()
 
 
-def _infer_quarter(report_date: str | None) -> str | None:
-    if not report_date:
+_QUARTER_LABEL_RE = re.compile(r"^\s*Q([1-4])\s*(?:FY)?\s*'?\s*(\d{4}|\d{2})\s*$", re.IGNORECASE)
+
+
+def _normalize_quarter(text: str | None) -> str | None:
+    """'Q3 FY26' / 'q3 fy2026' / 'Q3 2026' / "Q3'26" -> 'Q3 FY26'; anything else -> None."""
+    m = _QUARTER_LABEL_RE.match(text or "")
+    if not m:
+        return None
+    return f"Q{m.group(1)} FY{m.group(2)[-2:]}"
+
+
+_QUARTER_BASIS = (
+    "fiscal quarter: the last fiscal quarter end before the 8-K report date, from the "
+    "company's SEC fiscal year end (month-level)"
+)
+_NO_FISCAL_BASIS = (
+    "no fiscal quarter label: the SEC submissions index carries no fiscal year end"
+)
+
+
+def _parse_fye_month(fiscal_year_end: Any) -> int | None:
+    """SEC ``fiscalYearEnd`` is MMDD (e.g. '0926'); return the month or None."""
+    text = str(fiscal_year_end or "").strip()
+    if not re.fullmatch(r"\d{4}", text):
+        return None
+    month, day = int(text[:2]), int(text[2:])
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return month
+
+
+def _fiscal_quarter(report_date: str | None, fiscal_year_end: Any) -> str | None:
+    """Fiscal quarter label (e.g. 'Q1 FY26') of the period an 8-K report date releases.
+
+    The release reports the last fiscal quarter that ended before the report
+    date. Fiscal quarter ends fall every three months from the fiscal year-end
+    month. The fiscal year is named for the calendar year in which it ends.
+    Returns None when the report date or the fiscal year end is unusable, so a
+    caller never labels a period it cannot place.
+    """
+    fye_month = _parse_fye_month(fiscal_year_end)
+    if fye_month is None or not report_date:
         return None
     try:
-        dt = datetime.strptime(report_date[:10], "%Y-%m-%d")
-    except Exception:
+        dt = datetime.strptime(str(report_date)[:10], "%Y-%m-%d")
+    except ValueError:
         return None
-    q = (dt.month - 1) // 3 + 1
-    return f"Q{q} FY{str(dt.year)[2:]}"
+    year, month = dt.year, dt.month
+    while True:  # walk back to the nearest fiscal quarter-end month (at most 3 steps)
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+        if (month - fye_month) % 3 == 0:
+            break
+    quarter = ((month - fye_month) % 12) // 3 or 4
+    fy_year = year if month <= fye_month else year + 1
+    return f"Q{quarter} FY{str(fy_year)[2:]}"
 
 
 def _as_list(value: Any) -> list[str]:

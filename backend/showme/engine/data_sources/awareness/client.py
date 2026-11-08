@@ -57,6 +57,12 @@ def _awareness_python(home: Path) -> Path | None:
     return None
 
 
+def _describe(exc: BaseException) -> str:
+    """``Type: message``, or just ``Type`` when the exception carries no message (e.g. a timeout)."""
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 class AwarenessUnavailable(RuntimeError):
     """The awareness service could not answer; ``reason`` is safe to show in the UI."""
 
@@ -170,14 +176,14 @@ class AwarenessClient:
         except httpx.TimeoutException as exc:
             raise AwarenessUnavailable(f"awareness service timed out after {self.timeout:.0f}s for {full}") from exc
         except httpx.HTTPError as exc:
-            raise AwarenessUnavailable(f"awareness request failed: {type(exc).__name__}: {exc}") from exc
+            raise AwarenessUnavailable(f"awareness request failed: {_describe(exc)}") from exc
 
     async def post(self, path: str, body: Any) -> AwarenessResponse:
         full = f"/v1/markets{path}"
         try:
             return await self._request("POST", full, json=body)
         except httpx.HTTPError as exc:
-            raise AwarenessUnavailable(f"awareness request failed: {type(exc).__name__}: {exc}") from exc
+            raise AwarenessUnavailable(f"awareness request failed: {_describe(exc)}") from exc
 
     async def healthz(self) -> dict[str, Any] | None:
         try:

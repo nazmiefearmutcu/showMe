@@ -91,12 +91,35 @@ def lots() -> FunctionManifest:
                 min=0,
             ),
             InputSpec(
+                name="acquired_at",
+                label="Acquisition date",
+                control=ControlKind.TEXT,
+                required=False,
+                description=(
+                    "ISO date (YYYY-MM-DD) or datetime the lot was acquired, for action=open. "
+                    "Sets holding period and short/long term; future dates are rejected. "
+                    "Omitted = stamped with the entry time and flagged acquired_at_source=entry_time."
+                ),
+            ),
+            InputSpec(
                 name="method",
                 label="Lot selection",
                 control=ControlKind.SELECT,
                 required=False,
                 description="Lot selection for action=sell.",
                 options=["FIFO", "LIFO", "HIFO", "LOFO"],
+            ),
+            InputSpec(
+                name="long_term_threshold_days",
+                label="Long-term after (days)",
+                control=ControlKind.NUMBER,
+                required=False,
+                description=(
+                    "Holding days at or above which a sold lot is long-term, for action=sell. "
+                    "Default 365."
+                ),
+                min=1,
+                step=1,
             ),
             InputSpec(
                 name="year",
@@ -155,7 +178,8 @@ def lots() -> FunctionManifest:
             "stores symbol, account, acquisition quantity and price, and the quantity "
             "already closed by sales. remaining = quantity - closed_qty. action=sell "
             "consumes open lots by FIFO, LIFO, HIFO or LOFO and records realized P&L "
-            "against the ledger's own acquisition price. No broker lots, market values "
+            "against the ledger's own acquisition price. A sold lot is long-term when its holding "
+            "days reach long_term_threshold_days (default 365). No broker lots, market values "
             "or unrealized P&L are produced by this function."
         ),
         formula_dict={

@@ -31,16 +31,24 @@ class ACCTFunction(BaseFunction):
                 return FunctionResult(
                     code=self.code,
                     instrument=None,
-                    data={
+                    data=_with_card_fields({
                         "status": "ready_no_positions",
                         "accounts": [],
-                        "cross": {"total_mv": 0.0, "by_asset_class": {}, "by_symbol": {}},
+                        "cross": {"total_mv": None, "by_asset_class": {}, "by_symbol": {},
+                                  "unpriced_symbols": []},
+                        "summary": {
+                            "accounts": 0,
+                            "positions": 0,
+                            "total_market_value": None,
+                            "unpriced_positions": 0,
+                            "total_market_value_complete": False,
+                        },
                         "rows": [],
                         "next_actions": [
                             "Add real positions through the portfolio state surface.",
                             "Or pass positions in Params JSON with symbol, asset_class, quantity, avg_cost, last, and account.",
                         ],
-                    },
+                    }),
                     sources=["portfolio_state"],
                     metadata={"empty": True, "requires_positions": True},
                 )
@@ -55,14 +63,24 @@ class ACCTFunction(BaseFunction):
                 return FunctionResult(
                     code=self.code,
                     instrument=None,
-                    data={
+                    data=_with_card_fields({
                         "status": "input_error",
                         "reason": "positions must be a JSON array of position objects.",
+                        "accounts": [],
+                        "cross": {"total_mv": None, "by_asset_class": {}, "by_symbol": {},
+                                  "unpriced_symbols": []},
+                        "summary": {
+                            "accounts": 0,
+                            "positions": 0,
+                            "total_market_value": None,
+                            "unpriced_positions": 0,
+                            "total_market_value_complete": False,
+                        },
                         "rows": [],
                         "next_actions": [
                             "Pass positions=[{symbol, asset_class, quantity, avg_cost, last, account}, ...].",
                         ],
-                    },
+                    }),
                     sources=[],
                 )
             for idx, p in enumerate(positions):
@@ -120,9 +138,9 @@ class ACCTFunction(BaseFunction):
                 ]
                 metadata["skipped_positions"] = skipped
             if unpriced_total:
-                metadata["stale_marks"] = cross["unpriced_symbols"]
+                metadata["unpriced_symbols"] = cross["unpriced_symbols"]
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"status": "partial" if unpriced_total else "ok",
+                                  data=_with_card_fields({"status": "partial" if unpriced_total else "ok",
                                         "accounts": list(accounts.values()),
                                         "rows": [_account_row(slot) for slot in accounts.values()],
                                         "cross": cross,
@@ -134,7 +152,7 @@ class ACCTFunction(BaseFunction):
                                             "total_market_value_complete": unpriced_total == 0,
                                         },
                                         "methodology": _methodology(),
-                                        "field_dictionary": _field_dictionary()},
+                                        "field_dictionary": _field_dictionary()}),
                                   sources=["user_positions"],
                                   warnings=warnings,
                                   metadata=metadata)
@@ -231,10 +249,10 @@ class ACCTFunction(BaseFunction):
             )
         if price_errors:
             metadata["provider_errors"] = [f"ACCT: {sym}: {err}" for sym, err in sorted(price_errors.items())]
-            metadata["stale_marks"] = sorted(price_errors)
+            metadata["unpriced_symbols"] = sorted(price_errors)
         return FunctionResult(
             code=self.code, instrument=None,
-            data={"status": "partial" if unpriced_total else "ok",
+            data=_with_card_fields({"status": "partial" if unpriced_total else "ok",
                   "accounts": list(by_account.values()),
                   "rows": [_account_row(slot) for slot in by_account.values()],
                   "cross": cross,
@@ -246,7 +264,7 @@ class ACCTFunction(BaseFunction):
                       "total_market_value_complete": unpriced_total == 0,
                   },
                   "methodology": _methodology(),
-                  "field_dictionary": _field_dictionary()},
+                  "field_dictionary": _field_dictionary()}),
             sources=["yfinance"],
             warnings=warnings,
             metadata=metadata,
@@ -268,6 +286,22 @@ def _mark_timeout(params: dict[str, Any]) -> float:
     except (TypeError, ValueError):
         value = MARK_TIMEOUT_FLOOR_S
     return min(max(value, MARK_TIMEOUT_FLOOR_S), MARK_TIMEOUT_CEIL_S)
+
+
+def _with_card_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """Add the top-level scalars the card slots read (ACCT#3).
+
+    Card slots read top-level keys, and ``accounts`` is a list, so the card
+    reads these scalar copies of the summary instead.
+    """
+    summary = data.get("summary") or {}
+    return {
+        **data,
+        "total_market_value": summary.get("total_market_value"),
+        "accounts_count": summary.get("accounts", 0),
+        "positions": summary.get("positions", 0),
+        "unpriced_positions": summary.get("unpriced_positions", 0),
+    }
 
 
 def _account_row(slot: dict[str, Any]) -> dict[str, Any]:

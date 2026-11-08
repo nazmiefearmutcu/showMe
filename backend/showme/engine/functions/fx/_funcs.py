@@ -10,7 +10,9 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.functions.fx._frankfurter import fetch_frankfurter_rate, fetch_frankfurter_rates
+from showme.engine.functions._fred_csv import fetch_fred_csv_series
+from showme.engine.functions.fx._frankfurter import fetch_frankfurter_rate, fetch_frankfurter_rates_dated
+from showme.engine.services.fx_hedge import decimal_rate_error
 
 
 _MAJOR_PAIRS = [
@@ -71,67 +73,156 @@ _TENOR_WINDOW_DAYS = {
     "1Y": 252,
     "2Y": 504,
 }
+# OVDV#5: below this many daily returns a realized-vol estimate is statistically weak.
+_OVDV_MIN_RELIABLE_RETURNS = 21
+# OVDV#5: managed, crawling-peg or hard-pegged currencies. Their realized vol reflects
+# a managed rate path, not an option-market level. Examples, not an exhaustive list.
+_OVDV_MANAGED_CCYS = frozenset(
+    {"TRY", "CNY", "CNH", "SAR", "AED", "HKD", "ARS", "EGP", "NGN", "PKR", "VND", "BDT", "QAR", "OMR", "BHD", "JOD", "KWD"}
+)
 
 
 @FunctionRegistry.register
 class FXFCFunction(BaseFunction):
-    """FXFC - FX forecasts from forward carry plus volatility bands."""
+    """FXFC - FX forecasts from forward carry plus realized-vol bands."""
 
     code = "FXFC"
-    name = "FX Forecasts"
+    name = "CIP FX Forward Path"
     asset_classes = (AssetClass.FX,)
     category = "fx"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        base, quote, pair = _pair_from(instrument, params)
-        spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
-        r_base = _rate_for(base, params.get("r_base"))
-        r_quote = _rate_for(quote, params.get("r_quote"))
-        vol = float(params.get("vol_annualized", params.get("vol", 0.085)))
+        parts = _fx_pair_or_none(instrument, params)
+        if parts is None:
+            return _fx_pair_missing_result(self.code, instrument, params)
+        base, quote, pair = parts
+        rate_error = _rate_input_error(params)
+        if rate_error:
+            return _rate_error_result(self.code, instrument, pair, base, quote, rate_error)
+        spot_quote_info: dict[str, Any] = {}
+        spot, spot_source, source_mode = await _resolve_spot(
+            self, pair, params, quote_info=spot_quote_info
+        )
+        # FXFC#2: only explicit policy-rate inputs drive the forward. The
+        # 2024-06 reference table is not used here (DATA POLICY).
+        r_base = _fxfc_policy_rate(params.get("r_base"))
+        r_quote = _fxfc_policy_rate(params.get("r_quote"))
+        rates_ready = r_base is not None and r_quote is not None
+        rate_source = "user_inputs" if rates_ready else "none"
+        missing_rates = [c for c, r in ((base, r_base), (quote, r_quote)) if r is None]
         tenors = _parse_tenors(params.get("tenors"), default=("1M", "3M", "6M", "12M"))
+        # Band vol per tenor: an explicit input, or live realized FX vol. No
+        # constant is substituted; with neither, the bands are null.
+        vol_curve, vol_source, rv_source, vol_warning = await _fxfc_vol_curve(
+            self, pair, tenors, params
+        )
         rows = []
-        for tenor in tenors:
+        for i, tenor in enumerate(tenors):
             t = tenor["years"]
-            forward = _forward(spot, r_base, r_quote, t)
-            band = spot * vol * (t ** 0.5)
-            confidence = max(35.0, min(92.0, 78.0 - t * 9.0))
+            forward = _forward(spot, r_base, r_quote, t) if rates_ready else None
+            vol = vol_curve[i] if vol_curve is not None else None
+            band = spot * vol * (t ** 0.5) if (vol is not None and forward is not None) else None
             rows.append(
                 {
                     "pair": pair,
                     "horizon": tenor["label"],
                     "tenor_years": round(t, 6),
                     "spot": round(spot, 6),
-                    "forecast": round(forward, 6),
-                    "lower_band": round(forward - band, 6),
-                    "upper_band": round(forward + band, 6),
-                    "forward_points": round(forward - spot, 6),
-                    "confidence": round(confidence, 2),
+                    "forecast": round(forward, 6) if forward is not None else None,
+                    "lower_band": round(forward - band, 6) if band is not None else None,
+                    "upper_band": round(forward + band, 6) if band is not None else None,
+                    "forward_points": round(forward - spot, 6) if forward is not None else None,
+                    "vol_annualized": round(vol, 6) if vol is not None else None,
                     "source_mode": source_mode,
                 }
             )
+        now = _fxfc_now()
+        market_open = _fx_market_open(now)
+        spot_quote = _fxfc_spot_quote(spot_source, spot_quote_info, now)
+        warnings: list[str] = []
+        if missing_rates:
+            warnings.append(
+                f"policy rate not supplied for {', '.join(missing_rates)}: the CIP forward and bands are withheld "
+                "(no reference-table or generic rate is substituted). Supply r_base and r_quote to compute them."
+            )
+        if source_mode == "reference_model":
+            warnings.append(f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})")
+        if vol_warning:
+            warnings.append(vol_warning)
+        spot_quote_status = spot_quote["spot_quote_status"]
+        if spot_quote_status == "stale":
+            warnings.append(
+                f"yfinance spot quote is stale: its market time {spot_quote['spot_quote_time']} is "
+                f"{spot_quote['spot_quote_age_minutes']} min before the fetch (threshold "
+                f"{int(_FXFC_QUOTE_STALE_AFTER.total_seconds() // 60)} min); treat the spot as stale."
+            )
+        elif spot_quote_status == "off_session":
+            warnings.append(
+                f"yfinance spot quote time {spot_quote['spot_quote_time']} is outside the approximate "
+                "FX session (Sun 22:00 to Fri 22:00 UTC): it is a last print, not a live level."
+            )
+        elif spot_quote_status == "quote_time_unavailable":
+            warnings.append(
+                "yfinance spot carries no upstream quote time, so its market age is unknown "
+                f"(only the fetch time {now.isoformat()} is known)."
+            )
+            if not market_open:
+                warnings.append(
+                    "yfinance FX quote was fetched while the spot FX market is closed "
+                    f"(weekend, fetched {now.isoformat()}); the level may be the last Friday print."
+                )
         data = {
+            "status": (
+                "needs_input"
+                if not rates_ready
+                else ("ok" if vol_curve is not None else "bands_unavailable")
+            ),
+            "reason": (
+                f"policy rate not supplied for {', '.join(missing_rates)} (r_base / r_quote)"
+                if missing_rates
+                else (vol_warning if vol_curve is None else None)
+            ),
             "pair": pair,
             "base": base,
             "quote": quote,
             "spot": round(spot, 6),
+            "spot_fetched_at": now.isoformat(),
+            "fx_market_open_at_fetch": market_open,
+            **spot_quote,
             "base_rate": r_base,
             "quote_rate": r_quote,
-            "vol_annualized": vol,
+            "rate_source": rate_source,
+            "vol_annualized": _fxfc_headline_vol(tenors, vol_curve),
+            "vol_source": vol_source,
             "source_mode": source_mode,
             "forecast": rows,
             "curve": rows,
             "methodology": (
-                "FXFC uses covered-interest-parity forward carry as the deterministic forecast path. "
-                "Forecast = spot * (1 + quote_rate * T) / (1 + base_rate * T). "
-                "Bands are spot * annualized_vol * sqrt(T), so they are model bands, not vendor analyst forecasts."
+                "FXFC uses covered-interest-parity (CIP) forward carry as the deterministic forward path. "
+                "Forecast = spot * (1 + quote_rate * T) / (1 + base_rate * T). This is a no-arbitrage "
+                "forward level, not a consensus or predictive forecast. "
+                "Bands are spot * sigma_T * sqrt(T), where sigma_T is the live realized FX vol over a "
+                "trailing window sized to the tenor (yfinance daily closes), or an explicit vol_annualized "
+                "input. When neither is available the bands are null; no constant vol is substituted. "
+                "Bands are model bands, not vendor analyst forecasts."
             ),
             "field_dictionary": {
                 "spot": "Quote currency units per one base currency unit.",
-                "forecast": "Covered-interest-parity forward-implied level for the tenor.",
-                "forward_points": "forecast - spot in quote currency units.",
-                "lower_band": "Model lower band using spot * vol * sqrt(T).",
-                "upper_band": "Model upper band using spot * vol * sqrt(T).",
-                "confidence": "Deterministic model confidence score; lower for longer tenors.",
+                "spot_fetched_at": "UTC time the spot was fetched (our clock, not the quote's market time).",
+                "spot_quote_time": "The quote's own market time (UTC) when the provider supplied it; null otherwise.",
+                "spot_quote_time_source": "upstream_market_time when spot_quote_time comes from the provider; null when no quote time is known.",
+                "spot_quote_age_minutes": "Minutes between spot_quote_time and the fetch; null when spot_quote_time is unknown.",
+                "spot_quote_status": "fresh (quote within 60 min and inside the FX session), stale (older than 60 min), off_session (quote time outside the FX session), quote_time_unavailable (no provider quote time), or not_applicable (spot not from yfinance).",
+                "fx_market_open_at_fetch": "Whether the approximate spot-FX session (Sun 22:00 to Fri 22:00 UTC) was open at fetch time.",
+                "forecast": "Covered-interest-parity forward-implied level for the tenor (a CIP forward, not a consensus forecast); null until r_base and r_quote are supplied.",
+                "base_rate": "Base-currency annual rate (decimal) supplied as r_base; null when not supplied. No reference table is substituted.",
+                "quote_rate": "Quote-currency annual rate (decimal) supplied as r_quote; null when not supplied.",
+                "rate_source": "user_inputs when both r_base and r_quote are supplied, otherwise none.",
+                "forward_points": "forecast - spot in quote currency units; null when the forward is withheld.",
+                "vol_annualized": "Annualized band vol for the tenor (decimal); null when no vol source is available.",
+                "vol_source": "live_realized_vol (yfinance daily closes), user_inputs, or none.",
+                "lower_band": "forecast - spot * vol_annualized * sqrt(T); null when no vol source is available.",
+                "upper_band": "forecast + spot * vol_annualized * sqrt(T); null when no vol source is available.",
                 "source_mode": "live_yfinance_quote when a fresh quote was fetched; reference_model otherwise.",
             },
         }
@@ -139,20 +230,134 @@ class FXFCFunction(BaseFunction):
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
-            sources=[spot_source, "covered_interest_parity_formula"],
-            # Only warn when the spot came from the static reference template
-            # — manual_input and any live_* source mode are real values.
-            warnings=(
-                []
-                if source_mode != "reference_model"
-                else [f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"]
+            sources=_unique(
+                [
+                    spot_source,
+                    "covered_interest_parity_formula",
+                    rv_source or "",
+                    "user_inputs_policy_rates" if rates_ready else "",
+                ]
             ),
+            warnings=warnings,
             metadata=(
                 {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
                 if source_mode == "reference_model"
                 else {"data_mode": source_mode}
             ),
         )
+
+
+async def _fxfc_vol_curve(
+    fn: BaseFunction,
+    pair: str,
+    tenors: list[dict[str, Any]],
+    params: dict[str, Any],
+) -> tuple[list[float] | None, str, str | None, str | None]:
+    """Band vol per tenor for FXFC: ``(curve, vol_source, rv_source, warning)``.
+
+    Precedence: an explicit ``vol_annualized`` / ``vol`` input (flat, labelled
+    user_inputs), then live realized vol from the shared ATM term structure.
+    ``curve`` is None when no vol can be sourced honestly.
+    """
+    explicit = params.get("vol_annualized", params.get("vol"))
+    if explicit not in (None, ""):
+        flat = max(0.0001, float(explicit))
+        return [flat for _ in tenors], "user_inputs", None, None
+    if not _truthy(params.get("live", True)):
+        return (
+            None,
+            "none",
+            None,
+            "live=false: realized-vol history not requested; supply vol_annualized to view model bands",
+        )
+    curve, vol_source, _data_mode, rv_source, warning = await _atm_term_structure(
+        fn, pair, tenors, params
+    )
+    if curve is None:
+        return None, "none", None, warning or "realized vol unavailable; no band vol substituted"
+    return curve, vol_source, rv_source, None
+
+
+def _fxfc_headline_vol(tenors: list[dict[str, Any]], curve: list[float] | None) -> float | None:
+    """The 1M band vol (or the first tenor when 1M is not requested), decimal."""
+    if not curve:
+        return None
+    for i, tenor in enumerate(tenors):
+        if str(tenor["label"]).upper() == "1M":
+            return round(curve[i], 6)
+    return round(curve[0], 6)
+
+
+def _fxfc_policy_rate(explicit: Any) -> float | None:
+    """FXFC policy rate: only an explicit input counts (FXFC#2).
+
+    The 2024-06 reference table and its 0.04 generic fallback are not used on
+    the FXFC forward path; a missing rate yields None so the forward is withheld.
+    """
+    if explicit in (None, ""):
+        return None
+    try:
+        value = float(explicit)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _fxfc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _fx_market_open(now: datetime) -> bool:
+    """Approximate spot-FX session: open Sun 22:00 UTC to Fri 22:00 UTC.
+
+    No holiday calendar. A quote fetched outside this window is a last print,
+    not a live market level.
+    """
+    utc = now.astimezone(timezone.utc)
+    weekday = utc.weekday()  # Mon=0 ... Sun=6
+    minutes = utc.hour * 60 + utc.minute
+    if weekday == 5:  # Saturday
+        return False
+    if weekday == 6:  # Sunday: opens at 22:00 UTC
+        return minutes >= 22 * 60
+    if weekday == 4:  # Friday: closes at 22:00 UTC
+        return minutes < 22 * 60
+    return True
+
+
+_FXFC_QUOTE_STALE_AFTER = timedelta(minutes=60)
+
+
+def _fxfc_spot_quote(spot_source: str, quote_info: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Quote-time state of the FXFC spot: provenance, age and a status flag.
+
+    Only a provider-supplied quote time counts as a quote time. A quote without
+    one reports ``quote_time_unavailable`` rather than the fetch time.
+    """
+    unknown: dict[str, Any] = {
+        "spot_quote_time": None,
+        "spot_quote_time_source": None,
+        "spot_quote_age_minutes": None,
+    }
+    if spot_source != "yfinance":
+        return {**unknown, "spot_quote_status": "not_applicable"}
+    ts = quote_info.get("timestamp")
+    if quote_info.get("timestamp_source") != "upstream_market_time" or not isinstance(ts, datetime):
+        return {**unknown, "spot_quote_status": "quote_time_unavailable"}
+    ts = ts.astimezone(timezone.utc)
+    age = max(now.astimezone(timezone.utc) - ts, timedelta(0))
+    if age > _FXFC_QUOTE_STALE_AFTER:
+        status = "stale"
+    elif not _fx_market_open(ts):
+        status = "off_session"
+    else:
+        status = "fresh"
+    return {
+        "spot_quote_time": ts.isoformat(),
+        "spot_quote_time_source": "upstream_market_time",
+        "spot_quote_age_minutes": round(age.total_seconds() / 60, 2),
+        "spot_quote_status": status,
+    }
 
 
 @FunctionRegistry.register
@@ -165,19 +370,32 @@ class FXIPFunction(BaseFunction):
     category = "fx"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        base, quote, pair = _pair_from(instrument, params)
+        parts = _fx_pair_or_none(instrument, params)
+        if parts is None:
+            return _fx_pair_missing_result(self.code, instrument, params)
+        base, quote, pair = parts
+        rate_error = _rate_input_error(params)
+        if rate_error:
+            return _rate_error_result(self.code, instrument, pair, base, quote, rate_error)
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
-        r_base = _rate_for(base, params.get("r_base"))
-        r_quote = _rate_for(quote, params.get("r_quote"))
+        r_base, base_rate_source = _fxip_rate(base, params.get("r_base"))
+        r_quote, quote_rate_source = _fxip_rate(quote, params.get("r_quote"))
+        # FXIP#2 follow-up: with an unlisted currency and no caller rate there
+        # is no honest rate, so forwards and carry are null, not invented.
+        rates_missing = r_base is None or r_quote is None
+        missing_currencies = [c for c, r in ((base, r_base), (quote, r_quote)) if r is None]
+        fwd_1m = None if rates_missing else round(_forward(spot, r_base, r_quote, 1 / 12), 6)
+        fwd_3m = None if rates_missing else round(_forward(spot, r_base, r_quote, 0.25), 6)
+        carry = None if rates_missing else round(r_quote - r_base, 6)
         atm_vol = float(params.get("atm_vol", params.get("vol", 0.0845)))
         rows = [
             {"metric": "spot", "value": round(spot, 6), "unit": f"{quote} per {base}", "source": spot_source},
-            {"metric": "base_rate", "value": r_base, "unit": "decimal annual", "source": "reference_policy_rate"},
-            {"metric": "quote_rate", "value": r_quote, "unit": "decimal annual", "source": "reference_policy_rate"},
-            {"metric": "1m_forward", "value": round(_forward(spot, r_base, r_quote, 1 / 12), 6), "unit": "rate", "source": "covered_interest_parity"},
-            {"metric": "3m_forward", "value": round(_forward(spot, r_base, r_quote, 0.25), 6), "unit": "rate", "source": "covered_interest_parity"},
+            {"metric": "base_rate", "value": r_base, "unit": "decimal annual", "source": base_rate_source},
+            {"metric": "quote_rate", "value": r_quote, "unit": "decimal annual", "source": quote_rate_source},
+            {"metric": "1m_forward", "value": fwd_1m, "unit": "rate", "source": "covered_interest_parity"},
+            {"metric": "3m_forward", "value": fwd_3m, "unit": "rate", "source": "covered_interest_parity"},
             {"metric": "atm_vol_1m_pct", "value": round(atm_vol * 100, 3), "unit": "percent", "source": "reference_vol_assumption"},
-            {"metric": "carry_annualized", "value": round(r_quote - r_base, 6), "unit": "decimal annual", "source": "rate_differential"},
+            {"metric": "carry_annualized", "value": carry, "unit": "decimal annual", "source": "rate_differential"},
         ]
         history, history_source = await _history_rows(self, pair, params)
         data = {
@@ -186,45 +404,90 @@ class FXIPFunction(BaseFunction):
             "quote": quote,
             "spot": round(spot, 6),
             "daily_change_pct": _daily_change(history),
-            "one_month_forward": round(_forward(spot, r_base, r_quote, 1 / 12), 6),
-            "three_month_forward": round(_forward(spot, r_base, r_quote, 0.25), 6),
-            "implied_vol_atm_1m": round(atm_vol * 100, 3),
-            "carry_annualized": round(r_quote - r_base, 6),
+            "one_month_forward": fwd_1m,
+            "three_month_forward": fwd_3m,
+            # FXIP#1: the 1M ATM vol is an assumption (default 8.45 %), not a
+            # market implied vol, so the key says "assumed".
+            "assumed_vol_atm_1m_pct": round(atm_vol * 100, 3),
+            "carry_annualized": carry,
             "source_mode": source_mode,
+            "rate_basis": {"base": base_rate_source, "quote": quote_rate_source},
             "rows": rows,
             "history": history,
             "methodology": (
-                "FXIP combines a spot quote, reference policy-rate assumptions, forward levels from covered interest parity, "
-                "and an optional Yahoo/ECB price history. IV is an explicit ATM volatility assumption unless a vendor is configured."
+                "FXIP combines a spot quote, policy-rate inputs, forward levels from covered interest parity, "
+                "and an optional Yahoo/ECB price history. The ATM volatility is an explicit assumption, not a market "
+                "quote. Policy rates are caller inputs or dated reference constants (see rate_basis)."
             ),
             "field_dictionary": {
                 "daily_change_pct": "Last history close change versus previous close, in percent; null when no usable history exists.",
                 "one_month_forward": "1M covered-interest-parity forward.",
                 "three_month_forward": "3M covered-interest-parity forward.",
-                "implied_vol_atm_1m": "ATM volatility assumption for 1M, in percent.",
-                "carry_annualized": "quote_rate - base_rate.",
+                "assumed_vol_atm_1m_pct": "ASSUMED ATM volatility for 1M, in percent. Not a market implied vol.",
+                "carry_annualized": "quote_rate - base_rate (positive means a long-base holder pays; negative means a long-base holder earns).",
+                "rate_basis": f"Per-rate source: user_input, or reference_policy_rate_{_REFERENCE_AS_OF} (dated reference constant, not current).",
             },
         }
-        sources = [spot_source, "covered_interest_parity_formula", "reference_policy_rate"]
+        sources = [spot_source, "covered_interest_parity_formula"]
+        if any(src.startswith("reference_policy_rate") for src in (base_rate_source, quote_rate_source)):
+            sources.append("reference_policy_rate")
         if history_source:
             sources.append(history_source)
+        warnings: list[str] = []
+        # manual_input + any live_* counts as a real spot; warn only for
+        # the static reference_model fallback.
+        if source_mode == "reference_model":
+            warnings.append(f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})")
+        # FXIP#2: the policy rates are 2024-06 reference constants unless the
+        # caller supplied them; forwards and carry inherit that vintage.
+        # Per currency: a caller-supplied leg is not a reference constant, so the
+        # warning names only the leg(s) that actually fell back to the table.
+        reference_ccys = [
+            ccy
+            for ccy, src in ((base, base_rate_source), (quote, quote_rate_source))
+            if src.startswith("reference_policy_rate")
+        ]
+        if reference_ccys:
+            which = " and ".join(reference_ccys)
+            verb = "are reference constants" if len(reference_ccys) > 1 else "is a reference constant"
+            warnings.append(
+                f"{which} policy rate {verb} (vintage {_REFERENCE_AS_OF}), not current; "
+                "forwards and carry use it"
+            )
+        metadata: dict[str, Any] = (
+            {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
+            if source_mode == "reference_model"
+            else {"data_mode": source_mode}
+        )
+        if rates_missing:
+            # No honest policy rate for an unlisted currency: explicit state,
+            # never a substituted constant.
+            data.update(
+                {
+                    "status": "needs_input",
+                    "data_mode": "explicit_unavailable",
+                    "reason": (
+                        "No policy rate for "
+                        + ", ".join(missing_currencies)
+                        + f" in the {_REFERENCE_AS_OF} reference table; forwards and carry are unavailable."
+                    ),
+                    "next_actions": [
+                        "Supply r_base and/or r_quote as decimal annual rates (e.g. 0.04) for the missing currency.",
+                        "Forwards and carry are computed once both policy rates are known.",
+                    ],
+                }
+            )
+            warnings.append(
+                "no reference policy rate for " + ", ".join(missing_currencies) + "; forwards and carry are null"
+            )
+            metadata = {"data_mode": "explicit_unavailable"}
         return FunctionResult(
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
             sources=_unique(sources),
-            # manual_input + any live_* counts as a real spot; warn only for
-            # the static reference_model fallback.
-            warnings=(
-                []
-                if source_mode != "reference_model"
-                else [f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"]
-            ),
-            metadata=(
-                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
-                if source_mode == "reference_model"
-                else {"data_mode": source_mode}
-            ),
+            warnings=warnings,
+            metadata=metadata,
         )
 
 
@@ -240,15 +503,15 @@ class WCRSFunction(BaseFunction):
         bases = _currency_list(params.get("bases") or params.get("base"), default=_DEFAULT_CURRENCIES[:5])
         quotes = _currency_list(params.get("quotes"), default=_DEFAULT_CURRENCIES)
         history_budget = max(0.5, min(3.0, float(params.get("history_timeout", 2.5))))
-        # History gate mirrors the matrix live gate: an explicit ``live=false``
-        # turns both off, so a pure reference matrix never mixes in live
-        # change values.
-        live_enabled = _truthy(params.get("live_fx") or params.get("live", True))
+        # History gate mirrors the matrix live gate (_wcrs_fx_live): an explicit
+        # ``live_fx=false``, or ``live=false`` when live_fx is absent, turns both
+        # off, so a pure reference matrix never mixes in live change values.
+        live_enabled = _wcrs_fx_live(params)
         if live_enabled:
             # The per-currency history legs run concurrently with the matrix
             # fetch so the bounded history budget (max 3s) cannot stack on
             # top of the matrix latency.
-            (matrix, source_mode, sources), (legs, leg_sources) = await asyncio.gather(
+            (matrix, source_mode, sources, as_of), (legs, leg_sources) = await asyncio.gather(
                 _cross_matrix(self, bases, quotes, params),
                 _usd_history_legs(
                     self,
@@ -258,7 +521,7 @@ class WCRSFunction(BaseFunction):
                 ),
             )
         else:
-            matrix, source_mode, sources = await _cross_matrix(self, bases, quotes, params)
+            matrix, source_mode, sources, as_of = await _cross_matrix(self, bases, quotes, params)
             legs, leg_sources = {}, {}
         rows = []
         heatmap = []
@@ -268,9 +531,9 @@ class WCRSFunction(BaseFunction):
                 heatmap.append({"base": base, "quote": quote, "pair": f"{base}{quote}", "rate": rate})
                 if base == quote or rate <= 0:
                     continue
-                pip_factor = 100 if quote == "JPY" else 10000
-                bid = rate * 0.9999
-                ask = rate * 1.0001
+                # No keyless bid/ask source is wired, so bid, ask and spread are
+                # null. A constructed spread (mid * 0.9999 / 1.0001) is the same
+                # 0.02% for every pair and must never be shown as a market spread.
                 # Real daily change from the derived cross history; null when
                 # no usable history exists — never the old placeholder 0.0.
                 change_pct: float | None = None
@@ -285,11 +548,12 @@ class WCRSFunction(BaseFunction):
                     "quote": quote,
                     "pair": f"{base}{quote}",
                     "rate": round(rate, 8),
-                    "bid": round(bid, 8),
-                    "ask": round(ask, 8),
-                    "spread_pips": round((ask - bid) * pip_factor, 3),
+                    "bid": None,
+                    "ask": None,
+                    "spread_pips": None,
                     "change_pct": change_pct,
                     "source_mode": source_mode,
+                    "as_of": as_of,
                 }
                 if history:
                     # UI convention (WCRS/GLCO panes): per-row ``history`` is
@@ -308,47 +572,58 @@ class WCRSFunction(BaseFunction):
             "rows": rows,
             "surface": heatmap,
             "source_mode": source_mode,
+            "as_of": as_of,
             "methodology": (
                 "WCRS builds a cross-rate matrix from live exchangerate.host quotes when available, "
-                "else from keyless ECB reference rates (Frankfurter). "
-                "If both fail, it falls back to a labelled reference matrix; bid/ask are display spreads around the mid. "
+                "else from the keyless ECB daily reference fix (Frankfurter), which is delayed to the "
+                "fix date in as_of and is never presented as live. "
+                "If both fail, it falls back to a labelled reference matrix (vintage in as_of). "
                 "The daily change % and the per-row history are derived from keyless daily history legs "
                 "(one USD leg per currency, cross = leg(quote)/leg(base)); when history is unavailable the "
                 "change is null, never a placeholder 0.00%."
             ),
             "field_dictionary": {
                 "rate": "Mid cross rate: quote currency units per one base currency unit.",
-                "bid": "Display bid calculated as mid * 0.9999.",
-                "ask": "Display ask calculated as mid * 1.0001.",
-                "spread_pips": "Ask-bid spread converted to pips using JPY-aware pip sizing.",
+                "bid": "Real bid is null: no keyless bid/ask source is wired, so no bid is invented.",
+                "ask": "Real ask is null: no keyless bid/ask source is wired, so no ask is invented.",
+                "spread_pips": "Real spread in pips is null for the same reason; it is never constructed from the mid.",
                 "change_pct": "Real daily percent change of the cross rate from the last two daily closes; null when no history is available.",
                 "history": "Numeric daily cross-close series (ascending) for the sparkline; absent when history is unavailable.",
                 "history_source": "Provider tier(s) the daily history legs came from (yfinance / ecb).",
-                "source_mode": "live_exchangerate_host, live_official (Frankfurter/ECB), or reference_cross_rate_matrix.",
+                "source_mode": "live_exchangerate_host, official_daily_fix (ECB daily reference fix, dated by as_of), or reference_cross_rate_matrix.",
+                "as_of": "Date of the rates: the ECB fix date for official_daily_fix, the stamped vintage for the reference matrix, null for live quotes without a provider timestamp.",
             },
         }
-        warnings = (
-            []
-            if source_mode.startswith("live_")
-            else [f"live cross-rate provider unavailable; using labelled reference matrix (vintage {_REFERENCE_AS_OF})"]
-        )
+        if source_mode.startswith("live_"):
+            warnings: list[str] = []
+            metadata: dict[str, Any] = {"data_mode": source_mode}
+        elif source_mode == "official_daily_fix":
+            warnings = [
+                "live cross-rate provider unavailable; showing the ECB daily reference fix "
+                f"dated {as_of or 'unknown'} (delayed, not live)"
+            ]
+            metadata = {"data_mode": "delayed_reference", "as_of": as_of, "reference_as_of": as_of}
+        else:
+            warnings = [f"live cross-rate provider unavailable; using labelled reference matrix (vintage {_REFERENCE_AS_OF})"]
+            metadata = {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
         return FunctionResult(
             code=self.code,
             instrument=None,
             data=data,
             sources=sources,
             warnings=warnings,
-            metadata=(
-                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
-                if not source_mode.startswith("live_")
-                else {"data_mode": source_mode}
-            ),
+            metadata=metadata,
         )
 
 
 @FunctionRegistry.register
 class FRDFunction(BaseFunction):
-    """FRD - Forward rates via covered interest parity."""
+    """FRD - Forward rates via covered interest parity.
+
+    Policy-rate legs come from keyless FRED series when live or from caller input;
+    a leg with neither returns provider_unavailable, never a stale constant (FRD#1). Manifest input names
+    are honoured (FRD#2). Day count and forward-point units are stated (FRD#4).
+    """
 
     code = "FRD"
     name = "FX Forward Rates"
@@ -356,15 +631,77 @@ class FRDFunction(BaseFunction):
     category = "fx"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        base, quote, pair = _pair_from(instrument, params)
+        params = _frd_canonical_params(params)
+        resolved = _frd_pair(instrument, params)
+        if resolved is None:
+            return _frd_pair_error(self.code, instrument, params)
+        base, quote, pair = resolved
+        rate_error = _rate_input_error(params)
+        if rate_error:
+            return _rate_error_result(self.code, instrument, pair, base, quote, rate_error, day_count=_FRD_DAY_COUNT)
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
-        r_base = _rate_for(base, params.get("r_base"))
-        r_quote = _rate_for(quote, params.get("r_quote"))
+        base_leg, quote_leg = await asyncio.gather(
+            _frd_policy_rate(self, base, params.get("r_base"), params),
+            _frd_policy_rate(self, quote, params.get("r_quote"), params),
+        )
+        rate_sources = {"base": base_leg["source"], "quote": quote_leg["source"]}
+        rate_as_of = {"base": base_leg["as_of"], "quote": quote_leg["as_of"]}
+        rate_warnings = [leg["warning"] for leg in (base_leg, quote_leg) if leg["warning"]]
+        spot_warnings = (
+            []
+            if source_mode == "live_yfinance_quote"
+            else [
+                f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"
+                if source_mode == "reference_model"
+                else f"spot is {source_mode}, not a live exchange quote"
+            ]
+        )
+        warnings = spot_warnings + rate_warnings
+        sources = _unique(
+            [spot_source, "covered_interest_parity_formula", base_leg["source"], quote_leg["source"]]
+        )
+        metadata = (
+            {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
+            if source_mode == "reference_model"
+            else {"data_mode": source_mode}
+        )
+        if base_leg["rate"] is None or quote_leg["rate"] is None:
+            # No honest rate for a leg: return an explicit state, never a made-up rate.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "a currency leg has no caller-supplied rate and no live policy rate from FRED; no forward computed",
+                    "next_actions": [
+                        "Pass the policy rates explicitly as r_base and r_quote (decimal, e.g. 0.035 for 3.5%) to compute a forward.",
+                        "Retry when the FRED policy-rate series (DFF, ECBDFR and the other central bank series) are reachable.",
+                    ],
+                    "pair": pair,
+                    "base": base,
+                    "quote": quote,
+                    "S": round(spot, 6),
+                    "rows": [],
+                    "curve": [],
+                    "rate_sources": rate_sources,
+                    "rate_as_of": rate_as_of,
+                    "day_count": _FRD_DAY_COUNT,
+                },
+                sources=sources,
+                warnings=warnings,
+                metadata=metadata,
+            )
+        r_base = float(base_leg["rate"])
+        r_quote = float(quote_leg["rate"])
         tenors = _parse_tenors(params.get("tenors"), default=("1W", "1M", "3M", "6M", "1Y"))
+        pip_factor = 100.0 if quote == "JPY" else 10000.0
         rows = []
         for tenor in tenors:
             t = tenor["years"]
-            fwd = _forward(spot, r_base, r_quote, t)
+            fwd = _forward(spot, r_base, r_quote, t, _FRD_DAY_COUNT)
+            # Annualized carry implied by the forward, on the same ACT/360 accrual
+            # the forward uses: (F/S - 1) / (T x 365/360) x 100, in percent.
+            carry_pct = (fwd / spot - 1.0) / (t * 365.0 / 360.0) * 100.0 if spot else None
             rows.append(
                 {
                     "pair": pair,
@@ -373,55 +710,227 @@ class FRDFunction(BaseFunction):
                     "spot": round(spot, 6),
                     "forward": round(fwd, 6),
                     "forward_points": round(fwd - spot, 6),
+                    "forward_points_pips": round((fwd - spot) * pip_factor, 4),
+                    "implied_carry": round(carry_pct, 6) if carry_pct is not None else None,
                     "base_rate": r_base,
                     "quote_rate": r_quote,
                     "source_mode": source_mode,
                 }
             )
+        # Headline tenor: the 3M row when requested, else the last one. Every
+        # top-level figure below comes from this same row, so they agree.
+        headline = rows[2] if len(rows) > 2 else rows[-1]
         data = {
             "pair": pair,
             "base": base,
             "quote": quote,
             "S": round(spot, 6),
-            "F": rows[2]["forward"] if len(rows) > 2 else rows[-1]["forward"],
+            "spot": round(spot, 6),
+            "F": headline["forward"],
+            "forward_rate": headline["forward"],
+            "tenor": headline["tenor"],
+            "forward_points": headline["forward_points"],
+            "implied_carry": headline["implied_carry"],
+            "data_mode": source_mode,
+            "as_of": datetime.now(timezone.utc).isoformat(),
             "r_base": r_base,
             "r_quote": r_quote,
-            "T": rows[2]["tenor_years"] if len(rows) > 2 else rows[-1]["tenor_years"],
+            "rate_sources": rate_sources,
+            "rate_as_of": rate_as_of,
+            "rate_units": "decimal annual",
+            "T": headline["tenor_years"],
+            "day_count": _FRD_DAY_COUNT,
+            "forward_points_unit": (
+                "price (quote currency per base); forward_points_pips gives pips "
+                "(x10000, x100 for a JPY quote)"
+            ),
             "rows": rows,
             "curve": rows,
             "methodology": (
                 "Covered interest parity: F = S * (1 + r_quote * T) / (1 + r_base * T). "
-                "S is quote currency per base currency. Rates are annual decimals and T is year fraction."
+                "S is quote currency per base currency. Rates are annual decimals; T is the "
+                "tenor year fraction on ACT/360 (house convention for both legs). Each rate "
+                "comes from a live FRED series (rate_sources shows fred:<series>) or from the "
+                "caller; a leg with neither returns status provider_unavailable and no forward."
             ),
             "field_dictionary": {
                 "S": "Spot rate, quote currency per one base currency.",
                 "F": "Forward rate for the highlighted/default tenor.",
-                "r_base": "Annual risk-free/reference rate for the base currency.",
-                "r_quote": "Annual risk-free/reference rate for the quote currency.",
+                "r_base": "Annual policy/overnight reference rate for the base currency.",
+                "r_quote": "Annual policy/overnight reference rate for the quote currency.",
+                "rate_sources": (
+                    "Source of each rate leg: caller_input or fred:<series id>. "
+                    "A leg with neither gives provider_unavailable (source 'unavailable')."
+                ),
                 "T": "Tenor in years.",
-                "forward_points": "Forward - spot.",
+                "forward_rate": "Forward for the headline tenor (same value as F).",
+                "forward_points": "Forward - spot, in price units (quote currency per base), headline tenor.",
+                "forward_points_pips": "(Forward - spot) in pips: x10000, or x100 for a JPY quote.",
+                "implied_carry": "Annualized carry implied by the forward, in percent: (F/S - 1) / (T x 365/360) x 100.",
+                "tenor": "Headline tenor label (the row behind F).",
+                "data_mode": "Spot source mode for this forward (live_yfinance_quote, manual_input, reference_model, ...).",
+                "as_of": "UTC time this forward was computed (the spot's own time is in spot_source).",
+                "day_count": "Day-count convention applied to both rate legs.",
             },
         }
         return FunctionResult(
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
-            sources=[spot_source, "covered_interest_parity_formula", "reference_policy_rate"],
-            warnings=(
-                []
-                if source_mode == "live_yfinance_quote"
-                else [
-                    f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"
-                    if source_mode == "reference_model"
-                    else f"spot is {source_mode}, not a live exchange quote"
-                ]
-            ),
-            metadata=(
-                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
-                if source_mode == "reference_model"
-                else {"data_mode": source_mode}
-            ),
+            sources=sources,
+            warnings=warnings,
+            metadata=metadata,
         )
+
+
+# WB1-G11 FRD-only helpers. The shared _rate_for / _forward helpers
+# are deliberately left unchanged because FXIP and FXFC use them.
+_FRD_DAY_COUNT = "ACT/360"
+_FRD_POLICY_LOOKBACK_DAYS = 400
+_FRD_FETCH_TIMEOUT_S = 6.0
+# Keyless FRED series for each currency's policy / overnight reference rate.
+# Values are percent and are converted to decimals. A series with no
+# observation inside the lookback window leaves that leg without a rate (FRD#1).
+_FRD_POLICY_SERIES: dict[str, str] = {
+    "USD": "DFF",  # effective federal funds rate, daily
+    "EUR": "ECBDFR",  # ECB deposit facility rate, daily
+    "GBP": "IUDSOIA",  # SONIA overnight rate, daily
+    "JPY": "IRSTCI01JPM156N",  # call/interbank rate, monthly (OECD via FRED)
+    "AUD": "IRSTCI01AUM156N",  # call rate, monthly (OECD via FRED)
+    "CAD": "IRSTCI01CAM156N",  # call rate, monthly (OECD via FRED)
+    "CHF": "IRSTCI01CHM156N",  # call rate, monthly (last observation 2024-03)
+}
+
+
+def _frd_canonical_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Map manifest input names onto the handler's parameter names (FRD#2)."""
+    out = dict(params)
+    if out.get("r_base") in (None, "") and out.get("r_dom") not in (None, ""):
+        out["r_base"] = out["r_dom"]
+    if out.get("r_quote") in (None, "") and out.get("r_for") not in (None, ""):
+        out["r_quote"] = out["r_for"]
+    if out.get("spot") in (None, "") and out.get("spot_override") not in (None, ""):
+        out["spot"] = out["spot_override"]
+    if out.get("tenors") in (None, "") and out.get("tenor") not in (None, ""):
+        out["tenors"] = out["tenor"]
+    return out
+
+
+def _ccy_code(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    return text if len(text) == 3 and text.isalpha() else None
+
+
+def _strict_pair(raw: str) -> tuple[str, str, str] | None:
+    """A BASEQUOTE pair, or None. Unlike _normalize_pair there is no default (XCON-5-RQ)."""
+    value = raw.upper().strip().replace("/", "").replace("-", "").replace(" ", "").replace("=X", "")
+    if len(value) >= 6 and value[:3].isalpha() and value[3:6].isalpha() and value[:3] != value[3:6]:
+        return value[:3], value[3:6], value[:6]
+    return None
+
+
+def _frd_pair(instrument: Instrument | None, params: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Strict FRD pair precedence: explicit pair, then base+quote, then symbol/instrument.
+
+    XCON-5-RQ: FRD never substitutes a default pair. None means the inputs do not
+    name a valid pair, and the caller returns an explicit state instead of pricing one.
+    """
+    if params.get("pair") not in (None, ""):
+        return _strict_pair(str(params["pair"]))
+    if params.get("base") not in (None, "") or params.get("quote") not in (None, ""):
+        base_ccy = _ccy_code(params.get("base"))
+        quote_ccy = _ccy_code(params.get("quote"))
+        if base_ccy and quote_ccy and base_ccy != quote_ccy:
+            return base_ccy, quote_ccy, base_ccy + quote_ccy
+        return None
+    raw = params.get("symbol") or (instrument.symbol if instrument else None)
+    if raw in (None, ""):
+        return None
+    return _strict_pair(str(raw))
+
+
+def _frd_pair_error(
+    code: str, instrument: Instrument | None, params: dict[str, Any]
+) -> FunctionResult:
+    """Explicit state for an FRD call with no valid pair: needs_input if nothing was
+    given, input_error if a pair or currency was given but is not usable."""
+    supplied = any(params.get(key) not in (None, "") for key in ("pair", "base", "quote", "symbol"))
+    reason = (
+        "FRD needs a pair: give base and quote as 3-letter ISO codes (e.g. EUR and USD) "
+        "or pair as BASEQUOTE (e.g. EURUSD). No default pair is assumed."
+    )
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error" if supplied else "needs_input",
+            "reason": reason,
+            "pair": None,
+            "base": None,
+            "quote": None,
+            "rows": [],
+            "curve": [],
+            "forecast": [],
+            "next_actions": ["Enter base and quote (e.g. EUR and USD), or pair (e.g. EURUSD)."],
+            "day_count": _FRD_DAY_COUNT,
+        },
+        sources=["covered_interest_parity_formula"],
+        warnings=[reason],
+        metadata={"data_mode": "explicit_unavailable"},
+    )
+
+
+async def _frd_policy_rate(
+    fn: BaseFunction, currency: str, explicit: Any, params: dict[str, Any]
+) -> dict[str, Any]:
+    """Resolve one rate leg: caller input, then live keyless FRED, else no rate.
+
+    Returns ``{"rate", "source", "as_of", "warning"}``. ``rate`` is None whenever
+    there is neither a caller input nor a live FRED observation.
+    """
+    ccy = currency.upper()
+    if explicit not in (None, ""):
+        try:
+            value = float(explicit)
+        except (TypeError, ValueError):
+            value = math.nan
+        if math.isfinite(value):
+            return {"rate": value, "source": "caller_input", "as_of": None, "warning": None}
+    series_id = _FRD_POLICY_SERIES.get(ccy)
+    if series_id and _truthy(params.get("live", True)):
+        try:
+            frame = await asyncio.wait_for(
+                fetch_fred_csv_series(
+                    series_id,
+                    client=getattr(fn, "_http_client", None),
+                    timeout=_FRD_FETCH_TIMEOUT_S,
+                    lookback_days=_FRD_POLICY_LOOKBACK_DAYS,
+                ),
+                timeout=_FRD_FETCH_TIMEOUT_S + 1,
+            )
+            if frame is not None and not frame.empty:
+                value = float(frame["value"].iloc[-1])
+                if math.isfinite(value) and -5.0 <= value <= 50.0:
+                    return {
+                        "rate": value / 100.0,
+                        "source": f"fred:{series_id}",
+                        "as_of": frame.index[-1].strftime("%Y-%m-%d"),
+                        "warning": None,
+                    }
+        except Exception:  # noqa: BLE001 - any fetch/parse failure means no live rate
+            pass
+    # DATA POLICY (FRD#1): no live series and no caller input means no rate. The
+    # 2024-06 constants in _REFERENCE_RATES are stale and are never used as current
+    # rates here; the caller gets provider_unavailable instead of a forward.
+    return {
+        "rate": None,
+        "source": "unavailable",
+        "as_of": None,
+        "warning": (
+            f"{ccy} policy rate unavailable: no live FRED series and no caller-supplied rate "
+            f"(the {_REFERENCE_AS_OF} reference constant is not used as a current rate)"
+        ),
+    }
 
 
 @FunctionRegistry.register
@@ -442,9 +951,12 @@ class OVDVFunction(BaseFunction):
     category = "fx"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        base, quote, pair = _pair_from(instrument, params)
+        parts = _fx_pair_or_none(instrument, params)
+        if parts is None:
+            return _fx_pair_missing_result(self.code, instrument, params)
+        base, quote, pair = parts
         tenors = _parse_tenors(params.get("tenors"), default=("1W", "1M", "3M", "6M", "1Y"))
-        deltas = ["10P", "25P", "ATM", "25C", "10C"]
+        deltas =["10P", "25P", "ATM", "25C", "10C"]
 
         # --- anchor the ATM curve to live realized vol ------------------
         atm_curve, vol_source, data_mode, rv_source, rv_warning = await _atm_term_structure(
@@ -468,6 +980,7 @@ class OVDVFunction(BaseFunction):
         surface = []
         series = []
         atm_1m: float | None = None
+        wing_floor_cells: list[str] = []
         for i, tenor in enumerate(tenors):
             label = tenor["label"]
             term = atm_curve[i]
@@ -481,6 +994,9 @@ class OVDVFunction(BaseFunction):
                         "25C": bf_25 + rr_25 / 2,
                         "10C": bf_25 + 0.5 * abs(rr_25) + rr_25 / 2,
                     }.get(delta, 0.0)
+                if term + wing < 0.0001:
+                    # The quoted wing pushes this cell to or below the vol floor.
+                    wing_floor_cells.append(f"{label} {delta}")
                 vol = max(0.0001, term + wing)
                 surface.append(
                     {
@@ -509,6 +1025,22 @@ class OVDVFunction(BaseFunction):
         warnings: list[str] = []
         if rv_warning:
             warnings.append(rv_warning)
+        if wing_floor_cells:
+            # OVDV#2 residual: the 0.01 vol floor hides a quoted wing that is
+            # non-positive, so the surface 25C-25P no longer equals the headline RR.
+            warnings.append(
+                f"quoted risk reversal/butterfly push {', '.join(wing_floor_cells)} to or below the "
+                "0.01 vol floor; those surface cells show the floor value, so the surface 25C minus 25P "
+                "does not equal the headline risk_reversal_25d_pct"
+            )
+        if vol_source == "live_realized_vol":
+            # OVDV#5: a managed or pegged leg makes realized vol a managed-rate statistic.
+            managed_legs = [c for c in (base, quote) if c.upper() in _OVDV_MANAGED_CCYS]
+            if managed_legs:
+                warnings.append(
+                    f"{pair} involves managed or pegged currency {', '.join(managed_legs)}: its realized "
+                    "vol reflects a managed rate path, not an option-market level"
+                )
 
         data = {
             "pair": pair,
@@ -582,21 +1114,104 @@ class OVDVFunction(BaseFunction):
         )
 
 
+def _rate_input_error(params: dict[str, Any]) -> str | None:
+    """XCON-6: refuse a percent-scale explicit rate (3.5 for 3.5 %) on any FX pane."""
+    return decimal_rate_error("r_base", params.get("r_base")) or decimal_rate_error(
+        "r_quote", params.get("r_quote")
+    )
+
+
+def _rate_error_result(
+    code: str,
+    instrument: Instrument | None,
+    pair: str,
+    base: str,
+    quote: str,
+    reason: str,
+    day_count: str | None = None,
+) -> FunctionResult:
+    """Explicit input_error state: no spot fetch, no forward, no fabricated level."""
+    data: dict[str, Any] = {
+        "status": "input_error",
+        "reason": reason,
+        "pair": pair,
+        "base": base,
+        "quote": quote,
+        "rows": [],
+        "curve": [],
+        "forecast": [],
+        "forward_points": None,
+        "forecast_value": None,
+        "one_month_forward": None,
+        "three_month_forward": None,
+        "carry_annualized": None,
+        "next_actions": ["Enter r_base and r_quote as decimal annual rates (3.5 % = 0.035)."],
+    }
+    if day_count is not None:
+        data["day_count"] = day_count
+    return FunctionResult(
+        code=code,
+        instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
+        data=data,
+        sources=["covered_interest_parity_formula"],
+        warnings=[reason],
+        metadata={"data_mode": "explicit_unavailable"},
+    )
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _pair_from(instrument: Instrument | None, params: dict[str, Any]) -> tuple[str, str, str]:
-    raw = (
-        params.get("pair")
-        or params.get("symbol")
-        or (instrument.symbol if instrument else None)
-        or "EURUSD"
+def _fx_raw_pair(instrument: Instrument | None, params: dict[str, Any]) -> str | None:
+    """The caller's pair text: explicit pair, then symbol, then the instrument symbol."""
+    raw = params.get("pair") or params.get("symbol") or (instrument.symbol if instrument else None)
+    return None if raw in (None, "") else str(raw)
+
+
+def _fx_pair_or_none(instrument: Instrument | None, params: dict[str, Any]) -> tuple[str, str, str] | None:
+    """FXFC, FXIP and OVDV pair, or None. There is no default pair (DATA POLICY).
+
+    Unlike the shared _normalize_pair, a missing or malformed pair is not replaced
+    with EURUSD; the caller returns an explicit state instead.
+    """
+    raw = _fx_raw_pair(instrument, params)
+    return None if raw is None else _strict_pair(raw)
+
+
+def _fx_pair_missing_result(
+    code: str, instrument: Instrument | None, params: dict[str, Any]
+) -> FunctionResult:
+    """Explicit state for a call with no valid BASEQUOTE pair: needs_input when nothing
+    was given, input_error when a pair or symbol was given but is not a currency pair."""
+    raw = _fx_raw_pair(instrument, params)
+    reason = (
+        "A BASEQUOTE pair is needed (e.g. EURUSD, USDJPY). No default pair is assumed."
+        if raw is None
+        else f"{raw!r} is not a BASEQUOTE currency pair (e.g. EURUSD). No default pair is assumed."
     )
-    pair = _normalize_pair(str(raw))
-    return pair[:3], pair[3:6], pair
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "needs_input" if raw is None else "input_error",
+            "reason": reason,
+            "pair": None,
+            "base": None,
+            "quote": None,
+            "rows": [],
+            "curve": [],
+            "forecast": [],
+            "surface": [],
+            "next_actions": ["Enter pair as BASEQUOTE, e.g. EURUSD."],
+            "data_mode": "explicit_unavailable",
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"data_mode": "explicit_unavailable"},
+    )
 
 
 def _normalize_pair(raw: str) -> str:
@@ -616,7 +1231,40 @@ def _rate_for(currency: str, explicit: Any = None) -> float:
     return float(_REFERENCE_RATES.get(currency.upper(), 0.04))
 
 
-async def _resolve_spot(fn: BaseFunction, pair: str, params: dict[str, Any]) -> tuple[float, str, str]:
+def _fxip_rate(currency: str, explicit: Any = None) -> tuple[float | None, str]:
+    """FXIP policy rate plus its provenance (FXIP#2).
+
+    A caller-supplied rate is ``user_input``. Otherwise the value is the dated
+    2024-06 reference constant, and the source label carries that vintage so
+    the pane never presents it as a current policy rate. A currency missing
+    from the reference table returns ``(None, "unavailable_no_reference_rate")``
+    rather than an invented value. Kept separate from the shared ``_rate_for``
+    so other FX functions keep their behaviour.
+    """
+    if explicit not in (None, ""):
+        try:
+            return float(explicit), "user_input"
+        except Exception:
+            pass
+    key = currency.upper()
+    if key not in _REFERENCE_RATES:
+        return None, "unavailable_no_reference_rate"
+    return float(_REFERENCE_RATES[key]), f"reference_policy_rate_{_REFERENCE_AS_OF}"
+
+
+async def _resolve_spot(
+    fn: BaseFunction,
+    pair: str,
+    params: dict[str, Any],
+    quote_info: dict[str, Any] | None = None,
+) -> tuple[float, str, str]:
+    """Spot resolver shared by the FX functions.
+
+    ``quote_info`` is an optional output dict. When the yfinance quote is used,
+    it receives the quote's ``timestamp`` and ``timestamp_source`` so a caller
+    can tell an upstream quote time from a fetch time. Other callers pass
+    nothing and behave exactly as before.
+    """
     if params.get("spot") not in (None, ""):
         return float(params["spot"]), "manual_input", "manual_input"
     instrument = Instrument(symbol=pair, asset_class=AssetClass.FX)
@@ -635,6 +1283,9 @@ async def _resolve_spot(fn: BaseFunction, pair: str, params: dict[str, Any]) -> 
             )
             last = getattr(quote, "last", None)
             if last:
+                if quote_info is not None:
+                    quote_info["timestamp"] = getattr(quote, "timestamp", None)
+                    quote_info["timestamp_source"] = getattr(quote, "timestamp_source", None)
                 return float(last), "yfinance", "live_yfinance_quote"
         except Exception:
             pass
@@ -692,11 +1343,25 @@ async def _atm_term_structure(
     returns = _log_returns(closes)
     if len(returns) >= 4:
         curve: list[float] = []
+        window_notes: list[str] = []
         for tenor in tenors:
             window = _TENOR_WINDOW_DAYS.get(tenor["label"].upper())
             if window is None:
                 window = max(5, min(252, int(round(tenor["years"] * 252))))
             win = returns[-window:] if len(returns) >= window else returns
+            if len(win) < window:
+                # OVDV#4: history shorter than the tenor window. The value is still
+                # live realized vol, but over fewer days than its label implies.
+                window_notes.append(
+                    f"{tenor['label']} realized vol uses {len(win)} of the {window} daily returns "
+                    "requested (history too short for that window)"
+                )
+            if len(win) < _OVDV_MIN_RELIABLE_RETURNS:
+                # OVDV#5: e.g. 1W rests on 5 returns, which is a noisy estimate.
+                window_notes.append(
+                    f"{tenor['label']} realized vol rests on only {len(win)} daily returns; "
+                    "the estimate is statistically weak"
+                )
             atm = _annualized_vol(win)
             if atm is None or atm <= 0:
                 # Never swap a single tenor for a constant: the whole curve is unavailable.
@@ -709,7 +1374,7 @@ async def _atm_term_structure(
                     "no reference vol is substituted",
                 )
             curve.append(atm)
-        return curve, "live_realized_vol", "delayed_reference", "yfinance", None
+        return curve, "live_realized_vol", "delayed_reference", "yfinance", ("; ".join(window_notes) or None)
 
     return (
         None,
@@ -826,7 +1491,8 @@ def _annualized_vol(returns: list[float]) -> float | None:
     if n < 2:
         return None
     mean = sum(returns) / n
-    var = sum((r - mean) ** 2 for r in returns) / n  # population stdev
+    # Sample (n-1) variance, the same estimator as portfolio/greeks, corr and anr (XCON-11).
+    var = sum((r - mean) ** 2 for r in returns) / (n - 1)
     return math.sqrt(var) * _FX_ANNUALIZATION
 
 
@@ -1069,13 +1735,29 @@ def _tenor_to_years(label: str) -> float:
         return 0.0
 
 
+def _wcrs_fx_live(params: dict[str, Any]) -> bool:
+    """WCRS live-FX gate: an explicit ``live_fx`` (true or false) wins.
+
+    Only when ``live_fx`` is absent does the generic ``live`` flag (default
+    on) decide. The old ``_truthy(params.get("live_fx") or params.get("live",
+    True))`` turned an explicit ``live_fx=false`` into True, so the opt-out
+    was silently ignored.
+    """
+    raw = params.get("live_fx")
+    if raw is None or raw == "":
+        raw = params.get("live", True)
+    return _truthy(raw)
+
+
 async def _cross_matrix(
     fn: BaseFunction,
     bases: list[str],
     quotes: list[str],
     params: dict[str, Any],
-) -> tuple[dict[str, dict[str, float]], str, list[str]]:
-    if _truthy(params.get("live", True)) and fn.deps.exchangerate_host:
+) -> tuple[dict[str, dict[str, float]], str, list[str], str | None]:
+    """Returns ``(matrix, source_mode, sources, as_of)``; ``as_of`` is the date
+    the rates belong to (None when the provider gives no timestamp)."""
+    if _truthy(params.get("live", True)) and _wcrs_fx_live(params) and fn.deps.exchangerate_host:
         timeout = float(params.get("timeout", 4))
 
         async def fetch_base(base: str) -> tuple[str, dict[str, float] | None]:
@@ -1095,21 +1777,25 @@ async def _cross_matrix(
         results = await asyncio.gather(*(fetch_base(base) for base in bases))
         live_rows = {base: row for base, row in results if row}
         if len(live_rows) == len(bases):
-            return live_rows, "live_exchangerate_host", ["exchangerate_host"]
+            return live_rows, "live_exchangerate_host", ["exchangerate_host"], None
     # H-4 de-staling (2026-09-09): keyless ECB reference rates (Frankfurter)
     # bridge the gap between the keyed exchangerate.host tier and the
     # stamped reference matrix. All-or-nothing across bases AND quotes — a
     # currency Frankfurter does not carry disables the tier, so no cell can
     # mix live and seeded levels under a live label.
-    # R3 L-4: same gate expression as the spot tier — `live=false` turns the
-    # tier off, `live_fx=true` alone opts in, default on.
-    if _truthy(params.get("live_fx") or params.get("live", True)):
+    # Gate: _wcrs_fx_live. An explicit `live_fx` (true or false) wins; with
+    # `live_fx` absent the generic `live` flag (default on) decides. The spot
+    # tier in _resolve_spot still uses the older expression and is owned by
+    # another group.
+    if _wcrs_fx_live(params):
         timeout = float(params.get("timeout", 4))
 
-        async def fetch_base_frankfurter(base: str) -> tuple[str, dict[str, float] | None]:
+        async def fetch_base_frankfurter(
+            base: str,
+        ) -> tuple[str, dict[str, float] | None, str | None]:
             try:
-                rates = await asyncio.wait_for(
-                    fetch_frankfurter_rates(
+                rates, as_of = await asyncio.wait_for(
+                    fetch_frankfurter_rates_dated(
                         base,
                         quotes,
                         timeout=timeout,
@@ -1118,19 +1804,24 @@ async def _cross_matrix(
                     timeout=timeout + 1,
                 )
             except Exception:
-                return base, None
+                return base, None, None
             if not rates:
-                return base, None
+                return base, None, None
             if any(q != base and q not in rates for q in quotes):
-                return base, None  # partial coverage is not live coverage
+                return base, None, None  # partial coverage is not live coverage
             row = {q: float(rates[q]) for q in quotes if q != base}
             row[base] = 1.0
-            return base, row
+            return base, row, as_of
 
         results = await asyncio.gather(*(fetch_base_frankfurter(base) for base in bases))
-        live_rows = {base: row for base, row in results if row}
+        live_rows = {base: row for base, row, _ in results if row}
         if len(live_rows) == len(bases):
-            return live_rows, "live_official", ["frankfurter_ecb"]
+            # One ECB fix per day: the legs should share a date. If they ever
+            # differ, report the oldest so the label never overstates freshness.
+            fix_dates = sorted({as_of for _, _, as_of in results if as_of})
+            fix_date = fix_dates[0] if fix_dates else None
+            # Not "live_": a daily ECB fix is delayed, not a live quote.
+            return live_rows, "official_daily_fix", ["frankfurter_ecb"], fix_date
     seed = {ccy: _seed_usd_value(ccy) for ccy in _unique([*bases, *quotes])}
     matrix = {
         base: {
@@ -1139,7 +1830,7 @@ async def _cross_matrix(
         }
         for base in bases
     }
-    return matrix, "reference_cross_rate_matrix", ["reference_cross_rate_matrix"]
+    return matrix, "reference_cross_rate_matrix", ["reference_cross_rate_matrix"], _REFERENCE_AS_OF
 
 
 def _seed_usd_value(currency: str) -> float:

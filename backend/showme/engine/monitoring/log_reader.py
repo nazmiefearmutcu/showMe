@@ -25,7 +25,7 @@ class LogReader:
             with open(self.log_path, "r", encoding="utf-8", errors="replace") as f:
                 return list(deque(f, maxlen=n))
         except Exception as e:
-            logger.error(f"Error reading log file: {e}")
+            logger.error(f"Error reading log file: {str(e) or type(e).__name__}")
             return []
 
     def read_filtered(

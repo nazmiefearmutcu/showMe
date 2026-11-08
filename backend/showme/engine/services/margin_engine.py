@@ -83,24 +83,46 @@ _CLASS_RULE: dict[str, str] = {
 }
 
 
-def _is_crypto_perpetual(symbol: str) -> bool:
-    """True for a crypto perpetual/swap symbol (``BTC-PERP``, ``BTC-SWAP``, ccxt ``BTC/USDT:USDT``)."""
+def _is_crypto_perpetual(symbol: str, contract_type: str = "") -> bool:
+    """True for a crypto perpetual: a perp symbol (``BTC-PERP``, ``BTC-SWAP``, ccxt ``BTC/USDT:USDT``)
+    or a position whose product marker says PERPETUAL (MGN#2-RQ).
+
+    A bare pair such as ``BTCUSDT`` is not a perpetual by name: the registry does not know
+    whether it is spot or a perpetual, so only an explicit marker makes it one.
+    """
     s = str(symbol or "").upper()
+    if str(contract_type or "").strip().upper() == "PERPETUAL":
+        return True
     return s.endswith(("-PERP", "-SWAP", "PERP")) or ":" in s
+
+
+def _book_class(position: dict[str, Any]) -> str:
+    """Asset class used for account inference: a crypto perpetual is its own token.
+
+    A perpetual is held as asset_class CRYPTO (MGN#2-RQ), so it is told apart from spot
+    CRYPTO by its product marker (contract_type) or its symbol suffix, not by its class label.
+    """
+    cls = str(position.get("asset_class") or "").upper()
+    if cls == "CRYPTO" and _is_crypto_perpetual(
+            str(position.get("symbol") or ""), str(position.get("contract_type") or "")):
+        return "CRYPTO_PERP"
+    return cls
 
 
 def infer_margin_type(positions: list[dict[str, Any]]) -> str:
     """Account-level margin type implied by the products an account holds.
 
     Only an account made purely of spot crypto is crypto_spot. A crypto account that
-    also holds derivatives (CRYPTO and DERIVATIVE both present) is crypto_futures. A
-    DERIVATIVE-only book is futures: a DERIVATIVE is non-crypto futures/options, so it
-    must not take the crypto 10% rule. Each position is still priced under its own
-    class rule in calc_account.
+    also holds derivatives (CRYPTO and DERIVATIVE both present) is crypto_futures, and so
+    is any book holding a crypto perpetual (CRYPTO_PERP). A DERIVATIVE-only book is
+    futures: a DERIVATIVE is non-crypto futures/options, so it must not take the crypto
+    10% rule. Each position is still priced under its own class rule in calc_account.
     """
-    classes = {str(p.get("asset_class") or "").upper() for p in positions}
+    classes = {_book_class(p) for p in positions}
     if classes and classes <= {"CRYPTO"}:
         return "crypto_spot"
+    if "CRYPTO_PERP" in classes and classes <= {"CRYPTO", "CRYPTO_PERP", "DERIVATIVE"}:
+        return "crypto_futures"
     if classes and classes <= {"CRYPTO", "DERIVATIVE"} and {"CRYPTO", "DERIVATIVE"} <= classes:
         return "crypto_futures"
     if classes & {"FX"}:
@@ -117,18 +139,25 @@ def _position_rule(
     *,
     explicit: bool = True,
     symbol: str = "",
+    contract_type: str = "",
 ) -> dict[str, Any]:
     """Rule for one position: the account rule, unless its class has its own rule.
 
     ``explicit`` is False when the account type was inferred from the book (MGN#2
     residual): an inferred crypto_futures account must not reprice spot CRYPTO lines.
-    In such an inferred account a non-perpetual DERIVATIVE (ES, options) takes the
-    futures rule; a crypto perpetual keeps the crypto_futures rate.
+    A non-perpetual DERIVATIVE (ES, options) takes the futures per-contract rule in any
+    crypto_futures account, inferred or stored (MGN#2-RQ residual: an account stored before
+    the inferred flag existed must not price ES at the 10% crypto rate). A crypto perpetual
+    keeps the crypto_futures rate.
     """
     cls = str(asset_class or "").upper()
-    if (cls == "DERIVATIVE" and margin_type == "crypto_futures" and not explicit
-            and not _is_crypto_perpetual(symbol)):
+    if (cls == "DERIVATIVE" and margin_type == "crypto_futures"
+            and not _is_crypto_perpetual(symbol, contract_type)):
         return dict(DEFAULT_RULES["futures"])
+    # MGN#2-RQ: a crypto perpetual held as CRYPTO keeps the crypto_futures rate; only the
+    # spot CRYPTO lines of the same book are priced at the crypto_spot rate.
+    if cls == "CRYPTO" and _is_crypto_perpetual(symbol, contract_type):
+        return account_rule if margin_type == "crypto_futures" else dict(DEFAULT_RULES["crypto_futures"])
     mapped = _CLASS_RULE.get(cls)
     if mapped is None or mapped == margin_type:
         return account_rule
@@ -214,6 +243,16 @@ def _position_margin(
     return (notional * ip, notional * mp)
 
 
+# MGN#6: model assumptions, named and documented (not venue rules).
+# A portfolio-margin account's maintenance requirement is its stress loss scaled by this
+# factor (a model choice, not a published rule).
+PORTFOLIO_MAINTENANCE_SCALE = 0.6
+# Buying power of a portfolio-margin account is its equity surplus over initial margin
+# times this multiple (a model choice; the Reg-T and rule-table paths divide by the
+# initial rate instead).
+PORTFOLIO_BUYING_POWER_MULTIPLE = 4.0
+
+
 def _portfolio_margin(positions: list[dict[str, Any]], rule: dict[str, Any]) -> tuple[float, float]:
     """Stress-based margin: max loss under ±stress_pct shock."""
     stress = float(rule.get("stress_pct", 0.15))
@@ -230,7 +269,7 @@ def _portfolio_margin(positions: list[dict[str, Any]], rule: dict[str, Any]) -> 
         pnl_dn += -nv * stress
     worst = -min(pnl_up, pnl_dn)
     floor = notional * minp
-    return max(worst, floor), max(worst * 0.6, floor * 0.6)
+    return max(worst, floor), max(worst * PORTFOLIO_MAINTENANCE_SCALE, floor * PORTFOLIO_MAINTENANCE_SCALE)
 
 
 def calc_account(
@@ -255,7 +294,8 @@ def calc_account(
         biggest = -1.0
         for p in positions:
             p_rule = _position_rule(p.get("asset_class", ""), margin_type, rule,
-                                    explicit=explicit, symbol=str(p.get("symbol") or ""))
+                                    explicit=explicit, symbol=str(p.get("symbol") or ""),
+                                    contract_type=str(p.get("contract_type") or ""))
             i, m = _position_margin(p, p_rule)
             ip += i
             mp += m
@@ -270,8 +310,13 @@ def calc_account(
     equity = cash + mv
     excess = equity - ip
     cushion = (equity - mp) / equity if equity else 0.0
-    buying_power = max(equity - ip, 0) / max(bp_rule.get("initial_long_pct", 0.5), 0.05) \
-        if margin_type != "portfolio" else max(equity - ip, 0) * 4
+    # MGN#6: no floor on the initial rate. An FX line at 2% is 50x buying power, not a
+    # 20x value produced by a 5% floor; a zero rate has no defined capacity, so it is 0.
+    if margin_type == "portfolio":
+        buying_power = max(equity - ip, 0) * PORTFOLIO_BUYING_POWER_MULTIPLE
+    else:
+        bp_rate = float(bp_rule.get("initial_long_pct", 0.5) or 0)
+        buying_power = max(equity - ip, 0) / bp_rate if bp_rate > 0 else 0.0
     return {
         "account": account_name,
         "margin_type": margin_type,
@@ -293,7 +338,10 @@ def calc_all_accounts(
     prices: dict[str, float] | None = None,
     *,
     include_legacy: bool = False,
+    cash_overrides: dict[str, float] | None = None,
 ) -> dict[str, Any]:
+    """``cash_overrides`` maps account name -> cash for this calculation only (MGN#5). It is
+    never written to margin_config.json (MGN#6)."""
     portfolio = PortfolioState()
     if include_legacy:
         portfolio.import_legacy_crypto()
@@ -302,13 +350,20 @@ def calc_all_accounts(
     for p in portfolio.positions:
         sym = p.instrument.symbol
         px = (prices or {}).get(sym) or p.avg_cost
-        accts.setdefault(p.account or "main", []).append({
+        row: dict[str, Any] = {
             "symbol": sym, "asset_class": p.instrument.asset_class.value,
             "quantity": p.quantity, "avg_cost": p.avg_cost, "last": px,
             "currency": p.currency,
-        })
+        }
+        # MGN#2-RQ: the position's own product marker (set by its source), if it has one.
+        contract_type = (p.instrument.metadata or {}).get("contract_type")
+        if contract_type:
+            row["contract_type"] = str(contract_type)
+        accts.setdefault(p.account or "main", []).append(row)
     # Auto-create accounts if missing. An inferred type is flagged and re-derived from
     # the current book, so a book that loses its derivative is not stuck as crypto_futures.
+    # MGN#6: this is an in-memory view only; a calculation never writes margin_config.json
+    # (only an explicit upsert/delete does).
     cfg_accts = cfg.setdefault("accounts", {})
     for name, positions in accts.items():
         inferred = infer_margin_type(positions)
@@ -320,7 +375,29 @@ def calc_all_accounts(
             }
         elif entry.get("inferred"):
             entry["margin_type"] = inferred
-    _save_config(cfg)
+    # MGN#5: cash. An account the user recorded (upsert) keeps its cash. An auto-created
+    # account has none recorded: a single-account book takes the book's recorded USD cash
+    # (PortfolioState.cash, the same figure PORT shows), disclosed as portfolio_state. With
+    # several accounts the book cash is not guessed onto one of them and is reported as
+    # unallocated.
+    book_usd_cash = _as_float((portfolio.cash or {}).get("USD"))
+    cash_sources: dict[str, str] = {}
+    unallocated_cash_usd = 0.0
+    overrides = cash_overrides or {}
+    for name in accts:
+        entry = cfg_accts[name]
+        if name in overrides:
+            entry["cash"] = float(overrides[name])
+            cash_sources[name] = "request"
+        elif not entry.get("inferred"):
+            cash_sources[name] = "account_record"
+        elif len(accts) == 1 and book_usd_cash:
+            entry["cash"] = book_usd_cash
+            cash_sources[name] = "portfolio_state"
+        else:
+            cash_sources[name] = "none"
+            if len(accts) > 1:
+                unallocated_cash_usd = book_usd_cash
     out = []
     total = {
         "equity": 0.0, "initial_margin": 0.0, "maintenance_margin": 0.0,
@@ -335,4 +412,12 @@ def calc_all_accounts(
         (total["equity"] - total["maintenance_margin"]) / total["equity"] * 100
         if total["equity"] else 0
     )
-    return {"accounts": out, "total": total}
+    return {"accounts": out, "total": total, "cash_sources": cash_sources,
+            "unallocated_cash_usd": unallocated_cash_usd}
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0

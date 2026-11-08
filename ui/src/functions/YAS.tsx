@@ -69,6 +69,8 @@ interface YASSummary {
   frequency?: number;
   benchmark_rate?: number;
   benchmark_pct?: number;
+  benchmark_label?: string;
+  benchmark_series?: string | null;
   ytm?: number;
   ytm_pct?: number;
   spread_vs_benchmark?: number;
@@ -94,6 +96,15 @@ const FREQ_IDS = FREQ_OPTIONS.map((o) => o.value);
 
 const DEFAULT_BOND = "US10Y";
 
+/** UST curve points the sidecar has a live FRED CMT series for (YAS#2). */
+type BenchTenor = "UST2Y" | "UST5Y" | "UST10Y" | "UST30Y";
+const BENCH_OPTIONS = [
+  { value: "UST2Y", label: "2Y", title: "Spread vs the UST 2Y CMT" },
+  { value: "UST5Y", label: "5Y", title: "Spread vs the UST 5Y CMT" },
+  { value: "UST10Y", label: "10Y", title: "Spread vs the UST 10Y CMT" },
+  { value: "UST30Y", label: "30Y", title: "Spread vs the UST 30Y CMT" },
+] as const;
+
 /** Generic US Treasury tenor the backend prices from the live CMT yield. */
 export function isGenericTreasury(bond: string): boolean {
   return /^US(1M|3M|6M|1Y|2Y|3Y|5Y|7Y|10Y|20Y|30Y)$/.test(bond);
@@ -104,6 +115,9 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
   const [couponPct, setCouponPct] = useState<number | null>(null);
   const [maturity, setMaturity] = useState<number | null>(null);
   const [benchmarkPct, setBenchmarkPct] = useState<number | null>(null);
+  // YAS#2: the curve point the spread is measured against. null = the sidecar default
+  // (the 10Y CMT), which the caption then says is the default.
+  const [benchTenor, setBenchTenor] = useState<BenchTenor | null>(null);
   const [freq, setFreq] = usePersistentOption<number>(
     "showme.yas.freq",
     FREQ_IDS,
@@ -117,6 +131,7 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
     setCouponPct(null);
     setMaturity(null);
     setBenchmarkPct(null);
+    setBenchTenor(null);
     setBondRaw(next);
   };
 
@@ -124,13 +139,17 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
     // YAS only ever prices bonds. The pane owns the asset class: without it the
     // sidecar infers one from the symbol, and a CUSIP-style id falls through to
     // EQUITY and is refused as unsupported_asset.
-    const out: Record<string, string | number> = { asset_class: "BOND", freq };
+    const out: Record<string, string | number | boolean> = { asset_class: "BOND", freq };
     if (price != null) out.price = price;
     if (couponPct != null) out.coupon = pctToDecimal(couponPct);
     if (maturity != null) out.maturity_years = maturity;
     if (benchmarkPct != null) out.benchmark_rate = pctToDecimal(benchmarkPct);
+    else if (benchTenor != null) out.benchmark = benchTenor;
+    // The pane always sends its rates as decimals, so it states the unit: the
+    // sidecar would otherwise refuse a 20%-100% decimal as ambiguous (XCON-2).
+    if (couponPct != null || benchmarkPct != null) out.assume_decimal = true;
     return out;
-  }, [price, couponPct, maturity, benchmarkPct, freq]);
+  }, [price, couponPct, maturity, benchmarkPct, benchTenor, freq]);
 
   const { state, data, error, refetch } = useFunction<YASData>({
     code,
@@ -294,7 +313,7 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
           <StatCard
             label="Spread vs bench"
             value={`${fmtSignedFixed(summary?.spread_bps, 1)} bps`}
-            caption={`BENCH ${fmtFixed(summary?.benchmark_pct, 2)}%`}
+            caption={`${summary?.benchmark_label ?? "BENCH"} · ${fmtFixed(summary?.benchmark_pct, 2)}%`}
             tone={spreadTone(summary?.spread_bps)}
           />
           <StatCard
@@ -306,7 +325,7 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
           <StatCard
             label="Convexity"
             value={fmtFixed(stats.convexity, 1)}
-            caption="2ND-ORDER PRICE SENS."
+            caption="2ND-ORDER · YEARS²"
             tone="neutral"
           />
         </section>
@@ -399,6 +418,14 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
                 onCommit={setBenchmarkPct}
                 step={0.25}
                 min={0}
+              />
+              <SegmentedControl
+                label="BENCH"
+                title="Benchmark curve point"
+                value={benchTenor ?? "UST10Y"}
+                options={BENCH_OPTIONS}
+                onChange={setBenchTenor}
+                disabled={benchmarkPct != null}
               />
             </section>
             {body}

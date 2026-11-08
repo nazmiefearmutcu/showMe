@@ -1,12 +1,14 @@
 /**
- * TRAN — Earnings Call Transcript.
+ * TRAN — Earnings Transcript or Release.
  *
- * Renders the most recent earnings-call transcript harvested by the backend
+ * Renders the most recent earnings-call transcript harvested by the backend, or the
+ * 8-K earnings press release when no transcript exists (labelled as a release)
  * (SEC 8-K exhibit flow): sections (Prepared Remarks / Q&A) of speaker+role
  * utterances, a persisted speaker filter built from the payload's distinct
  * speakers, and jump-to-section anchors. Data honesty: when the provider is
  * unavailable / not configured the pane says so explicitly — never fake text.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Empty,
@@ -110,8 +112,9 @@ function safeHttpUrl(value: unknown): string | null {
  */
 function highlightMatches(text: string, query: string): ReactNode {
   if (!query) return text;
-  const haystack = text.toLowerCase();
-  const needle = query.toLowerCase();
+  // foldSearchText keeps the length, so the offsets below index the original text.
+  const haystack = foldSearchText(text);
+  const needle = foldSearchText(query);
   const nodes: ReactNode[] = [];
   let cursor = 0;
   let at = haystack.indexOf(needle, cursor);
@@ -211,8 +214,8 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
   const searchQuery = search.trim();
   const visible = useMemo(() => {
     if (!searchQuery) return filtered;
-    const needle = searchQuery.toLowerCase();
-    return filtered.filter((r) => (r.utterance ?? "").toLowerCase().includes(needle));
+    const needle = foldSearchText(searchQuery);
+    return filtered.filter((r) => foldSearchText(r.utterance ?? "").includes(needle));
   }, [filtered, searchQuery]);
   const sections = useMemo(() => groupBySection(visible), [visible]);
 

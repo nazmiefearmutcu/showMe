@@ -104,7 +104,7 @@ def _validate_code(code: str) -> None:
     except SyntaxError as exc:
         # Refuse rather than letting the subprocess silently print a
         # syntax error — keeps the contract uniform.
-        raise _SandboxViolation(f"syntax error: {exc}") from exc
+        raise _SandboxViolation(f"syntax error: {str(exc) or type(exc).__name__}") from exc
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -163,7 +163,7 @@ class CodeAgent(BaseAgent):
             return AgentResult(
                 agent=self.name,
                 task=task,
-                error=f"sandbox: {exc}",
+                error=f"sandbox: {str(exc) or type(exc).__name__}",
                 output={"refused": True, "reason": str(exc)},
             )
         wrapped = textwrap.dedent("""
@@ -177,8 +177,12 @@ class CodeAgent(BaseAgent):
         # produces lands in an isolated directory we delete on exit.
         sandbox_root = Path(tempfile.mkdtemp(prefix="showme-code-"))
         try:
+            # LOC-1: the snippet is UTF-8 source and the child must read it as
+            # UTF-8 (PEP 3120). Writing with the locale codec (cp1254 on tr-TR
+            # Windows) broke Turkish literals; the child env also needs
+            # PYTHONUTF8 so its stdout/stderr and our decoding agree.
             with tempfile.NamedTemporaryFile(
-                "w", delete=False, suffix=".py", dir=str(sandbox_root)
+                "w", delete=False, suffix=".py", dir=str(sandbox_root), encoding="utf-8"
             ) as f:
                 f.write(wrapped)
                 f.flush()
@@ -187,10 +191,15 @@ class CodeAgent(BaseAgent):
                 r = subprocess.run(
                     [sys.executable, path],
                     capture_output=True,
-                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=self.timeout,
                     cwd=str(sandbox_root),
-                    env={"PATH": os.environ.get("PATH", "")},
+                    env={
+                        "PATH": os.environ.get("PATH", ""),
+                        "PYTHONUTF8": "1",
+                        "PYTHONIOENCODING": "utf-8",
+                    },
                 )
                 return AgentResult(
                     agent=self.name,

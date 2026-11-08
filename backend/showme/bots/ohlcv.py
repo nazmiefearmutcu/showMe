@@ -94,7 +94,7 @@ async def fetch_ohlcv(
     try:
         raw = await ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     except Exception as exc:  # noqa: BLE001
-        raise BotRunnerError(f"fetch_ohlcv failed: {exc}") from exc
+        raise BotRunnerError(f"fetch_ohlcv failed: {str(exc) or type(exc).__name__}") from exc
     if not raw:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])

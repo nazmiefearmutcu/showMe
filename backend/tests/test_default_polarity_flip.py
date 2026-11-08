@@ -143,7 +143,8 @@ def test_litm_default_failure_is_provider_unavailable():
 def test_appl_default_failure_is_labelled():
     from showme.engine.functions.misc._bonus import APPLFunction
     result = _run(APPLFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.sources == ["taxonomy_model"]
+    # AAPL's template carries bundled crosswalk rows, so the static source is named (APPL#4).
+    assert result.sources == ["taxonomy_model", "taxonomy_crosswalk_static"]
     assert result.metadata.get("fallback") is True
     assert result.metadata.get("live") is False
     assert result.warnings
@@ -279,7 +280,8 @@ def test_appl_default_live_with_mocked_provider():
     fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(refdata)))
     result = _run(fn.execute(instrument=EQ))
     assert result.metadata.get("live") is True
-    assert result.sources == ["yfinance"]
+    # AAPL has a bundled GICS crosswalk, so the static source is named (APPL#4).
+    assert result.sources == ["yfinance", "taxonomy_crosswalk_static"]
     assert result.data["status"] == "ok"
     assert result.data["sector"] == "Technology"
 

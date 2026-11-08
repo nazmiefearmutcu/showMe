@@ -61,11 +61,13 @@ SEC_EDGAR_PRIMARY: frozenset[str] = frozenset(
     {"FORM4", "FTS", "HDS", "HFS", "SPLC", "PIB"}
 )
 YFINANCE_PRIMARY: frozenset[str] = frozenset(
-    {"APPL", "ANR", "RV", "DARK"}  # PIB -> SEC (PIB fix), DPF -> FINRA (DPF#4)
+    {"APPL", "ANR", "RV", "ESG"}  # PIB -> SEC (PIB fix), DPF/DARK -> FINRA (DPF#4, DARK#3); ESG seed primary=yfinance
 )
 # DPF (dark pool / ATS volume) reads FINRA ATS weekly volume first; its seed
 # used to claim yfinance and describe delisted firms (DPF#4, p2a-g05).
-FINRA_PRIMARY: frozenset[str] = frozenset({"DPF"})
+# DARK#3: DARK reads FINRA ATS weekly volume first (yfinance is only the
+# weekly-total denominator), so its seed must declare FINRA as primary.
+FINRA_PRIMARY: frozenset[str] = frozenset({"DPF", "DARK"})
 # Corporate-calendar functions moved to the Awareness service (dividends, splits, 8-K filings).
 # yfinance and SEC remain secondary inputs inside their handlers, not the declared primary.
 AWARENESS_PRIMARY: frozenset[str] = frozenset({"CACT", "DVD", "LITM"})
@@ -75,7 +77,7 @@ AWARENESS_PRIMARY: frozenset[str] = frozenset({"CACT", "DVD", "LITM"})
 # provider. Reclassified deliberately — the seeds now match the code.
 FINNHUB_PRIMARY: frozenset[str] = frozenset({"EE", "EREV"})
 INTERNAL_PRIMARY: frozenset[str] = frozenset(
-    {"BETA", "WACC", "DCF", "DCFS", "DDM", "ESG"}
+    {"BETA", "WACC", "DCF", "DCFS", "DDM"}
 )
 VALUATION_CODES: frozenset[str] = frozenset({"DCF", "DCFS", "DDM", "WACC"})
 
@@ -183,17 +185,18 @@ def test_internal_primary_chain(code: str) -> None:
     )
 
 
-def test_esg_accepts_not_configured_or_cached_only() -> None:
-    """ESG has no real vendor — modes must be limited to NOT_CONFIGURED + CACHED_SNAPSHOT."""
+def test_esg_declares_yahoo_source_and_labelled_sec_proxy() -> None:
+    """ESG methodology/modes must match the handler (ESG#5), not a vendor-gap story.
+
+    Supersedes the earlier assertion that ESG needs a paid vendor: the handler
+    reads Yahoo sustainability first and falls back to a labelled SEC EDGAR proxy.
+    """
     entry = REGISTRY.get("ESG")
     modes = set(entry.provider_chain.acceptable_modes)
-    assert modes <= {DataMode.NOT_CONFIGURED, DataMode.CACHED_SNAPSHOT}, (
-        f"ESG.acceptable_modes must be a subset of "
-        f"{{NOT_CONFIGURED, CACHED_SNAPSHOT}}, got {modes}"
-    )
-    assert "paid vendor" in entry.methodology.lower(), (
-        "ESG methodology must explicitly mention the paid-vendor requirement"
-    )
+    assert modes == {DataMode.DELAYED_REFERENCE, DataMode.LIVE_OFFICIAL, DataMode.NOT_CONFIGURED}, modes
+    text = entry.methodology.lower()
+    assert "sustainalytics" in text and "sec edgar" in text and "not risk scores" in text
+    assert "requires a paid vendor" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -341,11 +344,13 @@ def test_fts_query_input_is_required() -> None:
     assert query_inputs[0].required is True, "FTS query input must be required"
 
 
-def test_litm_includes_severity_filter() -> None:
+def test_litm_does_not_advertise_a_severity_filter() -> None:
+    # LITM#2: no severity heuristic exists behind the old filter, so the seed
+    # must not offer one; the severity column is a fixed review flag.
     litm = REGISTRY.get("LITM")
     sev_inputs = [i for i in litm.inputs if i.name == "severity"]
-    assert sev_inputs, "LITM must expose a severity filter"
-    assert sev_inputs[0].options, "LITM severity options must be enumerated"
+    assert not sev_inputs, "LITM must not expose a severity filter without a heuristic"
+    assert [i.name for i in litm.inputs if i.name == "months"], "LITM must expose the months lookback"
 
 
 def test_splc_methodology_warns_approximate() -> None:

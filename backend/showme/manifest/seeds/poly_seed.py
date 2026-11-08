@@ -47,7 +47,7 @@ def poly() -> FunctionManifest:
                 name="query",
                 label="Topic",
                 control=ControlKind.TEXT,
-                required=True,
+                required=False,
                 description="Free-text topic / event search.",
             ),
             InputSpec(

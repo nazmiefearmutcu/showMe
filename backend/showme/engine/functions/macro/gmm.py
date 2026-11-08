@@ -16,6 +16,7 @@ text. This module fetches real, live data from a keyless source instead.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -45,6 +46,26 @@ _DEFAULT_COUNTRIES: dict[str, str] = {
     "TR": "Turkey",
 }
 
+# Display names for every country code the manifest offers, including the
+# aggregates. EZ is the euro area and EU the European Union; neither is a
+# proxy for a member state.
+_COUNTRY_NAMES: dict[str, str] = {
+    **_DEFAULT_COUNTRIES,
+    "CH": "Switzerland",
+    "EZ": "Euro area",
+    "EU": "European Union",
+}
+
+# Our code -> World Bank request id, where the two differ (aggregates).
+_WB_REQUEST_CODE: dict[str, str] = {"EZ": "EMU", "EU": "EUU"}
+
+# World Bank response id (country.id or countryiso3code) -> our code.
+_WB_RESPONSE_CODE: dict[str, str] = {
+    "XC": "EZ",
+    "EMU": "EZ",
+    "EUU": "EU",
+}
+
 # Indicator code -> (output key, human label, unit). World Bank codes:
 #   NY.GDP.MKTP.KD.ZG  GDP growth (annual %)
 #   FP.CPI.TOTL.ZG     Inflation, consumer prices (annual %)
@@ -70,6 +91,13 @@ class GMMFunction(BaseFunction):
         requested = params.get("countries") or params.get("country")
         countries = _resolve_countries(requested)
         timeout = float(params.get("timeout", 12))
+        # Request-level warnings do not depend on the data outcome, so they are
+        # attached on every status (ok, empty, provider_unavailable).
+        unknown = [c for c in countries if c not in _COUNTRY_NAMES]
+        unknown_warnings = [
+            f"country code {c} has no display name; shown as its code and looked up as given"
+            for c in unknown
+        ]
 
         rows: list[dict[str, Any]] = []
         try:
@@ -77,36 +105,54 @@ class GMMFunction(BaseFunction):
                 _fetch_worldbank_matrix(countries), timeout=timeout
             )
         except Exception as exc:  # noqa: BLE001 - honest outage path
-            return _provider_unavailable(f"worldbank: {exc}")
+            return _provider_unavailable(f"worldbank: {str(exc) or type(exc).__name__}")
 
         if not rows:
             return _provider_unavailable(
                 "worldbank returned no observations for the requested countries."
             )
+        # GMM#3 follow-up: the matrix always lists every requested country, so a
+        # response with no observation at all would otherwise pass as an ok board
+        # of null rows. Report an explicit empty state instead.
+        if not any(row.get(k) is not None for row in rows for k in _SCORE_KEYS):
+            return _empty_matrix(
+                "worldbank answered, but no requested country has a non-null indicator observation.",
+                warnings=unknown_warnings,
+            )
 
         # Score = composite macro-stress proxy: high inflation + high
         # unemployment + high debt minus growth. Higher = more stressed /
         # bigger mover. Sort descending so the most extreme economies lead.
+        as_of = _as_of_year()
         for row in rows:
-            row["score"] = _composite_score(row)
+            row["score"] = _composite_score(row, as_of)
+            row["score_missing"] = _score_missing(row, as_of)
+            row["stale_fields"] = [
+                k for k in _SCORE_KEYS if row.get(k) is not None and _is_stale(row, k, as_of)
+            ]
         rows.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0.0)))
 
+        # GMM#1: the cards describe the whole requested universe, so they are
+        # ranked before top_n trims the table (a trimmed board must not make
+        # the sixth-most-stressed economy the "fastest growth").
+        universe_rows = rows
         limit = _coerce_int(params.get("top_n") or params.get("limit"), default=len(rows))
         rows = rows[:limit]
 
+        # Cards only rank fresh observations: a stale value must not win.
         hottest = max(
-            (r for r in rows if r.get("inflation") is not None),
+            (r for r in universe_rows if _usable(r, "inflation", as_of) is not None),
             key=lambda r: r["inflation"],
             default=None,
         )
         fastest = max(
-            (r for r in rows if r.get("gdp_growth") is not None),
+            (r for r in universe_rows if _usable(r, "gdp_growth", as_of) is not None),
             key=lambda r: r["gdp_growth"],
             default=None,
         )
 
         cards = [
-            {"key": "economies", "label": "Economies", "value": len(rows)},
+            {"key": "economies", "label": "Economies", "value": len(universe_rows)},
             {
                 "key": "hottest_inflation",
                 "label": "Hottest CPI",
@@ -126,6 +172,8 @@ class GMMFunction(BaseFunction):
             data={
                 "status": "ok",
                 "rows": rows,
+                "rows_shown": len(rows),
+                "rows_total": len(universe_rows),
                 "cards": cards,
                 "surface": [
                     {"country": r["country"], "code": r["country_code"], "score": r["score"]}
@@ -143,8 +191,12 @@ class GMMFunction(BaseFunction):
                     "(SL.UEM.TOTL.ZS), and central-government debt-to-GDP (GC.DOD.TOTL.GD.ZS). "
                     "Rows are ranked by a composite macro-stress score = inflation + unemployment "
                     "+ 0.05·debt/GDP − GDP growth, so the economies running hottest/most stretched "
-                    "surface first. World Bank annual series are lagged, so each cell carries its "
-                    "own observation year. No value is fabricated: a missing cell stays null."
+                    "surface first. A row is scored only when all four indicators are present and "
+                    f"no observation is more than {_MAX_OBS_AGE_YEARS} years old; otherwise its "
+                    "score is null and score_missing lists the blocking indicators. World Bank "
+                    "annual series are lagged, so each cell carries its own observation year and "
+                    "stale_fields lists any observation too old to score. No value is fabricated: "
+                    "a missing cell stays null."
                 ),
                 "field_dictionary": {
                     "country": "Country name.",
@@ -157,12 +209,17 @@ class GMMFunction(BaseFunction):
                     "unemployment_year": "Year of the unemployment observation.",
                     "debt_gdp": "Central government debt, % of GDP (GC.DOD.TOTL.GD.ZS).",
                     "debt_gdp_year": "Year of the debt/GDP observation.",
-                    "score": "Composite macro-stress score (higher = hotter/more stretched).",
+                    "score": (
+                        "Composite macro-stress score (higher = hotter/more stretched). Null unless "
+                        "all four indicators are present and fresh."
+                    ),
+                    "score_missing": "Indicators that block the score (null or older than the age limit).",
+                    "stale_fields": "Indicators whose observation is older than the age limit; shown, not scored.",
                 },
                 "source_mode": "worldbank",
             },
             sources=["worldbank"],
-            warnings=[],
+            warnings=unknown_warnings,
             metadata={"provider": "worldbank", "indicators": list(_INDICATORS.keys())},
         )
 
@@ -184,13 +241,11 @@ def _resolve_countries(requested: Any) -> dict[str, str]:
     out: dict[str, str] = {}
     for raw in codes:
         code = str(raw).strip().upper()
-        # Accept "EZ"/"EU" as euro-area proxy -> Germany is the largest member
-        # series available; otherwise keep known majors and pass through unknowns
-        # using the code as its own label so World Bank can still resolve it.
-        if code in _DEFAULT_COUNTRIES:
-            out[code] = _DEFAULT_COUNTRIES[code]
-        elif code in ("EZ", "EU"):
-            out["DE"] = _DEFAULT_COUNTRIES["DE"]
+        # Known codes (majors, CH, the EZ/EU aggregates) get their real name.
+        # Unknown codes pass through with the code as label so World Bank can
+        # still try them; execute() flags them with a warning.
+        if code in _COUNTRY_NAMES:
+            out[code] = _COUNTRY_NAMES[code]
         elif code:
             out[code] = code
     return out or dict(_DEFAULT_COUNTRIES)
@@ -206,7 +261,7 @@ async def _fetch_worldbank_matrix(countries: dict[str, str]) -> list[dict[str, A
     from showme.providers._http import get_client
 
     client = await get_client()
-    country_param = ";".join(countries.keys())
+    country_param = ";".join(_WB_REQUEST_CODE.get(c, c) for c in countries)
 
     async def _one_indicator(ind_code: str) -> dict[str, tuple[float, int]]:
         url = f"{_WB_BASE}/country/{country_param}/indicator/{ind_code}"
@@ -268,6 +323,9 @@ def _parse_wb_series(payload: Any) -> dict[str, tuple[float, int]]:
         iso2 = country_obj.get("id") or _iso3_to_iso2(country)
         if not iso2:
             continue
+        # Aggregates come back under their WB id (euro area = XC); map them to
+        # the code we requested so the row lands on the right country.
+        iso2 = _WB_RESPONSE_CODE.get(iso2, _WB_RESPONSE_CODE.get(country, iso2))
         try:
             year = int(obs.get("date"))
         except (TypeError, ValueError):
@@ -287,7 +345,7 @@ def _parse_wb_series(payload: Any) -> dict[str, tuple[float, int]]:
 _ISO3_ISO2 = {
     "USA": "US", "CHN": "CN", "JPN": "JP", "DEU": "DE", "GBR": "GB",
     "FRA": "FR", "IND": "IN", "BRA": "BR", "CAN": "CA", "ITA": "IT",
-    "KOR": "KR", "AUS": "AU", "MEX": "MX", "TUR": "TR",
+    "KOR": "KR", "AUS": "AU", "MEX": "MX", "TUR": "TR", "CHE": "CH",
 }
 
 
@@ -295,24 +353,51 @@ def _iso3_to_iso2(iso3: str) -> str | None:
     return _ISO3_ISO2.get((iso3 or "").upper())
 
 
-def _composite_score(row: dict[str, Any]) -> float | None:
-    """Macro-stress proxy: inflation + unemployment + 0.05·debt/GDP − growth."""
-    inflation = row.get("inflation")
-    unemployment = row.get("unemployment")
-    debt = row.get("debt_gdp")
-    growth = row.get("gdp_growth")
-    if inflation is None and unemployment is None and debt is None and growth is None:
+_SCORE_KEYS: tuple[str, ...] = ("inflation", "unemployment", "debt_gdp", "gdp_growth")
+
+# An observation whose year is more than this many years before the current
+# year is shown (with its year) but does not feed the score or the cards.
+_MAX_OBS_AGE_YEARS = 5
+
+
+def _as_of_year() -> int:
+    return datetime.now(timezone.utc).year
+
+
+def _is_stale(row: dict[str, Any], key: str, as_of_year: int) -> bool:
+    year = row.get(f"{key}_year")
+    return isinstance(year, int) and year < as_of_year - _MAX_OBS_AGE_YEARS
+
+
+def _usable(row: dict[str, Any], key: str, as_of_year: int) -> float | None:
+    """The indicator value if present and fresh enough to score, else None."""
+    value = row.get(key)
+    if value is None or _is_stale(row, key, as_of_year):
         return None
-    parts: list[float] = []
-    if inflation is not None:
-        parts.append(float(inflation))
-    if unemployment is not None:
-        parts.append(float(unemployment))
-    if debt is not None:
-        parts.append(0.05 * float(debt))
-    if growth is not None:
-        parts.append(-float(growth))
-    return round(sum(parts), 4) if parts else None
+    return float(value)
+
+
+def _score_missing(row: dict[str, Any], as_of_year: int) -> list[str]:
+    """Components a row cannot be scored on: null or too old."""
+    return [k for k in _SCORE_KEYS if _usable(row, k, as_of_year) is None]
+
+
+def _composite_score(row: dict[str, Any], as_of_year: int | None = None) -> float | None:
+    """Macro-stress proxy: inflation + unemployment + 0.05·debt/GDP − growth.
+
+    A row is scored only when all four components are present and fresh. A
+    partial row would otherwise rank as if its missing term were zero (a
+    country with no debt/GDP value looks less stressed than it is), and a
+    stale value would be ranked as if it were current.
+    """
+    as_of = _as_of_year() if as_of_year is None else as_of_year
+    vals = {k: _usable(row, k, as_of) for k in _SCORE_KEYS}
+    if any(v is None for v in vals.values()):
+        return None
+    return round(
+        vals["inflation"] + vals["unemployment"] + 0.05 * vals["debt_gdp"] - vals["gdp_growth"],
+        4,
+    )
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -321,6 +406,31 @@ def _coerce_int(value: Any, default: int) -> int:
         return out if out > 0 else default
     except (TypeError, ValueError):
         return default
+
+
+def _empty_matrix(reason: str, *, warnings: list[str] | None = None) -> FunctionResult:
+    """Explicit empty state: the provider answered but carried no usable observation."""
+    return FunctionResult(
+        code="GMM",
+        instrument=None,
+        data={
+            "status": "empty",
+            "rows": [],
+            "cards": [
+                {"key": "economies", "label": "Economies", "value": 0},
+                {"key": "source", "label": "Source", "value": "World Bank"},
+            ],
+            "reason": reason,
+            "source_mode": "worldbank",
+            "next_actions": [
+                "Retry later; World Bank annual series are updated irregularly.",
+                "Try other country codes; some economies publish fewer indicators.",
+            ],
+        },
+        sources=["worldbank"],
+        warnings=list(warnings or []),
+        metadata={"provider": "worldbank"},
+    )
 
 
 def _provider_unavailable(reason: str) -> FunctionResult:

@@ -115,7 +115,7 @@ class DPFFunction(BaseFunction):
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"DPF execution timed out: {exc}"
+            reason = f"DPF execution timed out: {str(exc) or type(exc).__name__}"
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data=_unavailable_data(instrument.symbol, reason),
@@ -141,7 +141,7 @@ class DPFFunction(BaseFunction):
                 if not df.empty:
                     sources.append("finra")
             except Exception as e:
-                warnings.append(f"finra: {e}")
+                warnings.append(f"finra: {str(e) or type(e).__name__}")
         # Aggregate by week & ATS code
         agg = pd.DataFrame()
         if not df.empty and "weekStartDate" in df.columns:

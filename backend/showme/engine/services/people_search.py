@@ -455,8 +455,12 @@ def _organization_from_text(text: str) -> str | None:
     return org or None
 
 
+def _query_tokens(query: str) -> list[str]:
+    return [t for t in re.split(r"[^a-z0-9]+", query.lower()) if len(t) > 1]
+
+
 def _matched_tokens(query: str, text: str) -> int:
-    tokens = [t for t in re.split(r"[^a-z0-9]+", query.lower()) if len(t) > 1]
+    tokens = _query_tokens(query)
     haystack = text.lower()
     return sum(1 for token in tokens if token in haystack)
 
@@ -542,8 +546,10 @@ def _fetch_people(query: str, *, limit: int) -> dict[str, Any]:
     try:
         cap = min(max(limit, MIN_CANDIDATES), MAX_CANDIDATES)
         hits = _search_candidates(query, cap)
+        # PEOP#6: the candidate cap is disclosed, never silent.
+        scanned = {"candidates_scanned": len(hits), "candidate_cap": cap}
         if not hits:
-            return {"ok": True, "items": [], "sources": ["wikipedia"], "reason": None}
+            return {"ok": True, "items": [], "sources": ["wikipedia"], "reason": None, **scanned}
         candidates = _fetch_summaries(hits)
         if not candidates:
             raise RuntimeError("every wikipedia summary fetch failed")
@@ -555,24 +561,29 @@ def _fetch_people(query: str, *, limit: int) -> dict[str, Any]:
             sources.append("wikidata")
         labels = _fetch_referenced_labels(entities)
         items: list[dict[str, Any]] = []
+        has_query_tokens = bool(_query_tokens(query))
         for candidate in candidates:
             qid = candidate["summary"].get("wikibase_item")
             entity = entities.get(str(qid)) if qid else None
             if not _is_person(candidate["summary"], entity):
                 continue
-            items.append(_map_item(candidate, entity, labels, query))
+            item = _map_item(candidate, entity, labels, query)
+            # PEOP#6: a row that shares no token with the query is noise, not a match.
+            if has_query_tokens and item["match_score"] == 0:
+                continue
+            items.append(item)
         items.sort(key=_rank_key)
         public = [
             {k: v for k, v in item.items() if not k.startswith("_")} for item in items
         ]
-        return {"ok": True, "items": public, "sources": sources, "reason": None}
+        return {"ok": True, "items": public, "sources": sources, "reason": None, **scanned}
     except Exception as exc:  # noqa: BLE001 — surfaced honestly, never faked
         LOG.info("people search failed for %r: %s", query, exc)
         return {
             "ok": False,
             "items": [],
             "sources": [],
-            "reason": f"wikipedia/wikidata: {exc}",
+            "reason": f"wikipedia/wikidata: {str(exc) or type(exc).__name__}",
         }
 
 

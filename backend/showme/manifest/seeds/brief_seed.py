@@ -66,8 +66,8 @@ def brief() -> FunctionManifest:
                 label="Sections",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="Which sections to render in the brief.",
-                options=["top_stories", "positions", "watchlist", "calendar", "next_actions"],
+                description="Which article sections to render: top_stories (cross-asset headlines) and watchlist (per-symbol headlines). Other values are reported in warnings and skipped.",
+                options=["top_stories", "watchlist"],
             ),
             InputSpec(
                 name="limit",
@@ -100,7 +100,7 @@ def brief() -> FunctionManifest:
         ],
         defaults={
             "watchlist": [],
-            "sections": ["top_stories", "positions", "watchlist", "calendar", "next_actions"],
+            "sections": ["top_stories", "watchlist"],
             "limit": 25,
             "live": True,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
@@ -125,11 +125,11 @@ def brief() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="published_utc", label="Time", kind="datetime", format="rel-time"),
+                ColumnSpec(key="published_at", label="Time", kind="datetime", format="rel-time"),
                 ColumnSpec(key="matched_symbol", label="Symbol", kind="tag"),
                 ColumnSpec(key="source", label="Source", kind="tag"),
                 ColumnSpec(key="title", label="Title", kind="text"),
-                ColumnSpec(key="evidence_url", label="Evidence", kind="action"),
+                ColumnSpec(key="url", label="Evidence", kind="action"),
             ],
             sortable=True,
             filterable=True,
@@ -144,25 +144,34 @@ def brief() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "BRIEF composes the briefing from existing surfaces — it does NOT call an LLM and "
-            "does NOT fabricate prose. (1) With no watchlist input, read the symbols of the user's portfolio positions (engine.portfolio.state) and of the saved watchlists (watchlist store), and merge them; an explicit watchlist input replaces that default. With no symbols at all the status is 'needs_input' and no news is fetched. (2) Call TOP() for cross-asset top news and once per symbol (capped) for symbol-scoped headlines. READ() and ECO() are not called. The markdown output lists each section as a "
-            "bulleted set of headlines with the source publisher in parentheses and a direct "
-            "link to the original article — every bullet is a cite. The structured `articles` "
-            "array carries the same rows so downstream callers can re-render without re-parsing "
-            "markdown. When no articles can be fetched (e.g. all news adapters down), status is "
-            "'provider_unavailable' and the markdown body is replaced with a setup-hint section "
-            "naming the failed providers — the brief never invents a 'no news today, all quiet' "
-            "summary."
+            "BRIEF composes the briefing from the Awareness news service — it does NOT call an LLM "
+            "and does NOT fabricate prose. (1) With no watchlist input, read the symbols of the "
+            "user's portfolio positions (engine.portfolio.state) and of the saved watchlists "
+            "(watchlist store), and merge them; an explicit watchlist input replaces that default. "
+            "With the watchlist section requested and no symbols at all, the status is 'needs_input' "
+            "and no news is fetched. (2) The top_stories section is one TOP() call (cross-asset "
+            "Awareness top stories, standard quality or better); the watchlist section is one CN() "
+            "call per symbol (the first 12). READ() and ECO() are not called. The sections input "
+            "selects which sections are composed (default both); other requested sections are "
+            "reported in warnings, and a request with no recognised section is 'input_error'. The "
+            "limit applies per section. The markdown lists each section under its own heading; every "
+            "bullet links to its article and names the publisher, tier, quality verdict and the "
+            "sentiment label Awareness assigned (BRIEF never re-scores sentiment). The structured "
+            "`articles` array carries the same rows so downstream callers can re-render without "
+            "re-parsing markdown. If every call fails, status is 'provider_unavailable' with "
+            "Awareness's reason; if some fail, the brief stays live with partial=true and names the "
+            "missing legs; 'empty' means Awareness answered and no headline matched — the brief "
+            "never invents a 'no news today, all quiet' summary."
         ),
         field_dict={
-            "status": FieldDef(description="ok / reference / provider_unavailable.", source="derived"),
+            "status": FieldDef(description="ok / empty / provider_unavailable / needs_input / input_error.", source="derived"),
             "markdown": FieldDef(description="Markdown rendering of the brief — every bullet links to its evidence row.", source="composed"),
             "articles": FieldDef(description="Structured rows of the headlines cited in the markdown body.", source="read"),
             "watchlist": FieldDef(description="Effective watchlist used (input + positions).", source="composed"),
             "article_count": FieldDef(unit="count", description="Number of cited articles.", source="derived"),
-            "articles[].evidence_url": FieldDef(unit="url", description="Direct HTTPS link to the source article — the evidence cite.", source="read"),
+            "articles[].url": FieldDef(unit="url", description="Direct HTTPS link to the source article — the evidence cite (same value as articles[].link).", source="read"),
             "articles[].title": FieldDef(description="Headline text quoted from the source.", source="read"),
-            "articles[].source": FieldDef(description="Publisher domain.", source="read"),
+            "articles[].source": FieldDef(description="Publisher name (for RSS items, the feed title).", source="read"),
             "articles[].matched_symbol": FieldDef(description="Symbol this article was tagged to.", source="read"),
             "next_actions": FieldDef(description="Suggested follow-up actions (e.g. 'no live headlines — broaden watchlist').", source="derived"),
         },
@@ -175,7 +184,7 @@ def brief() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="brief_evidence_links_present",
-                description="Asserts every bullet in markdown has an http(s) link AND every articles[] row has a non-empty evidence_url. The brief must cite, never summarize without evidence.",
+                description="Asserts every bullet in markdown has an http(s) link AND every articles[] row has a non-empty url. The brief must cite, never summarize without evidence.",
                 inputs={"watchlist": ["AAPL", "MSFT"]},
                 assertions=[
                     "every_markdown_bullet_has_link",

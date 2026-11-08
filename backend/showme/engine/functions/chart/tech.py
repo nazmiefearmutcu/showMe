@@ -164,7 +164,35 @@ class TECHFunction(BaseFunction):
         if not self.deps.yfinance:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=["no yfinance"])
-        days = int(params.get("days", 365))
+        # wc1-g33 (TECH#5): studies selects the families that are returned (every
+        # family is still computed, then filtered). interval is validated against
+        # the supported list before any provider call.
+        try:
+            wanted = _requested_families(params.get("studies"))
+        except ValueError as exc:
+            return _input_error(instrument, str(exc))
+        # Case-sensitive on purpose: '1M' must not be lowercased into '1m'
+        # (minute bars). Anything outside the list is rejected, never mapped.
+        interval = str(params.get("interval", "1d") or "1d").strip()
+        if interval not in _SUPPORTED_INTERVALS:
+            return _input_error(
+                instrument,
+                f"interval {interval!r} is not supported; choose one of "
+                f"{', '.join(_SUPPORTED_INTERVALS)}",
+            )
+        # An absent look-back keeps the manifest default (365 days). An
+        # unparsable one is an input error, never a silent 365.
+        raw_days = params.get("days")
+        if raw_days is None or str(raw_days).strip() == "":
+            days = 365
+        else:
+            try:
+                days = int(raw_days)
+            except (TypeError, ValueError):
+                return _input_error(
+                    instrument, f"days {raw_days!r} is not a whole number of days",
+                )
+            days = max(7, min(3650, days))
         tail = _bounded_int(
             params.get("tail", params.get("bars", params.get("limit", 1000))),
             default=1000,
@@ -186,7 +214,7 @@ class TECHFunction(BaseFunction):
             df = await self.deps.yfinance.fetch(DataRequest(
                 kind=DataKind.OHLCV, instrument=instrument,
                 start=datetime.now(timezone.utc) - timedelta(days=days),
-                interval=params.get("interval", "1d"),
+                interval=interval,
             ))
         except Exception as exc:
             return FunctionResult(
@@ -197,12 +225,12 @@ class TECHFunction(BaseFunction):
                     "rows": [],
                     "ohlcv": [],
                     "summary": {"symbol": instrument.symbol, "days": days},
-                    "reason": f"yfinance fetch failed: {exc}",
+                    "reason": f"yfinance fetch failed: {str(exc) or type(exc).__name__}",
                     "next_actions": [
                         "Try again later or check symbol support.",
                     ],
                 },
-                warnings=[f"yfinance: {exc}"],
+                warnings=[f"yfinance: {str(exc) or type(exc).__name__}"],
                 sources=["yfinance"],
             )
         if df.empty:
@@ -227,6 +255,11 @@ class TECHFunction(BaseFunction):
                 },
                 warnings=["no price history"],
                 sources=["yfinance"],
+                # wc1-g33 (TECH#3): an empty frame proves nothing live. The
+                # explicit live=False veto keeps the sanitizer from pinning
+                # data_state=live on an empty body (the yfinance source name
+                # alone would).
+                metadata={"live": False, "data_mode": "empty"},
             )
 
         df = df.sort_index()
@@ -251,79 +284,99 @@ class TECHFunction(BaseFunction):
         ichi = _ichimoku(df)
 
         ohlcv = _ohlcv_rows(df)
+        # wc1-g33 (TECH#5): only the requested families reach the output. The
+        # wanted=None default (no studies sent) keeps every family, as before.
+        def _has(family: str) -> bool:
+            return wanted is None or family in wanted
+
         enriched_rows: list[dict[str, Any]] = []
         for base in ohlcv:
             idx = pd.Timestamp(base["date"])
-            row: dict[str, Any] = {
-                **base,
-                "sma_fast": _clean_float(sma_fast_s.get(idx)),
-                "sma_slow": _clean_float(sma_slow_s.get(idx)),
-                "ema": _clean_float(ema.get(idx)),
-                "rsi": _clean_float(rsi.get(idx)),
-                "macd": _clean_float(macd_df["macd"].get(idx)),
-                "macd_signal": _clean_float(macd_df["macd_signal"].get(idx)),
-                "macd_hist": _clean_float(macd_df["macd_hist"].get(idx)),
-                "atr": _clean_float(atr.get(idx)),
-                "adx": _clean_float(adx["adx"].get(idx)),
-                "stoch_k": _clean_float(stoch_df["stoch_k"].get(idx)),
-                "stoch_d": _clean_float(stoch_df["stoch_d"].get(idx)),
-                "tenkan": _clean_float(ichi["tenkan"].get(idx)),
-                "kijun": _clean_float(ichi["kijun"].get(idx)),
-                "senkou_a": _clean_float(ichi["senkou_a"].get(idx)),
-                "senkou_b": _clean_float(ichi["senkou_b"].get(idx)),
-            }
-            if obv is not None:
+            row: dict[str, Any] = dict(base)
+            if _has("SMA"):
+                row["sma_fast"] = _clean_float(sma_fast_s.get(idx))
+                row["sma_slow"] = _clean_float(sma_slow_s.get(idx))
+            if _has("EMA"):
+                row["ema"] = _clean_float(ema.get(idx))
+            if _has("RSI"):
+                row["rsi"] = _clean_float(rsi.get(idx))
+            if _has("MACD"):
+                row["macd"] = _clean_float(macd_df["macd"].get(idx))
+                row["macd_signal"] = _clean_float(macd_df["macd_signal"].get(idx))
+                row["macd_hist"] = _clean_float(macd_df["macd_hist"].get(idx))
+            if _has("ATR"):
+                row["atr"] = _clean_float(atr.get(idx))
+            if _has("ADX"):
+                row["adx"] = _clean_float(adx["adx"].get(idx))
+            if _has("Stochastic"):
+                row["stoch_k"] = _clean_float(stoch_df["stoch_k"].get(idx))
+                row["stoch_d"] = _clean_float(stoch_df["stoch_d"].get(idx))
+            if _has("Ichimoku"):
+                row["tenkan"] = _clean_float(ichi["tenkan"].get(idx))
+                row["kijun"] = _clean_float(ichi["kijun"].get(idx))
+                row["senkou_a"] = _clean_float(ichi["senkou_a"].get(idx))
+                row["senkou_b"] = _clean_float(ichi["senkou_b"].get(idx))
+            if obv is not None and _has("OBV"):
                 row["obv"] = _clean_float(obv.get(idx))
             enriched_rows.append(row)
 
-        summary = {
-            "last_price": float(df["close"].iloc[-1]),
-            "rsi": _clean_float(rsi.iloc[-1]),
-            "atr": _clean_float(atr.iloc[-1]),
-            "adx": _clean_float(adx["adx"].iloc[-1]),
-            "macd": _clean_float(macd_df["macd"].iloc[-1]),
-            "macd_signal": _clean_float(macd_df["macd_signal"].iloc[-1]),
-            "stoch_k": _clean_float(stoch_df["stoch_k"].iloc[-1]),
-            "stoch_d": _clean_float(stoch_df["stoch_d"].iloc[-1]),
-            "obv": _clean_float(obv.iloc[-1]) if obv is not None else None,
-            "tenkan": _clean_float(ichi["tenkan"].iloc[-1]),
-            "kijun": _clean_float(ichi["kijun"].iloc[-1]),
-            "samples": len(ohlcv),
-        }
+        summary: dict[str, Any] = {"last_price": float(df["close"].iloc[-1])}
+        if _has("RSI"):
+            summary["rsi"] = _clean_float(rsi.iloc[-1])
+        if _has("ATR"):
+            summary["atr"] = _clean_float(atr.iloc[-1])
+        if _has("ADX"):
+            summary["adx"] = _clean_float(adx["adx"].iloc[-1])
+        if _has("MACD"):
+            summary["macd"] = _clean_float(macd_df["macd"].iloc[-1])
+            summary["macd_signal"] = _clean_float(macd_df["macd_signal"].iloc[-1])
+        if _has("Stochastic"):
+            summary["stoch_k"] = _clean_float(stoch_df["stoch_k"].iloc[-1])
+            summary["stoch_d"] = _clean_float(stoch_df["stoch_d"].iloc[-1])
+        if _has("OBV") and obv is not None:
+            summary["obv"] = _clean_float(obv.iloc[-1])
+        if _has("Ichimoku"):
+            summary["tenkan"] = _clean_float(ichi["tenkan"].iloc[-1])
+            summary["kijun"] = _clean_float(ichi["kijun"].iloc[-1])
+        summary["samples"] = len(ohlcv)
         results: dict[str, Any] = {
             "model": "builtin",
             "ohlcv": ohlcv[-tail:],
             "bars": ohlcv[-tail:],
             "rows": enriched_rows[-tail:],
             "indicators": {
-                f"sma_{sma_fast}": _points(sma_fast_s.tail(tail), 4),
-                f"sma_{sma_slow}": _points(sma_slow_s.tail(tail), 4),
-                f"ema_{ema_period}": _points(ema.tail(tail), 4),
-                "bb_upper": _points(bb["bb_upper"].tail(tail), 4),
-                "bb_mid": _points(bb["bb_mid"].tail(tail), 4),
-                "bb_lower": _points(bb["bb_lower"].tail(tail), 4),
-                "stoch_k": _points(stoch_df["stoch_k"].tail(tail), 4),
-                "stoch_d": _points(stoch_df["stoch_d"].tail(tail), 4),
-                "tenkan": _points(ichi["tenkan"].tail(tail), 4),
-                "kijun": _points(ichi["kijun"].tail(tail), 4),
-                "senkou_a": _points(ichi["senkou_a"].tail(tail), 4),
-                "senkou_b": _points(ichi["senkou_b"].tail(tail), 4),
-                **({"obv": _points(obv.tail(tail), 2)} if obv is not None else {}),
+                **({f"sma_{sma_fast}": _points(sma_fast_s.tail(tail), 4),
+                    f"sma_{sma_slow}": _points(sma_slow_s.tail(tail), 4)} if _has("SMA") else {}),
+                **({f"ema_{ema_period}": _points(ema.tail(tail), 4)} if _has("EMA") else {}),
+                **({"bb_upper": _points(bb["bb_upper"].tail(tail), 4),
+                    "bb_mid": _points(bb["bb_mid"].tail(tail), 4),
+                    "bb_lower": _points(bb["bb_lower"].tail(tail), 4)} if _has("BB") else {}),
+                **({"stoch_k": _points(stoch_df["stoch_k"].tail(tail), 4),
+                    "stoch_d": _points(stoch_df["stoch_d"].tail(tail), 4)} if _has("Stochastic") else {}),
+                **({"tenkan": _points(ichi["tenkan"].tail(tail), 4),
+                    "kijun": _points(ichi["kijun"].tail(tail), 4),
+                    "senkou_a": _points(ichi["senkou_a"].tail(tail), 4),
+                    "senkou_b": _points(ichi["senkou_b"].tail(tail), 4)} if _has("Ichimoku") else {}),
+                **({"obv": _points(obv.tail(tail), 2)} if obv is not None and _has("OBV") else {}),
             },
             "indicator_rows": [
-                {"indicator": "RSI", "value": summary["rsi"], "period": rsi_period, "formula": "100 - 100 / (1 + average_gain / average_loss)"},
-                {"indicator": "MACD", "value": summary["macd"], "period": f"{macd_fast}/{macd_slow}/{macd_signal}", "formula": "EMA(fast) - EMA(slow); signal = EMA(MACD)"},
-                {"indicator": "ATR", "value": summary["atr"], "period": atr_period, "formula": "EMA(true range)"},
-                {"indicator": "ADX", "value": summary["adx"], "period": adx_period, "formula": "EMA(DX) from +DI and -DI"},
-                {"indicator": "Stochastic %K", "value": summary["stoch_k"], "period": f"{stoch_k_period}/{stoch_d_period}", "formula": "100 * (close - low_k) / (high_k - low_k); %D = SMA(%K)"},
-                {"indicator": "OBV", "value": summary["obv"], "period": "cumulative", "formula": "sum(sign(close.diff) * volume)"},
-                {"indicator": "Ichimoku tenkan", "value": summary["tenkan"], "period": "9", "formula": "(rolling_max(high,9) + rolling_min(low,9)) / 2"},
-                {"indicator": "Ichimoku kijun", "value": summary["kijun"], "period": "26", "formula": "(rolling_max(high,26) + rolling_min(low,26)) / 2"},
+                family_row for family, family_row in (
+                    ("RSI", {"indicator": "RSI", "value": summary.get("rsi"), "period": rsi_period, "formula": "100 - 100 / (1 + average_gain / average_loss)"}),
+                    ("MACD", {"indicator": "MACD", "value": summary.get("macd"), "period": f"{macd_fast}/{macd_slow}/{macd_signal}", "formula": "EMA(fast) - EMA(slow); signal = EMA(MACD)"}),
+                    ("ATR", {"indicator": "ATR", "value": summary.get("atr"), "period": atr_period, "formula": "EMA(true range)"}),
+                    ("ADX", {"indicator": "ADX", "value": summary.get("adx"), "period": adx_period, "formula": "EMA(DX) from +DI and -DI"}),
+                    ("Stochastic", {"indicator": "Stochastic %K", "value": summary.get("stoch_k"), "period": f"{stoch_k_period}/{stoch_d_period}", "formula": "100 * (close - low_k) / (high_k - low_k); %D = SMA(%K)"}),
+                    ("OBV", {"indicator": "OBV", "value": summary.get("obv"), "period": "cumulative", "formula": "sum(sign(close.diff) * volume)"}),
+                    ("Ichimoku", {"indicator": "Ichimoku tenkan", "value": summary.get("tenkan"), "period": "9", "formula": "(rolling_max(high,9) + rolling_min(low,9)) / 2"}),
+                    ("Ichimoku", {"indicator": "Ichimoku kijun", "value": summary.get("kijun"), "period": "26", "formula": "(rolling_max(high,26) + rolling_min(low,26)) / 2"}),
+                ) if _has(family)
             ],
             "summary": summary,
             "bar_count": min(len(ohlcv), tail),
-            "resolution": params.get("interval", "1d"),
-            "deep_history": tail > 120,
+            "resolution": interval,
+            # wc1-g33 (TECH#6): depth of the fetched history, not the number of
+            # bars the caller asked to see (tail is only a display window).
+            "deep_history": len(ohlcv) > 120,
             "indicator_params": {
                 "rsi_period": rsi_period,
                 "sma_fast": sma_fast,
@@ -369,7 +422,7 @@ class TECHFunction(BaseFunction):
             code=self.code, instrument=instrument,
             data=results, sources=["yfinance"],
             metadata={"live": True, "data_mode": "live_yfinance",
-                      "interval": params.get("interval", "1d"), "days": days, "tail": tail},
+                      "interval": interval, "days": days, "tail": tail},
         )
 
 
@@ -379,3 +432,55 @@ def _bounded_int(value: Any, *, default: int, low: int, high: int) -> int:
     except Exception:
         parsed = default
     return max(low, min(high, parsed))
+
+
+# wc1-g33 (TECH#5): the intervals the pane offers (the seed's `interval`
+# options). Every one maps through the yfinance adapter's interval table.
+_SUPPORTED_INTERVALS: tuple[str, ...] = ("1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo")
+
+# Canonical family names, keyed by upper-case alias. These are the seed's
+# `studies` options.
+_STUDY_FAMILIES: dict[str, str] = {
+    name.upper(): name
+    for name in ("SMA", "EMA", "BB", "Ichimoku", "RSI", "MACD", "ATR", "ADX", "Stochastic", "OBV")
+}
+
+
+def _requested_families(raw: Any) -> frozenset[str] | None:
+    """Return the study families the caller asked for.
+
+    ``None`` means no studies were sent, so every family is returned (the
+    pane's default view). An unknown family name raises ValueError rather than
+    being dropped silently.
+    """
+    if raw is None:
+        return None
+    items = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
+    names = [str(item).strip() for item in items if str(item).strip()]
+    if not names:
+        return None
+    unknown = [name for name in names if name.upper() not in _STUDY_FAMILIES]
+    if unknown:
+        raise ValueError(
+            f"unknown studies: {', '.join(unknown)}; choose from "
+            f"{', '.join(_STUDY_FAMILIES.values())}"
+        )
+    return frozenset(_STUDY_FAMILIES[name.upper()] for name in names)
+
+
+def _input_error(instrument: Instrument | None, reason: str) -> FunctionResult:
+    """Honest input-rejection envelope: no provider call, no fabricated rows."""
+    return FunctionResult(
+        code="TECH",
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "rows": [],
+            "ohlcv": [],
+            "summary": {"symbol": instrument.symbol if instrument else None},
+            "reason": reason,
+            "next_actions": ["Pick a supported interval and study families, then rerun."],
+        },
+        warnings=[reason],
+        sources=[],
+    )

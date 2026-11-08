@@ -56,3 +56,22 @@ def test_status_families(inner, expected):
 ])
 def test_real_payloads_stay_ok(data):
     assert envelope("XYZ", data)["status"] == "ok"
+
+
+def test_router_default_symbol_is_labelled_not_silent():
+    """XCON-5: a symbol the router injected (__explicit_symbol=False) is named in
+    the envelope and in the visible warnings, for every function."""
+    payload = {"data": {"symbol": "EURUSD", "price": 1.08}, "sources": ["yfinance"], "metadata": {},
+               "warnings": []}
+    out = normalize_function_contract("FXFC", {"symbol": "EURUSD", "__explicit_symbol": False}, payload)
+    assert out["defaultedInputs"] == {"symbol": "EURUSD"}
+    assert any("default symbol EURUSD" in w for w in out["warnings"])
+    assert "__explicit_symbol" not in out["inputEcho"]
+
+
+def test_explicit_symbol_is_not_labelled_as_default():
+    payload = {"data": {"symbol": "GBPJPY", "price": 190.0}, "sources": ["yfinance"], "metadata": {},
+               "warnings": []}
+    out = normalize_function_contract("FXFC", {"symbol": "GBPJPY"}, payload)
+    assert "defaultedInputs" not in out
+    assert not any("default symbol" in w for w in out["warnings"])

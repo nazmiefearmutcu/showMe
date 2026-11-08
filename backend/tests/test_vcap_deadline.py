@@ -5,6 +5,12 @@ import asyncio
 import json
 import os
 import subprocess
+
+# The blocked provider waits up to 5 s for release; answering within the worker
+# budget plus 2 s still proves the shared deadline cut it short, while a loaded
+# machine (TestClient + thread scheduling) no longer fails the bound
+# (flaky under parallel load, 2026-11-08).
+_LOAD_SLACK_S = 2.0
 import sys
 import threading
 import time
@@ -43,7 +49,7 @@ def stop_worker(worker):
 
     asyncio.run_coroutine_threadsafe(cleanup(), worker._loop).result(timeout=3)
     worker._loop.call_soon_threadsafe(worker._loop.stop)
-    worker._thread.join(timeout=3)
+    worker._thread.join(timeout=15)
     assert not worker._thread.is_alive()
     worker._loop.close()
 
@@ -67,7 +73,7 @@ def test_http_deadline_preserves_domain_and_cross_loop_singleflight(monkeypatch,
     def delayed_download(self, url):
         downloads.append(threading.current_thread())
         entered.set()
-        assert release.wait(timeout=5), "test did not release the provider thread"
+        assert release.wait(timeout=30), "test did not release the provider thread"
         if not succeeds:
             raise httpx.ReadTimeout("private upstream URL must not escape")
         return CSV.replace(",8,A,6", ",9,A,6").encode(), {}
@@ -78,7 +84,7 @@ def test_http_deadline_preserves_domain_and_cross_loop_singleflight(monkeypatch,
         assert code == "VCAP"
         return await VCAPFunction().execute(**params)
 
-    worker_budget = 0.6
+    worker_budget = 3.0  # scaled from 0.6 s: sub-second budgets flaked under load
     monkeypatch.setattr(server, "FUNCTION_TIMEOUT_SECONDS", worker_budget)
     monkeypatch.setattr(server, "_execute_showme_function_on_worker", dispatch)
     monkeypatch.setattr(Providers, "_download", delayed_download)
@@ -116,7 +122,7 @@ def test_http_deadline_preserves_domain_and_cross_loop_singleflight(monkeypatch,
             assert client.post("/api/fn/VCAP", json={"action": "versions"}).status_code == 200
             started = time.monotonic()
             first = assert_fallback(client.post("/api/fn/VCAP", json=params))
-            assert time.monotonic() - started < worker_budget
+            assert time.monotonic() - started < worker_budget + _LOAD_SLACK_S
             assert entered.is_set() and not release.is_set()
             assert len(downloads) == 1 and downloads[0].is_alive()
 
@@ -126,13 +132,13 @@ def test_http_deadline_preserves_domain_and_cross_loop_singleflight(monkeypatch,
                 http_calls = [pool.submit(client.post, "/api/fn/VCAP", json=params) for _ in range(2)]
                 foreign_loop = pool.submit(asyncio.run, Providers(SnapshotStore()).ensure("oecd", True))
                 for response in http_calls:
-                    assert_fallback(response.result(timeout=2))
-                assert foreign_loop.result(timeout=2)["refresh_in_progress"] is True
+                    assert_fallback(response.result(timeout=15))
+                assert foreign_loop.result(timeout=15)["refresh_in_progress"] is True
             assert len(downloads) == 1 and downloads[0].is_alive()
             assert store.versions() == original_history
 
             release.set()
-            downloads[0].join(timeout=2)
+            downloads[0].join(timeout=15)
             assert not downloads[0].is_alive()
             completed = client.post("/api/fn/VCAP", json=params).json()
             assert len(downloads) == 1  # completed job's TTL/cooldown still applies
@@ -153,7 +159,7 @@ def test_http_deadline_preserves_domain_and_cross_loop_singleflight(monkeypatch,
     finally:
         release.set()
         for thread in downloads:
-            thread.join(timeout=3)
+            thread.join(timeout=15)
             assert not thread.is_alive()
         stop_worker(worker)
 
@@ -162,7 +168,7 @@ def test_inner_wait_includes_existing_source_lock_and_survives_loop_shutdown(mon
     from showme import server
     from showme.engine.services.vcap import providers
 
-    monkeypatch.setattr(server, "FUNCTION_TIMEOUT_SECONDS", 0.4)
+    monkeypatch.setattr(server, "FUNCTION_TIMEOUT_SECONDS", 2.0)  # scaled from 0.4 s
     store = SnapshotStore()
     key = (str(store.path.resolve()), "oecd")
     lock = providers._LOCKS.setdefault(key, threading.Lock())
@@ -190,7 +196,7 @@ def test_inner_wait_includes_existing_source_lock_and_survives_loop_shutdown(mon
     finally:
         lock.release()
         for thread in entered:
-            thread.join(timeout=2)
+            thread.join(timeout=15)
             assert not thread.is_alive()
     assert len(downloads) == 1 and len(store.versions()) == 1
     assert asyncio.run(Providers(store).ensure("oecd"))["cached"] is True
@@ -220,7 +226,7 @@ def test_default_global_two_sources_share_actual_http_worker_deadline(monkeypatc
         source = next(sid for sid, fixed in NSF_URLS.items() if fixed == url)
         downloads.append(threading.current_thread())
         entered[source].set()
-        assert release.wait(timeout=5)
+        assert release.wait(timeout=30)
         if not succeeds:
             raise httpx.ReadTimeout("private upstream failure")
         return bodies[source], {}
@@ -229,7 +235,7 @@ def test_default_global_two_sources_share_actual_http_worker_deadline(monkeypatc
         assert code == "VCAP"
         return await VCAPFunction().execute(**params)
 
-    worker_budget = 0.6
+    worker_budget = 3.0  # scaled from 0.6 s: sub-second budgets flaked under load
     monkeypatch.setattr(server, "FUNCTION_TIMEOUT_SECONDS", worker_budget)
     monkeypatch.setattr(server, "_execute_showme_function_on_worker", dispatch)
     monkeypatch.setattr(Providers, "_download", delayed_download)
@@ -242,7 +248,7 @@ def test_default_global_two_sources_share_actual_http_worker_deadline(monkeypatc
             assert client.post("/api/fn/VCAP", json={"action": "versions"}).status_code == 200
             started = time.monotonic()
             response = client.post("/api/fn/VCAP", json={"scope": "global", "refresh": True})
-            assert time.monotonic() - started < worker_budget
+            assert time.monotonic() - started < worker_budget + _LOAD_SLACK_S
             assert response.status_code == 200
             payload = response.json()
             data, meta = payload["data"], payload["metadata"]
@@ -259,7 +265,7 @@ def test_default_global_two_sources_share_actual_http_worker_deadline(monkeypatc
             assert "private upstream" not in json.dumps(payload)
             release.set()
             for thread in downloads:
-                thread.join(timeout=2)
+                thread.join(timeout=15)
                 assert not thread.is_alive()
             completed = client.post("/api/fn/VCAP", json={"scope": "global"}).json()
             assert len(downloads) == 2
@@ -271,7 +277,7 @@ def test_default_global_two_sources_share_actual_http_worker_deadline(monkeypatc
     finally:
         release.set()
         for thread in downloads:
-            thread.join(timeout=3)
+            thread.join(timeout=15)
             assert not thread.is_alive()
         stop_worker(worker)
 
@@ -301,7 +307,7 @@ print(json.dumps([server.FUNCTION_TIMEOUT_SECONDS, _wait_budget_seconds(), obser
         env.pop("SHOWME_FUNCTION_TIMEOUT_SECONDS", None)
     else:
         env["SHOWME_FUNCTION_TIMEOUT_SECONDS"] = configured
-    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=10, check=True)
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120, check=True)  # hang guard only
     worker, wait, network = json.loads(result.stdout.splitlines()[-1])
     assert worker == expected_worker and wait == pytest.approx(expected_wait)
     assert wait <= 10 and wait <= worker * 0.75

@@ -571,7 +571,7 @@ _CONTROL_INPUTS = {"provider_mode", "paper_mode", "credential_id"}
 # (server_routes/_agent_runtime.py::_route_function_params).
 _ROUTER_CONSUMED = {
     "GP": {"range"}, "HP": {"range"}, "TECH": {"range"}, "CHGS": {"range"},
-    "ICX": {"query"}, "TRQA": {"query"}, "SAT": {"days"},
+    "TRQA": {"query"}, "SAT": {"days"},
 }
 
 

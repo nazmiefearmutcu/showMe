@@ -19,6 +19,11 @@ cites the row it came from. BRIEF never re-scores sentiment: Awareness already
 scored each row, and a row without a sentiment label keeps none. BRIEF does not
 call an LLM and never fabricates prose.
 
+``sections`` selects which article sections are composed (top_stories, watchlist;
+default both) and ``limit`` caps each section separately. A requested section
+BRIEF does not compose is reported in warnings; a request with no recognised
+section is ``input_error``. With sections=top_stories alone no watchlist is needed.
+
 Honest state: every leg unavailable -> ``provider_unavailable`` with Awareness's
 reason; any leg served from a cached snapshot -> ``cached_snapshot`` with
 ``live`` false; otherwise ``live_official``.
@@ -47,6 +52,12 @@ MACRO_LIMIT_CAP = 15
 WATCHLIST_HOURS = 24
 # Symbol-scoped headline calls are capped; the rest are listed, not searched.
 MAX_WATCHLIST_SYMBOLS = 12
+
+
+def _describe(exc: BaseException) -> str:
+    """``Type: message``, or just ``Type`` when the exception carries no message (e.g. a timeout)."""
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
 @dataclass
@@ -94,6 +105,16 @@ class BRIEFFunction(BaseFunction):
         # empty shape with no headlines fetched, never the old fabricated template.
         live = _truthy(params.get("live_news"), params.get("live"), default=True)
         limit = _clamp_int(params.get("limit"), default=25, min_value=1, max_value=50)
+        # BRIEF#3: ``sections`` selects which article sections are composed; ``limit`` is
+        # applied per section. Omitted/empty means both sections.
+        requested_sections = _requested_sections(params.get("sections"))
+        chosen_sections = [s for s in _ARTICLE_SECTIONS if requested_sections is None or s in requested_sections]
+        # A requested section BRIEF does not compose is reported, never silently dropped.
+        unsupported_sections = [s for s in (requested_sections or []) if s not in _ARTICLE_SECTIONS]
+        if unsupported_sections:
+            base_warnings.append(
+                "Sections not implemented by BRIEF and skipped: " + ", ".join(unsupported_sections) + "."
+            )
 
         if not live:
             return FunctionResult(
@@ -109,6 +130,8 @@ class BRIEFFunction(BaseFunction):
                     "symbols_searched": [],
                     "article_count": 0,
                     "legs": [],
+                    "sections": chosen_sections,
+                    "unsupported_sections": unsupported_sections,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards(watchlist, 0, "off", positions_covered),
@@ -122,7 +145,33 @@ class BRIEFFunction(BaseFunction):
                 metadata={"format": "markdown", "live": False, "data_mode": "off"},
             )
 
-        if not watchlist:
+        if not chosen_sections:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "markdown": _input_error_markdown(requested_sections or []),
+                    "articles": [],
+                    "rows": [],
+                    "watchlist": watchlist,
+                    "watchlist_source": watchlist_source,
+                    "symbols_searched": [],
+                    "article_count": 0,
+                    "legs": [],
+                    "sections": [],
+                    "unsupported_sections": unsupported_sections,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards(watchlist, 0, "input_error", positions_covered),
+                    "next_actions": ["Pass sections=top_stories, sections=watchlist, or both."],
+                },
+                sources=["watchlist_brief_builder"],
+                warnings=[*base_warnings, "No recognised article section requested."],
+                metadata={"format": "markdown", "live": False, "data_mode": "explicit_unavailable"},
+            )
+
+        if not watchlist and "watchlist" in chosen_sections:
             # No positions, no saved watchlists, no input: say so and fetch nothing.
             return FunctionResult(
                 code=self.code,
@@ -137,6 +186,8 @@ class BRIEFFunction(BaseFunction):
                     "symbols_searched": [],
                     "article_count": 0,
                     "legs": [],
+                    "sections": chosen_sections,
+                    "unsupported_sections": unsupported_sections,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards([], 0, "needs_input", 0),
@@ -150,14 +201,15 @@ class BRIEFFunction(BaseFunction):
                 metadata={"format": "markdown", "live": False, "data_mode": "explicit_unavailable"},
             )
 
-        wl_symbols = watchlist[:MAX_WATCHLIST_SYMBOLS]
-        if len(watchlist) > len(wl_symbols):
+        want_macro = "top_stories" in chosen_sections
+        wl_symbols = watchlist[:MAX_WATCHLIST_SYMBOLS] if "watchlist" in chosen_sections else []
+        if "watchlist" in chosen_sections and len(watchlist) > len(wl_symbols):
             base_warnings.append(
                 f"Symbol headlines searched for the first {len(wl_symbols)} of {len(watchlist)} symbols."
             )
         per_symbol = max(3, min(limit // max(1, len(wl_symbols) + 1), 10))
         legs = await asyncio.gather(
-            self._macro_leg(min(limit, MACRO_LIMIT_CAP)),
+            *([self._macro_leg(min(limit, MACRO_LIMIT_CAP))] if want_macro else []),
             *[self._symbol_leg(sym, per_symbol) for sym in wl_symbols],
         )
         return _assemble(
@@ -170,6 +222,8 @@ class BRIEFFunction(BaseFunction):
             symbols_searched=wl_symbols,
             positions_covered=positions_covered,
             base_warnings=base_warnings,
+            sections=chosen_sections,
+            unsupported_sections=unsupported_sections,
         )
 
     def _child(self, cls: type) -> Any:
@@ -181,7 +235,7 @@ class BRIEFFunction(BaseFunction):
         try:
             res = await self._child(TOPFunction).execute(limit=limit)
         except Exception as exc:  # a leg must never sink the whole brief
-            return _Leg(MACRO_TAG, "top_stories", reason=f"TOP: {type(exc).__name__}: {exc}")
+            return _Leg(MACRO_TAG, "top_stories", reason=f"TOP: {_describe(exc)}")
         return _leg_from_result(MACRO_TAG, "top_stories", res)
 
     async def _symbol_leg(self, symbol: str, limit: int) -> _Leg:
@@ -189,7 +243,7 @@ class BRIEFFunction(BaseFunction):
         try:
             res = await self._child(CNFunction).execute(symbol=symbol, hours=WATCHLIST_HOURS, limit=limit)
         except Exception as exc:
-            return _Leg(tag, "watchlist", reason=f"CN: {type(exc).__name__}: {exc}")
+            return _Leg(tag, "watchlist", reason=f"CN: {_describe(exc)}")
         return _leg_from_result(tag, "watchlist", res)
 
 
@@ -223,7 +277,10 @@ def _assemble(
     symbols_searched: list[str] | None = None,
     positions_covered: int | None = None,
     base_warnings: list[str] | None = None,
+    sections: list[str] | None = None,
+    unsupported_sections: list[str] | None = None,
 ) -> FunctionResult:
+    wanted = [s for s in _ARTICLE_SECTIONS if sections is None or s in sections]
     # Watchlist legs go first so a story that matches both a symbol and the macro
     # list keeps the symbol tag.
     ordered = sorted(legs, key=lambda leg: 0 if leg.section == "watchlist" else 1)
@@ -240,8 +297,11 @@ def _assemble(
             articles.append(cleaned)
             if key:
                 seen.add(key)
-    articles.sort(key=lambda a: 0 if a.get("section") == "watchlist" else 1)
-    articles = articles[:limit]
+    # BRIEF#3: ``limit`` caps each section separately, so a long watchlist cannot push every
+    # top story out of the brief. Watchlist stories are listed first, then macro top stories.
+    watch_rows = [a for a in articles if a.get("section") == "watchlist"][:limit]
+    macro_rows = [a for a in articles if a.get("section") == "top_stories"][:limit]
+    articles = [*watch_rows, *macro_rows]
 
     answered = [leg for leg in legs if leg.reason is None]
     unavailable = [leg for leg in legs if leg.reason is not None]
@@ -300,7 +360,7 @@ def _assemble(
         next_actions = []
 
     source_label = _SOURCE_LABELS.get(watchlist_source, "Watchlist")
-    markdown = _compose_markdown(watchlist, articles, status, reason, leg_summary, data_mode, source_label)
+    markdown = _compose_markdown(watchlist, articles, status, reason, leg_summary, data_mode, source_label, wanted)
     data = {
         "status": status,
         "markdown": markdown,
@@ -311,6 +371,8 @@ def _assemble(
         "symbols_searched": list(symbols_searched or []),
         "article_count": len(articles),
         "legs": leg_summary,
+        "sections": wanted,
+        "unsupported_sections": list(unsupported_sections or []),
         "partial": partial,
         "missing_legs": missing,
         "methodology": _METHODOLOGY,
@@ -380,11 +442,15 @@ _METHODOLOGY = (
     "is provider_unavailable with Awareness's reason. A leg served from a cached snapshot marks the brief "
     "cached_snapshot with live false. If some legs fail while others answer, the brief stays live but "
     "sets partial true and names the missing legs. An empty brief means Awareness answered and no "
-    "headline matched."
+    "headline matched. The sections input selects the article sections (top_stories, watchlist; default "
+    "both); other requested sections are reported as not implemented, and a request with no recognised "
+    "section is input_error. With sections=top_stories alone no watchlist is needed. The limit applies "
+    "per section, so watchlist stories cannot push every top story out; the markdown lists each section "
+    "under its own heading."
 )
 
 _FIELD_DICTIONARY: dict[str, str] = {
-    "status": "ok / empty / provider_unavailable / needs_input.",
+    "status": "ok / empty / provider_unavailable / needs_input / input_error.",
     "markdown": "Markdown rendering of the brief; every bullet links to its evidence row.",
     "articles": "Structured rows of the headlines cited in the markdown body (Awareness news rows).",
     "articles[].title": "Headline text as published.",
@@ -401,6 +467,8 @@ _FIELD_DICTIONARY: dict[str, str] = {
     "watchlist_source": "input / positions_and_watchlists / instrument / none.",
     "symbols_searched": "Symbols that received a symbol-scoped CN call (capped at 12).",
     "article_count": "Number of cited articles.",
+    "sections": "Article sections composed (top_stories / watchlist).",
+    "unsupported_sections": "Requested sections BRIEF does not compose (reported in warnings, skipped).",
     "legs": "One entry per Awareness call: status, row count, stale flag and reason when unavailable.",
     "partial": "True when some legs failed while others answered: the rows are live, coverage is incomplete.",
     "missing_legs": "Legs (MACRO or symbols) that did not answer when partial is true.",
@@ -415,6 +483,21 @@ _SOURCE_LABELS = {
     "instrument": "Instrument",
     "none": "Watchlist",
 }
+
+
+_ARTICLE_SECTIONS = ("top_stories", "watchlist")
+
+
+def _requested_sections(raw: Any) -> list[str] | None:
+    """Normalise the ``sections`` input. ``None`` means the caller asked for no filter."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, (list, tuple, set)):
+        return None
+    out = [str(item).strip().lower() for item in raw if str(item or "").strip()]
+    return out or None
 
 
 def _normalise_symbols(values: list[Any]) -> list[str]:
@@ -439,13 +522,13 @@ def _portfolio_and_watchlist_symbols() -> tuple[list[str], list[str], list[str]]
         portfolio.import_legacy_crypto()
         portfolio_symbols = _normalise_symbols([p.instrument.symbol for p in portfolio.positions])
     except Exception as exc:  # reported honestly, not hidden
-        errors.append(f"Portfolio positions unavailable: {type(exc).__name__}: {exc}")
+        errors.append(f"Portfolio positions unavailable: {_describe(exc)}")
     try:
         for entry in list_watchlists():
             watch_symbols.extend(entry.get("symbols") or [])
         watch_symbols = _normalise_symbols(watch_symbols)
     except Exception as exc:
-        errors.append(f"Saved watchlists unavailable: {type(exc).__name__}: {exc}")
+        errors.append(f"Saved watchlists unavailable: {_describe(exc)}")
     return portfolio_symbols, watch_symbols, errors
 
 
@@ -515,6 +598,14 @@ def _dedupe_key(article: dict[str, Any]) -> str:
 
 def _clean_article(article: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(article)
+    # BRIEF#5: some rows carry the link as ``link``; the documented evidence field is ``url``.
+    link = str(cleaned.get("link") or "").strip()
+    if not cleaned.get("url") and link.lower().startswith(("http://", "https://")):
+        cleaned["url"] = link
+    # BRIEF#5: the documented ``source`` is the publisher, never an adapter tag such as "rss".
+    publisher = str(cleaned.get("publisher") or "").strip()
+    if publisher and str(cleaned.get("source") or "").strip().lower() in ("", "rss"):
+        cleaned["source"] = publisher
     for key in ("summary", "excerpt", "description", "snippet"):
         if isinstance(cleaned.get(key), str):
             cleaned[key] = _strip_html(cleaned[key])
@@ -537,25 +628,20 @@ def _compose_markdown(
     legs: list[dict[str, Any]],
     data_mode: str,
     source_label: str = "Watchlist",
+    sections: list[str] | None = None,
 ) -> str:
+    wanted = [s for s in _ARTICLE_SECTIONS if sections is None or s in sections]
+    headings = [(key, label) for key, label in (("watchlist", "Watchlist"), ("top_stories", "Top Stories")) if key in wanted]
     lines = [
         f"# ShowMe Daily Brief — {datetime.now(timezone.utc):%Y-%m-%d}",
         "",
-        f"**{source_label}:** {', '.join(watchlist)}",
+        f"**{source_label}:** {', '.join(watchlist) or 'none'}",
         "",
     ]
     if status == "provider_unavailable":
-        lines.extend(
-            [
-                "## Top Stories",
-                "",
-                f"- Awareness news service unavailable: {reason}.",
-                "",
-                "## Next actions",
-                "",
-                f"- {UNAVAILABLE_ACTIONS[0]}",
-            ]
-        )
+        for _key, label in headings:
+            lines.extend([f"## {label}", "", f"- Awareness news service unavailable: {reason}.", ""])
+        lines.extend(["## Next actions", "", f"- {UNAVAILABLE_ACTIONS[0]}"])
         return "\n".join(lines)
     if data_mode == "cached_snapshot":
         lines.extend(["**Cached snapshot:** an Awareness provider is down or degraded; these rows are cached.", ""])
@@ -563,39 +649,55 @@ def _compose_markdown(
     if gaps:
         parts = [f"{leg['leg']} ({'unavailable' if leg['reason'] is not None else 'cached'})" for leg in gaps]
         lines.extend([f"**Coverage gaps:** {', '.join(parts)}", ""])
-    lines.extend(["## Top Stories", ""])
     if not articles:
-        lines.extend(
-            [
-                "- No Awareness headlines matched the last 24 hours at standard quality.",
-                "",
-                "## Next actions",
-                "",
-                "- Add watchlist symbols or check the Awareness news service.",
-            ]
-        )
+        # Each requested section keeps its own heading and an honest empty line, nothing else.
+        for _key, label in headings:
+            lines.extend([f"## {label}", "", "- No Awareness headlines matched the last 24 hours at standard quality.", ""])
+        lines.extend(["## Next actions", "", "- Add watchlist symbols or check the Awareness news service."])
         return "\n".join(lines)
 
     top_symbols = sorted({str(a.get("matched_symbol") or "") for a in articles if a.get("matched_symbol")})
     if top_symbols:
         lines.extend([f"**Matched symbols:** {', '.join(top_symbols[:10])}", ""])
-    for a in articles:
-        title = a.get("title", "")
-        link = a.get("url") or a.get("link") or ""
-        sym = a.get("matched_symbol") or ""
-        evidence = [str(a.get("publisher") or a.get("source") or "")]
-        if a.get("publisher_tier") is not None:
-            evidence.append(f"tier {a.get('publisher_tier')}")
-        if a.get("quality_label"):
-            evidence.append(str(a.get("quality_label")))
-        if a.get("sentiment"):
-            evidence.append(str(a.get("sentiment")))
-        suffix = " — " + " · ".join(part for part in evidence if part)
-        if link:
-            lines.append(f"- ({sym}) [{title}]({link}){suffix}")
-        else:
-            lines.append(f"- ({sym}) {title}{suffix}")
-    return "\n".join(lines)
+    for key, label in headings:
+        lines.extend([f"## {label}", ""])
+        rows = [a for a in articles if a.get("section") == key]
+        if not rows:
+            lines.extend(["- No headlines in this section.", ""])
+            continue
+        for a in rows:
+            lines.append(_bullet(a))
+        lines.append("")
+    return "\n".join(lines).rstrip("\n")
+
+
+def _bullet(a: dict[str, Any]) -> str:
+    title = a.get("title", "")
+    link = a.get("url") or a.get("link") or ""
+    sym = a.get("matched_symbol") or ""
+    evidence = [str(a.get("publisher") or a.get("source") or "")]
+    if a.get("publisher_tier") is not None:
+        evidence.append(f"tier {a.get('publisher_tier')}")
+    if a.get("quality_label"):
+        evidence.append(str(a.get("quality_label")))
+    if a.get("sentiment"):
+        evidence.append(str(a.get("sentiment")))
+    suffix = " — " + " · ".join(part for part in evidence if part)
+    if link:
+        return f"- ({sym}) [{title}]({link}){suffix}"
+    return f"- ({sym}) {title}{suffix}"
+
+
+def _input_error_markdown(requested: list[str]) -> str:
+    return "\n".join(
+        [
+            f"# ShowMe Daily Brief — {datetime.now(timezone.utc):%Y-%m-%d}",
+            "",
+            f"**Sections requested:** {', '.join(requested) or 'none'}",
+            "",
+            "- No recognised article section was requested. Use top_stories and/or watchlist.",
+        ]
+    )
 
 
 def _no_compose_markdown(watchlist: list[str]) -> str:

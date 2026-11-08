@@ -98,7 +98,7 @@ async def _quick_scan(plan: Plan, deps: Any) -> dict[str, Any]:
         return _quick_scan_unavailable(plan, "scan timed out after 8.0s")
     except Exception as exc:  # noqa: BLE001
         LOG.warning("briefing quick scan failed: %r", exc)
-        return _quick_scan_unavailable(plan, f"scan failed: {exc}")
+        return _quick_scan_unavailable(plan, f"scan failed: {str(exc) or type(exc).__name__}")
     direction = (args.get("direction") or "").upper() or None
     rows = list(result.rows)
     if direction:
@@ -178,7 +178,7 @@ async def _function(plan: Plan, deps: Any, *, code: str,
         from showme.engine.core.base_function import FunctionRegistry
         from showme.engine.core.instrument import AssetClass, Instrument
     except Exception as exc:  # noqa: BLE001
-        return {"kind": "function", "warnings": [f"showme-import: {exc}"]}
+        return {"kind": "function", "warnings": [f"showme-import: {str(exc) or type(exc).__name__}"]}
     cls = FunctionRegistry.get(code.upper())
     if cls is None:
         return {"kind": "function", "warnings": [f"unknown code {code}"]}
@@ -192,7 +192,7 @@ async def _function(plan: Plan, deps: Any, *, code: str,
         res = await fn.execute_timed(instrument=instrument)
     except TypeError as exc:
         return {"kind": "function", "code": code,
-                "warnings": [f"argument error: {exc}"]}
+                "warnings": [f"argument error: {str(exc) or type(exc).__name__}"]}
     except Exception as exc:  # noqa: BLE001
         LOG.exception("function execute failed")
         return {"kind": "function", "code": code, "warnings": [str(exc)]}

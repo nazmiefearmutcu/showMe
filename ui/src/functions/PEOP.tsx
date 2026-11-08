@@ -37,11 +37,14 @@ import {
   RefreshButton,
 } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { safeHref } from "@/lib/safe-href";
 
 interface PEOPItem {
   full_name?: string;
   role?: string;
   company?: string;
+  /** "wikidata:P108" = an employer claim; "summary_pattern" = named in the summary text only (PEOP#7). */
+  company_source?: string | null;
   description?: string;
   summary?: string;
   nationality?: string;
@@ -70,6 +73,18 @@ interface PEOPData {
   methodology?: string;
 }
 
+/** PEOP#7: a company taken from summary text is not an employer claim. */
+function isMentionedCompany(r: PEOPItem): boolean {
+  return !!r.company && r.company_source === "summary_pattern";
+}
+
+function firmText(r: PEOPItem): string {
+  if (!r.company) return "";
+  return isMentionedCompany(r)
+    ? `${r.company} (mentioned in summary, not an employer claim)`
+    : r.company;
+}
+
 export function PEOPPane({ code }: FunctionPaneProps) {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
@@ -93,7 +108,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
     () => [
       { key: "full_name", header: "Name", value: (r) => r.full_name ?? "" },
       { key: "role", header: "Role / title", value: (r) => r.role ?? "" },
-      { key: "company", header: "Firm", value: (r) => r.company ?? "" },
+      { key: "company", header: "Firm", value: (r) => firmText(r) },
       { key: "bio", header: "Bio", value: (r) => r.bio ?? "" },
       {
         key: "contact_status",
@@ -165,6 +180,14 @@ export function PEOPPane({ code }: FunctionPaneProps) {
         render: (r) => (
           <span style={cellStackStyle}>
             <span style={titleStyle}>{r.company ?? "—"}</span>
+            {isMentionedCompany(r) && (
+              <span
+                style={summaryStyle}
+                title="Named in the Wikipedia summary text. Wikidata has no employer (P108) claim for this person."
+              >
+                mentioned in summary, not an employer claim
+              </span>
+            )}
             {r.nationality && <span style={summaryStyle}>{r.nationality}</span>}
           </span>
         ),
@@ -193,9 +216,9 @@ export function PEOPPane({ code }: FunctionPaneProps) {
         header: "Source",
         width: 140,
         render: (r) =>
-          r.profile_url ?? r.source_url ? (
+          safeHref(r.profile_url ?? r.source_url) ? (
             <a
-              href={r.profile_url ?? r.source_url}
+              href={safeHref(r.profile_url ?? r.source_url)}
               target="_blank"
               rel="noreferrer"
               style={linkStyle}
@@ -222,7 +245,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
                 buildTsvRow([
                   r.full_name,
                   r.role,
-                  r.company,
+                  firmText(r),
                   r.contact_status,
                   r.source_url ?? r.source,
                 ]),
@@ -288,7 +311,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
           <StatCard
             label="Top match"
             value={items[0]?.full_name ?? "—"}
-            caption={items[0]?.company ?? ""}
+            caption={items[0] ? firmText(items[0]) : ""}
             tone="neutral"
           />
         </section>

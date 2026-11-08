@@ -1,11 +1,9 @@
 {
   "_doc": "Offline truth-gate ratchet (backend/showme/audit/gate.py). Per function: count per '<check>:<rule>'. Counts may only go down. Regenerate downward with SHOWME_UPDATE_TRUTH_BASELINE=1 pytest tests/test_function_truth_gate.py.",
-  "total": 444,
+  "total": 365,
   "counts": {
     "ACCT": {
-      "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "AIM": {
       "T6:empty_description": 1,
@@ -26,22 +24,18 @@
     },
     "ANR": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "APPL": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:pane_control_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "AV": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "BBGT": {
       "T6:empty_description": 1,
@@ -68,19 +62,12 @@
     "BMC": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_input_ignored": 1
-    },
-    "BMTX": {
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "BOIL": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "BQL": {
       "T6:empty_description": 1,
@@ -96,17 +83,14 @@
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "BTFW": {
       "T9:manifest_control_ignored": 1,
       "T9:manifest_input_ignored": 1
     },
     "BTMM": {
-      "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "BTUNE": {
       "T9:manifest_control_ignored": 1
@@ -126,16 +110,12 @@
     },
     "CORR": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1,
       "T9:pane_param_ignored": 1
     },
     "COUN": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "CPF": {
       "T6:empty_description": 1,
@@ -158,8 +138,7 @@
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "DAPI": {
       "T6:empty_description": 1,
@@ -174,9 +153,7 @@
     "DCF": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "DCFS": {
       "T6:generic_inputs": 1,
@@ -193,8 +170,7 @@
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "DEBT": {
       "T6:empty_description": 1,
@@ -209,8 +185,7 @@
     "DINE": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "DPF": {
       "T6:generic_inputs": 1,
@@ -219,9 +194,7 @@
     "ECFC": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "ECST": {
       "T6:empty_description": 1,
@@ -240,8 +213,7 @@
     "EQS": {
       "T6:generic_inputs": 1,
       "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1,
-      "T9:pane_param_ignored": 1
+      "T9:manifest_input_ignored": 1
     },
     "EREV": {
       "T6:generic_inputs": 1
@@ -270,9 +242,7 @@
     "FLY": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_input_ignored": 1,
-      "T9:pane_control_ignored": 1
+      "T6:template_purpose": 1
     },
     "FORM4": {
       "T6:generic_inputs": 1,
@@ -282,27 +252,20 @@
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "FRH": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1,
       "T9:pane_control_ignored": 1
     },
     "FSRC": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "FTS": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1,
-      "T9:pane_control_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "FXFC": {
       "T6:empty_description": 1,
@@ -333,11 +296,6 @@
       "T6:template_purpose": 1,
       "T9:manifest_control_ignored": 1
     },
-    "GEX": {
-      "T4:placeholder_default": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
-    },
     "GLCO": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
@@ -347,8 +305,7 @@
     "GMM": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1
+      "T6:template_purpose": 1
     },
     "GP": {
       "T6:generic_inputs": 1
@@ -365,8 +322,7 @@
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "HFS": {
       "T6:generic_inputs": 1,
@@ -394,8 +350,7 @@
       "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1,
-      "T9:pane_param_ignored": 1
+      "T9:manifest_input_ignored": 1
     },
     "LANG": {
       "T6:empty_description": 1,
@@ -405,7 +360,6 @@
     "LITM": {
       "T6:generic_inputs": 1,
       "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1,
       "T9:pane_control_ignored": 1
     },
     "LOTS": {
@@ -418,16 +372,10 @@
       "T9:pane_param_maybe_ignored": 1
     },
     "MARS": {
-      "T6:empty_description": 1,
-      "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "MGN": {
-      "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "MICRO": {
       "T6:generic_inputs": 1,
@@ -435,8 +383,7 @@
       "T9:manifest_input_ignored": 1
     },
     "MLSIG": {
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "MOSS": {
       "T6:generic_inputs": 1,
@@ -459,11 +406,10 @@
       "T9:manifest_input_ignored": 1
     },
     "ONCH": {
-      "T6:generic_inputs": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "OSA": {
-      "T4:placeholder_default": 3,
+      "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T9:manifest_control_ignored": 1,
       "T9:manifest_input_ignored": 1
@@ -476,7 +422,6 @@
       "T9:manifest_input_ignored": 1
     },
     "OVME": {
-      "T4:placeholder_default": 1,
       "T6:empty_description": 1,
       "T9:manifest_control_ignored": 1,
       "T9:manifest_input_ignored": 1
@@ -490,9 +435,7 @@
       "T9:manifest_control_ignored": 1
     },
     "PFA": {
-      "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "PIB": {
       "T6:empty_description": 1,
@@ -508,16 +451,11 @@
       "T9:manifest_control_ignored": 1
     },
     "PORT_OPT": {
-      "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "PORT_WHATIF": {
-      "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "PSC": {
       "T6:generic_inputs": 1,
@@ -535,9 +473,7 @@
       "T9:manifest_control_ignored": 1
     },
     "REBA": {
-      "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "REGM": {
       "T6:generic_inputs": 1,
@@ -546,8 +482,7 @@
     },
     "RPAR": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "RV": {
       "T6:empty_description": 1,
@@ -592,7 +527,6 @@
     },
     "STRS": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
       "T9:manifest_input_ignored": 1
     },
     "TAUC": {
@@ -605,25 +539,17 @@
     },
     "TECH": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "TLDR": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "TLH": {
-      "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "TRA": {
-      "T6:empty_description": 1,
-      "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:generic_inputs": 1
     },
     "TRAN": {
       "T6:empty_description": 1,
@@ -633,8 +559,7 @@
     },
     "TRQA": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "TSAR": {
       "T6:generic_inputs": 1,
@@ -654,15 +579,13 @@
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "WB": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "WCRS": {
       "T6:empty_description": 1,
@@ -680,8 +603,7 @@
     "WETR": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1
+      "T6:template_purpose": 1
     },
     "WHAL": {
       "T6:generic_inputs": 1
@@ -689,15 +611,12 @@
     "WIRP": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T6:template_purpose": 1
     },
     "YAS": {
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
-      "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1
+      "T6:template_purpose": 1
     }
   }
 }

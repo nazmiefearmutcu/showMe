@@ -1,9 +1,9 @@
-"""GMM — Global Macro Movers.
+"""GMM — Global Macro Movers (Global Macro Matrix).
 
-Ranked surprise ladder across cross-country macro releases — the biggest
-standardized beats and misses surfaced as a diverging bar ladder so an
-analyst can see at a glance which release moved the most in σ-units
-across the lookback window.
+Cross-country macro-stress matrix from the keyless World Bank open-data API:
+one row per economy with real GDP growth, CPI inflation, unemployment and
+central-government debt/GDP, each cell carrying its own observation year, and
+a composite stress score ranked so the hottest economies surface first.
 """
 from __future__ import annotations
 
@@ -42,9 +42,10 @@ def gmm() -> FunctionManifest:
         name="Global Macro Movers",
         category=Category.MACRO,
         intent=(
-            "Ranked ladder of the largest standardized macro surprises across countries "
-            "and release categories over a configurable window — diverging bar chart so "
-            "an analyst can see at a glance which prints have moved the tape in σ-units."
+            "Cross-country macro-stress matrix from World Bank annual indicators — GDP growth, "
+            "CPI inflation, unemployment and debt/GDP per economy, ranked by a composite stress "
+            "score so the economies running hottest surface first. Each cell shows its own "
+            "observation year because the series are lagged."
         ),
         asset_classes=[
             AssetClass.RATE,
@@ -54,58 +55,45 @@ def gmm() -> FunctionManifest:
             AssetClass.BOND,
         ],
         inputs=[
-            # HNT-10 (2026-09-23 bug hunt): the `window` and `categories`
-            # InputSpecs were removed — the World Bank matrix handler only
-            # reads countries/top_n/timeout, so those controls silently did
-            # nothing. The honest contract is the smaller input set.
+            # HNT-10 (2026-09-23 bug hunt): the handler reads only countries and
+            # top_n. The former provider_mode input (and the window/categories
+            # inputs before it) were never read, so they are not offered here.
             InputSpec(
                 name="countries",
                 label="Countries",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="ISO 3166-1 alpha-2 list; empty = all majors.",
-                options=["US", "EZ", "GB", "JP", "CN", "TR", "BR", "IN", "CA", "AU", "CH", "MX", "KR"],
+                description=(
+                    "ISO 3166-1 alpha-2 codes; EZ = euro area and EU = European Union aggregates. "
+                    "Empty = the major-economy set."
+                ),
+                options=[
+                    "US", "CN", "JP", "DE", "GB", "FR", "IN", "BR", "CA", "IT",
+                    "KR", "AU", "MX", "TR", "CH", "EZ", "EU",
+                ],
             ),
             InputSpec(
                 name="top_n",
                 label="Top N",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="How many economies to rank (5..50).",
+                description="How many economies to show (5..50). Empty = all rows.",
                 min=5,
                 max=50,
                 step=5,
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
             "countries": [],
-            "top_n": 15,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
-            primary="fred",
-            fallbacks=["economic_calendar_rss", "cached_snapshot"],
-            acceptable_modes=[
-                DataMode.LIVE_OFFICIAL,
-                DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
-            ],
+            primary="worldbank",
+            fallbacks=[],
+            acceptable_modes=[DataMode.LIVE_OFFICIAL],
         ),
         caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["as_of", "movers", "window", "data_mode"],
+            must_have=["rows", "cards", "methodology"],
             rows=True,
             series=False,
             cards=True,
@@ -114,74 +102,66 @@ def gmm() -> FunctionManifest:
         ),
         chart_grammar=ChartGrammar(
             kind=ChartKind.BAR_LADDER,
-            x_axis=AxisSpec(type="numeric", unit="σ", label="Standardized surprise"),
-            y_axis=AxisSpec(type="category", label="Release"),
+            x_axis=AxisSpec(type="numeric", unit="score", label="Composite macro-stress score"),
+            y_axis=AxisSpec(type="category", label="Economy"),
             panes=[
-                PaneGrammar(name="surprise_ladder", series_kind="bar", height_pct=100),
+                PaneGrammar(name="stress_ladder", series_kind="bar", height_pct=100),
             ],
             overlay_support=False,
             compare_support=False,
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="rank", label="Rank", kind="number", format="%d", width_hint=48),
-                ColumnSpec(key="time_utc", label="Released", kind="datetime", format="rel-time"),
-                ColumnSpec(key="country", label="Country", kind="tag"),
-                ColumnSpec(key="category", label="Cat", kind="tag"),
-                ColumnSpec(key="name", label="Release", kind="text"),
-                ColumnSpec(key="surprise", label="Surprise", kind="number", format="%.2f", unit="σ"),
-                ColumnSpec(key="direction", label="Dir", kind="tag"),
-                ColumnSpec(key="actual", label="Actual", kind="number", format="%.2f"),
-                ColumnSpec(key="consensus", label="Cons", kind="number", format="%.2f"),
+                ColumnSpec(key="country", label="Country", kind="text"),
+                ColumnSpec(key="country_code", label="Code", kind="tag"),
+                ColumnSpec(key="gdp_growth", label="GDP g/y", kind="number", format="%.1f", unit="%"),
+                ColumnSpec(key="inflation", label="CPI", kind="number", format="%.1f", unit="%"),
+                ColumnSpec(key="unemployment", label="Unemp.", kind="number", format="%.1f", unit="%"),
+                ColumnSpec(key="debt_gdp", label="Debt/GDP", kind="number", format="%.1f", unit="%"),
+                ColumnSpec(key="score", label="Score", kind="number", format="%.2f"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="biggest_beat", label="Biggest Beat", kind="big_number", unit="σ"),
-                CardSlot(key="biggest_miss", label="Biggest Miss", kind="big_number", unit="σ"),
-                CardSlot(key="movers_count", label="Movers", kind="kpi"),
-                CardSlot(key="window", label="Window", kind="badge"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="economies", label="Economies", kind="kpi"),
+                CardSlot(key="hottest_inflation", label="Hottest CPI", kind="kpi"),
+                CardSlot(key="fastest_growth", label="Fastest GDP", kind="kpi"),
+                CardSlot(key="source", label="Source", kind="badge"),
             ],
         ),
         methodology=(
-            "GMM pulls released macro events from FRED's series_observations endpoint over the "
-            "configured window for the country and category filters. For each release with a "
-            "consensus value, the standardized surprise is computed as (actual - consensus) / "
-            "stdev_actual_last_24m. Releases with no consensus are excluded from the ranking "
-            "(they appear in ECO's calendar but cannot be scored). The top N movers (by absolute "
-            "surprise magnitude) are returned in descending order with a direction tag (beat / "
-            "miss / inline) derived from the release category's editorial bias — CPI prints "
-            "above consensus tag as 'beat' on the inflation-hawk side, while unemployment prints "
-            "above consensus tag as 'miss' on the growth side. The bar ladder visualises each "
-            "row as a diverging bar centered at zero σ. No mover is ever fabricated: when the "
-            "calendar feed yields zero releases in the window, movers is the empty array and a "
-            "warning explains the empty window."
+            "GMM pulls the most recent non-null annual observation of four World Bank indicators "
+            "per economy: real GDP growth (NY.GDP.MKTP.KD.ZG), CPI inflation (FP.CPI.TOTL.ZG), "
+            "unemployment (SL.UEM.TOTL.ZS) and central-government debt/GDP (GC.DOD.TOTL.GD.ZS). "
+            "The composite stress score is inflation + unemployment + 0.05 x debt/GDP - GDP growth. "
+            "A row is scored only when all four indicators are present and no observation is more "
+            "than five years old; otherwise the score is null and the row lists score_missing or "
+            "stale_fields. Missing cells stay null and are never filled in."
         ),
         formula_dict={
-            "surprise_sigma": Formula(
-                expression=r"surprise = \frac{actual - consensus}{\sigma_{24m}}",
+            "composite_score": Formula(
+                expression=r"score = \mathrm{infl} + \mathrm{unemp} + 0.05\,\mathrm{debt} - \mathrm{growth}",
                 variables={
-                    "actual": "Released value",
-                    "consensus": "Survey median",
-                    "sigma_{24m}": "Standard deviation of actual over last 24 months",
+                    "infl": "CPI inflation, annual %",
+                    "unemp": "Unemployment, % of labor force",
+                    "debt": "Central government debt, % of GDP",
+                    "growth": "Real GDP growth, annual %",
                 },
-                notes="Standardized surprise in units of historical σ; consistent with ECO.",
+                notes="Higher score = more stretched. Unitless composite of percentage indicators.",
             ),
         },
         field_dict={
-            "movers[].rank": FieldDef(description="1-indexed rank by |surprise| descending.", source="computed"),
-            "movers[].time_utc": FieldDef(unit="iso8601", description="Release time.", source="calendar"),
-            "movers[].country": FieldDef(description="ISO 3166-1 alpha-2 country code.", source="calendar"),
-            "movers[].category": FieldDef(description="Release category (cpi / gdp / employment / ...).", source="reference"),
-            "movers[].name": FieldDef(description="Release name (e.g. CPI YoY).", source="reference"),
-            "movers[].surprise": FieldDef(unit="σ", description="Standardized surprise.", source="computed"),
-            "movers[].direction": FieldDef(description="beat / miss / inline classification.", source="computed"),
-            "movers[].actual": FieldDef(unit="varies", description="Released value.", source="fred"),
-            "movers[].consensus": FieldDef(unit="varies", description="Survey median.", source="economic_calendar_rss"),
+            "rows[].country": FieldDef(description="Country or aggregate name.", source="reference"),
+            "rows[].country_code": FieldDef(description="ISO 3166-1 alpha-2 code (EZ and EU for aggregates).", source="reference"),
+            "rows[].gdp_growth": FieldDef(unit="%", description="Real GDP growth, annual %.", source="worldbank"),
+            "rows[].inflation": FieldDef(unit="%", description="Headline CPI inflation, annual %.", source="worldbank"),
+            "rows[].unemployment": FieldDef(unit="%", description="Unemployment, % of labor force.", source="worldbank"),
+            "rows[].debt_gdp": FieldDef(unit="%", description="Central government debt, % of GDP.", source="worldbank"),
+            "rows[].score": FieldDef(unit="score", description="Composite stress score; null unless all four are fresh.", source="computed"),
+            "rows[].score_missing": FieldDef(description="Indicators that block the score (null or too old).", source="computed"),
+            "rows[].stale_fields": FieldDef(description="Indicators older than five years; shown but not scored.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -191,28 +171,34 @@ def gmm() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="gmm_movers_sorted_by_abs_surprise_desc",
-                description="Asserts movers array is sorted by |surprise| descending.",
+                name="gmm_rows_sorted_by_score_desc",
+                description="Scored rows are ordered by composite score, highest first; unscored rows come last.",
                 inputs={},
-                assertions=["movers_sorted_by_abs_surprise_desc"],
+                assertions=["rows_sorted_by_score_desc", "unscored_rows_last"],
             ),
             SemanticTest(
-                name="gmm_excludes_releases_without_consensus",
-                description="Asserts no mover row has consensus == null (no-consensus releases are dropped from the ranking).",
+                name="gmm_score_requires_all_four_components",
+                description="A row with any indicator null or stale has a null score and lists it in score_missing.",
                 inputs={},
-                assertions=["every_mover_has_non_null_consensus"],
+                assertions=["scored_rows_have_all_components", "score_missing_matches_nulls"],
             ),
             SemanticTest(
-                name="gmm_empty_window_explained",
-                description="When the calendar feed has no releases in the window, asserts movers=[] and warning explains the empty window.",
-                inputs={"_mock": "calendar_empty"},
-                assertions=["movers_empty_array", "warning_mentions_empty_window"],
+                name="gmm_stale_observation_not_scored",
+                description="An observation older than five years is shown with its year but excluded from the score and the cards.",
+                inputs={},
+                assertions=["stale_observations_not_scored", "stale_fields_listed"],
             ),
             SemanticTest(
-                name="gmm_top_n_caps_ranking",
-                description="With top_n=10, asserts len(movers) <= 10.",
+                name="gmm_ez_is_euro_area",
+                description="EZ resolves to the World Bank euro-area aggregate, never to Germany.",
+                inputs={"countries": ["EZ"]},
+                assertions=["ez_label_is_euro_area", "no_germany_row"],
+            ),
+            SemanticTest(
+                name="gmm_top_n_caps_rows",
+                description="With top_n=10, the payload holds at most 10 rows.",
                 inputs={"top_n": 10},
-                assertions=["movers_length_le_top_n"],
+                assertions=["rows_length_le_top_n"],
             ),
         ],
     )

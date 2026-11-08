@@ -98,15 +98,25 @@ export function OVMEPane({ code }: FunctionPaneProps) {
   const [volPct, setVolPct] = usePersistentNumber("showme.ovme.vol", 30);
   const [ratePct, setRatePct] = usePersistentNumber("showme.ovme.rate", 4.5);
   const [divPct, setDivPct] = usePersistentNumber("showme.ovme.div", 0);
+  // The option itself is never priced from a prefilled number: spot, strike,
+  // expiry and vol reach the sidecar only once the user has entered each one.
+  const [spotSet, setSpotSet] = usePersistentOption<"0" | "1">("showme.ovme.spot.set", ["0", "1"], "0");
+  const [strikeSet, setStrikeSet] = usePersistentOption<"0" | "1">("showme.ovme.strike.set", ["0", "1"], "0");
+  const [yearsSet, setYearsSet] = usePersistentOption<"0" | "1">("showme.ovme.years.set", ["0", "1"], "0");
+  const [volSet, setVolSet] = usePersistentOption<"0" | "1">("showme.ovme.vol.set", ["0", "1"], "0");
+  const sentSpot = spotSet === "1" ? spot : null;
+  const sentStrike = strikeSet === "1" ? strike : null;
+  const sentYears = yearsSet === "1" ? years : null;
+  const sentVol = volSet === "1" ? volPct / 100 : null;
 
   const { state, data, error, refetch } = useFunction<OvmeData>({
     code,
     params: {
       asset_class: "DERIVATIVE",
-      spot,
-      strike,
-      years_to_expiry: years,
-      vol: volPct / 100,
+      spot: sentSpot,
+      strike: sentStrike,
+      years_to_expiry: sentYears,
+      vol: sentVol,
       rate: ratePct / 100,
       div_yield: divPct / 100,
       type,
@@ -119,17 +129,19 @@ export function OVMEPane({ code }: FunctionPaneProps) {
     [payload],
   );
   const isCall = type === "CALL";
+  // Moneyness and markers use only the spot and strike the user has entered;
+  // an unset field is an em-dash, never a prefilled number.
   const moneyness =
-    spot > 0 && strike > 0
+    sentSpot != null && sentStrike != null && sentSpot > 0 && sentStrike > 0
       ? isCall
-        ? strike < spot
+        ? sentStrike < sentSpot
           ? "ITM"
-          : strike > spot
+          : sentStrike > sentSpot
             ? "OTM"
             : "ATM"
-        : strike > spot
+        : sentStrike > sentSpot
           ? "ITM"
-          : strike < spot
+          : sentStrike < sentSpot
             ? "OTM"
             : "ATM"
       : "—";
@@ -146,7 +158,7 @@ export function OVMEPane({ code }: FunctionPaneProps) {
         sortable: true,
         render: (r) => {
           const rowSpot = num(r.spot);
-          const nearSpot = rowSpot != null && Math.abs(rowSpot - spot) < 1e-9;
+          const nearSpot = rowSpot != null && sentSpot != null && Math.abs(rowSpot - sentSpot) < 1e-9;
           return (
             <span
               style={{
@@ -198,7 +210,7 @@ export function OVMEPane({ code }: FunctionPaneProps) {
         render: (r) => <span style={monoStyle}>{fmtNum(r.delta, 4)}</span>,
       },
     ],
-    [spot],
+    [sentSpot],
   );
 
   const csvColumns = useMemo<GridCsvColumn<SensitivityPoint>[]>(
@@ -237,39 +249,51 @@ export function OVMEPane({ code }: FunctionPaneProps) {
         <section style={inputRowStyle} aria-label="Valuation inputs">
           <NumField
             label="Spot"
-            value={spot}
+            value={sentSpot}
             min={0.01}
             step={1}
             width={96}
             ariaLabel="Underlying spot price"
-            onChange={setSpot}
+            onChange={(v) => {
+              setSpot(v);
+              setSpotSet("1");
+            }}
           />
           <NumField
             label="Strike"
-            value={strike}
+            value={sentStrike}
             min={0.01}
             step={1}
             width={96}
             ariaLabel="Option strike price"
-            onChange={setStrike}
+            onChange={(v) => {
+              setStrike(v);
+              setStrikeSet("1");
+            }}
           />
           <NumField
             label="T (y)"
-            value={years}
+            value={sentYears}
             min={0.01}
             step={0.05}
             width={84}
             ariaLabel="Years to expiry"
-            onChange={setYears}
+            onChange={(v) => {
+              setYears(v);
+              setYearsSet("1");
+            }}
           />
           <NumField
             label="Vol %"
-            value={volPct}
+            value={volSet === "1" ? volPct : null}
             min={0.01}
             step={1}
             width={84}
             ariaLabel="Implied volatility percent"
-            onChange={setVolPct}
+            onChange={(v) => {
+              setVolPct(v);
+              setVolSet("1");
+            }}
           />
           <NumField
             label="Rate %"
@@ -321,8 +345,8 @@ export function OVMEPane({ code }: FunctionPaneProps) {
         {/* primary visual — value curve, vega/rho read inline */}
         <ValueChart
           curve={curve}
-          spot={spot}
-          strike={strike}
+          spot={sentSpot}
+          strike={sentStrike}
           optionType={type}
           vega={payload?.vega}
           rho={payload?.rho}
@@ -356,7 +380,7 @@ export function OVMEPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Option Valuation"
-          subtitle={`${type} ${fmtStrike(strike)} · ${moneyness}`}
+          subtitle={`${type} ${sentStrike != null ? fmtStrike(sentStrike) : "—"} · ${moneyness}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
@@ -420,8 +444,8 @@ function ValueChart({
   rho,
 }: {
   curve: SensitivityPoint[];
-  spot: number;
-  strike: number;
+  spot: number | null;
+  strike: number | null;
   optionType: string;
   vega?: number;
   rho?: number;
@@ -475,8 +499,8 @@ function ValueChart({
     );
   }
 
-  const spotX = spot >= geom.xMin && spot <= geom.xMax ? geom.px(spot) : null;
-  const strikeX = strike >= geom.xMin && strike <= geom.xMax ? geom.px(strike) : null;
+  const spotX = spot != null && spot >= geom.xMin && spot <= geom.xMax ? geom.px(spot) : null;
+  const strikeX = strike != null && strike >= geom.xMin && strike <= geom.xMax ? geom.px(strike) : null;
 
   return (
     <section style={chartCardStyle} aria-label="Option value curve">
@@ -581,16 +605,18 @@ function NumField({
   ariaLabel,
 }: {
   label: string;
-  value: number;
+  /** null = not entered yet: the field stays empty rather than showing a number. */
+  value: number | null;
   onChange: (v: number) => void;
   step?: number;
   min?: number;
   width?: number;
   ariaLabel: string;
 }) {
-  const [text, setText] = useState<string>(() => String(value));
+  const shown = (v: number | null) => (v == null ? "" : String(v));
+  const [text, setText] = useState<string>(() => shown(value));
   useEffect(() => {
-    setText(String(value));
+    setText(shown(value));
   }, [value]);
   return (
     <Field
@@ -611,7 +637,8 @@ function NumField({
           onChange(n);
         }
       }}
-      onBlur={() => setText(String(value))}
+      onBlur={() => setText(shown(value))}
+      placeholder="enter"
     />
   );
 }

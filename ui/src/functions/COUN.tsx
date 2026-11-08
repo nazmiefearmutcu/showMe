@@ -45,6 +45,7 @@ import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 interface COUNRow {
+  key?: string;
   section?: string;
   metric?: string;
   value?: number | string | null;
@@ -52,6 +53,11 @@ interface COUNRow {
   as_of?: string | null;
   series_id?: string;
   source_mode?: string;
+  // True when the latest provider observation is older than its series limit.
+  // The value keeps its as-of date but is not live.
+  stale?: boolean;
+  reason?: string;
+  note?: string;
 }
 
 interface COUNCard {
@@ -65,6 +71,8 @@ interface COUNData {
   cards?: COUNCard[];
   source_mode?: string;
   country_known?: boolean;
+  // Explicit no-profile state for an uncurated country on the live path.
+  profile_state?: { status?: string; reason?: string };
 }
 
 const COUNTRY_OPTIONS = [
@@ -100,6 +108,15 @@ export function COUNPane({ code }: FunctionPaneProps) {
 
   const payload = data?.data;
   const rows = useMemo(() => payload?.rows ?? [], [payload]);
+  // Backend warnings (provider failures, missing curated profile, ignored
+  // metric names) plus the explicit profile_state reason, shown outside the
+  // body so they stay visible even when no rows come back.
+  const notices = useMemo(() => {
+    const out: string[] = [...(data?.warnings ?? [])];
+    const profileReason = payload?.profile_state?.reason;
+    if (profileReason && !out.includes(profileReason)) out.push(profileReason);
+    return out;
+  }, [data, payload]);
 
   // DEFECT WORKAROUND: the payload's cards duplicate the Policy rate (live
   // value prepended first, stale reference value later). Dedupe by label,
@@ -116,17 +133,20 @@ export function COUNPane({ code }: FunctionPaneProps) {
     return out;
   }, [payload]);
 
-  // Live means a row with a value from a real provider; reference-profile and
-  // unavailable rows never make the pane live.
+  // Live means a fresh row with a value from a real provider; reference-profile,
+  // unavailable and stale rows never make the pane live.
   const isLive =
     state === "ok" &&
     rows.some(
       (r) =>
         r.value != null &&
         !isReferenceMode(r.source_mode) &&
-        !isUnavailableMode(r.source_mode),
+        !isUnavailableMode(r.source_mode) &&
+        !r.stale,
     );
   const hasUnavailable = rows.some((r) => isUnavailableMode(r.source_mode));
+  const hasStale = rows.some((r) => r.stale === true);
+  const hasReferenceRows = rows.some((r) => isReferenceMode(r.source_mode));
 
   // CSV export of the country metrics table — RAW payload values (a numeric
   // value stays numeric; string values pass through unchanged).
@@ -168,6 +188,8 @@ export function COUNPane({ code }: FunctionPaneProps) {
           <span>
             <span style={monoStrongStyle}>{r.metric || "—"}</span>
             <span style={sectionSubStyle}>{r.section ?? ""}</span>
+            {r.note ? <span style={sectionSubStyle}>{r.note}</span> : null}
+            {r.reason ? <span style={reasonStyle}>{r.reason}</span> : null}
           </span>
         ),
       },
@@ -212,7 +234,7 @@ export function COUNPane({ code }: FunctionPaneProps) {
           r.source_mode ? (
             <Pill
               tone={
-                isUnavailableMode(r.source_mode)
+                isUnavailableMode(r.source_mode) || r.stale
                   ? "warn"
                   : isReferenceMode(r.source_mode)
                     ? "muted"
@@ -276,7 +298,15 @@ export function COUNPane({ code }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live+ref" : hasUnavailable ? "unavailable" : "reference"}
+                {isLive
+                  ? hasReferenceRows
+                    ? "live+ref"
+                    : "live"
+                  : hasStale
+                    ? "stale"
+                    : hasUnavailable
+                      ? "unavailable"
+                      : "reference"}
               </Pill>
               <SegmentedControl
                 label="COUNTRY"
@@ -299,7 +329,18 @@ export function COUNPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <PaneBody>{body}</PaneBody>
+        <PaneBody>
+          {notices.length > 0 ? (
+            <div role="note" aria-label="COUN warnings" style={noticeStyle}>
+              {notices.map((notice, i) => (
+                <span key={i} style={noticeLineStyle}>
+                  {notice}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {body}
+        </PaneBody>
         <PaneFooter>
           <StatusSection label="country" value={country} tone="accent" />
           <StatusDivider />
@@ -318,11 +359,14 @@ export function COUNPane({ code }: FunctionPaneProps) {
 
 function cardCaption(card: COUNCard, rows: COUNRow[]): string {
   const label = String(card.label ?? "").toLowerCase();
+  // The currency code is a fact, not a statistic: it has no provider row.
+  if (label === "currency") return "CURRENCY CODE";
   const match = rows.find(
     (r) => (r.metric ?? "").toLowerCase() === label || label.includes(String(r.metric ?? "\u0000").toLowerCase()),
   );
-  if (!match) return "REFERENCE PROFILE";
+  if (!match) return "NO LIVE ROW";
   if (isUnavailableMode(match.source_mode)) return "UNAVAILABLE";
+  if (match.stale) return `STALE · ${String(match.as_of ?? "").slice(0, 10)}`;
   if (match.as_of) {
     return `${isReferenceMode(match.source_mode) ? "REF" : "LIVE"} · ${String(match.as_of).slice(0, 10)}`;
   }
@@ -359,6 +403,28 @@ const monoMutedStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-mute)",
+};
+
+const reasonStyle: CSSProperties = {
+  display: "block",
+  fontSize: "var(--font-size-2xs)",
+  color: "var(--text-mute)",
+  whiteSpace: "normal",
+};
+
+const noticeStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  margin: "0 0 10px",
+  padding: "8px 10px",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-secondary)",
+  fontSize: "var(--font-size-2xs)",
+};
+
+const noticeLineStyle: CSSProperties = {
+  display: "block",
 };
 
 const sectionSubStyle: CSSProperties = {

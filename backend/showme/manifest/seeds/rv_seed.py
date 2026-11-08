@@ -103,7 +103,7 @@ def rv() -> FunctionManifest:
                 ColumnSpec(key="ev_ebitda", label="EV/EBITDA", kind="number", format="%.2f"),
                 ColumnSpec(key="ps_ttm", label="P/S", kind="number", format="%.2f"),
                 ColumnSpec(key="pb", label="P/B", kind="number", format="%.2f"),
-                ColumnSpec(key="dividend_yield", label="Div yield", kind="percent", format="%.2f"),
+                ColumnSpec(key="dividend_yield", label="Div yield", kind="percent", unit="ratio", format="%.2f"),
                 ColumnSpec(key="fcf_yield", label="FCF yield", kind="percent", format="%.2f"),
             ],
             sortable=True,

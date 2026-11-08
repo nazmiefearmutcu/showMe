@@ -1,8 +1,16 @@
-"""COUN — Country Guide (ekonomi + siyaset + mali, tek sayfada)."""
+"""COUN — Country Guide (ekonomi + siyaset + mali, tek sayfada).
+
+Every metric row is either a live provider observation (BTMM policy row or a
+keyless FRED series through ECST) or an explicit unavailable row with a reason.
+COUN serves no hard-coded or reference macro values (data policy: never invent
+or template a number). Currency codes are facts and stay as a card.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from typing import Any, Callable
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
@@ -18,115 +26,272 @@ class COUNFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         country = (params.get("country") or "US").upper()
-        live = _truthy(params.get("live_macro") or params.get("live"))
-        profile = _country_profile_model(country)
+        live = _live_flag(params)
+        timeout = params.get("timeout", 4)
         country_is_known = country in _KNOWN_PROFILE_COUNTRIES
-        baseline_warnings: list[str] = []
+        requested, metric_warnings = _requested_metric_keys(params.get("metrics"))
+        baseline_warnings: list[str] = list(metric_warnings)
         if not country_is_known:
             baseline_warnings.append(
                 f"country '{country}' has no curated profile; no reference values are served"
             )
-        if not live:
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data=profile,
-                sources=["country_reference_profile"] if profile.get("rows") else [],
-                warnings=baseline_warnings,
-                metadata={"live": False, "country_known": country_is_known},
-            )
+
         provider_errors: list[str] = []
-        try:
-            btmm = await BTMMFunction(self.deps).execute(country=country, timeout=params.get("timeout", 4))
-            policy_row = (btmm.data.get("rows") or [None])[0] if isinstance(btmm.data, dict) else None
-        except Exception as exc:
-            provider_errors.append(f"btmm: {exc}")
-            policy_row = None
-        # FRED series mapping per country (US default)
-        series_per_country = {
-            "US": ["GDPC1", "CPIAUCSL", "UNRATE", "DGS10"],
-            "EU": ["LRHUTTTTEZQ156S"],
-            "GB": ["GBRCPIALLMINMEI"],
-            # TURGDPRQDSMEI is not on FRED (HTTP 404); NGDPRSAXDCTRQ is the
-            # FRED id for Real GDP, Republic of Turkiye (verified 2026-11-08).
-            "TR": ["NGDPRSAXDCTRQ"],
-        }
-        series = series_per_country.get(country, [])
+        policy_row: dict[str, Any] | None = None
         indicator_rows: list[dict[str, Any]] = []
         history: list[dict[str, Any]] = []
         indicator_warnings: list[str] = []
-        for sid in series:
-            try:
-                r = await ECSTFunction(self.deps).execute(series_id=sid, timeout=params.get("timeout", 4))
-                row, points = _indicator_from_ecst(country, sid, r.data, r.sources, r.warnings)
-            except Exception as exc:
-                provider_errors.append(f"ecst.{sid}: {exc}")
-                row, points = _unavailable_indicator(sid, str(exc)), []
-            indicator_rows.append(row)
-            history.extend(points)
-            if row["value"] is None:
-                indicator_warnings.append(f"{sid}: {row['reason']}")
-        # Only live observations feed the cards, history and source list; an
-        # indicator without a live value stays an explicit unavailable row.
+        series_ids = _series_ids(country)
+        if live:
+            policy_row, btmm_error = await _fetch_policy(self.deps, country, timeout)
+            if btmm_error:
+                provider_errors.append(btmm_error)
+            for sid in series_ids:
+                specs = [spec for spec in _LIVE_SERIES.get(country, ()) if spec.series_id == sid]
+                try:
+                    r = await ECSTFunction(self.deps).execute(series_id=sid, timeout=timeout)
+                except Exception as exc:
+                    provider_errors.append(f"ecst.{sid}: {str(exc) or type(exc).__name__}")
+                    indicator_rows.extend(_unavailable_series_row(spec, str(exc)) for spec in specs)
+                    continue
+                for spec in specs:
+                    row, points = _series_row(spec, r.data, _today())
+                    indicator_rows.append(row)
+                    if spec.transform == "level":
+                        history.extend(points)
+                    if row["value"] is None:
+                        indicator_warnings.append(f"{sid}: {row['reason']}")
+                    elif row.get("stale"):
+                        indicator_warnings.append(f"{sid}: {row['reason']}")
+
         live_indicator_rows = [row for row in indicator_rows if row["value"] is not None]
-        rows = _country_rows(country, profile, policy_row, indicator_rows)
-        # Honest source attribution: each provider is listed only when one of
-        # its rows is live ("fred"/"worldbank" from ECST, "btmm" for the policy row).
+        fresh_indicator_rows = [row for row in live_indicator_rows if not row.get("stale")]
+        has_live = bool(policy_row) or bool(fresh_indicator_rows)
+        stale_only = bool(live_indicator_rows) and not has_live
+
+        # A metric slot is covered when a provider row (value or explicit gap)
+        # already exists for it. Only uncovered slots get a generic gap row.
+        covered = {str(row["key"]) for row in indicator_rows}
+        if policy_row:
+            covered.add("policy_rate")
+        gap_rows = _gap_rows(
+            country,
+            covered,
+            _gap_reason_for(country, live, provider_errors),
+        )
+        rows = _country_rows(country, {"rows": gap_rows}, policy_row, indicator_rows)
+        rows = _filter_by_key(rows, requested)
+
         live_sources: list[str] = []
         if policy_row:
             live_sources.append("btmm")
         live_sources.extend(str(row["source_mode"]) for row in live_indicator_rows)
-        if profile.get("rows"):
-            live_sources.append("country_reference_profile")
-        has_live = bool(policy_row) or bool(live_indicator_rows)
         all_warnings = baseline_warnings + provider_errors + indicator_warnings
+
+        if has_live:
+            source_mode = "live_macro"
+        elif stale_only:
+            source_mode = "stale_macro"
+        else:
+            source_mode = "provider_unavailable"
+
+        data: dict[str, Any] = {
+            "country": country,
+            "rows": rows,
+            "history": _filter_by_key(history, requested)[-80:],
+            "cards": _filter_by_key(
+                _country_cards(country, policy_row, fresh_indicator_rows), requested
+            ),
+            "methodology": _METHODOLOGY,
+            "field_dictionary": _FIELD_DICTIONARY,
+            "source_mode": source_mode,
+            "country_known": country_is_known,
+        }
+        if not country_is_known:
+            # An unknown country gets needs_input as its status only when no
+            # live row exists; with live rows the missing profile is disclosed
+            # under profile_state so the top-level status does not contradict them.
+            if has_live:
+                data["profile_state"] = _unknown_country_state(country)
+            else:
+                data.update(_unknown_country_state(country))
+        elif not has_live:
+            data.update(_no_live_state(country, live, stale_only))
+
         return FunctionResult(
             code=self.code,
             instrument=None,
-            data={
-                "country": country,
-                "rows": rows,
-                "history": history[-80:],
-                "cards": _country_cards(country, profile, policy_row, live_indicator_rows),
-                "methodology": (
-                    "COUN combines a country reference profile with the latest policy-rate "
-                    "row from BTMM and normalized macro series from ECST. Values are shown "
-                    "with explicit metric labels, units, dates, and source modes."
-                ),
-                "field_dictionary": {
-                    "metric": "Human-readable country metric.",
-                    "value": "Latest normalized value in the displayed unit.",
-                    "as_of": "Latest provider date when available.",
-                    "source_mode": "Provider or reference layer used for the row.",
-                },
-                "source_mode": "live_macro" if has_live else "reference_country_profile",
-                "country_known": country_is_known,
-                # An unknown country gets needs_input as its status only when no
-                # live row exists; with live rows the missing profile is disclosed
-                # under profile_state so the top-level status does not contradict them.
-                **(
-                    {}
-                    if country_is_known or has_live
-                    else _unknown_country_state(country)
-                ),
-                **(
-                    {"profile_state": _unknown_country_state(country)}
-                    if not country_is_known and has_live
-                    else {}
-                ),
-            },
+            data=data,
             sources=_unique(live_sources),
             warnings=all_warnings,
             metadata={
                 "country": country,
-                "series": series,
+                "live": live,
+                "series": series_ids,
                 "provider_errors": provider_errors,
                 "country_known": country_is_known,
+                "metrics_requested": sorted(requested),
             },
         )
 
 
 _KNOWN_PROFILE_COUNTRIES = frozenset({"US", "EU", "GB", "TR"})
+
+# Currency codes are facts, not statistics; they are the only reference value.
+_CURRENCY = {"US": "USD", "EU": "EUR", "GB": "GBP", "TR": "TRY"}
+
+# ECST row modes that are real provider observations. Anything else (a
+# constructed or unknown mode, or no rows at all) is not live data.
+_LIVE_ECST_MODES = frozenset({"fred", "worldbank"})
+
+_METRIC_OPTIONS = frozenset(
+    {
+        "policy_rate",
+        "inflation",
+        "unemployment",
+        "gdp_growth",
+        "debt_to_gdp",
+        "fiscal_balance",
+        "ten_year_yield",
+        "currency",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _Metric:
+    """A standard workbook slot. Every curated country has one row per slot."""
+
+    key: str
+    section: str
+    label: str
+    unit: str
+
+
+_STANDARD_METRICS: tuple[_Metric, ...] = (
+    _Metric("policy_rate", "rates", "Policy rate", "%"),
+    _Metric("inflation", "prices", "Inflation", "% y/y"),
+    _Metric("unemployment", "labor", "Unemployment rate", "%"),
+    _Metric("gdp_growth", "growth", "Real GDP growth", "% y/y"),
+    _Metric("ten_year_yield", "rates", "10Y government yield", "%"),
+    _Metric("fiscal_balance", "fiscal", "Fiscal balance", "% GDP"),
+    _Metric("debt_to_gdp", "fiscal", "Debt to GDP", "% GDP"),
+)
+
+
+@dataclass(frozen=True)
+class _Series:
+    """A keyless FRED series and the workbook row it feeds.
+
+    ``transform`` is "level" (the observation itself) or "yoy_pct" (the change
+    against the observation one year earlier). ``max_age_days`` is how old the
+    latest observation may be before the row is flagged stale.
+    """
+
+    series_id: str
+    key: str
+    section: str
+    label: str
+    unit: str
+    transform: str = "level"
+    max_age_days: int = 120
+    note: str | None = None
+    # Unit of the World Bank fallback when ECST serves the same concept from
+    # the World Bank (e.g. GDPC1 -> NY.GDP.MKTP.KD, constant 2015 USD).
+    worldbank_unit: str | None = None
+
+
+# FRED ids. TURGDPRQDSMEI is not on FRED (HTTP 404); NGDPRSAXDCTRQ is the FRED
+# id for Real GDP, Republic of Turkiye (verified 2026-11-08).
+_LIVE_SERIES: dict[str, tuple[_Series, ...]] = {
+    "US": (
+        _Series(
+            "GDPC1",
+            "gdp_level",
+            "growth",
+            "Real GDP",
+            "bn chained USD",
+            max_age_days=270,
+            worldbank_unit="bn constant 2015 USD",
+        ),
+        _Series("GDPC1", "gdp_growth", "growth", "Real GDP growth", "% y/y", transform="yoy_pct", max_age_days=270),
+        _Series("CPIAUCSL", "inflation", "prices", "Inflation", "% y/y", transform="yoy_pct"),
+        _Series("UNRATE", "unemployment", "labor", "Unemployment rate", "%"),
+        _Series("DGS10", "ten_year_yield", "rates", "10Y government yield", "%", max_age_days=14),
+    ),
+    "EU": (
+        _Series(
+            "LRHUTTTTEZQ156S",
+            "unemployment",
+            "labor",
+            "Unemployment rate",
+            "%",
+            note="euro-area aggregate, not a single member state",
+        ),
+    ),
+    "GB": (
+        _Series("GBRCPIALLMINMEI", "inflation", "prices", "Inflation", "% y/y", transform="yoy_pct"),
+    ),
+    "TR": (
+        _Series("NGDPRSAXDCTRQ", "gdp_level", "growth", "Real GDP", "mn TRY (SA)", max_age_days=270),
+        _Series("NGDPRSAXDCTRQ", "gdp_growth", "growth", "Real GDP growth", "% y/y", transform="yoy_pct", max_age_days=270),
+    ),
+}
+
+_METHODOLOGY = (
+    "COUN combines the latest policy-rate row from BTMM with keyless FRED series normalized "
+    "via ECST. Every metric is a live observation or an explicit unavailable row with its "
+    "reason; no hard-coded or reference macro value is served. Inflation and real GDP growth "
+    "are year-over-year changes computed from the level series. An observation older than its "
+    "series limit is flagged stale, keeps its as-of date and does not count as live."
+)
+
+_FIELD_DICTIONARY = {
+    "metric": "Human-readable country metric.",
+    "value": "Latest live value in the displayed unit; null when unavailable.",
+    "as_of": "Latest provider observation date.",
+    "source_mode": "Provider used for the row, or provider_unavailable.",
+    "stale": "True when the latest observation is older than its series limit.",
+    "reason": "Why a row has no value or is stale.",
+}
+
+
+async def _fetch_policy(deps: Any, country: str, timeout: Any) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        btmm = await BTMMFunction(deps).execute(country=country, timeout=timeout)
+    except Exception as exc:
+        return None, f"btmm: {str(exc) or type(exc).__name__}"
+    rows = btmm.data.get("rows") if isinstance(btmm.data, dict) else None
+    candidates = [
+        row
+        for row in (rows or [])
+        if isinstance(row, dict) and row.get("policy_rate") is not None
+    ]
+    # COUN#4: only a fresh BIS row may drive the live policy rate. BTMM keeps
+    # legacy (stale) and undated rows in its output, and rows[0] can be one.
+    fresh = [row for row in candidates if row.get("freshness") == "fresh"]
+    if fresh:
+        return max(fresh, key=lambda row: str(row.get("as_of") or "")), None
+    if candidates:
+        newest = candidates[0]
+        return None, (
+            f"btmm: policy-rate row for {country} is not fresh "
+            f"(freshness={newest.get('freshness')!r}, as_of={newest.get('as_of')!r}); "
+            "not used as live"
+        )
+    return None, None
+
+
+def _series_ids(country: str) -> list[str]:
+    ids: list[str] = []
+    for spec in _LIVE_SERIES.get(country, ()):
+        if spec.series_id not in ids:
+            ids.append(spec.series_id)
+    return ids
+
+
+def _today() -> date:
+    return datetime.now(timezone.utc).date()
 
 
 def _unknown_country_state(country: str) -> dict[str, Any]:
@@ -139,110 +304,83 @@ def _unknown_country_state(country: str) -> dict[str, Any]:
         ),
         "next_actions": [
             "Choose a curated country: US, EU, GB or TR.",
-            "Use live_macro=true for the live BTMM and FRED rows that exist for this country.",
+            "Use live=true for the live BTMM and FRED rows that exist for this country.",
         ],
     }
 
 
-def _country_profile_model(country: str) -> dict[str, Any]:
-    profiles = {
-        "US": {"policy_rate": 0.0525, "inflation": 0.031, "unemployment": 0.039, "currency": "USD", "gdp_growth": 0.02, "debt_to_gdp": 1.21, "fiscal_balance": -0.058, "ten_year_yield": 0.043},
-        "EU": {"policy_rate": 0.04, "inflation": 0.026, "unemployment": 0.064, "currency": "EUR", "gdp_growth": 0.012, "debt_to_gdp": 0.88, "fiscal_balance": -0.031, "ten_year_yield": 0.026},
-        "GB": {"policy_rate": 0.0525, "inflation": 0.032, "unemployment": 0.043, "currency": "GBP", "gdp_growth": 0.011, "debt_to_gdp": 0.97, "fiscal_balance": -0.044, "ten_year_yield": 0.041},
-        "TR": {"policy_rate": 0.50, "inflation": 0.55, "unemployment": 0.09, "currency": "TRY", "gdp_growth": 0.032, "debt_to_gdp": 0.30, "fiscal_balance": -0.045, "ten_year_yield": 0.275},
-    }
-    profile = profiles.get(country)
-    if profile is None:
-        # Data policy: an unknown country gets no invented reference numbers.
+def _no_live_state(country: str, live: bool, stale_only: bool) -> dict[str, Any]:
+    if not live:
         return {
-            "country": country,
-            "rows": [],
-            "cards": [],
-            "methodology": "No curated reference profile exists for this country.",
-            "field_dictionary": {},
-            "source_mode": "no_reference_profile",
-            **_unknown_country_state(country),
+            "status": "needs_input",
+            "reason": "live overlay is off (live=false); COUN serves no reference values",
+            "next_actions": ["Set live=true to fetch the live BTMM and FRED rows."],
         }
-    rows = [
-        {"section": "rates", "metric": "Policy rate", "value": profile["policy_rate"] * 100, "unit": "%", "source_mode": "country_reference_profile"},
-        {"section": "prices", "metric": "Inflation", "value": profile["inflation"] * 100, "unit": "% y/y", "source_mode": "country_reference_profile"},
-        {"section": "labor", "metric": "Unemployment", "value": profile["unemployment"] * 100, "unit": "%", "source_mode": "country_reference_profile"},
-        {"section": "growth", "metric": "Real GDP growth", "value": profile["gdp_growth"] * 100, "unit": "% y/y", "source_mode": "country_reference_profile"},
-        {"section": "fiscal", "metric": "Fiscal balance", "value": _pct(profile.get("fiscal_balance")), "unit": "% GDP", "source_mode": "country_reference_profile"},
-        {"section": "fiscal", "metric": "Debt to GDP", "value": _pct(profile.get("debt_to_gdp")), "unit": "% GDP", "source_mode": "country_reference_profile"},
-    ]
+    if stale_only:
+        return {
+            "status": "stale",
+            "reason": (
+                f"the only provider observations for {country} are older than their series "
+                "limit; they keep their as-of dates and are not treated as live"
+            ),
+            "next_actions": ["Check the stale rows' as-of dates before relying on them."],
+        }
     return {
-        "country": country,
-        "rows": rows,
-        "cards": [
-            {"label": "Currency", "value": profile["currency"] or "-"},
-            {"label": "Policy rate", "value": round(profile["policy_rate"] * 100, 3)},
-            {"label": "Inflation", "value": round(profile["inflation"] * 100, 3)},
-            {"label": "Unemployment", "value": round(profile["unemployment"] * 100, 3)},
-        ],
-        "methodology": "Reference country profile used when live macro adapters are unavailable.",
-        "field_dictionary": {"value": "Displayed percent or level.", "unit": "Unit shown next to value."},
-        "source_mode": "country_reference_profile",
+        "status": "provider_unavailable",
+        "reason": (
+            f"no live provider returned a value for {country}; COUN serves no reference values"
+        ),
+        "next_actions": ["Retry later; COUN does not substitute reference values for missing data."],
     }
 
 
-# ECST row modes that are real provider observations. Anything else (a
-# constructed or unknown mode, or no rows at all) is not live data.
-_LIVE_ECST_MODES = frozenset({"fred", "worldbank"})
+def _live_flag(params: dict[str, Any]) -> bool:
+    """Seed default is live=true; the handler agrees when the flag is omitted."""
+    raw = params.get("live_macro")
+    if raw is None:
+        raw = params.get("live")
+    if raw is None:
+        return True
+    return _truthy(raw)
 
 
-def _indicator_from_ecst(
-    country: str,
-    series_id: str,
-    payload: Any,
-    sources: list[str],
-    warnings: list[str] | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    rows = payload.get("rows") if isinstance(payload, dict) else payload
-    if not isinstance(rows, list):
-        rows = []
-    label, unit = _series_label(series_id)
-    live_rows = [
-        row
-        for row in rows
-        if isinstance(row, dict)
-        and row.get("source_mode") in _LIVE_ECST_MODES
-        and row.get("date")
-        and row.get("value") is not None
+def _requested_metric_keys(value: Any) -> tuple[set[str], list[str]]:
+    if value is None:
+        return set(), []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple, set)):
+        items = [str(item) for item in value]
+    else:
+        items = []
+    keys = {item.strip().lower() for item in items if item and item.strip()}
+    warnings = [
+        f"metric '{key}' is not a COUN metric; ignored"
+        for key in sorted(keys)
+        if key not in _METRIC_OPTIONS
     ]
-    if not live_rows:
-        reason = payload.get("reason") if isinstance(payload, dict) else None
-        if not isinstance(reason, str) or not reason.strip():
-            reason = "; ".join(warnings or []) or "no live observations returned"
-        return _unavailable_indicator(series_id, reason), []
-    latest = live_rows[-1]
-    points = [
-        {
-            "date": row.get("date"),
-            "metric": label,
-            "value": row.get("value"),
-            "unit": unit,
-            "country": country,
-            "source_mode": row.get("source_mode"),
-        }
-        for row in live_rows
-    ]
-    return {
-        "section": _series_section(series_id),
-        "metric": label,
-        "value": latest.get("value"),
-        "unit": unit,
-        "as_of": latest.get("date"),
-        "series_id": series_id,
-        "source_mode": latest.get("source_mode"),
-    }, points
+    valid = {key for key in keys if key in _METRIC_OPTIONS}
+    return valid, warnings
 
 
-def _unavailable_indicator(series_id: str, reason: str) -> dict[str, Any]:
+def _filter_by_key(items: list[dict[str, Any]], requested: set[str]) -> list[dict[str, Any]]:
+    if not requested:
+        return items
+    return [item for item in items if item.get("key") in requested]
+
+
+def _unavailable_row(
+    key: str,
+    section: str,
+    label: str,
+    unit: str,
+    reason: str,
+    series_id: str | None = None,
+) -> dict[str, Any]:
     """Explicit no-data row: no value, no as-of, never a placeholder number."""
-    label, unit = _series_label(series_id)
     return {
-        "section": _series_section(series_id),
+        "key": key,
+        "section": section,
         "metric": label,
         "value": None,
         "unit": unit,
@@ -253,19 +391,165 @@ def _unavailable_indicator(series_id: str, reason: str) -> dict[str, Any]:
     }
 
 
-def _country_rows(country: str, profile: dict[str, Any], policy_row: dict[str, Any] | None, indicators: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _unavailable_series_row(spec: _Series, reason: str) -> dict[str, Any]:
+    return _unavailable_row(
+        spec.key, spec.section, spec.label, spec.unit, reason, series_id=spec.series_id
+    )
+
+
+def _gap_reason_for(country: str, live: bool, provider_errors: list[str]) -> Callable[[str], str]:
+    btmm_error = next((error for error in provider_errors if error.startswith("btmm:")), None)
+
+    def reason_for(key: str) -> str:
+        if not live:
+            return "live overlay is off (live=false); COUN serves no reference values"
+        if key == "policy_rate":
+            return btmm_error or f"BTMM returned no policy-rate row for {country}"
+        label = next((m.label for m in _STANDARD_METRICS if m.key == key), key)
+        return f"no keyless live provider is wired for {label} in {country}"
+
+    return reason_for
+
+
+def _gap_rows(
+    country: str,
+    covered: set[str],
+    reason_for: Callable[[str], str],
+) -> list[dict[str, Any]]:
+    """One explicit unavailable row per uncovered standard slot of a curated country."""
+    if country not in _KNOWN_PROFILE_COUNTRIES:
+        return []
+    return [
+        _unavailable_row(metric.key, metric.section, metric.label, metric.unit, reason_for(metric.key))
+        for metric in _STANDARD_METRICS
+        if metric.key not in covered
+    ]
+
+
+def _series_row(
+    spec: _Series,
+    payload: Any,
+    today: date,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    rows = payload.get("rows") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        rows = []
+    live_rows = sorted(
+        (
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and row.get("source_mode") in _LIVE_ECST_MODES
+            and row.get("date")
+            and row.get("value") is not None
+        ),
+        key=lambda row: str(row["date"]),
+    )
+    if not live_rows:
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        if not isinstance(reason, str) or not reason.strip():
+            reason = "no live observations returned"
+        return _unavailable_series_row(spec, reason), []
+
+    latest = live_rows[-1]
+    as_of = str(latest["date"])[:10]
+    try:
+        as_of_date = date.fromisoformat(as_of)
+    except ValueError:
+        return _unavailable_series_row(spec, f"unreadable observation date {as_of!r}"), []
+
+    if spec.transform == "yoy_pct":
+        prior = _observation_on(live_rows, _shift_years(as_of_date, -1))
+        if prior is None or float(prior["value"]) == 0:
+            return (
+                _unavailable_series_row(
+                    spec,
+                    f"no live observation one year before {as_of} to compute a y/y change",
+                ),
+                [],
+            )
+        value: Any = round((float(latest["value"]) / float(prior["value"]) - 1.0) * 100.0, 3)
+        points: list[dict[str, Any]] = []
+    else:
+        value = latest.get("value")
+        points = [
+            {
+                "date": row.get("date"),
+                "key": spec.key,
+                "metric": spec.label,
+                "value": row.get("value"),
+                "unit": _unit_for(spec, row.get("source_mode")),
+                "series_id": spec.series_id,
+                "source_mode": row.get("source_mode"),
+            }
+            for row in live_rows
+        ]
+
+    age_days = (today - as_of_date).days
+    row: dict[str, Any] = {
+        "key": spec.key,
+        "section": spec.section,
+        "metric": spec.label,
+        "value": value,
+        "unit": _unit_for(spec, latest.get("source_mode")),
+        "as_of": as_of,
+        "series_id": spec.series_id,
+        "source_mode": latest.get("source_mode"),
+    }
+    if spec.note:
+        row["note"] = spec.note
+    if age_days > spec.max_age_days:
+        row["stale"] = True
+        row["reason"] = (
+            f"latest observation {as_of} is {age_days} days old; the limit for this series is "
+            f"{spec.max_age_days} days. Shown with its as-of date; not treated as live."
+        )
+    return row, points
+
+
+def _unit_for(spec: _Series, source_mode: Any) -> str:
+    """The unit of the provider that actually served the row."""
+    if source_mode == "worldbank" and spec.worldbank_unit:
+        return spec.worldbank_unit
+    return spec.unit
+
+
+def _observation_on(rows: list[dict[str, Any]], target: date) -> dict[str, Any] | None:
+    wanted = target.isoformat()
+    for row in rows:
+        if str(row.get("date"))[:10] == wanted:
+            return row
+    return None
+
+
+def _shift_years(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:  # 29 Feb in a non-leap target year
+        return value.replace(year=value.year + years, day=28)
+
+
+def _country_rows(
+    country: str,
+    profile: dict[str, Any],
+    policy_row: dict[str, Any] | None,
+    indicators: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge the policy row, provider rows and gap rows into one deduped list.
+
+    ``profile`` carries only explicit unavailable rows here (never values); the
+    name is kept for the existing dedup contract.
+    """
     # Bug #23 fix: previously this concatenated the reference-profile rows
     # (which always include a static "Policy rate") with a BTMM-sourced
     # "Policy rate" row inserted at position 0 AND with ECST indicator
-    # rows. The UI then rendered three "Policy rate" entries with three
-    # different values (3.625% live, 5.25% reference, 4.3% 10Y proxy mis-
-    # parsed as policy). Solution: deduplicate by ``(section, metric)``,
-    # keeping the row with the most recent ``as_of`` timestamp and
-    # preferring rows that carry an ``as_of`` at all over reference rows
-    # that don't.
+    # rows. Solution: deduplicate by ``(section, metric)``, keeping the row
+    # with the most recent ``as_of`` timestamp and preferring rows that carry
+    # an ``as_of`` at all over rows that don't.
     candidates: list[dict[str, Any]] = []
     if policy_row:
         candidates.append({
+            "key": "policy_rate",
             "section": "rates",
             "metric": "Policy rate",
             "value": policy_row.get("policy_rate"),
@@ -283,7 +567,7 @@ def _deduplicate_country_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
     """Drop duplicate (section, metric) pairs, keeping the freshest row.
 
     "Freshest" = the row with the latest ``as_of`` ISO date; rows without
-    an ``as_of`` are treated as oldest (reference fallback only wins when
+    an ``as_of`` are treated as oldest (an explicit gap only wins when
     no live row exists). First seen wins on ties so the BTMM-inserted row
     keeps its leading slot.
     """
@@ -318,51 +602,22 @@ def _row_freshness(row: dict[str, Any]) -> str:
     return str(as_of)
 
 
-def _country_cards(country: str, profile: dict[str, Any], policy_row: dict[str, Any] | None, indicators: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    cards = list(profile.get("cards") or [])
+def _country_cards(
+    country: str,
+    policy_row: dict[str, Any] | None,
+    indicators: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    currency = _CURRENCY.get(country)
+    if currency:
+        cards.append({"key": "currency", "label": "Currency", "value": currency})
     if policy_row:
-        # The reference profile also carries a static "Policy rate" card;
-        # keep only the LIVE BTMM value or the UI shows two conflicting
-        # policy rates side by side (FN-WAVE survey defect).
-        cards = [
-            c for c in cards
-            if str(c.get("label", "")).strip().lower() != "policy rate"
-        ]
-        cards = [{"label": "Country", "value": country}, {"label": "Policy rate", "value": policy_row.get("policy_rate")}] + cards
+        cards.append(
+            {"key": "policy_rate", "label": "Policy rate", "value": policy_row.get("policy_rate")}
+        )
     for row in indicators[:3]:
-        cards.append({"label": row.get("metric"), "value": row.get("value")})
+        cards.append({"key": row.get("key"), "label": row.get("metric"), "value": row.get("value")})
     return cards[:8]
-
-
-def _series_label(series_id: str) -> tuple[str, str]:
-    labels = {
-        "GDPC1": ("Real GDP", "bn chained USD"),
-        "CPIAUCSL": ("Inflation proxy / CPI", "index"),
-        "UNRATE": ("Unemployment rate", "%"),
-        "DGS10": ("10Y government yield", "%"),
-        "LRHUTTTTEZQ156S": ("Unemployment rate", "%"),
-        "GBRCPIALLMINMEI": ("Consumer prices", "index"),
-        "NGDPRSAXDCTRQ": ("Real GDP", "mn TRY (SA)"),
-    }
-    return labels.get(series_id, (series_id, "value"))
-
-
-def _series_section(series_id: str) -> str:
-    if series_id in {"GDPC1", "NGDPRSAXDCTRQ"}:
-        return "growth"
-    if series_id in {"CPIAUCSL", "GBRCPIALLMINMEI"}:
-        return "prices"
-    if "UNRATE" in series_id or "LRHUT" in series_id:
-        return "labor"
-    if series_id.startswith("DGS"):
-        return "rates"
-    return "macro"
-
-
-def _pct(value: Any) -> float | None:
-    if value is None:
-        return None
-    return round(float(value) * 100, 3)
 
 
 def _unique(values: list[str]) -> list[str]:

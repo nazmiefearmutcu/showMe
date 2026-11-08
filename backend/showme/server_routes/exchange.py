@@ -110,7 +110,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             except Exception as exc:  # noqa: BLE001
                 factory_mod.unregister_credential(rec.id)
                 store.delete(rec.id)
-                raise HTTPException(400, detail=f"auth test failed: {exc}") from exc
+                raise HTTPException(400, detail=f"auth test failed: {str(exc) or type(exc).__name__}") from exc
 
         return rec.to_dict()
 

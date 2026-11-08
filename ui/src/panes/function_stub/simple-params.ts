@@ -195,7 +195,7 @@ export function simpleParamSpecsForFunction(code: string): SimpleParamSpec[] {
     case "ONCH":
       return [
         { key: "symbol", label: "Asset", hint: "BTCUSDT/ETHUSDT" },
-        { key: "chain", label: "Chain", hint: "BTC/ETH" },
+        { key: "chain", label: "Chain", hint: "BTC" },
       ];
     case "POLY":
       return [{ key: "include_closed", label: "Closed", hint: "false/true" }];
@@ -590,7 +590,6 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     return {
       ...(values.callsign?.trim() ? { callsign: values.callsign.trim().toUpperCase() } : {}),
       ...(values.country?.trim() ? { country: values.country.trim() } : {}),
-      live_flight: true,
     };
   }
   if (upper === "GRAB") {
@@ -682,7 +681,7 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     };
   }
   if (upper === "WB") {
-    return { countries: splitCsv(values.countries || "US, DE, JP, GB, FR, IT, ES, AU").map((item) => item.toUpperCase()), live_bonds: true };
+    return { countries: splitCsv(values.countries || "US, DE, JP, GB, FR, IT, ES, AU").map((item) => item.toUpperCase()), reference: false };
   }
   if (upper === "YAS") {
     // Only typed overrides are sent: generic US tenors use the live FRED CMT

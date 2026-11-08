@@ -7,6 +7,7 @@
  * market-data request — the pane keeps that honesty in a header pill and
  * surfaces the methodology instead of dressing rows up as quotes.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   DataGrid,
@@ -91,14 +92,14 @@ export function FLDSPane({ code }: FunctionPaneProps) {
   const summary = payload?.summary;
   const allRows = useMemo(() => payload?.rows ?? [], [payload]);
   const rows = useMemo(() => {
-    const needle = descFilter.trim().toLowerCase();
+    const needle = foldSearchText(descFilter.trim());
     return allRows.filter((r) => {
       if (category !== "all" && (r.category ?? "") !== category) return false;
       if (!needle) return true;
       return (
-        (r.field ?? "").toLowerCase().includes(needle) ||
-        (r.description ?? "").toLowerCase().includes(needle) ||
-        (r.example ?? "").toLowerCase().includes(needle)
+        foldSearchText(r.field ?? "").includes(needle) ||
+        foldSearchText(r.description ?? "").includes(needle) ||
+        foldSearchText(r.example ?? "").includes(needle)
       );
     });
   }, [allRows, category, descFilter]);

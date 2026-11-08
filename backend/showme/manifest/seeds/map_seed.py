@@ -1,11 +1,11 @@
 """MAP — World market heatmap (major country equity-index ETFs).
 
 Bloomberg ``MAP<GO>`` analogue over a curated set of single-country ETFs
-(SPY, VGK, EWG, …): each tile is colored by the delivered change and
+(EUSA, EWG, MCHI, …): each tile is colored by the delivered change and
 sized by |% change| magnitude (NOT market cap — the pane states this
 explicitly). Live mode quotes each ETF and computes the intraday change
-from last vs previous close; model mode returns a deterministic, labelled
-country ETF template. ``chart_grammar.kind=HEATMAP`` per the wave2 spec
+from last vs previous close; model mode lists the country ETF map with null
+prices and changes, labelled quote_type="model". ``chart_grammar.kind=HEATMAP`` per the wave2 spec
 and pinned by ``test_map_chart_grammar_is_heatmap``. UI hangs off the
 shared MarketHeatmapPane (same component as SECT).
 """
@@ -44,11 +44,11 @@ def market_map() -> FunctionManifest:
         name="World Market Heatmap",
         category=Category.SCREENING,
         intent=(
-            "Render a heat grid of major country equity-index ETFs (US/EU/DE/GB/JP/CN/IN/BR …) "
+            "Render a heat grid of MSCI single-country equity ETFs (US/DE/GB/JP/CN/IN/BR …) "
             "colored by the delivered day change and sized by |% change| magnitude so an operator "
             "can read global market breadth in one glance. Live mode uses quote-provider intraday "
-            "changes; model mode returns a deterministic, labelled country template — never a "
-            "fabricated live print."
+            "changes; model mode lists the country map with no prices or changes (labelled model) "
+            "— never a fabricated live print."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
@@ -59,7 +59,7 @@ def market_map() -> FunctionManifest:
                 required=False,
                 description=(
                     "True = quote-provider country ETF changes (default); False = explicitly "
-                    "labelled deterministic country model."
+                    "labelled model: the static country/ETF map with no prices or changes."
                 ),
             ),
             InputSpec(
@@ -130,12 +130,14 @@ def market_map() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "MAP quotes a curated map of single-country equity-index ETFs (SPY/VGK/EWG/EWU/EWQ/"
-            "EWI/EWP/EWJ/FXI/INDA/EWZ/EWW/TUR/EZA/EWA/EWC/EWY/EWT/EWH/EIDO/KSA/ARGT/VNM/EPOL/RSX). "
+            "MAP quotes one MSCI single-country ETF per market (EUSA for the US, which is the iShares "
+            "MSCI USA Equal Weighted ETF, equal-weighted and not the S&P 500; MCHI for China, "
+            "EWG for Germany, and so on; the full map is wmap._COUNTRY_ETFS). Markets without a "
+            "single-country MSCI ETF in the map are omitted rather than substituted. "
             "For each ETF the intraday change_pct = last / previous_close - 1 (null when either "
             "leg is missing — never a phantom -100% drop). Rows carry quote_type='live' when the "
             "quote provider answered, 'unavailable' when a single ETF failed, and 'model' in the "
-            "deterministic fallback branch, which also sets status='model' (or "
+            "model branch, which also sets status='model' (or "
             "status='provider_unavailable' with a reason + next_actions when no live row was "
             "usable). The pane colours tiles by the delivered change, sizes them by |% change| "
             "magnitude (NOT market cap), shows a MODEL banner for fallback data and renders a "
@@ -143,7 +145,7 @@ def market_map() -> FunctionManifest:
         ),
         field_dict={
             "rows[].country": FieldDef(description="ISO-style country key.", source="curated"),
-            "rows[].etf": FieldDef(description="Country equity-index ETF ticker (SPY, VGK, …).", source="curated"),
+            "rows[].etf": FieldDef(description="Country MSCI single-country ETF ticker (EUSA, EWG, MCHI, …).", source="curated"),
             "rows[].last": FieldDef(unit="quote_ccy", description="Latest quoted ETF price.", source="yfinance"),
             "rows[].change_pct": FieldDef(unit="%", description="Intraday change (last vs previous close); null when unavailable.", source="computed"),
             "rows[].period": FieldDef(description="Period the change covers (intraday 1D).", source="computed"),

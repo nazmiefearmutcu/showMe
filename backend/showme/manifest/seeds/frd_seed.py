@@ -76,7 +76,7 @@ def frd() -> FunctionManifest:
                 required=False,
                 description=(
                     "Annualized decimal rate for the quote (pricing) currency. "
-                    "Blank uses the labelled reference rate for that currency."
+                    "Blank uses the live FRED policy series. With neither, the forward is not computed (provider_unavailable)."
                 ),
                 min=-0.05,
                 max=0.50,
@@ -90,7 +90,7 @@ def frd() -> FunctionManifest:
                 required=False,
                 description=(
                     "Annualized decimal rate for the base currency. "
-                    "Blank uses the labelled reference rate for that currency."
+                    "Blank uses the live FRED policy series. With neither, the forward is not computed (provider_unavailable)."
                 ),
                 min=-0.05,
                 max=0.50,
@@ -176,34 +176,36 @@ def frd() -> FunctionManifest:
         ),
         methodology=(
             "FRD prices the FX forward via covered interest parity. Spot is "
-            "fetched from yfinance for the BASE/QUOTE pair, or taken from the "
-            "spot input when supplied. Tenor labels map to a year fraction T "
-            "(xD = x/365, xW = 7x/365, xM = x/12, xY = x). The forward rate is "
-            "F = S × (1 + r_quote × T') / (1 + r_base × T') where r_quote is the "
-            "quote-currency (pricing currency) annualized rate and r_base is the "
-            "base-currency annualized rate. Rates are decimals; a rate left blank "
-            "uses the labelled reference rate for that currency. Both are "
-            "simple-interest ACT/360 rates, so T' = T × 365/360 (calendar days / "
-            "360). Forward points are the price difference (F - S) in quote "
-            "currency per base currency. Implied carry is annualized "
-            "(F/S - 1) / T × 100. The card row exposes r_quote, r_base, tenor, "
-            "and spot source so users can audit the price."
+            "fetched live from yfinance (or overridden manually), with labelled "
+            "fallbacks. The policy rates are live keyless FRED series for the "
+            "base and quote currencies (USD DFF, EUR ECBDFR, GBP IUDSOIA, "
+            "JPY/AUD/CAD monthly call rates) or caller-supplied rates; a rate "
+            "with no live series and no caller input gives provider_unavailable, never a stale constant. "
+            "Tenor is mapped to a year fraction T on ACT/360 for both legs "
+            "(house convention; GBP and JPY market practice is ACT/365). The "
+            "forward rate is F = S × (1 + r_quote × T) / (1 + r_base × T), where "
+            "S is quote currency per base currency, r_base is the base-currency "
+            "rate and r_quote is the quote-currency rate. Forward points are "
+            "reported in price units (F - S) and in pips (x10000, x100 for a JPY "
+            "quote). Implied carry is annualized (F/S - 1) / T × 100. The card "
+            "row exposes the two rates, tenor, and spot source so users can "
+            "audit the price."
         ),
         formula_dict={
             "covered_interest_parity": Formula(
-                expression=r"F = S \cdot \frac{1 + r_{quote} \cdot T'}{1 + r_{base} \cdot T'}",
+                expression=r"F = S \cdot \frac{1 + r_{quote} \cdot T}{1 + r_{base} \cdot T}",
                 variables={
                     "S": "Spot, quote currency per one base currency",
-                    "r_quote": "Quote (pricing) currency annualized rate",
-                    "r_base": "Base currency annualized rate",
-                    "T'": "Tenor year fraction on the rate basis: T' = T × 365/360 (ACT/360)",
+                    "r_base": "Annualized rate of the base currency (denominator)",
+                    "r_quote": "Annualized rate of the quote currency (numerator)",
+                    "T": "Year fraction on ACT/360",
                 },
-                notes="Simple-interest CIP; the continuous-comp form is F = S × exp((r_quote - r_base) × T).",
+                notes="Simple-interest CIP on ACT/360 for both legs; the continuous-comp form is F = S × exp((r_quote - r_base) × T).",
             ),
             "forward_points": Formula(
                 expression=r"pts = F - S",
                 variables={"F": "Forward rate", "S": "Spot"},
-                notes="Price difference in quote currency per base currency (not pips).",
+                notes="Price units are F - S; pips are pts × 10^4, or × 10^2 for a JPY quote.",
             ),
             "implied_carry": Formula(
                 expression=r"carry = \frac{F/S - 1}{T} \times 100",
@@ -216,10 +218,11 @@ def frd() -> FunctionManifest:
             "spot": FieldDef(description="Spot rate used in the CIP equation.", source="provider"),
             "tenor": FieldDef(description="Forward tenor label.", source="input"),
             "forward_rate": FieldDef(description="No-arbitrage forward from CIP.", source="computed"),
-            "forward_points": FieldDef(unit="price", description="F - S, quote currency per base currency.", source="computed"),
+            "forward_points": FieldDef(unit="price", description="Forward - spot in quote-currency price units (quote per base).", source="computed"),
+            "forward_points_pips": FieldDef(unit="pips", description="(F - S) in pips: x10000, or x100 for a JPY quote.", source="computed"),
             "implied_carry": FieldDef(unit="%", description="(F/S - 1) / T × 100.", source="computed"),
-            "r_quote": FieldDef(unit="decimal", description="Quote (pricing) currency rate used (echoed; reference rate when not supplied).", source="input"),
-            "r_base": FieldDef(unit="decimal", description="Base currency rate used (echoed; reference rate when not supplied).", source="input"),
+            "r_base": FieldDef(unit="decimal", description="Base-currency rate used: caller input or live FRED policy series.", source="provider"),
+            "r_quote": FieldDef(unit="decimal", description="Quote-currency rate used: caller input or live FRED policy series.", source="provider"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

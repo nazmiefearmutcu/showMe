@@ -38,6 +38,7 @@ import { maxOf } from "@/lib/maxOf";
 import { relativeTimeLabel } from "@/lib/time";
 import { formatNumber, formatPercent, formatSignedDelta } from "@/lib/format";
 import type { FunctionPaneProps } from "./registry-types";
+import { safeHref } from "@/lib/safe-href";
 
 type LoadState = "idle" | "loading" | "ok" | "error";
 
@@ -884,9 +885,9 @@ function ExamplesSection({
                           <Pill tone="muted" variant="soft" withDot={false}>
                             {item.topic}
                           </Pill>
-                          {item.url ? (
+                          {safeHref(item.url) ? (
                             <a
-                              href={item.url}
+                              href={safeHref(item.url)}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="xsen-tweet__open"

@@ -563,7 +563,7 @@ class XAnalyzer:
                 # score scraped posts, so cool the chain down hard and let the
                 # fallback serve the chip until an operator installs the model.
                 _note_x_chain_failure(
-                    f"model bundle missing: {exc}",
+                    f"model bundle missing: {str(exc) or type(exc).__name__}",
                     cooldown=X_MODEL_MISSING_COOLDOWN_SECONDS,
                 )
                 analysis = {}

@@ -34,20 +34,25 @@ class FTSFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=["empty query"])
         # Default-polarity flip (2026-09-08): FTS searches live SEC EDGAR
-        # full-text by default; ``reference=true`` skips the provider.
-        live = not _truthy(params.get("reference"))
+        # full-text by default. ``live=false`` and ``reference=true`` both skip
+        # the provider (the manifest's live input is honoured, not ignored).
+        live = _live_requested(params)
+        date_from = params.get("date_from") or params.get("start") or None
+        date_to = params.get("date_to") or params.get("end") or None
         if not live or sec is None or (instrument and instrument.asset_class.value != "EQUITY"):
             if instrument and instrument.asset_class.value != "EQUITY":
                 reason = "SEC EDGAR full-text search is not applicable for this asset class."
             elif sec is None:
                 reason = "SEC EDGAR full-text search adapter (sec_efts) is not configured; no live filing hits can be served."
             else:
-                reason = "reference=true; live SEC full-text search skipped."
+                reason = "live SEC full-text search skipped (live=false or reference=true); no provider call was made."
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={"status": "provider_unavailable" if live else "empty", "rows": [], "query": query,
                       "reason": reason,
+                      "total_hits": None,
+                      "date_from": date_from, "date_to": date_to,
                       "next_actions": [
                           "Configure the sec_efts adapter to enable live EDGAR full-text search.",
                           "Verify the symbol is an EQUITY before requesting full-text search.",
@@ -63,8 +68,8 @@ class FTSFunction(BaseFunction):
             hits = await asyncio.wait_for(
                 sec.search(
                     query, forms=forms,
-                    start=params.get("start"),
-                    end=params.get("end"),
+                    start=date_from,
+                    end=date_to,
                     limit=int(params.get("limit", 50)),
                 ),
                 timeout=float(params.get("timeout", 8)),
@@ -72,22 +77,36 @@ class FTSFunction(BaseFunction):
         except Exception as e:
             return FunctionResult(code=self.code, instrument=instrument,
                                   data={"status": "provider_unavailable", "rows": [], "query": query,
-                                        "reason": f"sec_efts adapter raised: {e}",
+                                        "reason": f"sec_efts adapter raised: {str(e) or type(e).__name__}",
+                                        "total_hits": None,
                                         "next_actions": ["Retry once the SEC EDGAR provider recovers.", "Open Raw payload to inspect the provider error."],
                                         "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Provider errors are shown instead of unrelated hits.",
                                         "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                                   sources=["no_live_source"],
-                                  metadata={"provider_errors": [f"sec_efts: {e}"]})
+                                  metadata={"provider_errors": [f"sec_efts: {str(e) or type(e).__name__}"]})
         limit = max(1, min(int(params.get("limit", 50) or 50), 100))
         rows = _normalise_hits(hits, instrument)[:limit]
+        # EFTS reports the match count with a relation. Only relation "eq" is an
+        # exact count (total_hits). "gte" means the count is capped at that value,
+        # so it is a lower bound and is never shown as exact. Any other or missing
+        # relation is reported as neither.
+        raw_total = getattr(hits, "total", None)
+        relation = getattr(hits, "total_relation", None)
+        total_hits = raw_total if (raw_total is not None and relation == "eq") else None
+        total_lower_bound = raw_total if (raw_total is not None and relation == "gte") else None
         status = "ok" if rows else "empty"
         return FunctionResult(code=self.code, instrument=instrument, data={
                               "status": status,
                               "rows": rows,
                               "query": query,
                               "forms": forms,
+                              "total_hits": total_hits,
+                              "total_hits_lower_bound": total_lower_bound,
+                              "total_hits_relation": relation,
+                              "returned": len(rows),
+                              "date_from": date_from, "date_to": date_to,
                               "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. The visible rows include company, form, filing date, accession/link, score, and snippet evidence.",
-                              "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
+                              "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type.", "total_hits": "Exact match count reported by EDGAR (may exceed returned rows); null when not reported or when EDGAR marks it a lower bound.", "total_hits_lower_bound": "Lower bound on the match count when EDGAR caps it (relation gte); null otherwise."}},
                               sources=["sec_efts"],
                               metadata={"query": query, "forms": forms,
                                          "count": len(rows),
@@ -124,6 +143,14 @@ def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, 
         row["issuer_match"] = (hit_symbol == instrument_symbol) if (hit_symbol and instrument_symbol) else None
         rows.append(row)
     return rows
+
+
+def _live_requested(params: dict[str, Any]) -> bool:
+    """Live is the default. ``reference=true`` or an explicit ``live=false`` skips the provider."""
+    if _truthy(params.get("reference")):
+        return False
+    raw_live = params.get("live")
+    return True if raw_live is None else _truthy(raw_live)
 
 
 def _truthy(value: Any) -> bool:

@@ -31,6 +31,10 @@ _ALIASES: dict[str, tuple[str, ...]] = {
 }
 _REALIZED_WINDOW = 30
 _TRADING_DAYS = 252
+#: A plain (unitless) rate above this magnitude is refused as ambiguous: a
+#: decimal rate of 20%+ is not a plausible risk-free rate, so a value in
+#: (0.2, 1] is most likely a percent typed without its unit.
+_MAX_PLAIN_DECIMAL_RATE = 0.2
 
 
 def _first(position: dict[str, Any], names: tuple[str, ...]) -> Any:
@@ -54,7 +58,7 @@ def _years_until(value: Any, today: date) -> float | None:
         when = date.fromisoformat(text[:10])
     except ValueError:
         return None
-    return (when - today).days / 365.25
+    return (when - today).days / greeks_svc.DAYS_PER_YEAR
 
 
 def _positive(value: Any) -> float | None:
@@ -86,7 +90,7 @@ def normalize_position(position: dict[str, Any], today: date | None = None) -> t
             out["T"] = _years_until(position["expiry"], today)
         elif position.get("expiry_days") not in (None, ""):
             days = _positive(position["expiry_days"])
-            out["T"] = days / 365.25 if days else None
+            out["T"] = days / greeks_svc.DAYS_PER_YEAR if days else None
     problems = []
     if out["kind"] not in {"call", "put"}:
         problems.append("type (call/put)")
@@ -121,22 +125,46 @@ def normalize_position(position: dict[str, Any], today: date | None = None) -> t
             problems.append("vol must be a decimal in (0, 5] (0.25 = 25%)")
         else:
             out["vol"] = vol
-    if out.get("r") in (None, ""):
+    # Explicit units are unambiguous: rate_pct (4.5 = 4.5%) and rate_bps (450 = 4.5%).
+    explicit = [key for key in ("rate_pct", "rate_bps") if position.get(key) not in (None, "")]
+    if explicit and (len(explicit) > 1 or position.get("r") not in (None, "")):
+        problems.append("rate given more than once (use one of rate_pct, rate_bps or r)")
+    elif explicit:
+        key = explicit[0]
+        number = _number(position[key])
+        if number is None:
+            problems.append(f"{key} must be a number")
+        else:
+            out["r"] = number / 100.0 if key == "rate_pct" else number / 10000.0
+            out["rate_source"] = "input_percent" if key == "rate_pct" else "input_bps"
+    elif out.get("r") in (None, ""):
         out["_needs_rate"] = True
     else:
-        try:
-            rate = float(out["r"])
-            if not math.isfinite(rate):
-                raise ValueError
-        except (TypeError, ValueError):
+        rate = _number(out["r"])
+        if rate is None:
             problems.append("rate must be a number")
-        else:
-            if abs(rate) > 1:  # 4.5 means 4.5%; no real risk-free rate exceeds 100%
-                rate /= 100.0
-                out["rate_source"] = "input_percent"
+        elif abs(rate) > 1:  # 4.5 means 4.5%; no real risk-free rate exceeds 100%
+            rate /= 100.0
+            out["rate_source"] = "input_percent"
             out["r"] = rate
-            out.setdefault("rate_source", "input")
+        elif abs(rate) > _MAX_PLAIN_DECIMAL_RATE:
+            # 0.5 typed by a user who means 0.5 percent would be priced as 50%.
+            problems.append(
+                f"rate {rate:g} is ambiguous (read as a decimal it is {rate * 100:g}%): enter "
+                f"r={rate / 100:g} for {rate:g}% (decimal form), or rate_pct={rate:g} through the API")
+            out["r"] = rate
+        else:
+            out["r"] = rate
+            out["rate_source"] = "input_decimal"
     return out, problems
+
+
+def _number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 async def _risk_free_rate(deps: Any, client: Any = None) -> tuple[float, str] | None:
@@ -208,8 +236,9 @@ class GREEKSFunction(BaseFunction):
             )
         if not positions:
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"delta": 0, "gamma": 0, "vega": 0, "theta": 0,
-                                        "rho": 0, "positions": [], "n": 0,
+                                  data={# T10: an empty book has no Greeks to report, not zeros.
+                                        "delta": None, "gamma": None, "vega": None, "theta": None,
+                                        "rho": None, "positions": [], "n": 0,
                                         "rows": [],
                                         "status": "input_required",
                                         "reason": "No option positions were supplied or found in the local option book.",
@@ -296,13 +325,13 @@ class GREEKSFunction(BaseFunction):
                 instrument=None,
                 data={
                     "status": "calc_error",
-                    "reason": f"Greeks aggregation failed: {e}",
+                    "reason": f"Greeks aggregation failed: {str(e) or type(e).__name__}",
                     "rows": [],
                     "next_actions": [
                         "Verify each position has numeric qty, strike, expiry, vol, rate, and spot.",
                     ],
                 },
-                warnings=[f"aggregate: {e}"],
+                warnings=[f"aggregate: {str(e) or type(e).__name__}"],
             )
         failed = [row for row in agg.get("positions", []) if row.get("error")]
         if failed:
@@ -320,8 +349,19 @@ class GREEKSFunction(BaseFunction):
             for key in ("spot_source", "vol_source", "rate_source"):
                 if key in pos:
                     row[key] = pos[key]
+            # Echo the interpreted decimal rate so the unit actually used is visible.
+            if "r" in pos:
+                row["rate"] = pos["r"]
         totals = agg.get("totals") or {}
         warnings: list[str] = []
+        for i, pos in enumerate(normalized):
+            if pos.get("rate_source") == "input_decimal":
+                # A plain rate in (0, 0.2] is a valid decimal, but a user who typed
+                # a percent (0.1 = 0.1%) would get 10% priced: say which one was used.
+                rate = float(pos["r"])
+                warnings.append(
+                    f"position {i + 1} ({pos.get('symbol', '?')}): rate {rate:g} was read as a decimal "
+                    f"and priced at {rate * 100:g}%; if you meant {rate:g}% enter r={rate / 100:g}")
         data = {
             **agg,
             # NOTE: no separate input-echo `rows` key — the payload's `positions`
@@ -344,12 +384,17 @@ class GREEKSFunction(BaseFunction):
 
 def _methodology() -> str:
     return (
-        "Aggregate contract-level Black-Scholes Greeks across the option book. Each row is scaled by "
-        "quantity and contract size; portfolio delta/gamma/vega/theta/rho are the sums across positions. "
+        "Aggregate contract-level Black-Scholes Greeks across the option book. The model prices European "
+        "exercise in closed form, so American early exercise (common for listed puts and dividend payers) is "
+        "not modelled. Each row is scaled by quantity and contract size; a missing contract size uses 100 and "
+        "a missing dividend yield uses 0, both reported per row (contract_size_source / q) and in "
+        "assumptions_used. Portfolio delta/gamma/vega/theta/rho are the sums across positions. "
         "A missing spot uses the symbol's last daily close and a missing vol its 30-day realized "
         "volatility (log returns, annualized with 252 days), and a missing rate the live 3-month T-bill "
         "yield (FRED DGS3MO); each is labelled per row (spot_source / vol_source / rate_source). A rate "
-        "above 1 is read as a percent. Expiry is never assumed, and a position that cannot be priced "
+        "above 1 is read as a percent; a plain rate in (0.2, 1] is refused as ambiguous, and rate_pct or "
+        "rate_bps give an explicit unit (rate_source records which one was used). Expiry is never assumed, "
+        "and a position that cannot be priced "
         "fails the whole book instead of being left out of the totals."
     )
 
@@ -362,6 +407,8 @@ def _field_dictionary() -> dict[str, str]:
         "theta": "Time decay per year under the Black-Scholes convention used by the service.",
         "rho": "Change in option value for a 1.00 rate move.",
         "contract_size": "Multiplier applied to per-contract Greeks.",
+        "contract_size_source": "input, or default_100 when contract_size was not supplied.",
+        "q_source": "input, or default_0 when no dividend yield was supplied.",
         "spot_source": "input, or yfinance_last_close when spot was not supplied.",
         "vol_source": "input, or realized_30d when vol was not supplied.",
     }

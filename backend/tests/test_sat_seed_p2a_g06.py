@@ -68,16 +68,25 @@ def test_sat_seed_semantic_tests_match_handler_behaviour() -> None:
         )
 
 
-def test_sat_handler_output_satisfies_seed_must_have() -> None:
+def test_sat_handler_output_satisfies_seed_must_have(monkeypatch) -> None:
+    from showme.engine.functions.misc import sat as sat_handler
     from showme.engine.functions.misc.sat import SATFunction
 
-    # Force the outage branch offline: both providers unreachable.
+    # Force the outage branch offline: both providers unreachable. The HTTP seam
+    # is patched so the test never depends on whether GIBS / Open-Meteo answer.
     async def _down(*_a, **_k):
         raise RuntimeError("offline test")
 
+    async def _unreachable(*_a, **_k):
+        # The merged handler resolves tiles through _resolve_tile (PNG-decoded
+        # walk-back, SAT#2); patch it so the test never reaches the network.
+        return {"state": "unreachable", "capture_date": None, "tile_url": None, "checks": [],
+                "reason": "offline test"}
+
+    monkeypatch.setattr(sat_handler, "_http_get_raw", _down)
     handler = SATFunction()
     handler._fetch_conditions = _down  # type: ignore[method-assign]
-    handler._probe_tile = _down  # type: ignore[method-assign]
+    handler._resolve_tile = _unreachable  # type: ignore[method-assign]
     result = asyncio.run(handler.execute(aoi="cushing_ok", layer="true_color"))
     for key in sat.output_contract.must_have:
         assert key in result.data, f"must_have {key} missing"

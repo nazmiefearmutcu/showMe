@@ -3,9 +3,8 @@
  *
  * Purpose-built screen for `portfolio/pcas.py`: explained-variance profile
  * (PC1..PC5), the k-σ shock P&L headline, top component loadings, and the
- * per-asset shocked return / P&L table. `live_prices` selects real yfinance
- * return history; MODEL opts into the labelled template returns (the shared
- * data-quality badge discloses it).
+ * per-asset shocked return / P&L table. Returns always come from live yfinance
+ * daily history (delayed reference); the backend serves no template returns.
  */
 import { useMemo, useState } from "react";
 import {
@@ -151,23 +150,20 @@ const LOADING_COLUMNS: DataGridColumn<Row>[] = [
 export function PcaStressPane({ code }: FunctionPaneProps) {
   const [pcIndex, setPcIndex] = useState<0 | 1 | 2>(0);
   const [kSigma, setKSigma] = useState<2 | 3 | 4>(3);
-  const [livePrices, setLivePrices] = useState(true);
 
+  // PCAS#4 follow-up: the backend no longer serves template returns (it refuses
+  // live_prices=false), so every request runs on live yfinance daily history.
+  // The former MODEL toggle sent no live_prices key and came back labelled as
+  // template data while carrying delayed yfinance returns; it is removed.
   const params = useMemo(
     () => ({
       pc_index: pcIndex,
       k_sigma: kSigma,
       live: true,
+      live_prices: true,
       include_legacy: true,
-      // Wire quirk (probe-verified, backend `pcas.py:32-46`): the producer
-      // reads `params.get("live_prices") or params.get("live")` BEFORE
-      // coercing, so a present string "false" is truthy in Python and the
-      // MODEL toggle used to land on "live=true required for PCA stress".
-      // Omit the key instead — `bool(params.get("live_prices", False))`
-      // then selects the labelled template returns while `live` stays true.
-      ...(livePrices ? { live_prices: true } : {}),
     }),
-    [pcIndex, kSigma, livePrices],
+    [pcIndex, kSigma],
   );
   const { state, data, error, refetch } = useFunction<PcasPayload>({ code, params });
   const payload = data?.data;
@@ -196,6 +192,12 @@ export function PcaStressPane({ code }: FunctionPaneProps) {
       ? ` · first ${cumulative.length} of up to ${assetRows.length} components returned`
       : "";
 
+  // The return-source label is read from the payload, never hard-coded: the
+  // backend marks its yfinance daily returns as "delayed_reference", which the
+  // shared badge also reports as partial-live. A payload with no data_mode gets
+  // no source label rather than a guessed one.
+  const returnSourceLabel =
+    payload && payload.data_mode === "delayed_reference" ? "DELAYED · yfinance daily" : null;
   const warnings = data?.warnings ?? [];
   const status = str(payload?.status) ?? data?.status ?? "ok";
   const isEmpty = !payload || (assetRows.length === 0 && loadings.length === 0 && variance.length === 0);
@@ -248,7 +250,8 @@ export function PcaStressPane({ code }: FunctionPaneProps) {
                   key: "shock",
                   label: "Factor Shock",
                   value: fmtNum(payload?.factor_shock_magnitude, 4),
-                  title: "Magnitude of the applied principal-component shock",
+                  title:
+                    "Magnitude of the applied principal-component shock. +k moves each asset along the component's net-positive loading (sign fixed by convention, not by the SVD); the opposite move is not shown.",
                 },
                 {
                   key: "notional",
@@ -403,15 +406,14 @@ export function PcaStressPane({ code }: FunctionPaneProps) {
                 ]}
                 onChange={setKSigma}
               />
-              <button
-                type="button"
-                className={`btn btn--ghost portfolio-analytics-live${livePrices ? " portfolio-analytics-live--on" : ""}`}
-                onClick={() => setLivePrices((value) => !value)}
-                aria-pressed={livePrices}
-                title="Toggle live yfinance returns vs the labelled template returns"
-              >
-                {livePrices ? "LIVE" : "MODEL"}
-              </button>
+              {returnSourceLabel ? (
+                <span
+                  className="portfolio-analytics-live"
+                  title="Return source: yfinance daily history, delayed reference (not real-time, not a model)"
+                >
+                  {returnSourceLabel}
+                </span>
+              ) : null}
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}

@@ -229,11 +229,36 @@ const CANDIDATE_COLUMNS: DataGridColumn<Row>[] = [
             {label}
           </Pill>
           <span className="portfolio-analytics-num">→ {read.close}</span>
+          {washCheckPill(row)}
         </span>
       );
     },
   },
 ];
+
+/**
+ * Per-row wash-sale check result from the backend. A blocked row is a real
+ * finding (its open date sits inside the window). A not-checked row is
+ * labelled as such: the window above is an observation, not a clearance.
+ * A row without a status field renders nothing rather than a guessed label.
+ */
+function washCheckPill(row: Row) {
+  if (row.wash_sale_status === "blocked_open_date_in_window") {
+    return (
+      <Pill tone="warn" variant="soft" withDot={false}>
+        BLOCKED
+      </Pill>
+    );
+  }
+  if (row.wash_sale_status === "not_checked") {
+    return (
+      <Pill tone="muted" variant="soft" withDot={false}>
+        NOT CHECKED
+      </Pill>
+    );
+  }
+  return null;
+}
 
 export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
   // User-controlled tax assumptions (persisted). These were previously
@@ -275,6 +300,17 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
     : null;
   const windowText = firstWindow ? `${firstWindow.open} → ${firstWindow.close}` : "—";
   const note = typeof data?.metadata?.note === "string" ? data.metadata.note : null;
+  // The total is either netted against supplied realized gains or a gross
+  // upper bound; the hero label says which one, never a bare "savings".
+  const savingsLabel =
+    payload?.savings_basis === "netted_against_supplied_realized_gains"
+      ? "Estimated tax savings (netted)"
+      : payload?.savings_basis === "gross_upper_bound_no_gains_supplied"
+        ? "Estimated tax savings (gross, not netted)"
+        : "Estimated tax savings";
+  // The buy-history wash-sale check is not run by the backend; say so next
+  // to the window, so an observation window is never read as clearance.
+  const washNotChecked = payload?.wash_sale_checked === false;
 
   const badge = (
     <DataQualityBadge
@@ -313,7 +349,7 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
           {badge}
           <section className="portfolio-analytics-summary">
             <div className="portfolio-analytics-summary__hero">
-              <span className="portfolio-analytics-label">Estimated tax savings</span>
+              <span className="portfolio-analytics-label">{savingsLabel}</span>
               <strong className="u-text-positive">{fmtMoney(totalSavings)}</strong>
               <span>
                 {payload?.n_loss_positions ?? candidates.length} loss position(s) · assumed bracket{" "}
@@ -356,13 +392,22 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
                 {note ??
                   "US wash-sale rule (§1091): repurchasing a substantially identical security within 30 days before or after the sale disallows the loss. Replacement ETFs are similar, not identical."}
               </p>
+              {washNotChecked ? (
+                <p className="u-mt-4" style={{ margin: 0 }}>
+                  Wash-sale check not run against broker buy history. Only a position opened inside the
+                  window is BLOCKED; other rows are NOT CHECKED and may still have a repurchase inside the window.
+                </p>
+              ) : null}
             </section>
           ) : null}
 
           <WarningStrip warnings={warnings} />
 
           <section className="portfolio-table-panel">
-            <SectionHead title="Harvest candidates" meta={`${candidates.length} row(s) · est. savings descending`} />
+            <SectionHead
+              title="Harvest candidates"
+              meta={`${candidates.length} position(s) · gross saving descending · not tax lots`}
+            />
             <DataGrid
               columns={CANDIDATE_COLUMNS}
               rows={candidates}

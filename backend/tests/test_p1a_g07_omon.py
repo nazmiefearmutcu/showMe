@@ -156,3 +156,53 @@ def test_omon2_no_trade_timestamp_is_not_live(monkeypatch) -> None:
     assert result.metadata["live"] is False
     assert result.metadata["as_of"] is None
     assert result.metadata["data_mode"] != "live_yfinance"
+
+
+# ── OMON#3 ─────────────────────────────────────────────────────────────────
+
+
+def _run_with(monkeypatch, **params):
+    calls, puts = _basic_chain(datetime.now(timezone.utc) - timedelta(minutes=5))
+    _patch_chain(monkeypatch, calls, puts)
+    return asyncio.run(OMONFunction().execute(underlier="SPY", **params))
+
+
+def test_omon3_explicit_spot_wins_over_the_chain_spot(monkeypatch) -> None:
+    """A caller's spot must price moneyness and delta, not the chain's 735.29."""
+    # RED before fix: the chain spot always won, so spot stayed 735.29.
+    result = _run_with(monkeypatch, spot=700)
+    assert result.data["spot"] == 700
+    assert result.data["spot_source"] == "user_override"
+    row = _row(result.data["rows"], 740.0)
+    assert row["moneyness"] == round(740.0 / 700.0, 4)
+
+
+def test_omon3_chain_spot_is_used_and_labelled_when_no_spot_is_given(monkeypatch) -> None:
+    result = _run_with(monkeypatch)
+    assert result.data["spot"] == SPOT
+    assert result.data["spot_source"] == "chain"
+
+
+# ── OMON#4 ─────────────────────────────────────────────────────────────────
+
+
+def test_omon4_rate_and_dividend_yield_are_read_and_disclosed(monkeypatch) -> None:
+    """Greeks must follow the caller's r and q, and echo where each came from."""
+    default = _run_with(monkeypatch)
+    assert default.data["risk_free_rate"] == 0.045
+    assert default.data["risk_free_source"] == "default"
+    assert default.data["dividend_yield"] == 0.0
+    assert default.data["dividend_yield_source"] == "default_0"
+
+    with_q = _run_with(monkeypatch, dividend_yield=0.2)
+    # RED before fix: q was hard-coded 0, so the parameter changed nothing.
+    assert with_q.data["dividend_yield"] == 0.2
+    assert with_q.data["dividend_yield_source"] == "param"
+    d_default = _row(default.data["rows"], 740.0)["call_delta"]
+    d_q = _row(with_q.data["rows"], 740.0)["call_delta"]
+    assert d_q < d_default
+
+    with_r = _run_with(monkeypatch, risk_free=0.10)
+    assert with_r.data["risk_free_rate"] == 0.10
+    assert with_r.data["risk_free_source"] == "param"
+    assert _row(with_r.data["rows"], 740.0)["call_delta"] > d_default

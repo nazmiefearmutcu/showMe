@@ -68,19 +68,39 @@ class STRSFunction(BaseFunction):
         refresh_prices = _truthy(params.get("refresh_prices") or params.get("live_prices"))
         prices = await self._quote_many(symbols, timeout=quote_timeout) if refresh_prices else {}
         sector_lookup: dict[str, str] = {}
-        include_sectors = _truthy(params.get("include_sectors"))
+        # Sector shocks are on by default (STRS#2): the pane sends no include_sectors,
+        # and with the lookup off no sector shock ever reached a position.
+        raw_include = params.get("include_sectors")
+        include_sectors = True if raw_include is None else _truthy(raw_include)
+        sector_failures: dict[str, str] = {}
         if include_sectors and self.deps.yfinance:
-            await self._sectors(symbols, sector_lookup, timeout=min(quote_timeout, 2.0))
+            await self._sectors(symbols, sector_lookup, timeout=min(quote_timeout, 2.0),
+                                failures=sector_failures)
         positions_payload: list[dict[str, Any]] = []
+        # STRS#6: state which basis each position was valued on. A live-mode position
+        # with no quote falls back to average cost and is flagged, never silent.
+        price_basis: dict[str, str] = {}
         for p in portfolio.positions:
-            px = prices.get(p.instrument.symbol) or p.avg_cost
+            sym = p.instrument.symbol
+            if not refresh_prices:
+                price_basis[sym] = "portfolio_state_cost"
+            elif prices.get(sym):
+                price_basis[sym] = "live_quote"
+            else:
+                price_basis[sym] = "avg_cost_fallback"
+            px = prices.get(sym) or p.avg_cost
             mv = p.quantity * px
             positions_payload.append({
-                "symbol": p.instrument.symbol,
+                "symbol": sym,
                 "asset_class": p.instrument.asset_class.value,
                 "market_value": mv,
-                "sector": sector_lookup.get(p.instrument.symbol),
+                "sector": sector_lookup.get(sym),
             })
+        price_source = _price_source(price_basis, refresh_prices)
+        price_warnings = [
+            *_price_warnings(price_basis, refresh_prices),
+            *_sector_warnings(include_sectors, bool(self.deps.yfinance), sector_failures),
+        ]
         # The manifest's `scenario_magnitudes` input is the scale factor; `scale` is kept
         # as the older spelling.
         scale_raw = params.get("scale")
@@ -88,7 +108,9 @@ class STRSFunction(BaseFunction):
             scale_raw = params.get("scenario_magnitudes", 1.0)
         scale = float(scale_raw)
         sources = ["stress_scenarios", "portfolio_state"]
-        if refresh_prices or include_sectors:
+        # yfinance is a source only when an adapter exists and a quote or REFDATA
+        # lookup was actually attempted (STRS#2 follow-up).
+        if self.deps.yfinance and (refresh_prices or include_sectors):
             sources.insert(0, "yfinance")
         # Bond funds in the GFC/COVID windows take their own measured window return.
         # Fetch it only for the windows this request runs; custom shocks use none.
@@ -126,7 +148,8 @@ class STRSFunction(BaseFunction):
                 measured_by_key=measured_by_key,
             )
             compare_warnings = _unique_warnings(
-                [unknown_warnings, *(row.get("warnings", []) for row in data)],
+                [price_warnings, unknown_warnings,
+                 *(row.get("warnings", []) for row in data)],
             )
             return FunctionResult(code=self.code, instrument=None,
                                   warnings=compare_warnings,
@@ -136,7 +159,7 @@ class STRSFunction(BaseFunction):
                                             "scenarios": len(data),
                                             "positions": len(positions_payload),
                                             "worst_total_pnl": data[0]["total_pnl"] if data else 0,
-                                            "price_source": "live_quote" if refresh_prices else "portfolio_state_cost",
+                                            "price_source": price_source,
                                             "unpriced_positions": max(
                                                 (row["unpriced_positions"] for row in data), default=0,
                                             ),
@@ -154,8 +177,9 @@ class STRSFunction(BaseFunction):
                 symbol_shocks=params.get("symbol_shocks") or {},
             )
             data = stress.apply_scenario(positions_payload, sc, sector_lookup=sector_lookup, scale=scale)
+            _stamp_price_basis(data, price_basis, price_source)
             return FunctionResult(code=self.code, instrument=None,
-                                  warnings=list(data.get("warnings", [])),
+                                  warnings=_unique_warnings([price_warnings, data.get("warnings", [])]),
                                   data={**data, "rows": data.get("positions", []),
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()},
@@ -186,8 +210,9 @@ class STRSFunction(BaseFunction):
             positions_payload, sc, sector_lookup=sector_lookup, scale=scale,
             measured=measured_by_key.get(key) if key in stress.MEASURED_WINDOWS else None,
         )
+        _stamp_price_basis(data, price_basis, price_source)
         return FunctionResult(code=self.code, instrument=None,
-                              warnings=list(data.get("warnings", [])),
+                              warnings=_unique_warnings([price_warnings, data.get("warnings", [])]),
                               data={**data, "rows": data.get("positions", []),
                                     "methodology": _methodology(),
                                     "field_dictionary": _field_dictionary()},
@@ -249,7 +274,15 @@ class STRSFunction(BaseFunction):
         await asyncio.gather(*(_one(s, k) for s in symbols for k in keys))
         return out
 
-    async def _sectors(self, symbols: list[str], lookup: dict[str, str], timeout: float = 2.0) -> None:
+    async def _sectors(
+        self, symbols: list[str], lookup: dict[str, str], timeout: float = 2.0,
+        failures: dict[str, str] | None = None,
+    ) -> None:
+        """Fill ``lookup`` with sectors; record each symbol that got none in ``failures``.
+
+        STRS#2: a failed or empty REFDATA answer is never swallowed. It is recorded
+        with its reason so the handler can say the asset-class shock was used.
+        """
         async def _s(sym: str) -> None:
             try:
                 inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
@@ -264,9 +297,27 @@ class STRSFunction(BaseFunction):
                 sector = getattr(meta, "sector", None)
                 if sector:
                     lookup[sym] = str(sector)
-            except Exception:
-                pass
+                elif failures is not None:
+                    failures[sym] = "no sector reported"
+            except Exception as exc:
+                if failures is not None:
+                    failures[sym] = f"lookup failed ({type(exc).__name__})"
         await asyncio.gather(*(_s(s) for s in symbols))
+
+
+def _sector_warnings(
+    include_sectors: bool, has_adapter: bool, failures: dict[str, str],
+) -> list[str]:
+    """Why sector shocks may not have reached positions, stated in the result."""
+    if not include_sectors:
+        return []
+    if not has_adapter:
+        return ["sector lookup unavailable: no market data adapter; "
+                "sector shocks not applied, asset-class shocks used"]
+    return [
+        f"{sym}: sector unavailable ({reason}); asset-class shock used, not a sector shock"
+        for sym, reason in sorted(failures.items())
+    ]
 
 
 def _asset_class_for_quote(symbol: str) -> AssetClass:
@@ -284,6 +335,37 @@ def _as_date(value: Any) -> Any:
     """Calendar date of a history index entry (pandas Timestamp or datetime)."""
     day = getattr(value, "date", None)
     return day() if callable(day) else value
+
+
+def _price_source(basis: dict[str, str], refresh_prices: bool) -> str:
+    """live_quote when every position was quoted, mixed when some fell back, else cost."""
+    if not refresh_prices or not basis:
+        return "portfolio_state_cost"
+    values = set(basis.values())
+    if values == {"live_quote"}:
+        return "live_quote"
+    if "live_quote" in values:
+        return "mixed"
+    return "portfolio_state_cost"
+
+
+def _price_warnings(basis: dict[str, str], refresh_prices: bool) -> list[str]:
+    if not basis:
+        return []
+    if not refresh_prices:
+        return ["positions valued at average cost (no live refresh); "
+                "pass refresh_prices=true for live marks"]
+    return [
+        f"{sym}: live quote unavailable; valued at average cost (not a live mark)"
+        for sym, value in basis.items() if value == "avg_cost_fallback"
+    ]
+
+
+def _stamp_price_basis(data: dict[str, Any], basis: dict[str, str], price_source: str) -> None:
+    """Record the valuation basis on the response and on each stressed position."""
+    data["price_source"] = price_source
+    for row in data.get("positions", []):
+        row["price_basis"] = basis.get(row.get("symbol"), "portfolio_state_cost")
 
 
 def _unique_warnings(groups: Any) -> list[str]:
@@ -332,4 +414,8 @@ def _field_dictionary() -> dict[str, str]:
         "market_value_post": "Position market value after the shock.",
         "shock_source": "How the shock was set: hand_set, measured_window, or unavailable (not estimated).",
         "unpriced_positions": "Positions left unshocked because their measured window return was unavailable.",
+        "price_source": "Valuation basis: portfolio_state_cost (average cost), live_quote (all positions quoted), or mixed (some positions fell back to average cost).",
+        "price_basis": "Valuation basis of one position: portfolio_state_cost, live_quote, or avg_cost_fallback (live mode, no quote).",
+        "sector": "Sector in the scenario taxonomy (GICS-style key that the shock lookup matches). A normalized name, not the provider's label.",
+        "sector_provider_label": "The sector label the data provider returned, unchanged.",
     }

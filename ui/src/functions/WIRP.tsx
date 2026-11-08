@@ -87,24 +87,37 @@ interface AnchorEntry {
 }
 
 /**
- * Meeting-to-meeting implied policy-rate path: a zero baseline (today's
- * anchor, no cumulative move yet) followed by the running sum of each
- * meeting's probability-weighted `implied_change_bp`. Meetings without a
- * finite implied move are skipped, not zeroed — a missing row must not
- * flatten a real path. No finite implied value anywhere → empty path.
+ * Implied policy-rate path vs the current-target anchor: a zero baseline
+ * (today's anchor) followed by each meeting's `implied_change_bp` as-is.
+ * The backend value is already the expected move vs the anchor at that
+ * meeting (cumulative to that date), so it is NOT summed again. Meetings
+ * without a finite implied move are skipped, not zeroed — a missing row must
+ * not flatten a real path. No finite implied value anywhere → empty path.
  */
-export function cumulativeBpPath(rows: WIRPRow[]): number[] {
+export function impliedLevelPath(rows: WIRPRow[]): number[] {
   const path = [0];
-  let acc = 0;
   let sawValue = false;
   for (const row of rows) {
     const bp = row.implied_change_bp;
     if (typeof bp !== "number" || !Number.isFinite(bp)) continue;
-    acc += bp;
-    path.push(acc);
+    path.push(bp);
     sawValue = true;
   }
   return sawValue ? path : [];
+}
+
+/**
+ * Expected move (bp) vs the anchor at the last meeting that carries a finite
+ * implied move, or null when none does. This is the cumulative move to that
+ * date; summing across meetings would double-count it.
+ */
+export function lastImpliedBp(rows: WIRPRow[]): number | null {
+  let last: number | null = null;
+  for (const row of rows) {
+    const bp = row.implied_change_bp;
+    if (typeof bp === "number" && Number.isFinite(bp)) last = bp;
+  }
+  return last;
 }
 
 /**
@@ -265,13 +278,13 @@ export function WIRPPane({ code }: FunctionPaneProps) {
   );
 
   const cards = Array.isArray(payload.cards) ? payload.cards : [];
-  const totalImplied = rows.reduce(
-    (acc, r) => acc + (typeof r.implied_change_bp === "number" ? r.implied_change_bp : 0),
-    0,
+  const lastImplied = lastImpliedBp(rows);
+  const lastImpliedRow = [...rows].reverse().find(
+    (r) => typeof r.implied_change_bp === "number" && Number.isFinite(r.implied_change_bp),
   );
-  // Secondary visual (campaign C1): cumulative implied path from the real
+  // Secondary visual (campaign C1): implied path vs the anchor from the real
   // per-meeting `implied_change_bp` series + the backend `anchor` band.
-  const path = cumulativeBpPath(rows);
+  const path = impliedLevelPath(rows);
   const anchors = anchorEntries(payload.anchor);
   const pathReady = path.length >= 2;
 
@@ -386,19 +399,21 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                       />
                     ))
                   : null}
-                <StatCard
-                  label="Cumulative implied Δ"
-                  value={`${totalImplied >= 0 ? "+" : ""}${totalImplied.toFixed(1)} bp`}
-                  caption={`${rows.length} meetings · ${bank}`}
-                  tone={totalImplied >= 0 ? "positive" : "negative"}
-                />
+                {lastImplied != null ? (
+                  <StatCard
+                    label="Implied Δ at last meeting"
+                    value={`${lastImplied >= 0 ? "+" : ""}${lastImplied.toFixed(1)} bp`}
+                    caption={`vs ${bank} anchor · through ${lastImpliedRow?.date ?? "—"}`}
+                    tone={lastImplied >= 0 ? "positive" : "negative"}
+                  />
+                ) : null}
               </section>
               {pathReady || anchors.length ? (
                 <section style={pathPanelStyle} aria-label="WIRP implied path">
                   <div style={pathMetaStyle}>
                     <span style={pathTitleStyle}>Implied path</span>
                     <span className="u-text-mute" style={pathCaptionStyle}>
-                      Σ implied Δ from the {bank} anchor · {rows.length} meetings
+                      Implied Δ vs the {bank} anchor at each meeting · {rows.length} meetings
                     </span>
                     {anchors.map((a) => (
                       <span key={a.key} style={anchorChipStyle} title={a.title}>
@@ -413,7 +428,7 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                       width={200}
                       height={40}
                       tone={path[path.length - 1] >= 0 ? "positive" : "negative"}
-                      ariaLabel="Cumulative implied policy-rate path"
+                      ariaLabel="Implied policy-rate path vs anchor"
                     />
                   ) : (
                     <span className="u-text-mute" style={pathCaptionStyle}>

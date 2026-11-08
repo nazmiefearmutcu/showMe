@@ -64,7 +64,7 @@ def ddis() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=False,
                 description="Currency used to express principal amounts.",
-                options=["USD", "EUR", "GBP", "JPY", "TRY"],
+                options=["USD"],
             ),
             InputSpec(
                 name="maturities",
@@ -135,7 +135,7 @@ def ddis() -> FunctionManifest:
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="total_debt_usd_bn", label="Total", kind="big_number", unit="USD bn"),
+                CardSlot(key="scheduled_principal_usd_bn", label="Scheduled principal", kind="big_number", unit="USD bn"),
                 CardSlot(key="near_term_share", label="0-1Y %", kind="kpi", unit="%"),
                 CardSlot(key="long_term_share", label="5Y+ %", kind="kpi", unit="%"),
                 CardSlot(key="bucket_count", label="Buckets", kind="kpi"),

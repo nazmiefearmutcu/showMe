@@ -57,6 +57,8 @@ interface WCRSPayload {
   surface?: CrossRate[];
   matrix?: Record<string, Record<string, number>>;
   source_mode?: string;
+  /** Date the rates belong to (ECB fix date, or the reference vintage). */
+  as_of?: string | null;
   methodology?: string;
   field_dictionary?: Record<string, string>;
 }
@@ -130,11 +132,16 @@ export function WCRSPane({ code }: FunctionPaneProps) {
   const warnings = data?.warnings ?? [];
   const sourceMode = payload.source_mode ?? "";
   const isLive = state === "ok" && sourceMode.startsWith("live_");
+  // The ECB daily fix is a delayed official reference (dated by payload.as_of),
+  // never a live quote, so it gets its own non-live label.
+  const isOfficialFix = state === "ok" && sourceMode === "official_daily_fix";
   const liveLabel = isLive
     ? "live"
-    : state === "ok" && sourceMode.startsWith("reference")
-      ? "reference"
-      : state;
+    : isOfficialFix
+      ? "ecb fix"
+      : state === "ok" && sourceMode.startsWith("reference")
+        ? "reference"
+        : state;
 
   const cols = useMemo<DataGridColumn<CrossRate>[]>(
     () => [
@@ -363,6 +370,8 @@ export function WCRSPane({ code }: FunctionPaneProps) {
               "showMe engine"
             }
           />
+          <StatusDivider />
+          <StatusSection label="as of" value={payload.as_of ?? "—"} />
           <StatusDivider />
           <StatusSection label="poll" value={`${REFRESH_MS / 1000}s`} />
           <StatusDivider />
@@ -652,12 +661,12 @@ function fmtRate(v: number | undefined): string {
 
 function fmtPips(r: CrossRate): string {
   // Backend ships JPY-aware spread_pips (JPY quote = pip factor 100, else
-  // 10000). Render that field when present; the local fallback mirrors the
-  // same pip factor so USDJPY is never shown 100x wide.
+  // 10000) only from a real bid/ask; it is null when no bid/ask source exists.
+  // The local fallback mirrors the same pip factor for real bid/ask only.
   if (typeof r.spread_pips === "number" && Number.isFinite(r.spread_pips)) {
     return r.spread_pips.toFixed(1);
   }
-  if (r.bid == null || r.ask == null) return "—";
+  if (r.bid == null || r.ask == null) return "n/a";
   const spread = r.ask - r.bid;
   const pipFactor = (r.quote ?? "").toUpperCase() === "JPY" ? 100 : 10000;
   return Math.abs(spread * pipFactor).toFixed(1);

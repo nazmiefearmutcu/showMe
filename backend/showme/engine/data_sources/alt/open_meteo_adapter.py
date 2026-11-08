@@ -48,18 +48,20 @@ def open_meteo_to_onecall(payload: Any) -> dict[str, Any]:
     times = daily.get("time")
     if not isinstance(times, list) or not times:
         raise DataSourceError("Open-Meteo payload has no daily timestamps")
+    means = daily.get("temperature_2m_mean") or []
     highs = daily.get("temperature_2m_max") or []
     lows = daily.get("temperature_2m_min") or []
     precip = daily.get("precipitation_sum") or []
 
     rows: list[dict[str, Any]] = []
     for index, day in enumerate(times):
+        mean_raw = means[index] if index < len(means) else None
         high = highs[index] if index < len(highs) else None
         low = lows[index] if index < len(lows) else None
-        values = [float(v) for v in (high, low) if isinstance(v, (int, float))]
-        if not values:
+        # WETR#2: ``day`` is the provider's daily mean. A day without a mean is
+        # skipped, never filled with the high/low midpoint.
+        if not isinstance(mean_raw, (int, float)):
             continue
-        mean = sum(values) / len(values)
         rain = precip[index] if index < len(precip) else None
         try:
             dt = datetime.strptime(str(day)[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -68,9 +70,9 @@ def open_meteo_to_onecall(payload: Any) -> dict[str, Any]:
         rows.append({
             "dt": dt.timestamp(),
             "temp": {
-                "day": round(mean, 2),
-                "min": float(low) if isinstance(low, (int, float)) else round(mean, 2),
-                "max": float(high) if isinstance(high, (int, float)) else round(mean, 2),
+                "day": round(float(mean_raw), 2),
+                "min": float(low) if isinstance(low, (int, float)) else None,
+                "max": float(high) if isinstance(high, (int, float)) else None,
             },
             "precipitation": float(rain) if isinstance(rain, (int, float)) else 0.0,
         })
@@ -109,7 +111,7 @@ class OpenMeteoAdapter(BaseDataSource):
         r = await client.get(url, params={
             "latitude": f"{float(lat):.4f}",
             "longitude": f"{float(lon):.4f}",
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
+            "daily": "temperature_2m_mean,temperature_2m_max,temperature_2m_min,precipitation_sum",
             "forecast_days": horizon,
             "timezone": "UTC",
         })

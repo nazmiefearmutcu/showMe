@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRequest, DataSourceError
+from showme.providers.base import get_redacted
 
 
 class TradingEconomicsAdapter(BaseDataSource):
@@ -45,8 +46,7 @@ class TradingEconomicsAdapter(BaseDataSource):
             # dropping the range just because a country was given returns
             # the full country calendar instead of the requested window.
             path = f"{path}/{start}/{end}"
-        r = await client.get(path, params=params)
-        r.raise_for_status()
+        r = await get_redacted(client, path, params=params, secrets=(self.api_key,))
         return r.json() or []
 
     async def fetch(self, request: DataRequest) -> Any:
@@ -60,8 +60,7 @@ class TradingEconomicsAdapter(BaseDataSource):
             ind = request.extra.get("indicator", "gdp")
             country = request.extra.get("country", "united states")
             client = await self._client_()
-            r = await client.get(f"/historical/country/{country}/indicator/{ind}",
-                                  params={"c": self.api_key, "f": "json"})
-            r.raise_for_status()
+            r = await get_redacted(client, f"/historical/country/{country}/indicator/{ind}",
+                                   params={"c": self.api_key, "f": "json"}, secrets=(self.api_key,))
             return r.json()
         raise DataSourceError(f"unsupported kind {request.kind}")

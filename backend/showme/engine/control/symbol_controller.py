@@ -38,7 +38,7 @@ class SymbolController:
                 logger.warning(f"Invalid symbol in file: '{symbol}'")
                 return None
         except Exception as e:
-            logger.error(f"Error reading symbol file: {e}")
+            logger.error(f"Error reading symbol file: {str(e) or type(e).__name__}")
             return None
 
     def check_for_change(self) -> tuple[bool, Optional[str]]:
@@ -81,5 +81,5 @@ class SymbolController:
             logger.info(f"Symbol set to: {symbol}")
             return True
         except Exception as e:
-            logger.error(f"Error writing symbol file: {e}")
+            logger.error(f"Error writing symbol file: {str(e) or type(e).__name__}")
             return False

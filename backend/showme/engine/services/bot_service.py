@@ -900,7 +900,7 @@ class BotService:
         try:
             import yaml as _yaml
             _cfg_path = Path(self.config.get("_config_path", "config/default.yaml"))
-            config = _yaml.safe_load(_cfg_path.read_text()) or {}
+            config = _yaml.safe_load(_cfg_path.read_text(encoding="utf-8-sig")) or {}
         except Exception:
             config = self.config
         if not config.get("auto_scan_enabled", True):
@@ -1280,7 +1280,7 @@ class BotService:
             try:
                 _cfg_path = Path(self.config.get("_config_path", "config/default.yaml"))
                 import yaml as _yaml
-                _fresh_cfg = _yaml.safe_load(_cfg_path.read_text()) or {}
+                _fresh_cfg = _yaml.safe_load(_cfg_path.read_text(encoding="utf-8-sig")) or {}
                 auto_select_on = _fresh_cfg.get("auto_select_enabled", True)
             except Exception:
                 pass

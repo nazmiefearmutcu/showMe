@@ -56,8 +56,11 @@ def reba() -> FunctionManifest:
                 name="credential_id",
                 label="Account",
                 control=ControlKind.SELECT,
-                required=True,
-                description="Account whose current weights drive the diff.",
+                required=False,
+                description=(
+                    "Not applied yet: live weights come from the local portfolio book. "
+                    "Accepted for forward compatibility; a warning is returned when set."
+                ),
             ),
             InputSpec(
                 name="targets",
@@ -87,7 +90,10 @@ def reba() -> FunctionManifest:
                 label="Min trade size",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Skip trades below this notional.",
+                description=(
+                    "Live preview only: skip trades whose notional is below this amount. "
+                    "Model mode sizes no orders."
+                ),
                 min=0,
                 max=100000,
                 step=10,
@@ -98,33 +104,23 @@ def reba() -> FunctionManifest:
                 label="Lot rounding",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Round qty to whole shares, fractional, or contract.",
-                options=["whole", "fractional", "contract"],
+                description=(
+                    "Live preview only. whole floors equity and ETF quantities to whole shares; "
+                    "crypto and other classes stay fractional. fractional keeps every quantity."
+                ),
+                options=["whole", "fractional"],
             ),
-            InputSpec(
-                name="tax_aware",
-                label="Tax-aware",
-                control=ControlKind.BOOLEAN,
-                required=False,
-                description="When true, prefer selling lots that minimize realized tax.",
-            ),
+            # tax_aware is not declared: REBA has no lot-level cost data, so it
+            # cannot prefer low-tax lots. provider_mode is not declared: live
+            # quotes come from yfinance only, with no cached-snapshot path.
             InputSpec(
                 name="paper_mode",
                 label="Paper mode (safe)",
                 control=ControlKind.BOOLEAN,
                 required=True,
-                description="Preview-only by default. No live execution path from REBA.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for live quotes.",
-                options=[
-                    DataMode.LIVE_EXCHANGE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description=(
+                    "Preview-only. REBA never submits orders; setting this to false has no effect."
+                ),
             ),
         ],
         defaults={
@@ -135,29 +131,27 @@ def reba() -> FunctionManifest:
             "min_drift_pct": 0.005,
             "min_trade_size": 100,
             "lot_rounding": "whole",
-            "tax_aware": False,
             "paper_mode": True,
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
         },
+        # REBA#5: no cached-snapshot path exists in the handler, so none is advertised.
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=["ccxt_broker", "yfinance", "cached_snapshot"],
+            fallbacks=["yfinance"],
             acceptable_modes=[
                 DataMode.LIVE_EXCHANGE,
-                DataMode.CACHED_SNAPSHOT,
                 DataMode.NOT_CONFIGURED,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=False),
+        # Keys below are the ones the handler emits (see reba.py execute()).
         output_contract=OutputContract(
             must_have=[
-                "as_of",
-                "credential_id",
-                "current_weights",
-                "target_weights",
-                "trades",
-                "total_turnover",
-                "data_mode",
+                "target_weights_pct",
+                "orders",
+                "liquidations",
+                "rows",
+                "suppressed",
+                "summary",
             ],
             rows=True,
             series=False,
@@ -169,43 +163,40 @@ def reba() -> FunctionManifest:
         table_schema=TableSchema(
             columns=[
                 ColumnSpec(key="symbol", label="Symbol", kind="text"),
-                ColumnSpec(key="current_weight", label="Now %", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="target_weight", label="Target %", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="current_weight_pct", label="Now %", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="target_weight_pct", label="Target %", kind="percent", unit="%", format="%.2f"),
                 ColumnSpec(key="drift_pct", label="Drift", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="side", label="Side", kind="tag"),
-                ColumnSpec(key="qty_delta", label="ΔQty", kind="number", format="%.6g"),
-                ColumnSpec(key="notional", label="Notional", kind="currency", unit="ccy", format="%.0f"),
-                ColumnSpec(key="suppressed_reason", label="Suppressed", kind="text"),
+                ColumnSpec(key="action", label="Side", kind="tag"),
+                ColumnSpec(key="quantity", label="Qty", kind="number", format="%.6g"),
+                ColumnSpec(key="notional_delta", label="Notional", kind="currency", unit="ccy", format="%.0f"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="total_turnover", label="Turnover", kind="big_number", unit="ccy"),
-                CardSlot(key="buys_count", label="Buys", kind="kpi"),
-                CardSlot(key="sells_count", label="Sells", kind="kpi"),
-                CardSlot(key="max_drift_pct", label="Max drift", kind="kpi", unit="%"),
-                CardSlot(key="estimated_tax_impact", label="Tax Δ", kind="kpi", unit="ccy"),
-                CardSlot(key="paper_mode", label="Mode", kind="badge"),
-                CardSlot(key="data_mode", label="Data", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="total_value", label="NAV", kind="big_number", unit="ccy"),
+                CardSlot(key="gross_notional", label="Gross trade", kind="kpi", unit="ccy"),
+                CardSlot(key="n_orders", label="Orders", kind="kpi"),
+                CardSlot(key="n_liquidations", label="Liquidations", kind="kpi"),
+                CardSlot(key="n_suppressed", label="Suppressed", kind="kpi"),
+                CardSlot(key="cash_weight_pct", label="Cash %", kind="kpi", unit="%"),
+                CardSlot(key="execution", label="Mode", kind="badge"),
             ],
         ),
         methodology=(
-            "REBA computes the per-symbol weight drift = current_weight − "
-            "target_weight from PORT for the chosen credential. Symbols "
-            "with |drift| < min_drift_pct are suppressed (with "
-            "suppressed_reason='within_tolerance'). Remaining trades sized "
-            "as qty_delta = -drift × total_equity / last_price; sign "
-            "determines side (positive drift → sell, negative → buy). "
-            "lot_rounding rounds qty to the venue's tradeable increment. "
-            "Trades below min_trade_size are dropped with "
-            "suppressed_reason='below_min'. tax_aware (when enabled) "
-            "selects lots to sell that minimize estimated_tax_impact "
-            "(prefers long-term lots and lots near zero gain). The output "
-            "is strictly a preview — REBA does not submit. Users hand-off "
-            "to EMSX explicitly, where paper_mode=false is required."
+            "REBA computes the per-symbol weight drift = current_weight − target_weight. "
+            "Current weights come from the local portfolio book (positions valued at live "
+            "marks, plus USD cash in the NAV); credential_id is not applied yet. Symbols with "
+            "|drift| < min_drift_pct produce no row. "
+            "Remaining trades are sized as notional = target_weight × NAV − current_value, "
+            "and quantity = notional / last_price on the live path. lot_rounding=whole floors "
+            "equity and ETF quantities to whole shares. Trades below min_trade_size are "
+            "dropped and listed in suppressed[] with reason='below_min'. If whole-share rounding "
+            "leaves zero shares, the trade is dropped and listed in suppressed[] with "
+            "reason='below_lot'. Live preview "
+            "holdings with no quote withhold the preview (status='provider_unavailable'). "
+            "The output is strictly a preview: REBA does not submit orders."
         ),
         formula_dict={
             "Drift": Formula(
@@ -222,11 +213,12 @@ def reba() -> FunctionManifest:
             ),
         },
         field_dict={
-            "current_weights": FieldDef(unit="decimal", description="From PORT for the credential.", source="computed_from_broker"),
-            "target_weights": FieldDef(unit="decimal", description="User-supplied targets.", source="input"),
-            "trades[]": FieldDef(description="Per-symbol trade preview with side, qty_delta, notional.", source="computed"),
-            "total_turnover": FieldDef(unit="ccy", description="Σ |notional| across the trade preview.", source="computed"),
-            "trades[].suppressed_reason": FieldDef(description="Reason a symbol got no trade: within_tolerance | below_min.", source="computed"),
+            "current_weights_pct": FieldDef(unit="percent", description="Live-book weights (positions at live marks plus USD cash). Absent in model mode.", source="computed_from_portfolio_book"),
+            "target_weights_pct": FieldDef(unit="percent", description="Normalized user-supplied targets.", source="input"),
+            "orders[]": FieldDef(description="Per-symbol BUY/SELL preview with quantity, price, notional_delta.", source="computed"),
+            "liquidations[]": FieldDef(description="Held symbols absent from the targets, to be sold in full.", source="computed"),
+            "summary.gross_notional": FieldDef(unit="ccy", description="Sum of |notional_delta| across orders and liquidations.", source="computed"),
+            "suppressed[].reason": FieldDef(description="Why a trade was not emitted: below_min | below_lot.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

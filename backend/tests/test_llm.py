@@ -70,11 +70,13 @@ def test_ledger_round_trips_through_disk(tmp_path: Path) -> None:
 def test_today_spend_only_counts_today(tmp_path: Path) -> None:
     p = tmp_path / "costs.json"
     led = CostLedger(path=p)
-    from datetime import date
-    today = date.today().isoformat()
+    from datetime import date, datetime, time, timezone
+    # ASOF-7: "today" is the local calendar day; the ledger stamp is UTC, so
+    # build the stamp from local noon rather than a bare local-date prefix.
+    today_noon_utc = datetime.combine(date.today(), time(12, 0)).astimezone().astimezone(timezone.utc)
     led.append(CostEntry(ts="2024-01-01T00:00:00+00:00",
                          provider="x", model="y", input_tokens=0, output_tokens=0, usd=0.5))
-    led.append(CostEntry(ts=f"{today}T00:00:00+00:00",
+    led.append(CostEntry(ts=today_noon_utc.isoformat(),
                          provider="x", model="y", input_tokens=0, output_tokens=0, usd=0.04))
     assert led.today_spend() == pytest.approx(0.04)
 

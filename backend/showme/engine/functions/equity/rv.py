@@ -11,6 +11,33 @@ from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.equity._common import finite, reference_profile
 
 
+_METHODOLOGY = (
+    "RV compares the target against a peer set from an explicit user list, Finnhub peers, "
+    "or a labelled sector-reference peer map (see peer_source). Multiples are live yfinance "
+    "fields when available; rank is computed within returned peers."
+)
+
+# yfinance info fields that carry a multiple or size. A refdata result with none of
+# these is a failed or empty call (the adapter swallows info errors), not live data.
+_MULTIPLE_KEYS = (
+    "trailingPE", "forwardPE", "priceToBook", "priceToSalesTrailing12Months",
+    "enterpriseToEbitda", "returnOnEquity", "returnOnAssets", "debtToEquity", "dividendYield",
+)
+
+_FIELD_DICTIONARY = {
+    "pe": "Trailing price/earnings multiple.",
+    "fwd_pe": "Forward price/earnings multiple.",
+    "ev_ebitda": "Enterprise value / EBITDA.",
+    "roe": "Return on equity as a fraction (0.25 = 25%).",
+    "roa": "Return on assets as a fraction (0.05 = 5%).",
+    "debt_equity": "Total debt / equity as a ratio (yfinance debtToEquity percent divided by 100).",
+    "div_yield": "Dividend yield as a decimal fraction (0.0032 = 0.32%).",
+    "rank_pe": "Ascending PE rank within peer set.",
+    "percentile_pe": "Peer percentile for PE, lower is cheaper.",
+    "peer_source": "Where the peer set came from: user_input, finnhub, or reference_sector_map.",
+}
+
+
 @FunctionRegistry.register
 class RVFunction(BaseFunction):
     code = "RV"
@@ -21,88 +48,156 @@ class RVFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError
-        raw_peers = params.get("peers")
-        peers: list[str] = [str(p).strip().upper() for p in raw_peers if str(p).strip()] if isinstance(raw_peers, (list, tuple, set)) else []
-        if self.deps.finnhub:
-            try:
-                if not peers:
-                    peers = await asyncio.wait_for(
-                        self.deps.finnhub.peers(instrument.symbol),
-                        timeout=float(params.get("finnhub_timeout", 8)),
-                    )
-            except Exception:
-                peers = peers or []
-        peers = [p for p in peers if p != instrument.symbol][:8]
-        if not peers:
-            peers = [p for p in reference_profile(instrument.symbol).get("peers", []) if p != instrument.symbol][:6]
-        full = [instrument.symbol] + peers
-        rows: list[dict[str, Any]] = []
-        if self.deps.yfinance:
-            from showme.engine.core.base_data_source import DataKind, DataRequest
-            from showme.engine.core.instrument import Instrument as I
-            tasks = [asyncio.wait_for(
-                self.deps.yfinance.fetch(DataRequest(
-                    kind=DataKind.REFDATA,
-                    instrument=I(symbol=s, asset_class=AssetClass.EQUITY, exchange="NASDAQ"),
-                )),
-                timeout=float(params.get("yfinance_timeout", 8)),
-            ) for s in full]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for sym, r in zip(full, results):
-                if isinstance(r, Exception) or r is None:
-                    continue
-                raw = (r.extras or {}).get("raw", {}) if hasattr(r, "extras") else {}
-                div_yield, div_yield_status = _dividend_yield(raw.get("dividendYield"), raw)
-                rows.append({
-                    "symbol": sym,
-                    "marketCap": r.market_cap or raw.get("marketCap"),
-                    "pe": raw.get("trailingPE"),
-                    "fwd_pe": raw.get("forwardPE"),
-                    "pb": raw.get("priceToBook"),
-                    "ps": raw.get("priceToSalesTrailing12Months"),
-                    "ev_ebitda": raw.get("enterpriseToEbitda"),
-                    "roe": raw.get("returnOnEquity"),
-                    "roa": raw.get("returnOnAssets"),
-                    "debt_equity": raw.get("debtToEquity"),
-                    "div_yield": div_yield,
-                    "div_yield_status": div_yield_status,
-                    "source_mode": "live_yfinance",
-                })
-        if not rows:
-            rows = [{
-                "symbol": instrument.symbol,
-                "marketCap": None,
-                "pe": None,
-                "fwd_pe": None,
-                "pb": None,
-                "ps": None,
-                "ev_ebitda": None,
-                "roe": None,
-                "roa": None,
-                "debt_equity": None,
-                "div_yield": None,
-                "status": "provider_unavailable",
-                "source_mode": "provider_unavailable",
-            }]
-        rows = _rank_rows(rows, instrument.symbol)
+        target = instrument.symbol
+        peers, peer_source = await self._resolve_peers(target, params)
+        by_symbol = await self._refdata_rows([target] + peers, params) if self.deps.yfinance else {}
+
+        metadata: dict[str, Any] = {"peers": peers, "peer_source": peer_source}
+        ranked = [by_symbol[s] for s in [target] + peers if s in by_symbol]
+        reason: str | None = None
+        if target in by_symbol and len(ranked) > 1:
+            status = "ok"
+            rows = _rank_rows(ranked, target)
+            sources = _sources(peer_source, live=True)
+        else:
+            status = "provider_unavailable"
+            if not self.deps.yfinance:
+                reason = "The yfinance refdata adapter is not configured, so no peer multiples can be fetched."
+            elif target not in by_symbol:
+                reason = f"yfinance refdata returned no multiples for {target}; peer multiples are not shown without the target."
+            else:
+                reason = "yfinance refdata returned the target only; no peer multiples were available for the median."
+            rows = _rank_rows(ranked, target) if target in by_symbol else []
+            if not rows:
+                rows = [{
+                    "symbol": target,
+                    "marketCap": None,
+                    "pe": None,
+                    "fwd_pe": None,
+                    "pb": None,
+                    "ps": None,
+                    "ev_ebitda": None,
+                    "roe": None,
+                    "roa": None,
+                    "debt_equity": None,
+                    "div_yield": None,
+                    "status": "provider_unavailable",
+                    "source_mode": "provider_unavailable",
+                }]
+            # Failure semantics: the status is a provider failure. Only yfinance
+            # is listed, and only when the target's own live multiples came back;
+            # with no target row no source produced values, so none is listed.
+            sources = ["yfinance"] if target in by_symbol else []
+            metadata.update({
+                "fallback": True,
+                "data_mode": "provider_unavailable",
+                "provider_errors": [reason],
+            })
+        data: dict[str, Any] = {
+            "status": status,
+            "rows": rows,
+            "peers": peers,
+            "peer_source": peer_source,
+            "methodology": _METHODOLOGY,
+            "field_dictionary": dict(_FIELD_DICTIONARY),
+        }
+        if reason is not None:
+            data["reason"] = reason
+            data["next_actions"] = [
+                "Retry when the yfinance refdata provider recovers.",
+                "Pass an explicit peer list to compare against a different peer set.",
+            ]
         return FunctionResult(
             code=self.code, instrument=instrument,
-            data={
-                "status": "ok" if len(rows) > 1 else "provider_unavailable",
-                "rows": rows,
-                "peers": peers,
-                "methodology": "RV compares the target against a peer set from Finnhub or a labelled sector-reference peer map. Multiples are live yfinance fields when available; rank is computed within returned peers.",
-                "field_dictionary": {
-                    "pe": "Trailing price/earnings multiple.",
-                    "fwd_pe": "Forward price/earnings multiple.",
-                    "ev_ebitda": "Enterprise value / EBITDA.",
-                    "rank_pe": "Ascending PE rank within peer set.",
-                    "percentile_pe": "Peer percentile for PE, lower is cheaper.",
-                },
-            },
-            sources=["finnhub", "yfinance"] if self.deps.yfinance else ["relative_value_model"],
-            metadata={"peers": peers},
+            data=data,
+            sources=sources,
+            metadata=metadata,
         )
+
+    async def _resolve_peers(self, target: str, params: dict[str, Any]) -> tuple[list[str], str]:
+        raw_peers = params.get("peers")
+        peers: list[str] = (
+            [str(p).strip().upper() for p in raw_peers if str(p).strip()]
+            if isinstance(raw_peers, (list, tuple, set)) else []
+        )
+        source = "user_input" if peers else ""
+        if not peers and self.deps.finnhub:
+            try:
+                fetched = await asyncio.wait_for(
+                    self.deps.finnhub.peers(target),
+                    timeout=float(params.get("finnhub_timeout", 8)),
+                )
+            except Exception:
+                fetched = None
+            if isinstance(fetched, (list, tuple)):
+                peers = [str(p).strip().upper() for p in fetched if str(p).strip()]
+                source = "finnhub" if peers else ""
+        peers = list(dict.fromkeys(p for p in peers if p != target))[:8]
+        if not peers:
+            ref = [p for p in reference_profile(target).get("peers", []) if p != target][:6]
+            if ref:
+                peers = ref
+                source = "reference_sector_map"
+        return peers, (source or "none")
+
+    async def _refdata_rows(self, symbols: list[str], params: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Rows for the symbols whose refdata actually carries multiples.
+
+        A failed or empty refdata call is dropped rather than turned into an
+        all-None row labelled live.
+        """
+        from showme.engine.core.base_data_source import DataKind, DataRequest
+        from showme.engine.core.instrument import Instrument as I
+
+        tasks = [asyncio.wait_for(
+            self.deps.yfinance.fetch(DataRequest(
+                kind=DataKind.REFDATA,
+                instrument=I(symbol=s, asset_class=AssetClass.EQUITY, exchange="NASDAQ"),
+            )),
+            timeout=float(params.get("yfinance_timeout", 8)),
+        ) for s in symbols]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        out: dict[str, dict[str, Any]] = {}
+        for sym, r in zip(symbols, results):
+            if isinstance(r, Exception) or r is None:
+                continue
+            raw = (r.extras or {}).get("raw", {}) if hasattr(r, "extras") else {}
+            if not isinstance(raw, dict):
+                raw = {}
+            market_cap = r.market_cap or raw.get("marketCap")
+            if finite(market_cap) is None and all(finite(raw.get(k)) is None for k in _MULTIPLE_KEYS):
+                continue
+            div_yield, div_yield_status = _dividend_yield(raw.get("dividendYield"), raw)
+            de_pct = finite(raw.get("debtToEquity"))
+            out[sym] = {
+                "symbol": sym,
+                "marketCap": market_cap,
+                "pe": raw.get("trailingPE"),
+                "fwd_pe": raw.get("forwardPE"),
+                "pb": raw.get("priceToBook"),
+                "ps": raw.get("priceToSalesTrailing12Months"),
+                "ev_ebitda": raw.get("enterpriseToEbitda"),
+                "roe": raw.get("returnOnEquity"),
+                "roa": raw.get("returnOnAssets"),
+                # yfinance debtToEquity is percent (84.286 = 0.84x); deliver a ratio.
+                "debt_equity": None if de_pct is None else de_pct / 100.0,
+                "div_yield": div_yield,
+                "div_yield_status": div_yield_status,
+                "source_mode": "live_yfinance",
+            }
+        return out
+
+
+def _sources(peer_source: str, *, live: bool) -> list[str]:
+    """Providers that contributed: the peer-set origin plus yfinance when rows are live."""
+    out: list[str] = []
+    if peer_source == "finnhub":
+        out.append("finnhub")
+    if live:
+        out.append("yfinance")
+    if peer_source == "reference_sector_map":
+        out.append("reference_sector_map")
+    return out
 
 
 def _dividend_yield(value: Any, raw: dict[str, Any] | None = None) -> tuple[float | None, str]:

@@ -3,7 +3,7 @@
  *
  * Pins the FLY flight-tracking contract:
  *  - the four load states (loading / empty / error / ok) render;
- *  - the provider_unavailable payload (OpenSky down or live_flight off)
+ *  - the provider_unavailable payload (OpenSky down)
  *    renders its reason as an explicit empty state — no sample traffic;
  *  - aircraft rows render callsign, country, altitude, speed and an
  *    honest on-ground / airborne pill;
@@ -168,7 +168,7 @@ describe("FLY pane — load states", () => {
         data: {
           status: "provider_unavailable",
           reason:
-            "OpenSky live tracking is unavailable or live_flight is disabled; no sample aircraft are shown.",
+            "OpenSky live tracking is unavailable; no sample aircraft are shown.",
           rows: [],
         },
       },

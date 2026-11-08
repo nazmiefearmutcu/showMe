@@ -40,10 +40,10 @@ _PROXY_METHODOLOGY = (
 
 _FIELD_DICTIONARY = {
     "pillar": "ESG component (total / environment / social / governance / controversy).",
-    "score": "Vendor ESG pillar score (lower may indicate lower unmanaged risk).",
+    "score": "Row score: vendor ESG risk score (yfinance path, lower = lower unmanaged risk) or a 10-K filing count (SEC proxy path, not a risk score).",
     "scale": "Scale / unit semantics for the displayed score.",
     "source_mode": "Provider state for the displayed row.",
-    "totalEsg": "Composite ESG risk score.",
+    "totalEsg": "Vendor composite ESG risk score (yfinance path). On the SEC proxy path it is the count of unique 10-K filings in the window matching any E/S/G term, not a risk score.",
     "environmentScore": "E pillar score.",
     "socialScore": "S pillar score.",
     "governanceScore": "G pillar score.",
@@ -111,7 +111,7 @@ def _build_rows_from_sustainability(flat: dict[str, Any]) -> list[dict[str, Any]
                 "scale": "vendor risk scale (lower=better)"
                 if label != "controversy"
                 else "level 1-5",
-                "source_mode": "live_yfinance",
+                "source_mode": "delayed_reference",
             }
         )
     return rows if has_value else None
@@ -137,7 +137,10 @@ async def _efts_total(client: Any, query: str, symbol: str, window: dict[str, st
     hits = payload.get("hits", {}) if isinstance(payload, dict) else {}
     total = hits.get("total", {}) if isinstance(hits, dict) else {}
     value = total.get("value") if isinstance(total, dict) else None
-    return int(value) if isinstance(value, (int, float)) else 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        # No count in the payload is not a zero count: surface it as a provider error.
+        raise ValueError("EFTS response has no hits.total.value")
+    return int(value)
 
 
 async def _fetch_proxy_counts(symbol: str) -> dict[str, int]:
@@ -175,6 +178,7 @@ class ESGFunction(BaseFunction):
 
         # ---- Primary: Yahoo Finance sustainability (Sustainalytics) ----
         scores: dict[str, Any] = {}
+        yahoo_note: str | None = None  # why the Yahoo primary gave no pillar values
         try:
             if self.deps.yfinance:
                 import yfinance as yf
@@ -189,11 +193,18 @@ class ESGFunction(BaseFunction):
                 )
                 if sus is not None:
                     scores = sus.to_dict() if hasattr(sus, "to_dict") else dict(sus)
+            else:
+                yahoo_note = "yahoo sustainability: yfinance adapter not configured"
         except Exception as exc:  # network / parse failure -> try proxy next
-            warnings.append(f"yfinance esg: {exc}")
+            yahoo_note = f"yfinance esg: {exc}"
 
         flat = _flatten_sustainability(scores)
         rows = _build_rows_from_sustainability(flat) if flat else None
+        if rows is None:
+            # Record why the primary gave nothing, so provenance shows why the proxy answered.
+            warnings.append(
+                yahoo_note or "yahoo sustainability: Yahoo published no pillar values for this ticker"
+            )
         if rows is not None:
             data = {
                 "symbol": symbol,
@@ -307,7 +318,7 @@ class ESGFunction(BaseFunction):
                 "socialScore": counts["social"],
                 "governanceScore": counts["governance"],
                 "controversyLevel": None,
-                "data_mode": "cached_snapshot",
+                "data_mode": "live_official",
                 "window": proxy_window(),
                 "rows": proxy_rows,
                 "warnings": [

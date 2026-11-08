@@ -27,7 +27,19 @@ from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRe
 
 def _cache_path():
     return runtime_path("damodaran_erp.json")
+
+
+# The table is keyed by ISO-2 codes in the snapshot and by country names in a
+# live workbook. Both spellings of the US map to one key (wc1-g34 WACC#3).
+_US_COUNTRY_NAMES = frozenset({"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"})
+
+
+def _country_key(country: str) -> str:
+    key = " ".join(str(country).upper().split())
+    return "US" if key in _US_COUNTRY_NAMES else key
 _CACHE_TTL = 30 * 24 * 3600  # 30 gün
+# Provenance label for the hard-coded table below (wc1-g34 WACC#3).
+SNAPSHOT_SOURCE = "damodaran_snapshot_2025_01"
 # A failed scrape serves the fallback from MEMORY only, for this long —
 # a transient network error (or a missing openpyxl) must not stamp the
 # January snapshot with ts=now and lock out the real scrape for 30 days.
@@ -50,6 +62,26 @@ _ERP_FALLBACK = {
     "PE": 6.68, "PH": 7.23, "TH": 6.00, "VN": 9.60, "EG": 13.04,
     "NG": 14.60, "PK": 17.88, "PL": 5.95, "HU": 7.23, "CZ": 5.07,
     "RO": 7.55, "IL": 5.07, "MY": 6.18,
+}
+
+
+# WACC#3-RQ: full country names (upper-cased, as _country_key normalises them)
+# for the ISO-2 keys of the January 2025 snapshot. yfinance reports names.
+_SNAPSHOT_NAME_TO_ISO2 = {
+    "GERMANY": "DE", "UNITED KINGDOM": "GB", "UK": "GB", "GREAT BRITAIN": "GB",
+    "FRANCE": "FR", "JAPAN": "JP", "AUSTRALIA": "AU", "CANADA": "CA",
+    "SWITZERLAND": "CH", "NETHERLANDS": "NL", "SWEDEN": "SE", "DENMARK": "DK",
+    "SPAIN": "ES", "ITALY": "IT", "GREECE": "GR", "PORTUGAL": "PT",
+    "BRAZIL": "BR", "MEXICO": "MX", "CHINA": "CN", "INDIA": "IN",
+    "RUSSIA": "RU", "RUSSIAN FEDERATION": "RU", "TURKEY": "TR", "TURKIYE": "TR",
+    "SOUTH AFRICA": "ZA", "INDONESIA": "ID", "SOUTH KOREA": "KR",
+    "KOREA, REPUBLIC OF": "KR", "REPUBLIC OF KOREA": "KR", "TAIWAN": "TW",
+    "SAUDI ARABIA": "SA", "UNITED ARAB EMIRATES": "AE", "ARGENTINA": "AR",
+    "CHILE": "CL", "COLOMBIA": "CO", "PERU": "PE", "PHILIPPINES": "PH",
+    "THAILAND": "TH", "VIETNAM": "VN", "VIET NAM": "VN", "EGYPT": "EG",
+    "NIGERIA": "NG", "PAKISTAN": "PK", "POLAND": "PL", "HUNGARY": "HU",
+    "CZECHIA": "CZ", "CZECH REPUBLIC": "CZ", "ROMANIA": "RO", "ISRAEL": "IL",
+    "MALAYSIA": "MY",
 }
 
 
@@ -126,12 +158,18 @@ class DamodaranAdapter(BaseDataSource):
             out[country] = erp
         return out
 
-    async def country_erp(self) -> dict[str, float]:
+    async def _erp_table(self) -> tuple[dict[str, float], str]:
+        """The ERP table and where it came from (wc1-g34 WACC#3).
+
+        Sources: ``damodaran_cache`` (a stored scrape under its TTL),
+        ``damodaran_live`` (a scrape made now) or ``damodaran_snapshot_2025_01``
+        (the hard-coded January 2025 table, used when the scrape fails).
+        """
         cached = self._cache_load()
         if cached is not None:
-            return cached
+            return cached, "damodaran_cache"
         if time.time() < self._fallback_until:
-            return dict(_ERP_FALLBACK)
+            return dict(_ERP_FALLBACK), SNAPSHOT_SOURCE
         # Best-effort scrape — Damodaran's table layout varies by year.
         # We grab the 'ctryprem.xls' binary if reachable; otherwise fallback.
         try:
@@ -145,18 +183,44 @@ class DamodaranAdapter(BaseDataSource):
                 out = await asyncio.to_thread(self._parse_workbook, r.content)
                 if out is not None:
                     self._cache_save(out)
-                    return out
+                    return out, "damodaran_live"
         except Exception:
             pass
         # Fallback stays in memory with a short TTL so the real scrape is
         # retried after an hour instead of being locked out for 30 days.
         self._fallback_until = time.time() + _FALLBACK_RETRY_SECONDS
-        return dict(_ERP_FALLBACK)
+        return dict(_ERP_FALLBACK), SNAPSHOT_SOURCE
+
+    async def country_erp(self) -> dict[str, float]:
+        table, _source = await self._erp_table()
+        return table
 
     async def fetch(self, request: DataRequest) -> Any:
         return await self.country_erp()
 
-    async def get_erp(self, country: str = "US") -> float:
-        table = await self.country_erp()
-        country = (country or "US").upper()
-        return float(table.get(country, table.get("_global", 4.60))) / 100.0
+    async def get_erp_with_source(self, country: str) -> tuple[float, str]:
+        """ERP as a decimal plus its source label.
+
+        The country is required: a missing one is an error, never a default
+        location (wc1-g34 WACC#3). A country missing from the table gets the
+        mature-market (_global) value; that case is labelled
+        ``..._country_unmatched`` rather than passed off as the country's own
+        premium. Names match case-insensitively, and the US spellings match.
+        """
+        key = _country_key(country) if country else ""
+        if not key:
+            raise ValueError("a country is required to look up a Damodaran ERP")
+        table, source = await self._erp_table()
+        keys = {_country_key(name): value for name, value in table.items() if name != "_global"}
+        if key in keys:
+            return float(keys[key]) / 100.0, source
+        # WACC#3-RQ: the snapshot is keyed by ISO-2, so a full name such as
+        # "Spain" (as yfinance reports it) resolves through the name map.
+        iso = _SNAPSHOT_NAME_TO_ISO2.get(key)
+        if iso is not None and iso in keys:
+            return float(keys[iso]) / 100.0, source
+        return float(table.get("_global", 4.60)) / 100.0, f"{source}_country_unmatched"
+
+    async def get_erp(self, country: str) -> float:
+        erp, _source = await self.get_erp_with_source(country)
+        return erp

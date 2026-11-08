@@ -63,22 +63,6 @@ def strs() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="portfolio_source",
-                label="Portfolio source",
-                control=ControlKind.SELECT,
-                required=True,
-                description="PORT (live broker positions) or custom basket.",
-                options=["port", "custom"],
-            ),
-            InputSpec(
-                name="positions",
-                label="Custom positions",
-                control=ControlKind.CONSTRAINT_SET,
-                required=False,
-                description="When portfolio_source=custom.",
-                depends_on=["portfolio_source"],
-            ),
-            InputSpec(
                 name="scenarios",
                 label="Scenarios",
                 control=ControlKind.MODEL_ASSUMPTION,
@@ -128,29 +112,19 @@ def strs() -> FunctionManifest:
                 label="Horizon",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Days over which the shock unfolds.",
+                description=(
+                    "Days over which a custom shock unfolds. Named scenarios keep "
+                    "the horizon in their catalog entry and ignore this control."
+                ),
                 min=1,
                 max=60,
                 step=1,
                 unit="days",
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for the price history.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
-            "portfolio_source": "port",
             "propagation": "hand_set_lookup",
             "horizon_days": 5,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
@@ -211,7 +185,9 @@ def strs() -> FunctionManifest:
             "scenario holds decimal shocks keyed by symbol, sector or asset class; "
             "a position takes the first match in that order. Treasury and "
             "aggregate bond funds (TLT, IEF, SHY, AGG and similar) take the BOND "
-            "row in scenarios without a measured window. In GFC_2008 and "
+            "row in scenarios without a measured window; a scenario with no BOND "
+            "row (CRYPTO_WINTER, or a custom shock without one) leaves them unshocked "
+            "and reported as unavailable, never the equity-style ETF/FUND shock or 0. In GFC_2008 and "
             "COVID_2020 they take their own measured window return: the price "
             "return of that fund from the window's first to last close, fetched "
             "from price history. If that return cannot be obtained the fund is "

@@ -43,13 +43,18 @@ function setMockFn(next: MockFnState) {
   mockFn.error = next.error ?? null;
 }
 
+const mockFnCalls: Array<{ params?: Record<string, unknown> }> = [];
+
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: { params?: Record<string, unknown> }) => {
+    mockFnCalls.push({ params: args?.params });
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
 // The chart engine fetches /api/bars and owns its own canvas — stub it so
@@ -91,7 +96,8 @@ function livePayload() {
         },
       },
       sources: ["yfinance"],
-      metadata: { alias_of: "TECH" },
+      // Mirrors TECHFunction: live_yfinance daily bars, echoed interval.
+      metadata: { alias_of: "TECH", data_mode: "live_yfinance", interval: "1d" },
       elapsed_ms: 55,
     },
   };
@@ -205,11 +211,35 @@ describe("CHGS pane — live payload", () => {
     expect(container.textContent).toContain("123.00");
   });
 
-  it("shows the live-studies pill and no synthetic warning", () => {
+  it("labels the yfinance daily feed as delayed, not live (CHGS#3)", () => {
+    // TECH stamps metadata.data_mode=live_yfinance; yfinance quotes are not a
+    // real-time exchange feed, so the pill must not claim "live studies".
     setMockFn({ state: "ok", ...livePayload() });
+    render(<CHGSPane code="CHGS" symbol="AAPL" />);
+    expect(screen.getByText(/delayed studies/i)).toBeInTheDocument();
+    expect(screen.queryByText(/live studies/i)).toBeNull();
+    expect(screen.queryByText(/synthetic template/i)).toBeNull();
+  });
+
+  it("shows the live-studies pill only for a live_exchange payload (CHGS#3)", () => {
+    const payload = livePayload();
+    payload.data.metadata = { ...payload.data.metadata, data_mode: "live_exchange" };
+    setMockFn({ state: "ok", ...payload });
     render(<CHGSPane code="CHGS" symbol="AAPL" />);
     expect(screen.getByText(/live studies/i)).toBeInTheDocument();
     expect(screen.queryByText(/synthetic template/i)).toBeNull();
+  });
+});
+
+describe("CHGS pane — timeframe honesty", () => {
+  it("requests daily bars explicitly and says the chart interval does not change the studies (CHGS#4)", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<CHGSPane code="CHGS" symbol="AAPL" />);
+    const last = mockFnCalls[mockFnCalls.length - 1];
+    expect(last?.params).toMatchObject({ days: 180, interval: "1d" });
+    expect(
+      screen.getByText(/daily \(1d\) bars/i),
+    ).toBeInTheDocument();
   });
 });
 

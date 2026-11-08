@@ -15,7 +15,7 @@
  * No per-row "change" column is fabricated: the payload carries a history
  * series for the top symbol only.
  */
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -95,6 +95,21 @@ const DAYS_IDS: readonly number[] = DAYS_OPTIONS.map((o) => o.value);
 // apply the user's TOP-N cap client-side so the showing-note stays honest.
 const SERVER_LIMIT = 200;
 
+const UNIVERSE_MAX = 60;
+const UNIVERSE_TOKEN = /^[A-Z0-9^=./-]{1,24}$/;
+
+/** Parse the typed universe: blank means the backend default universe. */
+function parseUniverse(raw: string): { symbols: string[]; error: string | null } {
+  const tokens = raw.toUpperCase().split(/[\s,;]+/).filter(Boolean);
+  const unique = Array.from(new Set(tokens));
+  const bad = unique.find((t) => !UNIVERSE_TOKEN.test(t));
+  if (bad) return { symbols: [], error: `Invalid symbol: ${bad}` };
+  if (unique.length > UNIVERSE_MAX) {
+    return { symbols: [], error: `At most ${UNIVERSE_MAX} symbols per scan` };
+  }
+  return { symbols: unique, error: null };
+}
+
 function metricFor(r: MOSSRow, key: string): unknown {
   if (key === "samples") return r.samples ?? null;
   if (key === "last_close") return r.last_close ?? null;
@@ -116,13 +131,34 @@ export function MOSSPane({ code }: FunctionPaneProps) {
   );
   const [sortBy, setSortBy] = useState<string | null>("vol_pct");
   const [sortDir, setSortDir] = useState<SortDir>("descending");
+  // Scan universe: the user types it, the pane sends it only once applied.
+  // Blank = the backend's default universe (never a silent substitute).
+  const [universeDraft, setUniverseDraft] = useState("");
+  const [universe, setUniverse] = useState("");
+  const [universeError, setUniverseError] = useState<string | null>(null);
   // DES cross-link (B2): same focused-security + navigate pattern as WEI.
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
 
   const { state, data, error, refetch } = useFunction<MOSSData>({
     code,
-    params: { live: true, days, limit: SERVER_LIMIT },
+    params: {
+      live: true,
+      days,
+      limit: SERVER_LIMIT,
+      ...(universe ? { universe } : {}),
+    },
   });
+
+  const applyUniverse = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const parsed = parseUniverse(universeDraft);
+    if (parsed.error) {
+      setUniverseError(parsed.error);
+      return;
+    }
+    setUniverseError(null);
+    setUniverse(parsed.symbols.join(","));
+  };
 
   const payload = data?.data;
   const rows: MOSSRow[] = useMemo(() => payload?.rows ?? [], [payload]);
@@ -160,6 +196,12 @@ export function MOSSPane({ code }: FunctionPaneProps) {
   }, [rows, sortBy, sortDir]);
 
   const shown = sorted.slice(0, topN);
+  // Only rows with a real vol count as ranked; unavailable rows are listed
+  // but must not inflate the ranked total.
+  const rankedCount = rows.filter(
+    (r) => typeof r.vol_pct === "number" && Number.isFinite(r.vol_pct),
+  ).length;
+  const unavailableCount = rows.length - rankedCount;
 
   const historyValues = useMemo(
     () =>
@@ -322,7 +364,7 @@ export function MOSSPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Most Volatile"
-          subtitle={`${rows.length} rows · lookback ${payload?.lookback_days ?? days}d · top ${topSymbol || "—"}`}
+          subtitle={`${rankedCount} ranked · ${unavailableCount} unavailable · lookback ${payload?.lookback_days ?? days}d · top ${topSymbol || "—"}`}
           trailing={
             <FunctionControlGroup>
               <Pill
@@ -352,7 +394,37 @@ export function MOSSPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <PaneBody>{body}</PaneBody>
+        <PaneBody>
+          <form
+            aria-label="MOSS universe"
+            onSubmit={applyUniverse}
+            style={universeFormStyle}
+          >
+            <input
+              type="text"
+              value={universeDraft}
+              onChange={(e) => setUniverseDraft(e.target.value)}
+              placeholder="default universe (e.g. AAPL, MSFT, EURUSD=X)"
+              aria-label="Universe symbols"
+              aria-invalid={universeError ? true : undefined}
+              style={universeInputStyle}
+            />
+            <button type="submit" style={universeButtonStyle} aria-label="Apply universe">
+              Apply
+            </button>
+            {universe ? (
+              <span className="u-text-mute" style={noteStyle}>
+                Scanning {universe.split(",").length} typed symbols
+              </span>
+            ) : null}
+            {universeError ? (
+              <span role="alert" style={universeErrorStyle}>
+                {universeError}
+              </span>
+            ) : null}
+          </form>
+          {body}
+        </PaneBody>
         <PaneFooter>
           <StatusSection
             label="sources"
@@ -392,6 +464,37 @@ function fmtPct(v: unknown): string {
 }
 
 const noteStyle: CSSProperties = { fontSize: "var(--font-size-sm)" };
+const universeFormStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  flexWrap: "wrap",
+  gap: 8,
+  marginBottom: 10,
+};
+const universeInputStyle: CSSProperties = {
+  flex: "1 1 260px",
+  minWidth: 0,
+  padding: "4px 8px",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-sm)",
+  color: "var(--text-primary)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: 4,
+};
+const universeButtonStyle: CSSProperties = {
+  padding: "4px 10px",
+  fontSize: "var(--font-size-sm)",
+  color: "var(--accent)",
+  background: "transparent",
+  border: "1px solid var(--accent)",
+  borderRadius: 4,
+  cursor: "pointer",
+};
+const universeErrorStyle: CSSProperties = {
+  fontSize: "var(--font-size-sm)",
+  color: "var(--negative)",
+};
 const historyCardStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",

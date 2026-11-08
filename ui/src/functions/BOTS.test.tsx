@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BOTSPane } from "./BOTS";
 import { useBotsSupervisionStore } from "@/lib/bots-supervision-store";
 import { usePerformanceStore } from "@/lib/performance-store";
+import { formatDateTime } from "@/lib/timezone";
 
 // Stub Promise-returning store actions so the useBotEcosystemPolling tick
 // doesn't try to hit the network in jsdom.
@@ -141,9 +142,8 @@ describe("BOTS pane", () => {
     // Render a known UTC instant and assert that the cell does NOT show the
     // raw ISO slice — it should be the user's local formatted string.
     const iso = "2026-05-22T10:00:00Z";
-    const expected = new Date(iso).toLocaleString(
-      (typeof navigator !== "undefined" && navigator.language) || undefined,
-    );
+    // WC2-G05 UI-14: the expected string is the app-timezone, 24-hour format.
+    const expected = formatDateTime(iso);
     useBotsSupervisionStore.setState({
       stats: { total: 1, enabled: 1, live: 0, signals_today: 1 },
       bots: [

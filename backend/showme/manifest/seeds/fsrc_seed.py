@@ -1,10 +1,12 @@
-"""FSRC — Futures screener.
+"""FSRC — Fund Screener.
 
-Filter the futures universe (energy/metals/grains/financials/softs)
-by contract month, open interest, daily change, and volume. Backend
-handler is ``engine/functions/screening/fsrc.py`` which pulls front-
-month futures from yfinance (=F suffix) and resolves contract month
-ladders for sectoral aggregates.
+Filter the fund / ETF reference universe (US equity, international, bond,
+commodity, closed-end) by category and expense ratio with a server-side
+predicate query. Backend handler is ``FSRCFunction`` in
+``engine/functions/screen/_funcs.py``: it serves the curated fund reference
+universe and, when live is requested, overlays keyless yfinance last-price
+quotes per row. Expense ratio and dividend yield are curated reference values;
+AUM and YTD are not served (no provider), so predicates on them are refused.
 """
 from __future__ import annotations
 
@@ -35,60 +37,33 @@ from ..spec import (
 def fsrc() -> FunctionManifest:
     return FunctionManifest(
         code="FSRC",
-        name="Futures Screener",
+        name="Fund Screener",
         category=Category.SCREENING,
         intent=(
-            "Filter the listed futures universe by sector (energy, metals, grains, financials, softs), "
-            "contract month, daily change, and open interest, returning the matching contracts with "
-            "front/next-month columns and one-click GP/HP drill-downs."
+            "Filter the fund and ETF universe by category and expense ratio with a predicate "
+            "query, returning matching funds with curated reference expense ratio and dividend "
+            "yield, and a live last-price overlay when the quote provider answers. AUM and YTD "
+            "are not served."
         ),
-        asset_classes=[AssetClass.FUTURE, AssetClass.COMMODITY],
+        asset_classes=[AssetClass.FUND, AssetClass.ETF],
         inputs=[
             InputSpec(
-                name="sector",
-                label="Sector",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Commodity sector to scan.",
-                options=["all", "energy", "metals", "grains", "softs", "livestock", "financials", "currencies"],
-            ),
-            InputSpec(
-                name="contract_month",
-                label="Contract month",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Which contract month to surface (front month is default).",
-                options=["front", "next", "back", "all"],
-            ),
-            InputSpec(
-                name="min_open_interest",
-                label="Min OI",
-                control=ControlKind.NUMBER,
+                name="query",
+                label="Filter",
+                control=ControlKind.TEXT,
                 required=False,
-                description="Floor on open interest (contracts).",
-                min=0,
-                max=10_000_000,
-                step=1000,
-                unit="contracts",
+                description=(
+                    "Predicate over fund columns, e.g. expenseRatio < 0.01 AND dividend_yield > 0.03 "
+                    "or category = \"Long Government\". Predicates on aum_usd or ytd_return_pct are "
+                    "refused (not served)."
+                ),
             ),
             InputSpec(
-                name="min_volume",
-                label="Min volume",
-                control=ControlKind.NUMBER,
+                name="universe",
+                label="Universe",
+                control=ControlKind.TEXT,
                 required=False,
-                description="Floor on session volume (contracts).",
-                min=0,
-                max=10_000_000,
-                step=1000,
-                unit="contracts",
-            ),
-            InputSpec(
-                name="saved_screen",
-                label="Saved screen",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Load a previously saved futures screen.",
-                options=["ENERGY-FRONT", "METALS-MOV", "GRAINS-OI", "FX-FUT"],
+                description="Optional comma-separated fund tickers to restrict the screen to.",
             ),
             InputSpec(
                 name="limit",
@@ -99,38 +74,39 @@ def fsrc() -> FunctionManifest:
                 options=[25, 50, 100, 250],
             ),
             InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
+                name="live",
+                label="Live quotes",
+                control=ControlKind.BOOLEAN,
                 required=False,
-                description="Preferred mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description=(
+                    "Overlay keyless yfinance last-price quotes per row. Setting live false or "
+                    "reference true serves the curated reference universe only."
+                ),
+            ),
+            InputSpec(
+                name="reference",
+                label="Reference only",
+                control=ControlKind.BOOLEAN,
+                required=False,
+                description="Serve the curated reference universe only; no quote provider call.",
             ),
         ],
         defaults={
-            "sector": "all",
-            "contract_month": "front",
-            "min_open_interest": 1000,
-            "min_volume": 100,
+            "query": "expenseRatio < 0.01",
             "limit": 50,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
+            "live": True,
         },
         provider_chain=ProviderChain(
             primary="yfinance",
-            fallbacks=["openfigi", "cached_snapshot"],
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=True),
+        caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["as_of", "rows", "matched", "scanned", "sector", "data_mode"],
+            must_have=["status", "rows", "matched", "scanned", "sources"],
             rows=True,
             series=False,
             cards=True,
@@ -139,16 +115,14 @@ def fsrc() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="symbol", label="Contract", kind="text"),
-                ColumnSpec(key="name", label="Name", kind="text"),
-                ColumnSpec(key="sector", label="Sector", kind="tag"),
-                ColumnSpec(key="month", label="Month", kind="text"),
-                ColumnSpec(key="last", label="Last", kind="currency", format="%.3f"),
-                ColumnSpec(key="change", label="Δ", kind="currency", format="%.3f"),
-                ColumnSpec(key="change_pct", label="Δ %", kind="percent", format="%.2f"),
-                ColumnSpec(key="volume", label="Vol", kind="number", format="si"),
-                ColumnSpec(key="open_interest", label="OI", kind="number", format="si"),
-                ColumnSpec(key="actions", label="", kind="action"),
+                ColumnSpec(key="symbol", label="Symbol", kind="text"),
+                ColumnSpec(key="name", label="Fund", kind="text"),
+                ColumnSpec(key="issuer", label="Issuer", kind="text"),
+                ColumnSpec(key="category", label="Category", kind="tag"),
+                ColumnSpec(key="expenseRatio", label="Exp%", kind="percent", format="%.3f"),
+                ColumnSpec(key="last", label="Last", kind="currency", format="%.2f"),
+                ColumnSpec(key="change_pct", label="Change %", kind="percent", format="%.2f"),
+                ColumnSpec(key="dividend_yield", label="Div%", kind="percent", format="%.2f"),
             ],
             sortable=True,
             filterable=True,
@@ -157,81 +131,77 @@ def fsrc() -> FunctionManifest:
             slots=[
                 CardSlot(key="matched", label="Matched", kind="kpi"),
                 CardSlot(key="scanned", label="Scanned", kind="kpi"),
-                CardSlot(key="median_change_pct", label="Median Δ", kind="trend_pill", unit="%"),
-                CardSlot(key="top_sector", label="Top Sector", kind="badge"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="status", label="Status", kind="badge"),
             ],
         ),
         methodology=(
-            "FSRC enumerates a curated futures universe partitioned by sector (energy: CL/NG/RB/HO, "
-            "metals: GC/SI/HG/PA/PL, grains: ZC/ZS/ZW/KE, softs: CT/CC/KC/SB, livestock: HE/LE, "
-            "financials: ES/NQ/RTY/ZB/ZN, currencies: 6E/6J/6B/6A/6C). For contract_month=front the "
-            "scanner uses yfinance =F suffix tickers; for next/back it walks the listed maturity "
-            "ladder. Each row pulls last/change/volume from yfinance with a 5-min DuckDB cache. "
-            "Open-interest comes from the daily settlement CSV when available; rows missing OI carry "
-            "a warning rather than a synthesized 0. Predicates min_open_interest, min_volume, and "
-            "sector are applied; matches are sorted by abs(change_pct) desc by default. Next actions: "
-            "save_screen, export_csv, open_in_gp."
+            "FSRC filters a curated fund and ETF reference universe with the predicate query. "
+            "Expense ratio and dividend yield are curated reference values with no provider as-of "
+            "date. AUM and YTD are not served: no keyless provider supplies them, the earlier curated "
+            "figures were stale, so aum_usd and ytd_return_pct are null with aum_state / ytd_state "
+            "unavailable, and a predicate on either returns status provider_unavailable with no rows. "
+            "When live is requested, each row gets a yfinance last price and change percent "
+            "(quote_state live) where the provider answers; rows without a quote keep quote_state "
+            "reference and no price. Predicates are applied after the overlay. A query that matches "
+            "no row returns status empty with next_actions, never filler rows."
         ),
         field_dict={
-            "rows[].symbol": FieldDef(description="Futures root + month code (e.g. CLZ25 or =F front).", source="universe"),
-            "rows[].name": FieldDef(description="Display name (Crude Oil, Gold, …).", source="curated"),
-            "rows[].sector": FieldDef(description="Commodity sector tag.", source="curated"),
-            "rows[].month": FieldDef(description="Contract month (FRONT/NEXT/BACK or YYYY-MM).", source="derived"),
-            "rows[].last": FieldDef(unit="quote_ccy", description="Last settlement or trade.", source="yfinance"),
-            "rows[].change": FieldDef(unit="quote_ccy", description="last - prev_close.", source="computed"),
-            "rows[].change_pct": FieldDef(unit="%", description="change / prev_close * 100.", source="computed"),
-            "rows[].volume": FieldDef(unit="contracts", description="Session volume in contracts.", source="yfinance"),
-            "rows[].open_interest": FieldDef(unit="contracts", description="Outstanding open interest.", source="cme_settlement"),
+            "rows[].symbol": FieldDef(description="Fund or ETF ticker.", source="curated"),
+            "rows[].name": FieldDef(description="Fund display name.", source="curated"),
+            "rows[].issuer": FieldDef(description="Fund sponsor.", source="curated"),
+            "rows[].category": FieldDef(description="Fund exposure bucket.", source="curated"),
+            "rows[].aum_usd": FieldDef(unit="USD", description="Not served: always null (no provider supplies fund AUM).", source="derived"),
+            "rows[].aum_state": FieldDef(description="\"unavailable\" — aum_usd is not served.", source="derived"),
+            "rows[].expenseRatio": FieldDef(unit="fraction", description="Curated reference annual expense ratio as a decimal (0.0009 = 0.09%); no as-of date.", source="curated_reference"),
+            "rows[].ytd_return_pct": FieldDef(unit="%", description="Not served: always null (no provider supplies fund YTD returns).", source="derived"),
+            "rows[].ytd_state": FieldDef(description="\"unavailable\" — ytd_return_pct is not served.", source="derived"),
+            "rows[].dividend_yield": FieldDef(unit="fraction", description="Curated reference dividend yield as a decimal.", source="curated_reference"),
+            "rows[].last": FieldDef(unit="USD", description="Latest traded price when the live overlay answers.", source="yfinance"),
+            "rows[].change_pct": FieldDef(unit="%", description="Percent move versus previous close when the live overlay answers.", source="yfinance"),
+            "rows[].quote_state": FieldDef(description="\"live\" when a quote was overlaid, else \"reference\".", source="derived"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
-            require_as_of=True,
+            require_as_of=False,
             require_latency_ms=True,
         ),
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="fsrc_sector_filter_restricts_rows",
-                description="With sector=energy every row's sector field equals 'energy'.",
-                inputs={"sector": "energy"},
-                assertions=["all_rows_sector_equals_energy"],
+                name="fsrc_category_predicate_restricts_rows",
+                description="With category = \"Long Government\" every row's category equals 'Long Government'.",
+                inputs={"query": "category = \"Long Government\""},
+                assertions=["all_rows_category_equals_long_government"],
             ),
             SemanticTest(
-                name="fsrc_min_oi_filter_respected",
-                description="Every returned row has open_interest >= min_open_interest (when OI is available).",
-                inputs={"min_open_interest": 10_000},
-                assertions=["all_rows_above_oi_floor_or_carries_warning"],
+                name="fsrc_expense_predicate_respected",
+                description="With expenseRatio <= 0.001 every returned row has expenseRatio <= 0.001.",
+                inputs={"query": "expenseRatio <= 0.001"},
+                assertions=["all_rows_expense_ratio_at_most_0_001"],
             ),
             SemanticTest(
-                name="fsrc_next_actions_include_save_export_and_open_gp",
-                description="next_actions list always contains save_screen, export_csv, and open_in_gp entries.",
-                inputs={},
+                name="fsrc_aum_and_ytd_not_served",
+                description="Every returned row has aum_usd and ytd_return_pct null with aum_state and ytd_state unavailable, and the payload warns AUM and YTD are not served.",
+                inputs={"query": "expenseRatio < 0.01"},
                 assertions=[
-                    "next_actions_contains_save_screen",
-                    "next_actions_contains_export_csv",
-                    "next_actions_contains_open_in_gp",
+                    "rows_aum_usd_null",
+                    "rows_ytd_return_pct_null",
+                    "rows_aum_state_unavailable",
+                    "rows_ytd_state_unavailable",
+                    "warnings_mention_not_served",
                 ],
             ),
             SemanticTest(
-                name="fsrc_missing_oi_emits_warning_not_zero",
-                description="A contract without published OI carries a warning rather than open_interest=0.",
-                inputs={},
-                assertions=[
-                    "missing_oi_row_warning_present",
-                    "missing_oi_row_open_interest_is_null_not_zero",
-                ],
+                name="fsrc_aum_predicate_refused",
+                description="A predicate on aum_usd returns status provider_unavailable with rows=[] instead of matching against nothing.",
+                inputs={"query": "aum_usd > 10000000000"},
+                assertions=["status_equals_provider_unavailable", "rows_is_empty_array", "next_actions_present"],
             ),
             SemanticTest(
-                name="fsrc_provider_unavailable_returns_empty_rows_not_synthetic",
-                description="When yfinance is unreachable, rows=[] and data_mode=provider_unavailable with no synthetic settles.",
-                inputs={},
-                assertions=[
-                    "rows_is_empty_array_on_provider_failure",
-                    "data_mode_equals_provider_unavailable",
-                    "no_synthetic_fields",
-                ],
+                name="fsrc_no_match_returns_empty_not_filler",
+                description="A query that matches no fund returns status empty with rows=[] and next_actions.",
+                inputs={"query": "expenseRatio < 0"},
+                assertions=["status_equals_empty", "rows_is_empty_array", "next_actions_present"],
             ),
         ],
     )

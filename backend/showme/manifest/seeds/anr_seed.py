@@ -53,7 +53,10 @@ def anr() -> FunctionManifest:
                 label="History (months)",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Lookback window for the bucket trend table.",
+                description=(
+                    "Lookback window for the bucket trend table. The provider returns only its own "
+                    "periods (yfinance: current month back to -3m); a longer window shows those and warns."
+                ),
                 min=3,
                 max=36,
                 step=1,
@@ -122,7 +125,8 @@ def anr() -> FunctionManifest:
             "the analyst price-target dict in parallel. Each row's score is a weighted average "
             "where strongBuy=5..strongSell=1. When yfinance has no rows, the chain falls back "
             "to finnhub recommendation_trends and price_target endpoints. The pane displays the "
-            "latest month as the headline plus a `months`-long history table."
+            "latest month as the headline plus the provider's own periods inside the `months` "
+            "window (trend rows); periods the provider did not return are never filled in."
         ),
         field_dict={
             "symbol": FieldDef(description="Equity ticker.", source="instrument"),

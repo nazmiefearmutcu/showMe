@@ -153,7 +153,7 @@ class LLMRouter:
             text = _log_path().read_text()
         except Exception as exc:  # noqa: BLE001
             LOG.exception("LLM ledger read failed; failing closed on budget")
-            self._load_error = f"ledger_read_failed: {exc.__class__.__name__}: {exc}"
+            self._load_error = f"ledger_read_failed: {exc.__class__.__name__}: {str(exc) or type(exc).__name__}"
             # Fail-closed: pretend we already hit the budget so no LLM call
             # goes out until an operator investigates.
             return float(os.environ.get("LLM_DAILY_BUDGET_USD", "5"))
@@ -230,7 +230,7 @@ class LLMRouter:
         try:
             import anthropic  # type: ignore
         except Exception as e:
-            raise RuntimeError(f"anthropic SDK missing: {e}")
+            raise RuntimeError(f"anthropic SDK missing: {str(e) or type(e).__name__}")
         model_map = {
             "claude-haiku":  "claude-haiku-4-5-20251001",
             "claude-sonnet": "claude-sonnet-4-6",
@@ -250,7 +250,7 @@ class LLMRouter:
         try:
             import openai  # type: ignore
         except Exception as e:
-            raise RuntimeError(f"openai SDK missing: {e}")
+            raise RuntimeError(f"openai SDK missing: {str(e) or type(e).__name__}")
         client = _get_openai_client(openai, self.openai_key)
         r = await client.chat.completions.create(
             model=model, max_tokens=req.max_tokens, temperature=req.temperature,

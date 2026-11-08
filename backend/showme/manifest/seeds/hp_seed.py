@@ -2,7 +2,7 @@
 
 Server-side this is an alias for the price-history pipeline (server.py
 ``_execute_price_history_alias``) — same underlying OHLCV fetcher as GP
-but with deeper bars, range/interval/depth/chart-style controls, and a
+but with deeper bars, range/interval controls, and a
 key-levels right-rail in the UI. Asset coverage matches GP.
 """
 from __future__ import annotations
@@ -44,7 +44,7 @@ def hp() -> FunctionManifest:
         category=Category.CHARTS_TECH,
         intent=(
             "Drill into deep historical OHLCV for a single instrument with "
-            "configurable depth, chart style, and key-level overlays."
+            "range and interval controls, chart style, and key-level overlays."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -80,48 +80,10 @@ def hp() -> FunctionManifest:
                 options=["1m", "5m", "15m", "1h", "4h", "1d", "1w"],
                 depends_on=["range"],
             ),
-            InputSpec(
-                name="depth",
-                label="Bar depth",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Max bars to request from the provider chain.",
-                options=["300", "1000", "3000", "10000"],
-            ),
-            InputSpec(
-                name="chart_style",
-                label="Chart style",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Render style for the price pane.",
-                options=["candle", "line", "area"],
-            ),
-            InputSpec(
-                name="compare",
-                label="Compare with",
-                control=ControlKind.SYMBOL_PICKER,
-                required=False,
-                description="Overlay a second instrument normalized to 100 at range start.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_EXCHANGE.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
             "range": "1Y",
             "interval": "1d",
-            "depth": "1000",
-            "chart_style": "candle",
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
         },
         provider_chain=ProviderChain(
             primary="yfinance",
@@ -156,7 +118,7 @@ def hp() -> FunctionManifest:
                 PaneGrammar(name="volume", series_kind="histogram", height_pct=25),
             ],
             overlay_support=True,
-            compare_support=True,
+            compare_support=False,
         ),
         table_schema=TableSchema(
             columns=[
@@ -180,12 +142,17 @@ def hp() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "HP is the deep-history alias: server.py:_execute_price_history_alias races the configured "
-            "OHLCV adapters per asset class (binance/coingecko for CRYPTO, then yfinance) and returns "
-            "the longest, oldest-first-bar history. Compare overlays normalize to 100 at the first "
-            "visible bar. Key levels use provider 52-week meta when the winning source supplies it and "
-            "fall back to the selected range's high/low (labelled as range extremes) otherwise. "
-            "Pan/zoom is preserved across refresh via the first-seed-focus pattern."
+            "HP is the deep-history alias: server.py:_execute_price_history_alias calls "
+            "chart_history.fetch_longest_history, which races Yahoo for every asset class, Binance "
+            "for CRYPTO, and Stooq when STOOQ_API_KEY is set; the source whose earliest bar is oldest "
+            "wins. The winner is cut to the requested range and then to its newest `bars` rows (the HP "
+            "pane sends 1000), so an intraday range can cover less time than its label; the pane states "
+            "the loaded span when that happens. If the race returns nothing, the alias falls back to the "
+            "ccxt/CoinGecko (crypto) and yfinance adapters. Key levels use provider 52-week meta when the "
+            "winning source supplies it and fall back to the selected range's bar high/low (labelled as "
+            "range extremes) otherwise; the 23.6% and 78.6% levels are computed Fibonacci retracements of "
+            "that range, not support or resistance signals. Pan/zoom is preserved across refresh via the "
+            "first-seed-focus pattern."
         ),
         formula_dict={
             "change_pct": Formula(
@@ -221,7 +188,7 @@ def hp() -> FunctionManifest:
             SemanticTest(
                 name="hp_aapl_1y_1d_returns_deep_history",
                 description="HP returns a non-empty ohlcv array with bar_count > 0 and a winner source.",
-                inputs={"symbol": "AAPL", "range": "1Y", "interval": "1d", "depth": "1000"},
+                inputs={"symbol": "AAPL", "range": "1Y", "interval": "1d"},
                 assertions=[
                     "ohlcv_non_empty",
                     "bar_count_positive",

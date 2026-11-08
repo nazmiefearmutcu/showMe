@@ -16,6 +16,7 @@ All providers are patched; no network is used.
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 import pandas as pd
 
@@ -65,6 +66,8 @@ def _patch(monkeypatch, fred: _Fred) -> None:
     monkeypatch.setattr(
         ecst_mod, "fred_with_keyless_fallback", lambda deps_fred, client=None: fred
     )
+    # Pin "today" so the 270-day series limit does not expire the 2026-04-01 fixture.
+    monkeypatch.setattr(coun_mod, "_today", lambda: date(2026, 11, 8))
 
 
 def _metric(result, name):
@@ -112,7 +115,7 @@ def test_us_all_indicator_outage_never_reports_fred_or_live(monkeypatch):
 
     result = _run(COUNFunction(FunctionDeps()).execute(country="US", live=True))
 
-    for name in ("Real GDP", "Inflation proxy / CPI", "Unemployment rate", "10Y government yield"):
+    for name in ("Real GDP", "Inflation", "Unemployment rate", "10Y government yield"):
         row = _metric(result, name)
         assert row["value"] is None, f"{name} served a value without a live source"
         assert row["source_mode"] == "provider_unavailable"
@@ -120,7 +123,7 @@ def test_us_all_indicator_outage_never_reports_fred_or_live(monkeypatch):
     assert "macro_series_baseline" not in result.sources
     assert result.data["source_mode"] != "live_macro"
     assert not any(
-        card.get("label") in {"Real GDP", "Inflation proxy / CPI", "Unemployment rate", "10Y government yield"}
+        card.get("label") in {"Real GDP", "Inflation", "Unemployment rate", "10Y government yield"}
         for card in result.data["cards"]
     )
     assert all(point.get("source_mode") != "macro_series_baseline" for point in result.data["history"])

@@ -32,6 +32,11 @@ class DDMFunction(BaseFunction):
         d0 = params.get("dividend_ttm")
         g = float(params.get("growth_rate", 0.03))
         r = params.get("required_return")
+        forward_indicated: float | None = None
+        # No caller value and no provider answer yet: the dividend is unknown
+        # until the provider returns a usable payload (T10: a failed or empty
+        # provider must never read as "pays no dividend, value 0, status ok").
+        provider_failed = d0 is None
         # Try to source D0 from yfinance
         if d0 is None and self.deps.yfinance:
             try:
@@ -40,14 +45,72 @@ class DDMFunction(BaseFunction):
                     kind=DataKind.REFDATA, instrument=instrument
                 ))
                 raw = (rd.extras or {}).get("raw", {}) if hasattr(rd, "extras") else {}
-                d0 = raw.get("dividendRate") or raw.get("trailingAnnualDividendRate") or 0
-                sources.append("yfinance")
+                # The adapter swallows info failures and returns raw holding
+                # only info_error (or nothing): that is no data, not a payer.
+                if not raw or raw.get("info_error"):
+                    provider_failed = True
+                    warnings.append(f"yfinance: {raw.get('info_error') or 'no reference data returned'}")
+                else:
+                    provider_failed = False
+                    # D0 is the TRAILING dividend. dividendRate is the forward
+                    # indicated annual rate (not yet paid): growing it by (1+g)
+                    # again would double-count one year of growth (DDM#1).
+                    d0 = raw.get("trailingAnnualDividendRate") or 0
+                    forward_indicated = raw.get("dividendRate")
+                    sources.append("yfinance")
             except Exception as e:
+                provider_failed = True
                 warnings.append(f"yfinance: {e}")
         d0 = float(d0 or 0)
         if d0 <= 0:
-            warnings.append(
-                "dividend_ttm: provider returned 0 or no dividend; DDM is not applicable for non-dividend payers. Pass dividend_ttm explicitly to override."
+            if provider_failed:
+                status = "provider_unavailable"
+                reason = "Dividend reference data is unavailable, so the trailing dividend is unknown. Pass dividend_ttm explicitly."
+            elif forward_indicated is not None and float(forward_indicated) > 0:
+                status = "needs_input"
+                reason = "Provider reports a forward dividend but no trailing 12-month dividend. Pass dividend_ttm explicitly."
+            else:
+                status = "not_applicable"
+                reason = "Provider reports no trailing dividend, so DDM is not applicable for non-dividend payers."
+                warnings.append(
+                    "dividend_ttm: provider returned 0 or no dividend; DDM is not applicable for non-dividend payers. Pass dividend_ttm explicitly to override."
+                )
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={
+                    "status": status,
+                    "reason": reason,
+                    "next_actions": ["Pass dividend_ttm explicitly (trailing annual dividend per share)."],
+                    "dividend_ttm": None,
+                    "dividend_forward_indicated": forward_indicated,
+                    "next_dividend": None,
+                    "growth": g, "required_return": None,
+                    "fair_value_per_share": None,
+                    "rows": [], "surface": [],
+                },
+                sources=list(set(sources)), warnings=warnings,
+            )
+            # No positive dividend means no Gordon value: report the missing
+            # input explicitly instead of a fake 0.0 fair value with status ok.
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={"status": "needs_input",
+                      "reason": "No positive trailing dividend for this instrument; DDM needs dividend_ttm to value it.",
+                      "next_actions": [
+                          "Pass dividend_ttm explicitly to value the shares on a Gordon basis.",
+                          "Use DCF for non-dividend payers.",
+                      ],
+                      "dividend_ttm": None, "next_dividend": None,
+                      "growth": g, "required_return": None,
+                      "fair_value_per_share": None,
+                      "assumptions": {"required_return": None, "growth": g, "dividend_ttm": None},
+                      "rows": [], "surface": [],
+                      "methodology": "Gordon Growth DDM: P = D1 / (r - g). Not computed without a positive trailing dividend.",
+                      "field_dictionary": {
+                          "dividend_ttm": "Trailing annual dividend per share from provider or user override.",
+                          "fair_value_per_share": "The dividend-implied value per share; null when no dividend is available.",
+                      }},
+                sources=list(set(sources)), warnings=warnings,
             )
         # Required return: WACC if not specified
         if r is None:
@@ -115,7 +178,9 @@ class DDMFunction(BaseFunction):
         sensitivity = []
         for req in (r - 0.02, r, r + 0.02):
             for grow in (max(0.0, g - 0.01), g, g + 0.01):
-                value = None if req <= grow else d1 / (req - grow)
+                # D1 depends on the column's own growth: D0 * (1 + g_cell).
+                # Reusing the base-case D1 would understate the growth axis.
+                value = None if req <= grow else d0 * (1 + grow) / (req - grow)
                 sensitivity.append({
                     "required_return": round(req, 4),
                     "growth": round(grow, 4),
@@ -126,13 +191,17 @@ class DDMFunction(BaseFunction):
             code=self.code, instrument=instrument,
             data={"status": "ok",
                    "dividend_ttm": d0, "next_dividend": d1,
+                   # Labelled cross-check only; never used in the valuation.
+                   "dividend_forward_indicated": forward_indicated,
                    "growth": g, "required_return": r,
                    "fair_value_per_share": fair_value,
+                   "assumptions": {"required_return": r, "growth": g, "dividend_ttm": d0},
                    "rows": rows,
                    "surface": sensitivity,
                    "methodology": "Gordon Growth DDM: P = D1 / (r - g), where D1 is next expected dividend, r is required return, and g is perpetual dividend growth. Required return defaults to WACC when not supplied.",
                    "field_dictionary": {
                        "dividend_ttm": "Trailing annual dividend per share from provider or user override.",
+                       "dividend_forward_indicated": "Provider forward indicated annual dividend; cross-check only, not used in the valuation.",
                        "growth": "Long-run dividend growth assumption.",
                        "required_return": "Discount rate required by equity holders.",
                        "fair_value_per_share": "The dividend-implied value per share.",
@@ -152,8 +221,9 @@ class DCFFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("DCF requires instrument")
-        N = int(params.get("years", 5))
-        g_high = float(params.get("growth_high", 0.10))
+        # Defaults mirror the manifest (dcf_seed.py defaults) and the pane (DCF.tsx).
+        N = int(params.get("years", 10))
+        g_high = float(params.get("growth_high", 0.08))
         g_terminal = float(params.get("growth_terminal", 0.025))
         wacc = params.get("wacc")
         # Review of DCF#1: say where WACC came from (caller input vs the WACC model).
@@ -174,6 +244,9 @@ class DCFFunction(BaseFunction):
                     data={"status": status, "reason": reason, "next_actions": next_actions,
                           "wacc": None, "wacc_source": None, "g_high": g_high, "g_terminal": g_terminal,
                           "years": N, "starting_fcfe": None, "fcfe_source": None, "shares_source": None,
+                          "assumptions": {"wacc": None, "wacc_source": None, "growth_high": g_high,
+                                  "growth_terminal": g_terminal, "years": N,
+                                  "fcfe_source": None, "shares_source": None},
                           "shares_outstanding": None, "equity_value": None, "fair_value_per_share": None,
                           "rows": [], "bridge": [],
                           "methodology": "Two-stage FCFE DCF; WACC is required and is never substituted with a constant.",
@@ -241,9 +314,13 @@ class DCFFunction(BaseFunction):
                       "wacc": wacc, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
                       "years": N, "starting_fcfe": None,
                       "fcfe_source": "missing",
+                      "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                                      "growth_high": g_high, "growth_terminal": g_terminal,
+                                      "years": N, "fcfe_source": "missing",
+                                      "shares_source": "user_override" if shares is not None else None},
                       "shares_source": "user_override" if shares is not None else None,
                       "shares_outstanding": shares,
-                      "fair_value_per_share": None,
+                      "equity_value": None, "fair_value_per_share": None,
                       "rows": [], "bridge": [],
                       "methodology": "Two-stage FCFE DCF; FCFE is required and is never substituted with a placeholder.",
                       "field_dictionary": FIELD_DICTIONARIES["valuation"]},
@@ -255,9 +332,38 @@ class DCFFunction(BaseFunction):
                 "free_cash_flow: provider reported negative free cash flow; DCF surface compounds the negative base value — pass fcfe explicitly for a tradable model."
             )
         if wacc <= g_terminal:
-            return FunctionResult(code=self.code, instrument=instrument,
-                                  data={"error": "wacc must exceed terminal growth"},
-                                  warnings=["wacc ≤ g_terminal"])
+            # Explicit input_error state with the full must_have payload shape
+            # (DCF#3): the Gordon terminal value is undefined here, so no
+            # valuation is computed and no value is substituted.
+            reason = (
+                f"WACC ({wacc:.2%}) must exceed terminal growth ({g_terminal:.2%}); "
+                "the terminal value is undefined. Raise wacc or lower terminal growth."
+            )
+            warnings.append("wacc ≤ g_terminal")
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={"status": "input_error",
+                      "reason": reason,
+                      "next_actions": ["Raise wacc above terminal growth.",
+                                       "Or lower growth_terminal below wacc."],
+                      "error": "wacc must exceed terminal growth",
+                      "wacc": wacc, "wacc_source": wacc_source,
+                      "g_high": g_high, "g_terminal": g_terminal,
+                      "years": N, "starting_fcfe": fcfe,
+                      "fcfe_source": fcfe_source,
+                      "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                                      "growth_high": g_high, "growth_terminal": g_terminal,
+                                      "years": N, "fcfe_source": fcfe_source,
+                                      "shares_source": None},
+                      "shares_source": None,
+                      "shares_outstanding": None,
+                      "pv_explicit": None, "terminal_value": None, "pv_terminal": None,
+                      "equity_value": None, "fair_value_per_share": None,
+                      "rows": [], "bridge": [],
+                      "methodology": "Two-stage FCFE DCF; the terminal value is undefined when wacc is not above terminal growth.",
+                      "field_dictionary": FIELD_DICTIONARIES["valuation"]},
+                sources=list(set(sources)), warnings=warnings,
+            )
         # Stage 1: explicit forecast
         cashflows = []
         cf = fcfe
@@ -318,6 +424,10 @@ class DCFFunction(BaseFunction):
                    "years": N, "starting_fcfe": fcfe,
                    "fcfe_source": fcfe_source,
                    "shares_source": shares_source or "missing",
+                   "assumptions": {"wacc": wacc, "wacc_source": wacc_source,
+                                   "growth_high": g_high, "growth_terminal": g_terminal,
+                                   "years": N, "fcfe_source": fcfe_source,
+                                   "shares_source": shares_source or "missing"},
                    "pv_explicit": pv_explicit,
                    "terminal_value": tv, "pv_terminal": pv_tv,
                    "equity_value": equity_value,

@@ -1,10 +1,8 @@
-"""DINE — Food / restaurant pick utility (non-core).
+"""DINE — Restaurant lookup (non-core).
 
-DINE is an auxiliary off-topic utility that lets the operator stash a
-short list of nearby food spots. It is not a finance function and has
-no external provider — entries live in the same Round 16 preset
-filesystem as other personal lists. DINE is explicitly low-priority in
-the cockpit's nav weighting; it belongs in the auxiliary tray, not the
+DINE is an auxiliary off-topic utility that searches OpenStreetMap
+Nominatim for food places near a location. It is not a finance function
+and carries low nav weight: it belongs in the miscellaneous tray, not the
 finance-first workspace default.
 """
 from __future__ import annotations
@@ -35,44 +33,53 @@ from ..spec import (
 def dine() -> FunctionManifest:
     return FunctionManifest(
         code="DINE",
-        name="Food Picks",
+        name="Restaurants",
         category=Category.MISC,
         intent=(
-            "Operator-curated short list of nearby food spots — an auxiliary off-topic "
+            "Food places near a location from OpenStreetMap, an auxiliary off-topic "
             "utility for the cockpit's miscellaneous tray, not a finance function."
         ),
         asset_classes=[],
         inputs=[
             InputSpec(
+                name="location",
+                label="Location",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Place name geocoded with OpenStreetMap Nominatim. Required: DINE does not guess a city.",
+            ),
+            InputSpec(
+                name="query",
+                label="Search",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Amenity keyword such as restaurant, cafe or sushi (default restaurant).",
+            ),
+            InputSpec(
                 name="cuisine",
                 label="Cuisine",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Filter the list by cuisine tag.",
+                description=(
+                    "Keep only places whose OSM cuisine tag (or OSM type) matches. Applied to the "
+                    "places Nominatim returns for the search, so it can narrow the list to zero."
+                ),
                 options=["any", "turkish", "italian", "japanese", "mexican", "indian", "cafe"],
-            ),
-            InputSpec(
-                name="price_band",
-                label="Price",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Filter by reported price band.",
-                options=["any", "$", "$$", "$$$"],
             ),
         ],
         defaults={
+            "query": "restaurant",
             "cuisine": "any",
-            "price_band": "any",
         },
         provider_chain=ProviderChain(
-            primary="internal",
+            primary="openstreetmap_nominatim",
             fallbacks=[],
             acceptable_modes=[
-                DataMode.CACHED_SNAPSHOT,
-                DataMode.NOT_CONFIGURED,
+                DataMode.LIVE_OFFICIAL,
+                DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=0, scope="per_input", persist=True),
+        caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=False),
         output_contract=OutputContract(
             must_have=["rows"],
             rows=True,
@@ -85,31 +92,35 @@ def dine() -> FunctionManifest:
             columns=[
                 ColumnSpec(key="name", label="Name", kind="text"),
                 ColumnSpec(key="cuisine", label="Cuisine", kind="tag"),
-                ColumnSpec(key="price_band", label="Price", kind="tag"),
+                ColumnSpec(key="type", label="OSM type", kind="tag"),
+                ColumnSpec(key="address", label="Address", kind="text"),
+                ColumnSpec(key="distance_km", label="Distance (km)", kind="number", format="%.2f"),
                 ColumnSpec(key="rating", label="Rating", kind="number", format="%.1f"),
-                ColumnSpec(key="note", label="Note", kind="text"),
             ],
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="entry_count", label="Entries", kind="kpi"),
+                CardSlot(key="entry_count", label="Places", kind="kpi"),
                 CardSlot(key="top_pick", label="Top pick", kind="badge"),
             ],
         ),
         methodology=(
             "DINE is an auxiliary utility, low nav weight in the finance-first workspace. "
-            "It does not belong on the default cockpit grid; it lives in the miscellaneous "
-            "tray for operators who want a personal food list inside the same app. There is "
-            "no external provider (no Yelp, no Google Places), no network calls, and no "
-            "geolocation — entries are operator-supplied and persisted in the Round 16 preset "
-            "filesystem alongside other personal lists."
+            "It lives in the miscellaneous tray. The location is geocoded with OpenStreetMap "
+            "Nominatim (a city-level match is preferred over a state match), then the place "
+            "search is bounded to that area. Rows are OSM places with their OSM address, type "
+            "and cuisine tags; distance_km is the great-circle distance from the geocoded point "
+            "of the location match. Ratings and prices are not available from OSM and are never "
+            "fabricated: the rating field stays empty. When Nominatim is unreachable the result "
+            "is status provider_unavailable with a reason, never placeholder rows."
         ),
         field_dict={
-            "rows[].name": FieldDef(description="Operator-supplied entry name.", source="store"),
-            "rows[].cuisine": FieldDef(description="Optional cuisine tag.", source="store"),
-            "rows[].price_band": FieldDef(description="Optional price-band tag.", source="store"),
-            "rows[].rating": FieldDef(description="Operator-supplied rating 0..5.", source="store"),
-            "rows[].note": FieldDef(description="Free-text note.", source="store"),
+            "rows[].name": FieldDef(description="Place name from OpenStreetMap.", source="openstreetmap_nominatim"),
+            "rows[].address": FieldDef(description="Compact street address from OSM address tags.", source="openstreetmap_nominatim"),
+            "rows[].cuisine": FieldDef(description="OSM cuisine tag when the mapper supplied one.", source="openstreetmap_nominatim"),
+            "rows[].type": FieldDef(description="OSM place type (e.g. restaurant, cafe, fast_food).", source="openstreetmap_nominatim"),
+            "rows[].distance_km": FieldDef(description="Great-circle distance from the geocoded location point, km (not a route).", source="computed"),
+            "rows[].rating": FieldDef(description="Always empty: OSM carries no ratings.", source="openstreetmap_nominatim"),
         },
         provenance=ProvenanceSpec(
             require_source_list=False,
@@ -119,16 +130,16 @@ def dine() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="dine_returns_only_operator_entries_no_synthetic_seed",
-                description="With an empty store, DINE returns rows=[] — it never seeds synthetic restaurant entries.",
-                inputs={},
-                assertions=["rows_is_empty_array_when_store_empty"],
+                name="dine_provider_unavailable_returns_explicit_state_not_rows",
+                description="When Nominatim is unavailable DINE returns status provider_unavailable with rows=[] and a reason, never synthetic restaurants.",
+                inputs={"location": "New York"},
+                assertions=["status_is_provider_unavailable_when_nominatim_fails", "rows_is_empty_array_when_unavailable"],
             ),
             SemanticTest(
                 name="dine_filter_cuisine_excludes_others",
-                description="With cuisine='italian' every returned row has cuisine == 'italian'.",
+                description="With cuisine='italian' every returned row has cuisine or type matching 'italian'.",
                 inputs={"cuisine": "italian"},
-                assertions=["every_row_cuisine_equals_italian"],
+                assertions=["every_row_cuisine_or_type_equals_italian"],
             ),
         ],
     )

@@ -107,6 +107,17 @@ def test_fallback_spread_param_no_longer_substitutes_a_value(no_network: None) -
     assert by_country["XX"]["proxy_spread_pct"] is None
 
 
+def _fred_frame(series_id: str, value: float):
+    """A FRED-shaped frame: DGS10 daily over a month, IRLTLT01 sovereigns monthly."""
+    import pandas as pd
+
+    if series_id == "DGS10":
+        idx = pd.date_range("2026-09-01", "2026-09-30", freq="B")
+    else:
+        idx = pd.DatetimeIndex(["2026-09-01"])
+    return pd.DataFrame({"value": [float(value)] * len(idx)}, index=idx)
+
+
 class _Col:
     """Minimal stand-in for a pandas column: only ``.iloc[-1]`` is used."""
 
@@ -123,8 +134,10 @@ class _FakeFred:
         "IRLTLT01TRM156N": 9.0,  # Turkey 10Y -> spread 7.0
     }
 
-    async def series(self, series_id: str) -> dict[str, _Col]:
-        return {"value": _Col(self._SERIES[series_id])}
+    api_key = "test-key"  # a keyed adapter, so the keyless CSV shim is not used
+
+    async def series(self, series_id: str) -> Any:
+        return _fred_frame(series_id, self._SERIES[series_id])
 
 
 class _NoWorldBank:

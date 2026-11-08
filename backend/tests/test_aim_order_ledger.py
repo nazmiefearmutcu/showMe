@@ -157,6 +157,33 @@ def test_history_row_matching_live_order_is_not_duplicated(monkeypatch):
 # --------------------------------------------------------------------------- #
 # AIM#2 — broker_filter must also restrict the order-history tail.
 # --------------------------------------------------------------------------- #
+def test_history_duplicate_under_adapter_name_and_key_is_counted_once(monkeypatch):
+    """AIM#3-RQ: one order stored under both the adapter's .name and its config
+    key is one order: it must be listed and notional-counted once."""
+    rows = [
+        _hist("ord-1", broker="alpaca-paper", status="filled", quantity=1, price=190.0),
+        _hist("ord-1", broker="alpaca_broker", status="filled", quantity=1, price=190.0),
+    ]
+    _install_history(monkeypatch, rows)
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper"))
+    res = _run(_aim(deps).execute())
+    ids = [r["order_id"] for r in res.data["rows"]]
+    assert ids.count("ord-1") == 1, ids
+    assert res.data["cards"]["total_notional"] == pytest.approx(190.0)
+
+
+def test_history_same_order_id_under_unrelated_broker_is_kept(monkeypatch):
+    """Dedupe is per broker: an equal order_id on another venue is a different order."""
+    rows = [
+        _hist("ord-1", broker="alpaca-paper", status="filled", quantity=1, price=190.0),
+        _hist("ord-1", broker="binance", symbol="BTCUSDT", status="filled", quantity=1, price=190.0),
+    ]
+    _install_history(monkeypatch, rows)
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper"))
+    res = _run(_aim(deps).execute())
+    assert [r["order_id"] for r in res.data["rows"]].count("ord-1") == 2
+
+
 def test_broker_filter_restricts_history_rows(monkeypatch):
     rows = [
         _hist("h-alpaca", broker="alpaca-paper", status="filled"),

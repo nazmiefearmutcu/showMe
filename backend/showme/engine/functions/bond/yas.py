@@ -60,7 +60,8 @@ def _ytm_macaulay_modified_duration(face: float, price: float, coupon: float,
         the (1+y)^(k+2) discounting was already per-period but the freq
         scaling at the end double-counted.
       H14: convexity normalization stays inside the formula (no extra
-        0.5 scaling). 30y 4% bond convexity → ~200, not ~700.
+        0.5 scaling). 30y 4% quarterly par bond convexity is ~421 years^2
+        (annual-yield convention), not the inflated ~700.
     """
     c = coupon / freq
     # Initial guess: coupon yield if reasonable, else 5%.
@@ -97,9 +98,9 @@ def _ytm_macaulay_modified_duration(face: float, price: float, coupon: float,
     modified = macaulay / (1 + ytm / freq)
     # H13+H14: convexity. Per-period cashflow PV weighted by k*(k+1), then
     # discounted by an extra (1+y)^2 (i.e. k+2 in the denominator), then
-    # normalized by PV. Final freq^2 makes the result an annualized
-    # second-derivative; the 30y 4% bond now yields convexity ≈ 200 instead
-    # of the inflated ~700.
+    # normalized by PV. Final freq^2 makes the result (1/P) d²P/dy² in
+    # years^2 for an annual yield; the 30y 4% quarterly par bond gives
+    # ≈ 421 (checked by finite difference), not the inflated ~700.
     convexity = sum(k * (k + 1) * c * face / (1 + y) ** (k + 2)
                     for k in range(1, n_periods + 1))
     convexity += n_periods * (n_periods + 1) * face / (1 + y) ** (n_periods + 2)
@@ -120,6 +121,39 @@ def _single_cashflow_metrics(face: float, price: float, coupon: float, years: fl
     growth = 1 + ytm * years
     return {"ytm": ytm, "macaulay_duration": years,
             "modified_duration": years / growth, "convexity": 2 * years * years / (growth * growth)}
+
+
+_AMBIGUOUS_RATE_LOW = 0.2  # matches portfolio/greeks _MAX_PLAIN_DECIMAL_RATE (XCON-2)
+
+
+def _ambiguous_rate(value: Any, assume_decimal: bool) -> bool:
+    """True for a caller rate in (0.2, 1] with no stated unit: percent or decimal?"""
+    if assume_decimal or value in (None, ""):
+        return False
+    try:
+        number = abs(float(value))
+    except (TypeError, ValueError):
+        return False
+    return _AMBIGUOUS_RATE_LOW < number <= 1.0
+
+
+def _plain_decimal_note(name: str, value: Any, assume_decimal: bool) -> str | None:
+    """Warning for a rate in (0, 0.2] with no stated unit (XCON-2, sub-0.2 part).
+
+    Such a value is priced as a decimal (0.04 = 4% is the documented form), but a
+    user who typed a percent (0.1 meaning 0.1%) would get 10% priced. Say which
+    reading was used. Values above 0.2 are refused or read as percent elsewhere.
+    """
+    if assume_decimal or value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0 < abs(number) <= _AMBIGUOUS_RATE_LOW:
+        return None
+    return (f"{name} {number:g} was read as a decimal and priced at {number * 100:g}%; "
+            f"if you meant {number:g}%, pass {name}={number / 100:g} with assume_decimal=true.")
 
 
 def _rate_decimal(value: Any, fallback: float, *,
@@ -172,6 +206,15 @@ def generic_treasury(symbol: str) -> tuple[str, float] | None:
     return series, (n / 12.0 if match.group(2) == "M" else n)
 
 
+def _benchmark_series(name: str) -> str | None:
+    """FRED CMT series for a named US benchmark (``UST2Y``/``US2Y``); ``None`` when none is live."""
+    key = str(name).strip().upper()
+    if key.startswith("UST"):
+        key = "US" + key[3:]
+    generic = generic_treasury(key)
+    return generic[0] if generic else None
+
+
 @FunctionRegistry.register
 class YASFunction(BaseFunction):
     code = "YAS"
@@ -221,16 +264,37 @@ class YASFunction(BaseFunction):
         coupon_raw = _first_param(params, "coupon")
         maturity = _first_param(params, "maturity_years", "years_to_maturity", "years")
         bench_raw = _first_param(params, "benchmark_rate", "benchmark", "ust10y")
-        try:
-            float(bench_raw) if bench_raw is not None else None
-        except (TypeError, ValueError):
-            bench_raw = None  # a name such as "UST10Y" selects the live 10Y benchmark
+        bench_name: str | None = None
+        if bench_raw is not None:
+            try:
+                float(bench_raw)
+            except (TypeError, ValueError):
+                bench_name = str(bench_raw)  # a name such as "UST10Y" or "DBR10Y"
+                bench_raw = None
+        # XCON-2: a rate in (0.2, 1] is ambiguous (0.5 is 0.5% or 50%). Refuse it with an
+        # explicit state unless the caller states the unit with assume_decimal.
+        user_assume = bool(params.get("assume_decimal", False))
+        for rate_name, rate_value in (("coupon", coupon_raw), ("benchmark", bench_raw)):
+            if _ambiguous_rate(rate_value, user_assume):
+                value = float(rate_value)
+                return FunctionResult(
+                    code=self.code, instrument=instrument,
+                    data={"status": "input_error",
+                          "reason": (f"{rate_name} {value:g} is ambiguous: as a percent it is {value:g}%, "
+                                     f"as a decimal it is {value * 100:g}%. Enter a percent above 1 "
+                                     f"(e.g. 4.25) or the decimal with assume_decimal=true (e.g. 0.005)."),
+                          "next_actions": [f"Restate the {rate_name} as a percent above 1, or pass the "
+                                           "decimal with assume_decimal=true."],
+                          "rows": []},
+                    warnings=[f"{rate_name} {value:g} is ambiguous; not priced"],
+                )
 
         sources: list[str] = []
         warnings: list[str] = []
         metadata: dict[str, Any] = {}
         generic = generic_treasury(symbol)
         cmt_date = None
+        cmt_used = False  # the bond's terms came from a live FRED CMT yield
         if generic and (price is None or coupon_raw is None or maturity is None):
             series_id, tenor_years = generic
             cmt = await self._cmt(series_id, timeout)
@@ -245,6 +309,7 @@ class YASFunction(BaseFunction):
                 )
             par_yield, cmt_date = cmt
             sources.append("fred")
+            cmt_used = True
             metadata.update({"cmt_series": series_id, "cmt_date": cmt_date,
                              "construction": "par bond at the constant-maturity yield"})
             # Quotes are per 100 of face: a par bond is priced at 100, whatever face is.
@@ -269,6 +334,9 @@ class YASFunction(BaseFunction):
         # price in currency units (price per 100 x face / 100), not with the per-100 quote.
         price_amount = price * face / 100.0
         coupon = _rate_decimal(coupon_raw, 0.0, assume_decimal=assume_dec)
+        coupon_note = _plain_decimal_note("coupon", coupon_raw, assume_dec)
+        if coupon_note:
+            warnings.append(coupon_note)
         maturity_years = float(maturity)
         if maturity_years * freq < 1 and "n_periods" not in params:
             # Shorter than one coupon period (US1M/US3M bills): a single cash
@@ -282,19 +350,74 @@ class YASFunction(BaseFunction):
         if not sources:
             sources.append("yield_spread_model")
 
+        # YAS#2: every benchmark states what it is, so the pane never shows a bare "BENCH x%".
         benchmark = None
+        bench_series: str | None = None
+        # The analytics (YTM, duration, convexity) stand without the benchmark; when the
+        # spread cannot be reported, the result says so as an explicit partial state.
+        benchmark_gap: dict[str, Any] = {}
         if bench_raw is not None:
             benchmark = _rate_decimal(bench_raw, 0.0, assume_decimal=bool(params.get("assume_decimal", False)))
+            bench_note = _plain_decimal_note("benchmark", bench_raw, bool(params.get("assume_decimal", False)))
+            if bench_note:
+                warnings.append(bench_note)
             metadata["benchmark"] = "input"
+            bench_label = "custom rate"
+        elif bench_name is not None:
+            # A named benchmark is the series it names, never a silent US 10Y substitute.
+            metadata["benchmark_requested"] = bench_name
+            series = _benchmark_series(bench_name)
+            if series is None:
+                metadata["benchmark"] = None
+                bench_label = f"{bench_name} · no live series"
+                benchmark_gap = {
+                    "status": "partial",
+                    "reason": (f"Benchmark {bench_name} has no live series in this build; the spread is not "
+                               "reported (no US 10Y substitute is used)."),
+                    "next_actions": ["Use a UST tenor (UST2Y, UST5Y, UST10Y or UST30Y) for a live spread, "
+                                     "or enter the benchmark as a numeric rate."],
+                }
+                warnings.append(
+                    f"Benchmark {bench_name} has no live series in this build; the spread is not "
+                    "reported (no US 10Y substitute is used)."
+                )
+            else:
+                bench = await self._cmt(series, timeout)
+                bench_label = f"{bench_name.upper()} · FRED {series}"
+                if bench is None:
+                    metadata["benchmark"] = None
+                    bench_label += " unavailable"
+                    benchmark_gap = {
+                        "status": "partial",
+                        "reason": f"FRED {series} ({bench_name}) benchmark unavailable; the spread is not reported.",
+                        "next_actions": ["Retry later, or enter the benchmark as a numeric rate."],
+                    }
+                    warnings.append(f"FRED {series} ({bench_name}) benchmark unavailable; the spread is not reported.")
+                else:
+                    benchmark = bench[0]
+                    bench_series = series
+                    metadata.update({"benchmark": series, "benchmark_date": bench[1]})
+                    if "fred" not in sources:
+                        sources.append("fred")
         else:
+            # No benchmark named: the 10Y CMT is used, and the label says it is the default.
             bench = await self._cmt(_BENCHMARK_SERIES, timeout)
+            bench_label = f"UST10Y (default) · FRED {_BENCHMARK_SERIES}"
             if bench is None:
+                bench_label += " unavailable"
+                benchmark_gap = {
+                    "status": "partial",
+                    "reason": "Live 10Y benchmark (FRED DGS10) unavailable; the spread is not reported.",
+                    "next_actions": ["Retry later, or enter the benchmark as a numeric rate or a UST tenor."],
+                }
                 warnings.append("Live 10Y benchmark (FRED DGS10) unavailable; the spread is not reported.")
             else:
                 benchmark = bench[0]
+                bench_series = _BENCHMARK_SERIES
                 metadata.update({"benchmark": _BENCHMARK_SERIES, "benchmark_date": bench[1]})
                 if "fred" not in sources:
                     sources.append("fred")
+        metadata["benchmark_label"] = bench_label
         spread = metrics["ytm"] - benchmark if benchmark is not None else None
         curve = []
         for offset_bps in [-100, -50, -25, 0, 25, 50, 100]:
@@ -312,13 +435,19 @@ class YASFunction(BaseFunction):
              "spread_bps": None if spread is None else spread * 10_000, "unit": "decimal"},
             {"metric": "macaulay_duration", "value": metrics["macaulay_duration"], "unit": "years"},
             {"metric": "modified_duration", "value": metrics["modified_duration"], "unit": "years"},
-            {"metric": "convexity", "value": metrics["convexity"], "unit": "price convexity"},
+            {"metric": "convexity", "value": metrics["convexity"], "unit": "years^2"},
         ]
+        # YAS#5: the mode follows the data path. A bond built from a live CMT
+        # yield is modeled; one priced from user-supplied terms is user_input.
+        data_mode = "modeled" if cmt_used else "user_input"
+        metadata["data_mode"] = data_mode
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
                 "rows": rows,
+                **benchmark_gap,
                 "curve": curve,
+                "data_mode": data_mode,
                 "summary": {
                     "bond": symbol,
                     "price": price,
@@ -330,6 +459,8 @@ class YASFunction(BaseFunction):
                     "frequency": freq,
                     "benchmark_rate": benchmark,
                     "benchmark_pct": None if benchmark is None else benchmark * 100,
+                    "benchmark_label": bench_label,
+                    "benchmark_series": bench_series,
                     "ytm": metrics["ytm"],
                     "ytm_pct": metrics["ytm"] * 100,
                     "spread_vs_benchmark": spread,
@@ -341,7 +472,8 @@ class YASFunction(BaseFunction):
                     "constant-maturity yield for that tenor; other bonds need price, coupon and maturity. "
                     "YAS solves yield-to-maturity with Newton iteration (bisection fallback), then computes "
                     "Macaulay duration, modified duration, convexity, and the spread versus the live 10Y CMT "
-                    "benchmark (or a supplied one). Coupon and benchmark inputs accept decimals (0.0425) or "
+                    "benchmark by default, a named UST tenor's live CMT (UST2Y, UST5Y, UST10Y, UST30Y), or a supplied "
+                    "rate; a named benchmark with no live series reports no spread. Coupon and benchmark inputs accept decimals (0.0425) or "
                     "percentages (4.25); frequency is coupon payments per year."
                 ),
                 "field_dictionary": {
@@ -349,7 +481,8 @@ class YASFunction(BaseFunction):
                     "spread_vs_benchmark": "YTM minus benchmark rate (null when no benchmark is available).",
                     "spread_bps": "Spread versus benchmark in basis points.",
                     "modified_duration": "Approximate percent price sensitivity to a 100 bp yield move.",
-                    "convexity": "Second-order price sensitivity to yield changes.",
+                    "convexity": "Second-order yield sensitivity (1/P)·d²P/dy² for an annual yield, in years^2 (about 421 for a 30y 4% quarterly par bond).",
+                    "data_mode": "modeled when the bond is a par bond at a live FRED constant-maturity yield; user_input when price, coupon and maturity were supplied.",
                     "ytm_pct": "Yield used on the sensitivity-curve x-axis.",
                     "price": "Observed or model price per 100 face (100 for a par CMT bond).",
                     "as_of": "Observation date of the constant-maturity yield, when used.",

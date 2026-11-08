@@ -232,3 +232,45 @@ describe("EMSX pane — live success state (F9/H)", () => {
     expect(container.textContent).not.toContain("· paper");
   });
 });
+
+describe("EMSX pane — input_error is never a ready preview (EMSX#1 follow-up)", () => {
+  function inputErrorPayload() {
+    return {
+      data: {
+        status: "input_error",
+        reason: "side must be BUY or SELL; got HOLD",
+        field: "side",
+        broker: "paper",
+        submit: false,
+        symbol: "AAPL",
+        asset_class: "EQUITY",
+        side: "HOLD",
+        quantity: 5,
+        order_type: "LIMIT",
+        time_in_force: "DAY",
+        tif: "DAY",
+        price: null,
+        leverage: null,
+        next_actions: [
+          "Correct the side field in the ticket controls and preview again.",
+          "Nothing was sent to a broker.",
+        ],
+      },
+      sources: ["paper_ticket"],
+      elapsed_ms: 2,
+      warnings: [],
+    };
+  }
+
+  it("shows an input error and does not echo the invalid ticket as a preview", async () => {
+    runFunctionMock.mockResolvedValue(inputErrorPayload());
+    render(<EMSXPane code="EMSX" symbol="AAPL" />);
+    fillTicket();
+    fireEvent.click(screen.getByTitle(/paper-broker preview/));
+    await screen.findByText("Input error");
+    expect(screen.getByText("side must be BUY or SELL; got HOLD")).toBeInTheDocument();
+    expect(screen.queryByText("HOLD")).not.toBeInTheDocument();
+    expect(screen.queryByText("Symbol")).not.toBeInTheDocument();
+    expect(screen.queryByText("Price")).not.toBeInTheDocument();
+  });
+});

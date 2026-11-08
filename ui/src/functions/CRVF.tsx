@@ -11,7 +11,8 @@
  * an inline notice with the backend's reason. A non-US country returns an
  * explicit unavailable state, never the US levels under another label.
  * The tenor chips send the `tenors` filter; with none picked the full curve
- * comes back.
+ * comes back. The country select sends `country` for non-US choices, and the
+ * Live FRED switch sends `live_curve=false` to request the labelled model curve.
  */
 import { useMemo, useState, type CSSProperties } from "react";
 import {
@@ -66,15 +67,25 @@ const PAD = { top: 12, right: 14, bottom: 26, left: 38 };
 
 // Mirrors the CRVF manifest `tenors` options (backend crvf_seed.py).
 const TENOR_OPTIONS = ["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"];
+// Mirrors the CRVF manifest `country` options (backend crvf_seed.py). Only US has a
+// curve; other countries return the backend's explicit unavailable state.
+const COUNTRY_OPTIONS = ["US", "DE", "JP", "GB", "FR", "IT", "ES", "AU", "CA", "TR"];
 
 export function CRVFPane({ code, symbol }: FunctionPaneProps) {
   const effectiveSymbol =
     symbol || defaultSymbolForFunction(code, ["EQUITY", "BOND"]);
   const [tenorPick, setTenorPick] = useState<string[]>([]);
-  const requestParams = useMemo(
-    () => (tenorPick.length ? { tenors: tenorPick } : undefined),
-    [tenorPick],
-  );
+  const [country, setCountry] = useState("US");
+  const [live, setLive] = useState(true);
+  // Defaults send no params: the backend serves the US live curve. Only the
+  // non-default choices are sent.
+  const requestParams = useMemo(() => {
+    const params: Record<string, unknown> = {};
+    if (country !== "US") params.country = country;
+    if (!live) params.live_curve = false;
+    if (tenorPick.length) params.tenors = tenorPick;
+    return Object.keys(params).length ? params : undefined;
+  }, [country, live, tenorPick]);
   const toggleTenor = (tenor: string) => {
     setTenorPick((prev) => {
       const next = new Set(prev);
@@ -304,6 +315,32 @@ export function CRVFPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <div role="group" aria-label="Curve controls" style={tenorBarStyle}>
+          <label style={tenorChipStyle}>
+            Country{" "}
+            <select
+              aria-label="Country"
+              value={country}
+              onChange={(e) => setCountry(e.target.value)}
+              style={selectStyle}
+            >
+              {COUNTRY_OPTIONS.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            aria-pressed={live}
+            onClick={() => setLive((v) => !v)}
+            style={live ? tenorChipOnStyle : tenorChipStyle}
+            title="On: FRED live US curve. Off: the labelled computed-model curve (not live)."
+          >
+            Live FRED
+          </button>
+        </div>
         <div role="group" aria-label="Tenor filter" style={tenorBarStyle}>
           {TENOR_OPTIONS.map((t) => {
             const on = tenorPick.includes(t);
@@ -533,6 +570,16 @@ const tenorChipOnStyle: CSSProperties = {
   ...tenorChipStyle,
   borderColor: "var(--accent)",
   color: "var(--accent)",
+};
+
+const selectStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-2xs)",
+  background: "transparent",
+  color: "var(--text-primary)",
+  border: "1px solid var(--text-mute)",
+  borderRadius: 4,
+  padding: "1px 4px",
 };
 
 const kpiGridStyle: CSSProperties = {

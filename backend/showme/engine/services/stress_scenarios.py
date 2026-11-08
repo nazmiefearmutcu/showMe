@@ -215,6 +215,26 @@ def custom_scenario(
     )
 
 
+# Yahoo Finance sector labels mapped to the GICS-style keys used by
+# ``StressScenario.sector_shocks``. Names already in the scenario taxonomy pass through.
+_YAHOO_TO_SCENARIO_SECTOR: dict[str, str] = {
+    "Technology": "Information Technology",
+    "Financial Services": "Financials",
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Healthcare": "Health Care",
+    "Basic Materials": "Materials",
+}
+
+
+def normalize_sector(sector: Any) -> str | None:
+    """A position's sector in the scenario taxonomy, or ``None`` when unknown."""
+    name = str(sector or "").strip()
+    if not name:
+        return None
+    return _YAHOO_TO_SCENARIO_SECTOR.get(name, name)
+
+
 def resolve_shock_bucket(symbol: str, asset_class: str) -> str:
     """Asset-class bucket a position is shocked under.
 
@@ -284,8 +304,13 @@ def apply_scenario(
     unpriced = 0
     for p in positions:
         sym = p["symbol"]
+        missing_class: str | None = None
         ac = resolve_shock_bucket(sym, p.get("asset_class", "EQUITY"))
-        sector = p.get("sector") or sector_lookup.get(sym)
+        raw_sector = p.get("sector") or sector_lookup.get(sym)
+        # STRS#2: the shock lookup matches the normalized scenario key, but the row keeps
+        # the label the provider actually returned so the two are never confused.
+        sector = normalize_sector(raw_sector)
+        provider_label = str(raw_sector).strip() if raw_sector and str(raw_sector).strip() else None
         mv = float(p.get("market_value", 0) or 0)
         if measured is not None and ac == "BOND" and str(sym).upper() in BOND_ETF_SYMBOLS:
             shock: float | None = measured.get(sym)
@@ -295,17 +320,54 @@ def apply_scenario(
             shock = scenario.symbol_shocks.get(sym)
             if shock is None and sector:
                 shock = scenario.sector_shocks.get(sector)
-            if shock is None:
-                shock = scenario.asset_class_shocks.get(ac, 0.0)
             source = "hand_set"
+            if shock is None and ac == "BOND" and str(sym).upper() in BOND_ETF_SYMBOLS \
+                    and "BOND" not in scenario.asset_class_shocks:
+                # A Treasury/aggregate fund with no BOND row in this scenario must
+                # neither take the equity-style ETF/FUND shock nor a silent 0.0.
+                shock = None
+                source = "unavailable"
+            elif shock is None:
+                if sector and scenario.sector_shocks and sector not in scenario.sector_shocks:
+                    # Known sector, no row for it in this scenario: the asset-class
+                    # shock is used, and that is reported.
+                    warnings.append(
+                        f"{sym}: sector {sector} has no shock in {scenario.name}; "
+                        f"asset-class shock {ac} used"
+                    )
+                elif sector is None and ac == "EQUITY" and scenario.sector_shocks:
+                    # STRS#2: no sector at all (lookup failed, unavailable or unreported)
+                    # on a path where a sector shock would apply. Never silent.
+                    warnings.append(
+                        f"{sym}: sector unknown; asset-class shock {ac} used, not a sector shock"
+                    )
+                if ac in scenario.asset_class_shocks:
+                    shock = scenario.asset_class_shocks[ac]
+                elif ac == "CASH":
+                    # Cash has no market move in any scenario: a real zero.
+                    shock = 0.0
+                    source = "cash"
+                else:
+                    # STRS#3-RQ: an asset class the scenario has no row for is not
+                    # a silent 0.0 move; it is left unshocked and reported.
+                    shock = None
+                    source = "unavailable"
+                    missing_class = ac
         if shock is None:
             unpriced += 1
-            warnings.append(
-                f"{sym}: measured window return unavailable for {scenario.name}; "
-                "position left unshocked (not estimated)"
-            )
+            if missing_class is not None:
+                reason = f"{sym}: scenario {scenario.name} has no shock for asset class {missing_class}"
+            elif source == "unavailable" and measured is None:
+                reason = (
+                    f"{sym}: scenario {scenario.name} has no BOND shock, so the Treasury "
+                    "fund shock is unavailable"
+                )
+            else:
+                reason = f"{sym}: measured window return unavailable for {scenario.name}"
+            warnings.append(f"{reason}; position left unshocked (not estimated)")
             rows.append({
                 "symbol": sym, "asset_class": ac, "sector": sector,
+                "sector_provider_label": provider_label,
                 "shock": None, "shock_unfloored": None, "floored": False,
                 "shock_source": source,
                 "market_value_pre": mv,
@@ -328,6 +390,7 @@ def apply_scenario(
         mv_post = mv * (1.0 + shock)
         rows.append({
             "symbol": sym, "asset_class": ac, "sector": sector,
+            "sector_provider_label": provider_label,
             "shock": shock, "shock_unfloored": raw_shock, "floored": floored,
             "shock_source": source,
             "market_value_pre": mv,

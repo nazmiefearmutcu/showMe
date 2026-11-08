@@ -8,6 +8,7 @@
  * zoom, drag pan, dblclick fit, keyboard), and theme integration (palette
  * resolved from the live CSS variables — every theme works).
  */
+import { foldSearchText } from "@/lib/search-fold";
 import {
   useCallback,
   useEffect,
@@ -47,6 +48,7 @@ import {
   saveAlertStore,
 } from "./chart-alerts";
 import type { AlertFireState, AlertRule } from "./chart-alerts";
+import { lastBarObservedIso } from "./chart-asof";
 import { clearLayout, loadLayout, saveLayout } from "./chart-layout";
 import type {
   Bar,
@@ -116,6 +118,11 @@ export interface ChartProps {
    * daily-studies pane (CHGS) for the same symbol. Omit for unscoped keys.
    */
   layoutScope?: string;
+  /**
+   * GP#5: reports the effective timeframe (restored, default or user pick) so a
+   * host pane can request and label the same timeframe the chart shows.
+   */
+  onIntervalChange?: (interval: string) => void;
   /** Auto-refresh cadence; 0 disables. Defaults to 30s. */
   refreshMs?: number;
   /** Multi-symbol compare overlay (percent-normalized lines). Default []. */
@@ -140,6 +147,7 @@ export function Chart({
   initialInterval = DEFAULT_TF,
   initialType = "candles",
   layoutScope,
+  onIntervalChange,
   refreshMs = 30_000,
   compareSymbols = [],
   className,
@@ -165,6 +173,12 @@ export function Chart({
   const [restored] = useState(() => loadLayout(symbol, undefined, layoutScope));
 
   const [interval, setInterval] = useState(restored?.interval ?? initialInterval);
+  // GP#5: the host hears the effective timeframe on mount and on every change.
+  const onIntervalChangeRef = useRef(onIntervalChange);
+  onIntervalChangeRef.current = onIntervalChange;
+  useEffect(() => {
+    onIntervalChangeRef.current?.(interval);
+  }, [interval]);
   const [chartType, setChartType] = useState<ChartType>(restored?.chartType ?? initialType);
   const [bars, setBars] = useState<Bar[]>([]);
   const [source, setSource] = useState("");
@@ -447,7 +461,8 @@ export function Chart({
         barsRef.current = next;
         setSource(res.source ?? "");
         setReason(res.reason ?? null);
-        setAsOf(res.asOf ?? null);
+        // The envelope asOf is the serve time; the legend shows the newest bar's time.
+        setAsOf(lastBarObservedIso(next));
         setFetchError(null);
         if (
           next.length === 0 &&
@@ -1058,10 +1073,10 @@ export function Chart({
     setAlertRules((prev) => prev.filter((r) => r.id !== id));
 
   const pickerResults = useMemo(() => {
-    const q = pickerQuery.trim().toLowerCase();
+    const q = foldSearchText(pickerQuery.trim());
     const list = q
       ? INDICATORS.filter(
-          (d) => d.name.toLowerCase().includes(q) || d.category.toLowerCase().includes(q),
+          (d) => foldSearchText(d.name).includes(q) || foldSearchText(d.category).includes(q),
         )
       : INDICATORS;
     const byCat = new Map<string, IndicatorDef[]>();

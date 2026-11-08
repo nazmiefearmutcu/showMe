@@ -53,6 +53,38 @@ class HDSFunction(BaseFunction):
                 sources=[],
                 metadata={"live": False},
             )
+        holder_type = str(params.get("holder_type") or "all").strip().lower()
+        if holder_type not in HOLDER_TYPE_FILTERS:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "rows": [],
+                    "reason": f"Unknown holder_type {holder_type!r}.",
+                    "next_actions": [f"Use one of: {', '.join(HOLDER_TYPE_FILTERS)}."],
+                    "field_dictionary": FIELD_DICTIONARIES["holders"],
+                },
+                sources=[],
+                metadata={"live": False},
+            )
+        if holder_type == "insider":
+            # No provider wired into HDS returns insider holder rows, so the
+            # filter is reported as unavailable instead of falling back to all rows.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "rows": [],
+                    "holder_type_filter": holder_type,
+                    "reason": "No HDS provider supplies insider holder rows. Yahoo institutional and mutual-fund tables and local SEC 13F data are the holder sources.",
+                    "next_actions": ["Choose holder_type all, institutional or mutual_fund."],
+                    "field_dictionary": FIELD_DICTIONARIES["holders"],
+                },
+                sources=[],
+                metadata={"live": False},
+            )
         warnings: list[str] = []
         sources: list[str] = []
         yahoo: dict[str, Any] = {}
@@ -69,7 +101,7 @@ class HDSFunction(BaseFunction):
                     yahoo = {}
                 sources.append("yfinance")
         except Exception as e:
-            warnings.append(f"yfinance: {e}")
+            warnings.append(f"yfinance: {str(e) or type(e).__name__}")
         # Then enrich with the SEC 13F aggregate for the issuer (DuckDB-cached).
         # 13F rows carry the issuer name, not the ticker, so the ticker is first
         # resolved to its SEC filer name and matched on the normalized name.
@@ -92,11 +124,15 @@ class HDSFunction(BaseFunction):
                     sec_top = top.to_dict(orient="records")
                     sources.append("sec_13f")
             except Exception as e:
-                warnings.append(f"sec_13f: {e}")
-        rows = _holder_rows(instrument.symbol, sec_top, yahoo)
+                warnings.append(f"sec_13f: {str(e) or type(e).__name__}")
+        all_rows = _holder_rows(instrument.symbol, sec_top, yahoo)
+        rows = _filter_holder_type(all_rows, holder_type)
         summary = _major_summary(yahoo.get("major"))
         if rows:
             status, reason = "ok", None
+        elif all_rows:
+            status = "empty"
+            reason = f"Holder rows exist for {instrument.symbol} but none match holder_type={holder_type}."
         elif sources:
             status = "empty"
             reason = f"Holder providers answered for {instrument.symbol} but returned no holder rows."
@@ -108,7 +144,8 @@ class HDSFunction(BaseFunction):
         payload: dict[str, Any] = {
             "status": status,
             "rows": rows,
-            "methodology": "HDS shows holder rows from Yahoo institutional / mutual-fund holder tables and local SEC 13F data. Yahoo major-holder percentages are a summary block, not holder rows.",
+            "holder_type_filter": holder_type,
+            "methodology": "HDS shows one holder source per table: Yahoo institutional / mutual-fund holder tables when they return rows (pct_outstanding from pctHeld), otherwise the local SEC 13F aggregate (CIK-labelled, no pct). The 13F aggregate is always returned in sec_13f_top when present. Rows are restricted to holder_type. Yahoo major-holder percentages are a summary block, not holder rows.",
             "field_dictionary": FIELD_DICTIONARIES["holders"],
         }
         if reason:
@@ -127,6 +164,23 @@ class HDSFunction(BaseFunction):
                 "live": True,
             },
         )
+
+
+HOLDER_TYPE_FILTERS: tuple[str, ...] = ("all", "institutional", "insider", "mutual_fund")
+
+# Row holder_type values that each holder_type filter selects. 13F rows are
+# typed institutional_13f and count as institutional.
+_HOLDER_TYPE_MATCH: dict[str, frozenset[str]] = {
+    "institutional": frozenset({"institutional", "institutional_13f"}),
+    "mutual_fund": frozenset({"mutual_fund"}),
+}
+
+
+def _filter_holder_type(rows: list[dict[str, Any]], holder_type: str) -> list[dict[str, Any]]:
+    if holder_type == "all":
+        return rows
+    wanted = _HOLDER_TYPE_MATCH.get(holder_type, frozenset())
+    return [row for row in rows if row.get("holder_type") in wanted]
 
 
 def _truthy(value: Any) -> bool:
@@ -182,7 +236,28 @@ def _major_summary(frame: Any) -> dict[str, Any]:
     return out
 
 
+def _fraction_of_outstanding(value: Any) -> float | None:
+    """yfinance ``pctHeld`` is a fraction of shares outstanding (0.08 = 8%).
+
+    Only values inside [0, 1] are kept; anything else is reported as missing
+    rather than rescaled.
+    """
+    out = finite(value)
+    if out is None or out < 0 or out > 1:
+        return None
+    return out
+
+
 def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, Any]) -> list[dict[str, Any]]:
+    """Holder rows come from one source only, never a mix.
+
+    Yahoo holder tables win when they return rows, because only they carry
+    pctHeld (the % out basis). The local 13F aggregate is the row source when
+    Yahoo returns nothing; it is always returned separately as sec_13f_top.
+    """
+    yahoo_rows = _yahoo_holder_rows(symbol, yahoo)
+    if yahoo_rows:
+        return yahoo_rows
     if sec_top:
         rows = []
         for item in sec_top:
@@ -202,6 +277,10 @@ def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, An
                 "source_mode": "sec_13f",
             })
         return rows
+    return []
+
+
+def _yahoo_holder_rows(symbol: str, yahoo: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for key, holder_type in [("institutional", "institutional"), ("mutualfund", "mutual_fund")]:
         for item in frame_rows(yahoo.get(key), limit=25):
@@ -210,7 +289,9 @@ def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, An
                 "holder": item.get("Holder") or item.get("holder") or item.get("index") or holder_type,
                 "holder_type": holder_type,
                 "shares": finite(item.get("Shares") or item.get("shares")),
-                "pct_outstanding": finite(item.get("% Out") or item.get("pct_outstanding")),
+                "pct_outstanding": _fraction_of_outstanding(
+                    item.get("pctHeld", item.get("% Out", item.get("pct_outstanding")))
+                ),
                 "market_value": finite(item.get("Value") or item.get("value")),
                 "date_reported": item.get("Date Reported") or item.get("date_reported"),
                 "source_mode": "yfinance_holders",

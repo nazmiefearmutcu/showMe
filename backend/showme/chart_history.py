@@ -17,8 +17,10 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from io import StringIO
+import logging
 import math
 import os
+import re
 from typing import Any
 
 import httpx
@@ -26,6 +28,23 @@ import httpx
 from showme.crypto_aliases import split_crypto_symbol
 
 STOOQ_API_KEY_ENV = "STOOQ_API_KEY"
+
+_STOOQ_APIKEY_PARAM = re.compile(r"(apikey=)[^&\s\"'<>]+")
+
+
+class _RedactStooqApiKey(logging.Filter):
+    """httpx logs each request URL at INFO; blank the Stooq apikey query value (SEC-1)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "apikey=" in message and "stooq.com" in message:
+            record.msg = _STOOQ_APIKEY_PARAM.sub(r"\1[redacted]", message)
+            record.args = ()
+        return True
+
+
+if not any(isinstance(f, _RedactStooqApiKey) for f in logging.getLogger("httpx").filters):
+    logging.getLogger("httpx").addFilter(_RedactStooqApiKey())
 
 
 INTERVAL_SECONDS: dict[str, int] = {
@@ -396,7 +415,7 @@ async def fetch_binance_history(
                         },
                     )
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"{source}: {exc}")
+                warnings.append(f"{source}: {str(exc) or type(exc).__name__}")
     raise RuntimeError("; ".join(warnings) or f"no Binance history for {provider_symbol}")
 
 
@@ -607,20 +626,33 @@ async def fetch_stooq_history(
         "i": stooq_interval,
         "apikey": api_key,
     }
-    async with httpx.AsyncClient(
-        timeout=15,
-        headers={
-            "User-Agent": "Mozilla/5.0 showMe-chart/1.0",
-            "Accept": "text/csv,text/plain,*/*",
-        },
-        follow_redirects=True,
-    ) as client:
-        response = await client.get(
-            "https://stooq.com/q/d/l/",
-            params=params,
-        )
-        response.raise_for_status()
-        text = response.text or ""
+    # The API key travels in the query string, and httpx embeds the full
+    # request URL in its exception text. Re-raise without the URL or the
+    # exception chain so the key never reaches provider_errors, sources
+    # considered or warnings (SEC-1).
+    try:
+        async with httpx.AsyncClient(
+            timeout=15,
+            headers={
+                "User-Agent": "Mozilla/5.0 showMe-chart/1.0",
+                "Accept": "text/csv,text/plain,*/*",
+            },
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(
+                "https://stooq.com/q/d/l/",
+                params=params,
+            )
+            response.raise_for_status()
+            text = response.text or ""
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"stooq HTTP {exc.response.status_code} for {provider_symbol}"
+        ) from None
+    except httpx.HTTPError as exc:
+        raise RuntimeError(
+            f"stooq request failed for {provider_symbol}: {type(exc).__name__}"
+        ) from None
     head = text.lower()[:200]
     if not text or "apikey" in head or "no data" in head or len(text) < 30:
         raise RuntimeError(f"stooq returned no data for {provider_symbol}")

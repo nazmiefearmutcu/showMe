@@ -29,7 +29,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             factory = factory_mod.get_factory()
         except Exception as exc:  # noqa: BLE001
             LOG.exception("get_factory failed")
-            raise HTTPException(status_code=500, detail=f"factory: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"factory: {str(exc) or type(exc).__name__}") from exc
         body = payload or {}
         # Optional multi-turn history (G4 OPP wave): sanitized here so a
         # malformed body is dropped, never trusted. The pane persists its

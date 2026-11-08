@@ -80,6 +80,6 @@ class TreasuryDirectAdapter(ProviderAdapter):
             data = r.json()
         except Exception as exc:  # noqa: BLE001 — record-and-reraise
             self._record_failure(exc)
-            raise AdapterError(f"treasury_direct query failed: {exc}") from exc
+            raise AdapterError(f"treasury_direct query failed: {str(exc) or type(exc).__name__}") from exc
         self._record_success(int((time.monotonic() - started) * 1000))
         return data

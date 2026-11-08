@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -175,8 +176,31 @@ def normalize_function_contract(
     data = _attach_data_status(data, status, reason, next_action)
     payload["data"] = data
     payload["status"] = status
-    payload["asOf"] = payload.get("fetched_at") or _utcnow()
-    payload["inputEcho"] = _clean_input(params)
+    # asOf is the observation date of the data, never the compute time: a
+    # monthly CPI print must not read as current because it was served today.
+    # The retrieval time is kept separately as retrievedAt.
+    payload["retrievedAt"] = payload.get("fetched_at") or _utcnow()
+    payload["asOf"] = _observation_as_of(metadata, data, rows, _parse_observation(payload["retrievedAt"]))
+    echo = _clean_input(params)
+    # Keys the /api/fn route filled in (never sent by the caller) are reported
+    # as routeDefaults, not echoed as if the caller had asked for them.
+    route_defaults = params.get("__route_defaults")
+    if isinstance(route_defaults, (list, tuple)):
+        injected = {key: echo.pop(key) for key in route_defaults if key in echo}
+        if injected:
+            payload["routeDefaults"] = injected
+    payload["inputEcho"] = echo
+    # The router injects a default symbol when the caller chose none and flags
+    # it __explicit_symbol=False. That default must never be silent: say so in
+    # the envelope (defaultedInputs) and in the visible warnings (XCON-5).
+    if params.get("__explicit_symbol") is False and params.get("symbol"):
+        default_symbol = str(params["symbol"])
+        payload["defaultedInputs"] = {"symbol": default_symbol}
+        note = (f"No symbol was given, so this ran on the default symbol {default_symbol}; "
+                "pass symbol to choose the instrument.")
+        current = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+        if note not in current:
+            payload["warnings"] = [*current, note]
     payload["payload"] = _contract_payload(data)
     payload["rows"] = rows
     payload["series"] = series
@@ -481,7 +505,93 @@ def _clean_input(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _source_details(sources: list[Any], as_of: str, status: FnStatus) -> list[dict[str, Any]]:
+_OBSERVATION_KEYS = ("as_of", "asOf", "observation_date", "last_observation", "last_updated", "lastUpdated")
+_ROW_OBSERVATION_KEYS = ("as_of", "asOf", "observation_date", "date", "timestamp", "time")
+
+
+def _parse_observation(value: Any) -> datetime | None:
+    """A UTC datetime for an observation stamp (ISO text, datetime or epoch seconds)."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, bool):
+        return None
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    elif isinstance(value, (int, float)) and value > 0:
+        try:
+            parsed = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# A row stamp this close to the retrieval moment is the compute/serve time, not
+# an observation (producers stamp now() per row), so it is not used as asOf.
+_RETRIEVAL_MARGIN = timedelta(seconds=60)
+
+
+def _declared_observation_date(value: Any) -> datetime | None:
+    """A top-level or metadata as-of value, only when it is a plain observation date.
+
+    Producers routinely write ``datetime.now()`` into ``as_of``/``last_updated``
+    keys, so a full timestamp there cannot be told apart from the compute time.
+    Only a date-granular value (YYYY-MM-DD) is accepted as a declared observation.
+    """
+    if not isinstance(value, str) or not _DATE_ONLY.match(value.strip()):
+        return None
+    return _parse_observation(value.strip())
+
+
+def _observation_as_of(
+    metadata: dict[str, Any],
+    data: Any,
+    rows: list[dict] | None,
+    retrieved: datetime | None = None,
+) -> str | None:
+    """Latest observation date the payload declares, or None when it declares none.
+
+    Declared top-level and metadata keys count only when they are date-granular.
+    Row date-like fields count only when they are not in the future and not the
+    retrieval moment itself (future values are event dates; retrieval-moment values
+    are compute stamps). Falls back to None rather than the compute time.
+    """
+    if retrieved is None:
+        retrieved = datetime.now(timezone.utc)
+    latest_row_ok = retrieved - _RETRIEVAL_MARGIN
+    found: list[datetime] = []
+    for holder in (metadata, data if isinstance(data, dict) else None):
+        if not isinstance(holder, dict):
+            continue
+        for key in _OBSERVATION_KEYS:
+            parsed = _declared_observation_date(holder.get(key))
+            if parsed is not None:
+                found.append(parsed)
+                break
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        for key in _ROW_OBSERVATION_KEYS:
+            parsed = _parse_observation(row.get(key))
+            if parsed is not None and parsed <= latest_row_ok:
+                found.append(parsed)
+                break
+    if not found:
+        return None
+    return max(found).isoformat()
+
+
+def _source_details(sources: list[Any], as_of: str | None, status: FnStatus) -> list[dict[str, Any]]:
     if not sources:
         return [{"name": "none", "asOf": as_of, "status": "missing"}]
     source_status = "ok" if status == OK else status

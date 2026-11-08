@@ -56,6 +56,29 @@ const COMPARE_OPTIONS: { value: string; label: string; title: string }[] = [
 ];
 const COMPARE_IDS = COMPARE_OPTIONS.map((o) => o.value);
 
+// `date_range` and `transform` are the backend's exact params (ecst.py). Only the
+// non-default values go on the wire, so the default request stays unchanged.
+const RANGE_DEFAULT = "10Y";
+const RANGE_OPTIONS = [
+  { value: "1Y", label: "1Y", title: "Last 1 year" },
+  { value: "3Y", label: "3Y", title: "Last 3 years" },
+  { value: "5Y", label: "5Y", title: "Last 5 years" },
+  { value: "10Y", label: "10Y", title: "Last 10 years" },
+  { value: "20Y", label: "20Y", title: "Last 20 years" },
+  { value: "MAX", label: "MAX", title: "Full history" },
+] as const;
+const RANGE_IDS = RANGE_OPTIONS.map((o) => o.value);
+const TRANSFORM_LEVEL = "level";
+const TRANSFORM_OPTIONS = [
+  { value: TRANSFORM_LEVEL, label: "Level", title: "Series as published" },
+  {
+    value: "yoy",
+    label: "Y/Y %",
+    title: "Percent change vs the same date one year earlier",
+  },
+] as const;
+const TRANSFORM_IDS = TRANSFORM_OPTIONS.map((o) => o.value);
+
 interface EcstRow {
   date?: string;
   series_id?: string;
@@ -88,6 +111,7 @@ interface EcstPayload {
   compare_source_mode?: string;
   status?: string;
   reason?: string;
+  unhonoured_params?: string[];
 }
 
 export function ECSTPane({ code }: FunctionPaneProps) {
@@ -102,12 +126,25 @@ export function ECSTPane({ code }: FunctionPaneProps) {
     COMPARE_OFF,
   );
 
+  const [dateRange, setDateRange] = usePersistentOption<string>(
+    "showme.ecst.range",
+    RANGE_IDS,
+    RANGE_DEFAULT,
+  );
+  const [transform, setTransform] = usePersistentOption<string>(
+    "showme.ecst.transform",
+    TRANSFORM_IDS,
+    TRANSFORM_LEVEL,
+  );
+
   const params = useMemo(
     () => ({
       series_id: seriesId,
       ...(compareWith !== COMPARE_OFF ? { compare_with: compareWith } : {}),
+      ...(dateRange !== RANGE_DEFAULT ? { date_range: dateRange } : {}),
+      ...(transform !== TRANSFORM_LEVEL ? { transform } : {}),
     }),
-    [seriesId, compareWith],
+    [seriesId, compareWith, dateRange, transform],
   );
 
   const { state, data, error, refetch } = useFunction<EcstPayload>({
@@ -295,6 +332,20 @@ export function ECSTPane({ code }: FunctionPaneProps) {
                 onChange={(next) => setCompareWith(next)}
                 title="Compare with another series"
               />
+              <SegmentedControl
+                label="RANGE"
+                value={dateRange}
+                options={RANGE_OPTIONS}
+                onChange={(next) => setDateRange(next)}
+                title="Observation window"
+              />
+              <SegmentedControl
+                label="TRANSFORM"
+                value={transform}
+                options={TRANSFORM_OPTIONS}
+                onChange={(next) => setTransform(next)}
+                title="Level or year-over-year percent change"
+              />
               <LoadStatePill state={state} />
               <RefreshButton
                 loading={state === "loading"}
@@ -324,9 +375,15 @@ export function ECSTPane({ code }: FunctionPaneProps) {
             />
           ) : sortedRows.length === 0 ? (
             <Empty
-              title={unavailable ? "Series unavailable" : "No observations"}
+              title={
+                payload.status === "input_error"
+                  ? "Invalid request"
+                  : unavailable
+                    ? "Series unavailable"
+                    : "No observations"
+              }
               body={
-                unavailable
+                unavailable || payload.status === "input_error"
                   ? (payload.reason ?? `${seriesId} has no live source right now.`)
                   : `${seriesId} returned no rows.`
               }
@@ -338,6 +395,13 @@ export function ECSTPane({ code }: FunctionPaneProps) {
             />
           ) : (
             <div className="u-grid-gap-14">
+              {payload.unhonoured_params && payload.unhonoured_params.length > 0 ? (
+                <div role="note" aria-label="ECST request not applied" style={{ padding: 8, fontSize: "var(--font-size-sm)" }}>
+                  {payload.unhonoured_params.join(", ")} not applied: the keyless
+                  FRED source serves native frequency and latest vintage only.
+                  Showing {seriesId} at its native frequency ({frequency}).
+                </div>
+              ) : null}
               <KPIRibbon cards={cards} seriesId={seriesId} frequency={frequency} />
               {comparePairs.length >= 2 ? (
                 <CompareOverlay

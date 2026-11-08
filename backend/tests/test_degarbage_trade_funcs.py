@@ -212,10 +212,11 @@ def test_fxgo_default_board_live_or_graceful_real_network():
         assert first["bid"] > 0 and first["ask"] > 0
         assert first["ask"] >= first["bid"]
         # A quote older than the stale threshold must NOT be labelled live.
-        if data["cards"]["status"] == "stale":
-            assert data["data_mode"] == "delayed_reference"
-        else:
+        # FXGO#1-RQ: cards.status is "ok" only for a live board.
+        if data["cards"]["status"] == "ok":
             assert data["data_mode"] == "live_yfinance_quote"
+        else:
+            assert data["data_mode"] == "delayed_reference"
     else:
         # Offline / rate-limited: honest unavailable shape, no numbers.
         assert data["data_mode"] == "provider_unavailable"
@@ -270,6 +271,29 @@ def test_fxgo_partial_board_survival_is_labelled_degraded(monkeypatch):
     assert any("Board degraded" in w for w in (res.warnings or []))
     assert res.metadata["requested_count"] == 5
     assert res.metadata["row_count"] == 2
+
+
+def test_fxgo_partial_board_cards_status_is_not_ok(monkeypatch):
+    """FXGO#1-RQ: a degraded board (provider failures) must not be labelled
+    cards.status 'ok' just because the surviving rows are fresh."""
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    def half_failing(self, pair):
+        if pair.upper().startswith("EUR"):
+            return (
+                1.10,
+                None,
+                {"previous_close_date": None, "quote_time": _fresh_quote_time()},
+            )
+        raise RuntimeError("simulated 404")
+
+    monkeypatch.setattr(FXGOFunction, "_fetch_fx_spot", half_failing)
+    h = _mk_handler(FXGOFunction, deps=None)
+    res = _run(h.execute(pairs="EURUSD,GBPUSD"))
+    data = res.data
+    assert data["data_mode"] == "delayed_reference"
+    assert data["cards"]["data_mode"] == "delayed_reference"
+    assert data["cards"]["status"] != "ok", data["cards"]
 
 
 def test_fxgo_board_via_injected_spot(monkeypatch):

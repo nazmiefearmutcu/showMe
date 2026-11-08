@@ -161,13 +161,23 @@ describe("PVAR Position VaR pane", () => {
     expect(screen.getByTestId("portx-warning-strip")).toBeInTheDocument();
   });
 
-  it("switches the confidence control", () => {
+  it("starts at the 99% default and switches the confidence control", () => {
     ok(LIVE_PAYLOAD);
     render(<PositionVarPane code="PVAR" />);
-    const ninetyNine = screen.getByRole("button", { name: "99%" });
-    expect(ninetyNine).not.toBeDisabled();
-    fireEvent.click(ninetyNine);
+    // PVAR#2: the pane starts on the backend default (99%), not 95%.
     expect(screen.getByRole("button", { name: "99%" })).toBeDisabled();
+    const ninetyFive = screen.getByRole("button", { name: "95%" });
+    expect(ninetyFive).not.toBeDisabled();
+    fireEvent.click(ninetyFive);
+    expect(screen.getByRole("button", { name: "95%" })).toBeDisabled();
+  });
+
+  it("starts on the manifest default method (historical), not parametric", () => {
+    ok(LIVE_PAYLOAD);
+    render(<PositionVarPane code="PVAR" />);
+    // PVAR#2-RQ: pvar_seed defaults method="historical"; the pane must preselect the same.
+    expect(screen.getByRole("button", { name: "historical" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "parametric" })).not.toBeDisabled();
   });
 });
 

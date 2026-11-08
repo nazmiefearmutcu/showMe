@@ -246,7 +246,7 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
       out.push({
         label: "Interest coverage",
         value: formatRatio(summary.interest_coverage_x),
-        caption: "EBITDA ÷ interest expense",
+        caption: "EBIT ÷ interest expense",
         tone: coverageTone(summary.interest_coverage_x),
       });
       out.push({

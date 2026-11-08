@@ -1,8 +1,10 @@
-"""PFA — Portfolio Factor Analysis.
+"""PFA — Performance Attribution (Brinson-Hood-Beebower).
 
-Decompose portfolio returns through a chosen factor model (CAPM, Fama-
-French 3F, or Fama-French + momentum 5F) and report per-factor loadings,
-contributions, and the residual alpha.
+Sector-level decomposition of portfolio active return into allocation,
+selection and interaction effects. The handler (``portfolio/pfa.py``) computes
+on the four sector maps the caller supplies; it does not fetch market data and
+does not run a factor regression (that is a different analysis and is not
+offered under this code).
 """
 from __future__ import annotations
 
@@ -37,12 +39,12 @@ from ..spec import (
 def pfa() -> FunctionManifest:
     return FunctionManifest(
         code="PFA",
-        name="Portfolio Factor Analysis",
+        name="Performance Attribution (Brinson)",
         category=Category.PORTFOLIO,
         intent=(
-            "Decompose realized portfolio returns through a chosen factor "
-            "model (CAPM / FF3 / FF5+Mom), reporting per-factor loadings, "
-            "contribution to return, residual alpha, and R²."
+            "Attribute a portfolio's active return against a benchmark, sector by sector, "
+            "into allocation, selection and interaction effects, from the portfolio and "
+            "benchmark weights and sector returns the user supplies."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -51,94 +53,58 @@ def pfa() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="portfolio_source",
-                label="Portfolio source",
-                control=ControlKind.SELECT,
-                required=True,
-                description="PORT (live broker positions) or custom basket.",
-                options=["port", "custom"],
-            ),
-            InputSpec(
-                name="positions",
-                label="Custom positions",
+                name="port_weights",
+                label="Portfolio weights",
                 control=ControlKind.CONSTRAINT_SET,
-                required=False,
-                description="When portfolio_source=custom.",
-                depends_on=["portfolio_source"],
-            ),
-            InputSpec(
-                name="factor_model",
-                label="Factor model",
-                control=ControlKind.SELECT,
                 required=True,
-                description="Which factor set to regress against.",
-                options=["capm", "ff3", "ff5", "ff5_mom", "carhart_4"],
+                description=(
+                    "Sector to portfolio weight as a decimal fraction (0.45 for 45%), summing to 1.0 within 1e-4. "
+                    "A percent-scale map (summing to 100) is rejected as input_error. The PFA editor takes percent "
+                    "and divides by 100 before sending. Required: the attribution does not infer weights."
+                ),
             ),
             InputSpec(
-                name="window",
-                label="Lookback",
-                control=ControlKind.SELECT,
+                name="port_returns",
+                label="Portfolio sector returns",
+                control=ControlKind.CONSTRAINT_SET,
                 required=True,
-                description="Regression window.",
-                options=["1Y", "2Y", "3Y", "5Y", "10Y"],
+                description=(
+                    "Sector to total return, as decimals, for every sector in either weight map. "
+                    "A missing return is rejected, never read as 0%."
+                ),
             ),
             InputSpec(
-                name="frequency",
-                label="Frequency",
-                control=ControlKind.SELECT,
+                name="bench_weights",
+                label="Benchmark weights",
+                control=ControlKind.CONSTRAINT_SET,
                 required=True,
-                description="Return sampling cadence.",
-                options=["1d", "1wk", "1mo"],
+                description="Sector to benchmark weight, as fractions summing to 1.0.",
             ),
             InputSpec(
-                name="risk_free_rate",
-                label="Risk-free rate",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Used for excess returns when factor data does not include it.",
-                min=-0.05,
-                max=0.25,
-                step=0.0001,
-                unit="decimal",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for prices + factor series.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                name="bench_returns",
+                label="Benchmark sector returns",
+                control=ControlKind.CONSTRAINT_SET,
+                required=True,
+                description=(
+                    "Sector to benchmark total return, as decimals, for every sector in either weight map."
+                ),
             ),
         ],
-        defaults={
-            "portfolio_source": "port",
-            "factor_model": "ff3",
-            "window": "3Y",
-            "frequency": "1d",
-            "risk_free_rate": 0.045,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
-        },
+        defaults={},
         provider_chain=ProviderChain(
-            primary="yfinance",
-            fallbacks=["fred", "cached_snapshot"],
+            primary="internal",
+            fallbacks=[],
             acceptable_modes=[
-                DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
+                DataMode.MODELED,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=3600, scope="per_input", persist=True),
+        caching=CachingPolicy(ttl_seconds=900, scope="per_input", persist=False),
         output_contract=OutputContract(
             must_have=[
-                "as_of",
-                "factor_model",
-                "loadings",
-                "contributions",
-                "alpha",
-                "r_squared",
-                "data_mode",
+                "status",
+                "rows",
+                "totals",
+                "summary",
             ],
             rows=True,
             series=False,
@@ -148,102 +114,78 @@ def pfa() -> FunctionManifest:
         ),
         chart_grammar=ChartGrammar(
             kind=ChartKind.ATTRIBUTION_BAR,
-            x_axis=AxisSpec(type="category", unit="", label="Factor"),
-            y_axis=AxisSpec(type="numeric", unit="%", label="Return contribution"),
+            x_axis=AxisSpec(type="category", unit="", label="Sector"),
+            y_axis=AxisSpec(type="numeric", unit="decimal", label="Effect (fraction of benchmark)"),
             panes=[],
             overlay_support=False,
-            compare_support=True,
+            compare_support=False,
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="factor", label="Factor", kind="tag"),
-                ColumnSpec(key="loading", label="β", kind="number", format="%.3f"),
-                ColumnSpec(key="t_stat", label="t-stat", kind="number", format="%.2f"),
-                ColumnSpec(key="contribution_ann", label="Contr. (ann.)", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="factor_return_ann", label="Factor r (ann.)", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="sector", label="Sector", kind="tag"),
+                # Percent columns read the *_pct twins (value x 100); the handler's decimals are not % values.
+                ColumnSpec(key="port_weight_pct", label="Port w", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="bench_weight_pct", label="Bench w", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="allocation_effect_pct", label="Allocation", kind="percent", unit="%", format="%.4f"),
+                ColumnSpec(key="selection_effect_pct", label="Selection", kind="percent", unit="%", format="%.4f"),
+                ColumnSpec(key="interaction_effect_pct", label="Interaction", kind="percent", unit="%", format="%.4f"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="alpha", label="α (ann.)", kind="big_number", unit="%"),
-                CardSlot(key="r_squared", label="R²", kind="kpi"),
-                CardSlot(key="market_beta", label="β_mkt", kind="kpi"),
-                CardSlot(key="factor_model", label="Model", kind="badge"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="active_return_pct", label="Active return", kind="big_number", unit="%"),
+                CardSlot(key="allocation_pct", label="Allocation", kind="kpi", unit="%"),
+                CardSlot(key="selection_pct", label="Selection", kind="kpi", unit="%"),
+                CardSlot(key="interaction_pct", label="Interaction", kind="kpi", unit="%"),
+                CardSlot(key="sectors", label="Sectors", kind="kpi"),
             ],
         ),
         methodology=(
-            "PFA computes the portfolio's daily return series r_p,t over "
-            "the lookback as Σ w_i,t · r_i,t for current positions (or "
-            "rebalanced under the configured weights). The factor data "
-            "comes from Ken French's public library (MKT-RF, SMB, HML, "
-            "RMW, CMA, MOM as required by the chosen model); the risk-free "
-            "rate is the 1-month T-bill from the same source. Excess "
-            "returns r_p,t − r_f,t are regressed on the chosen factor "
-            "vector by OLS; the intercept is the annualized alpha. "
-            "Contribution per factor is β_k · μ_k (annualized factor "
-            "return × loading). R² and t-stats are reported with HAC "
-            "(Newey-West) standard errors at 5 lags to handle "
-            "autocorrelation."
+            "Brinson-Hood-Beebower attribution over the sectors in either weight map. For each sector: "
+            "allocation = (w_p - w_b) * (R_b - R_b_total); selection = w_b * (R_p - R_b); "
+            "interaction = (w_p - w_b) * (R_p - R_b). The three effects sum to the active return "
+            "(portfolio total minus benchmark total). Inputs are user-supplied; no market data is fetched."
         ),
         formula_dict={
-            "CAPM": Formula(
-                expression=r"r_p - r_f = \alpha + \beta_{mkt} (r_{mkt} - r_f) + \epsilon",
-                variables={"β_mkt": "Market loading", "α": "Excess return"},
+            "Allocation": Formula(
+                expression=r"AE_i = (w_{p,i} - w_{b,i})(R_{b,i} - R_{b})",
+                variables={"R_b": "Benchmark total return"},
             ),
-            "FamaFrench3": Formula(
-                expression=r"r_p - r_f = \alpha + \beta_{mkt} MKT + \beta_{smb} SMB + \beta_{hml} HML + \epsilon",
-                variables={"SMB": "Size factor", "HML": "Value factor"},
+            "Selection": Formula(
+                expression=r"SE_i = w_{b,i}(R_{p,i} - R_{b,i})",
+                variables={},
             ),
-            "Contribution": Formula(
-                expression=r"C_k = \beta_k \mu_k",
-                variables={"μ_k": "Annualized factor return"},
-            ),
-            "AnnualizedAlpha": Formula(
-                expression=r"\alpha_{ann} = (1 + \alpha)^F - 1",
-                variables={"F": "Periods per year"},
+            "Interaction": Formula(
+                expression=r"IE_i = (w_{p,i} - w_{b,i})(R_{p,i} - R_{b,i})",
+                variables={},
             ),
         },
         field_dict={
-            "loadings": FieldDef(unit="", description="OLS β by factor.", source="computed"),
-            "contributions": FieldDef(unit="decimal annualized", description="β_k μ_k by factor.", source="computed"),
-            "alpha": FieldDef(unit="decimal annualized", description="Regression intercept, annualized.", source="computed"),
-            "r_squared": FieldDef(unit="", description="OLS coefficient of determination.", source="computed"),
-            "t_stats[]": FieldDef(unit="", description="HAC (Newey-West) t-statistics per factor.", source="computed"),
+            "allocation_effect": FieldDef(unit="decimal", description="Allocation effect per sector.", source="computed"),
+            "selection_effect": FieldDef(unit="decimal", description="Selection effect per sector.", source="computed"),
+            "interaction_effect": FieldDef(unit="decimal", description="Interaction effect per sector.", source="computed"),
+            "totals.active_return": FieldDef(unit="decimal", description="Portfolio total return minus benchmark total return.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
-            require_as_of=True,
+            require_as_of=False,
             require_latency_ms=True,
         ),
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="pfa_alpha_plus_contributions_equals_ann_return",
-                description="Sum of α + Σ contributions ≈ portfolio's annualized excess return.",
+                name="pfa_effects_sum_to_active_return",
+                description="Allocation + selection + interaction equals the active return for fully invested weights.",
                 inputs={},
-                assertions=["abs(alpha + sum(contributions) - port_excess_ann) < 1e-3"],
+                assertions=["abs(totals.allocation + totals.selection + totals.interaction - totals.active_return) < 1e-9"],
             ),
             SemanticTest(
-                name="pfa_r_squared_in_zero_one",
-                description="R² is bounded in [0, 1].",
+                name="pfa_missing_sector_return_is_rejected",
+                description="A sector present in a weight map without a return on both sides returns input_error, not a 0% return.",
                 inputs={},
-                assertions=["0.0 <= r_squared <= 1.0"],
-            ),
-            SemanticTest(
-                name="pfa_capm_returns_only_mkt_loading",
-                description="CAPM model returns exactly one loading: market beta.",
-                inputs={"factor_model": "capm"},
-                assertions=["len(loadings) == 1", "loadings contains 'mkt'"],
-            ),
-            SemanticTest(
-                name="pfa_window_shorter_than_min_observations_warns",
-                description="Window with < 30 observations after alignment surfaces a warning.",
-                inputs={},
-                assertions=["warnings_non_empty_when_insufficient_obs"],
+                assertions=["status == 'input_error' when any sector lacks a return"],
             ),
         ],
     )

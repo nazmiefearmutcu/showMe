@@ -1,9 +1,10 @@
-"""LITM — Litigation Matters (8-K litigation/governance items from Awareness).
+"""LITM — Litigation Monitor (8-K litigation and governance items from Awareness).
 
-Scans the issuer's 8-K filings of the last year, as served by the Awareness
-service (SEC EDGAR submissions with decoded item codes), for the litigation
-and governance items 1.03, 1.04, 3.03, 5.02 and 5.03, newest first, with the
-source filing URL.
+Scans the issuer's 8-K filings dated within the lookback (the Awareness filing
+index covers the last 365 days), as served by the Awareness service (SEC EDGAR
+submissions with decoded item codes). Items 1.03 (bankruptcy/receivership) and
+1.04 (mine safety) are litigation items; 3.03, 5.02 and 5.03 are governance
+items shown under their own category. Newest first, with the source filing URL.
 """
 from __future__ import annotations
 
@@ -37,8 +38,8 @@ def litm() -> FunctionManifest:
         name="Litigation Matters",
         category=Category.EQUITIES,
         intent=(
-            "Surface litigation and governance events disclosed in the issuer's 8-K filings "
-            "(items 1.03, 1.04, 3.03, 5.02, 5.03), newest first, with the source filing URL."
+            "Surface 8-K filings carrying litigation items (1.03, 1.04) and governance items "
+            "(3.03, 5.02, 5.03), ranked by filing date with the source document URL."
         ),
         asset_classes=[AssetClass.EQUITY],
         inputs=[
@@ -54,19 +55,11 @@ def litm() -> FunctionManifest:
                 label="History (months)",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Lookback for the litigation history.",
+                description="Lookback for the 8-K scan: only filings dated within this window are scanned. The Awareness filing index covers the last 365 days; a longer lookback is capped with a warning.",
                 min=3,
                 max=60,
                 step=1,
                 unit="months",
-            ),
-            InputSpec(
-                name="severity",
-                label="Min severity",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Minimum severity bucket (rough heuristic from disclosure size + keywords).",
-                options=["low", "medium", "high", "critical"],
             ),
             InputSpec(
                 name="provider_mode",
@@ -82,7 +75,6 @@ def litm() -> FunctionManifest:
         ],
         defaults={
             "months": 24,
-            "severity": "low",
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
@@ -124,22 +116,27 @@ def litm() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "LITM reads the issuer's 8-K filings of the last 365 days from the Awareness service "
-            "(via CACT: SEC EDGAR submissions history plus the latest-filings feed, with the 8-K "
-            "item codes decoded) and keeps filings carrying item 1.03 (bankruptcy), 1.04 (mine "
-            "safety), 3.03 (modification of security holder rights), 5.02 (director/officer "
-            "changes) or 5.03 (charter/bylaw amendments). Each kept filing is one row (filing date, "
-            "matched item codes, accession, filing URL), newest first; severity is a review flag, "
-            "not legal advice. Filings without item codes are reported as a provider gap, no 8-Ks "
-            "in the window is reported as empty with 'not a verified absence', and an unreachable "
-            "Awareness service is provider_unavailable with the reason. Nothing is modelled on the "
-            "default path."
+            "LITM reads the issuer's 8-K filings dated within the lookback (months, default 24) from "
+            "the Awareness service (via CACT: SEC EDGAR submissions history plus the latest-filings "
+            "feed, with the 8-K item codes decoded). The Awareness filing index covers the last 365 "
+            "days, so a longer lookback is capped to that window with a warning. Items 1.03 "
+            "(bankruptcy or receivership) and 1.04 (mine safety) are the litigation category; items "
+            "3.03, 5.02 and 5.03 (security-holder rights, director or officer changes, charter "
+            "amendments) are governance items, not legal proceedings, labelled category=governance. "
+            "10-K Item 3 (Legal Proceedings) and 8-K Item 8.01 are not scanned. Each kept filing is "
+            "one row (filing date, matched item codes, accession, filing URL), newest first; the "
+            "severity column is a review flag, not legal advice, and no severity filter is applied. "
+            "Filings without item codes are reported as a provider gap, no relevant filings in the "
+            "window is status=empty with an explicit scan count ('not a verified absence'), and an "
+            "unreachable Awareness service is provider_unavailable with the reason. Nothing is "
+            "modelled on the default path."
         ),
         field_dict={
             "symbol": FieldDef(description="Equity ticker.", source="instrument"),
             "matters": FieldDef(description="Normalized list of disclosed litigation matters.", source="awareness"),
             "matter_count": FieldDef(description="Total matters in the lookback window.", source="computed"),
-            "severity": FieldDef(description="low | medium | high | critical (heuristic).", source="computed"),
+            "severity": FieldDef(description="ShowMe review flag, not legal advice: 'review' on a matched filing row, 'none' when the scan found no matching filing, 'unknown' when SEC item codes are unavailable.", source="computed"),
+            "category": FieldDef(description="litigation (1.03, 1.04) or governance (3.03, 5.02, 5.03).", source="computed"),
             "latest_filing_date": FieldDef(description="Most-recent litigation-related filing date.", source="computed"),
             "filing_url": FieldDef(description="Direct EDGAR document URL for the source filing.", source="awareness"),
         },
@@ -160,10 +157,10 @@ def litm() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="litm_severity_filter_applies",
-                description="severity='high' restricts the table to high+ rows.",
-                inputs={"symbol": "AAPL", "severity": "high"},
-                assertions=["all_matters_severity_at_least_high"],
+                name="litm_months_lookback_bounds_scan",
+                description="months=3 scans only 8-K filings dated within roughly the last 3 months.",
+                inputs={"symbol": "AAPL", "months": 3},
+                assertions=["all_scanned_filings_within_lookback"],
             ),
             SemanticTest(
                 name="litm_provider_outage_returns_unavailable",

@@ -3,8 +3,9 @@
 Bloomberg ``ALLQ<GO>`` analogue: a dealer-quote ladder for a bond with
 per-dealer bid, ask, mid, size, quote time, and the spread in basis
 points of the price. Without an authenticated dealer/TRACE feed the rows
-are explicitly composite/proxy quotes marked ``trace_proxy_model`` so
-they are never confused with executable dealer prices.
+are modeled composite quotes around one keyless Treasury par-yield anchor,
+labelled ``data_mode=modeled`` so they are never confused with executable
+dealer prices.
 """
 from __future__ import annotations
 
@@ -62,7 +63,7 @@ def allq() -> FunctionManifest:
                 label="Composite mid",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Composite mid price used to anchor the proxy ladder.",
+                description="Optional operator mid. When supplied it overrides the Treasury reference and is labelled user_input.",
                 min=0.01,
                 max=1000.0,
                 step=0.001,
@@ -102,7 +103,6 @@ def allq() -> FunctionManifest:
             ),
         ],
         defaults={
-            "mid": 99.75,
             "spread": 0.18,
             "size": 1_000_000.0,
             "provider_mode": DataMode.MODELED.value,
@@ -166,12 +166,16 @@ def allq() -> FunctionManifest:
         ),
         methodology=(
             "ALLQ is a dealer-quote-style view. Without an authenticated dealer/TRACE feed the engine"
-            " builds three composite/proxy rows from the operator's ``mid`` and ``spread`` inputs"
-            " (composite A: spread/2 around mid; composite B: asymmetric ~0.7/0.8; TRACE proxy:"
-            " full spread either side). For every row mid, spread_points, and spread_bps_of_price"
-            " are derived client-side as (bid+ask)/2, ask−bid, and (spread/mid)·10 000 respectively."
-            " Rows are explicitly labelled ``source_mode=trace_proxy_model`` and a warning is set so"
-            " they are never confused with executable dealer prices."
+            " anchors only US Treasury tenors (US1M to US30Y) on the keyless Treasury par-yield curve:"
+            " the latest tenor par yield is discounted to a clean price of a reference bond with a"
+            " labelled 4% coupon (exact semi-annual cash flows; bills use simple discounting)."
+            " An explicit ``mid`` input overrides that reference and is labelled user_input."
+            " Three composite rows are then built from the mid and the ``spread`` input (composite A:"
+            " spread/2 around mid; composite B: asymmetric ~0.7/0.8; composite C: full spread either side)."
+            " For every row mid, spread_points, and spread_bps_of_price are (bid+ask)/2, ask−bid, and"
+            " (spread/mid)·10 000. Rows are labelled ``source_mode=indicative_anchored_to_real_reference``"
+            " with ``data_mode=modeled`` and a warning, so they are never confused with executable prices."
+            " Non-Treasury symbols return provider_unavailable rather than a substituted anchor."
         ),
         formula_dict={
             "spread_bps_of_price": Formula(
@@ -200,15 +204,16 @@ def allq() -> FunctionManifest:
         ),
         semantic_tests=[
             SemanticTest(
-                name="allq_proxy_quotes_are_labelled",
+                name="allq_modeled_quotes_are_labelled",
                 description=(
-                    "Without a live dealer feed the response is marked source_mode=trace_proxy_model"
-                    " and a warning explains the row is a composite proxy, not an executable price."
+                    "Without a live dealer feed the response is marked"
+                    " source_mode=indicative_anchored_to_real_reference and a warning explains the rows"
+                    " are modeled composite quotes, not an executable price."
                 ),
                 inputs={"symbol": "US10Y"},
                 assertions=[
-                    "source_mode_equals_trace_proxy_model",
-                    "warning_mentions_proxy_or_composite",
+                    "source_mode_equals_indicative_anchored_to_real_reference",
+                    "warning_mentions_modeled_or_composite",
                 ],
             ),
             SemanticTest(
@@ -227,8 +232,8 @@ def allq() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="allq_three_proxy_dealers_present",
-                description="Without a live feed the ladder ships three composite/proxy rows so the layout stays stable.",
+                name="allq_three_composite_rows_present",
+                description="The ladder always ships three modeled composite rows so the layout stays stable.",
                 inputs={"symbol": "US10Y"},
                 assertions=["rows_length_equals_3"],
             ),

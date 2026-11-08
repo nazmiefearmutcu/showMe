@@ -21,7 +21,8 @@ export function intensityToken(value: number, range = 1): string {
 }
 
 interface HeatCellProps {
-  value: number;
+  /** `null` marks a missing cell: neutral, untinted, never shown as 0. */
+  value: number | null;
   range?: number;
   diagonal?: boolean;
   size?: number;
@@ -49,15 +50,25 @@ function HeatCellImpl({
   ariaLabel,
   tabIndex,
 }: HeatCellProps) {
-  const bg = diagonal ? "var(--surface-1)" : intensityToken(value, range);
-  const ratio = Math.min(1, Math.abs(value) / range);
-  const fg = diagonal
-    ? "var(--text-mute)"
-    : ratio > 0.5
-      ? "var(--text-display)"
-      : "var(--text-secondary)";
+  const missing = value === null;
+  const bg = diagonal
+    ? "var(--surface-1)"
+    : value === null
+      ? "transparent"
+      : intensityToken(value, range);
+  const ratio = value === null ? 0 : Math.min(1, Math.abs(value) / range);
+  const fg =
+    diagonal || missing
+      ? "var(--text-mute)"
+      : ratio > 0.5
+        ? "var(--text-display)"
+        : "var(--text-secondary)";
   const interactive = Boolean(onClick);
-  const sign = value > 0 ? "+" : value < 0 ? "" : "";
+  const sign = value !== null && value > 0 ? "+" : "";
+  const defaultAria =
+    value === null ? "no value" : `value ${sign}${value.toFixed(fractionDigits)}`;
+  const defaultLabel =
+    value === null ? "—" : diagonal ? "—" : value.toFixed(fractionDigits);
   return (
     <button
       type="button"
@@ -68,7 +79,7 @@ function HeatCellImpl({
       className={
         `showme-heat-cell focus-ring${interactive ? " showme-heat-cell--interactive" : ""}`
       }
-      aria-label={ariaLabel ?? `value ${sign}${value.toFixed(fractionDigits)}`}
+      aria-label={ariaLabel ?? defaultAria}
       style={{
         all: "unset",
         cursor: interactive ? "pointer" : "default",
@@ -87,7 +98,7 @@ function HeatCellImpl({
         transition: "transform var(--motion-fast)",
       }}
     >
-      {label ?? (diagonal ? "—" : value.toFixed(fractionDigits))}
+      {label ?? defaultLabel}
     </button>
   );
 }

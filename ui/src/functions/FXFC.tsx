@@ -1,19 +1,19 @@
 /**
- * FXFC — FX Forecasts (covered-interest-parity forward carry).
+ * FXFC — CIP FX Forward Path (covered-interest-parity forward carry).
  *
  * Header: pair segmented control (persisted) + source honesty pill +
  * status + refresh. Body: warning banner when the backend fell back to
- * the labelled reference spot + KPI ribbon (spot, 3M forecast, rate
- * differential, vol assumption) + forecast-vs-spot curve (dashed spot
- * overlay) + the horizon table: forecast level, forecast-vs-spot delta
- * (F − S), model bands (spot·vol·√T), confidence, and the per-row
+ * the labelled reference spot + KPI ribbon (spot, 3M CIP forward, rate
+ * differential, band vol) + forward-vs-spot curve (dashed spot overlay)
+ * + the horizon table: CIP forward level, forward-vs-spot delta (F − S),
+ * model bands (spot·vol·√T, null when no vol source), and the per-row
  * source_mode pill.
  *
- * Model note (honesty): forecasts are the CIP forward path and the bands
- * are MODEL bands (spot·vol·√T) — not vendor analyst forecasts. When the
- * live spot cannot be fetched the backend labels rows `reference_model`;
- * the pane mirrors that as a "reference spot" pill + banner instead of
- * pretending the curve is live.
+ * Model note (honesty): the forward levels are CIP forwards (no-arbitrage,
+ * not a consensus forecast) and the bands are MODEL bands on live realized
+ * vol — not vendor analyst forecasts. When the live spot cannot be fetched
+ * the backend labels rows `reference_model`; the pane mirrors that as a
+ * "reference spot" pill + banner instead of pretending the curve is live.
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -30,7 +30,6 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
-import { formatNumberPlain } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -47,21 +46,29 @@ interface FXFCRow {
   tenor_years?: number;
   spot?: number;
   forecast?: number;
-  lower_band?: number;
-  upper_band?: number;
+  lower_band?: number | null;
+  upper_band?: number | null;
   forward_points?: number;
-  confidence?: number;
+  vol_annualized?: number | null;
   source_mode?: string;
 }
 
 interface FXFCData {
+  status?: string;
+  reason?: string | null;
   pair?: string;
   base?: string;
   quote?: string;
   spot?: number;
+  spot_fetched_at?: string;
+  spot_quote_time?: string | null;
+  spot_quote_age_minutes?: number | null;
+  spot_quote_status?: string;
+  fx_market_open_at_fetch?: boolean;
   base_rate?: number;
   quote_rate?: number;
-  vol_annualized?: number;
+  vol_annualized?: number | null;
+  vol_source?: string;
   source_mode?: string;
   forecast?: FXFCRow[];
   curve?: FXFCRow[];
@@ -93,6 +100,27 @@ function normalizePair(raw: string | undefined): PairId | null {
 const CURVE_W = 320;
 const CURVE_H = 88;
 
+
+// ECB-based tiers are a once-a-day reference fixing, not a live spot
+// (FXFC#4-RQ): the ECB daily rate and Frankfurter, which republishes it.
+const DAILY_FIX_MODES = new Set(["live_ecb_reference", "live_official"]);
+
+/** Spot pill label and tone; only a fresh intraday spot reads as live. */
+export function spotStatusPill(
+  status: string | null | undefined,
+  isLive: boolean,
+  isManual: boolean,
+  sourceMode?: string,
+): { label: string; tone: "positive" | "warn" } {
+  if (sourceMode && DAILY_FIX_MODES.has(sourceMode)) return { label: "ECB daily fix", tone: "warn" };
+  if (status === "stale") return { label: "stale spot", tone: "warn" };
+  if (status === "off_session") return { label: "off-session print", tone: "warn" };
+  if (status === "quote_time_unavailable") return { label: "spot time unknown", tone: "warn" };
+  if (isLive) return { label: "live spot", tone: "positive" };
+  if (isManual) return { label: "manual spot", tone: "warn" };
+  return { label: "reference spot", tone: "warn" };
+}
+
 export function FXFCPane({ code, symbol }: FunctionPaneProps) {
   const [pair, setPair] = usePersistentOption<PairId>(
     "showme.fxfc.pair",
@@ -120,7 +148,12 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
   // envelope-level source_mode is preferred; per-row carries the fallback.
   const sourceMode = payload?.source_mode ?? rows[0]?.source_mode;
   const isLive = typeof sourceMode === "string" && sourceMode.startsWith("live_");
+  // Quote-time check from the backend: a yfinance quote older than the
+  // threshold is labelled stale, never live.
   const isManual = sourceMode === "manual_input";
+  const isDailyFix = typeof sourceMode === "string" && DAILY_FIX_MODES.has(sourceMode);
+  // FXFC#4 follow-up: a yfinance spot that is not fresh is never called "live".
+  const spotPill = spotStatusPill(payload?.spot_quote_status, isLive, isManual, sourceMode);
   const spot = payload?.spot;
 
   const stats = useMemo(() => deriveStats(rows), [rows]);
@@ -138,7 +171,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
       },
       {
         key: "forecast",
-        header: "Forecast",
+        header: "CIP forward",
         numeric: true,
         width: 116,
         render: (r) => (
@@ -174,15 +207,6 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         width: 116,
         render: (r) => <span style={monoMutedStyle}>{fmtFx(r.upper_band)}</span>,
-      },
-      {
-        key: "confidence",
-        header: "Conf.",
-        numeric: true,
-        width: 88,
-        render: (r) => (
-          <span style={monoMutedStyle}>{fmtNum(r.confidence, 1)}%</span>
-        ),
       },
       {
         key: "source_mode",
@@ -253,34 +277,40 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
             label={`Spot ${payload?.pair ?? effectivePair}`}
             value={fmtFx(spot)}
             caption={
-              isLive
+              isDailyFix
+                ? `ECB DAILY FIX · ${sourceMode}`
+                : isLive
                 ? `LIVE SPOT · ${sourceMode}`
                 : isManual
                   ? "MANUAL SPOT INPUT"
                   : "REFERENCE MODEL SPOT"
             }
-            tone={isLive ? "positive" : "neutral"}
+            tone={isLive && !isDailyFix ? "positive" : "neutral"}
           />
           <StatCard
-            label={`${stats.horizon} forecast`}
+            label={`${stats.horizon} CIP forward`}
             value={fmtFx(stats.fwd3m)}
             caption={`${fmtDiff(stats.points3m)} F−S`}
             tone="neutral"
           />
           <StatCard
             label="Rate diff"
-            value={`${fmtRate((payload?.quote_rate ?? 0) - (payload?.base_rate ?? 0))}%`}
-            caption={`${payload?.quote ?? "—"} vs ${payload?.base ?? "—"} RATES`}
-            tone={
-              (payload?.quote_rate ?? 0) >= (payload?.base_rate ?? 0)
-                ? "positive"
-                : "negative"
+            value={rateSpreadText(payload?.quote_rate, payload?.base_rate)}
+            caption={
+              payload?.base_rate == null || payload?.quote_rate == null
+                ? "rates not supplied (r_base / r_quote)"
+                : `${payload?.quote ?? "—"} vs ${payload?.base ?? "—"} RATES`
             }
+            tone={rateSpreadTone(payload?.quote_rate, payload?.base_rate)}
           />
           <StatCard
-            label="Vol assumption"
-            value={`${fmtRate(payload?.vol_annualized)}%`}
-            caption="MODEL BAND INPUT (spot·vol·√T)"
+            label="Band vol"
+            value={
+              payload?.vol_annualized == null
+                ? "—"
+                : `${fmtRate(payload.vol_annualized)}%`
+            }
+            caption={volCaption(payload?.vol_source, payload?.vol_annualized)}
             tone="neutral"
           />
         </section>
@@ -288,7 +318,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           className="fxfc-curve"
           style={curveStyle}
           role="img"
-          aria-label={`FXFC forecast path for ${payload?.pair ?? effectivePair}: CIP forward forecast by horizon with a dashed spot overlay`}
+          aria-label={`FXFC CIP forward path for ${payload?.pair ?? effectivePair}: CIP forward level by horizon with a dashed spot overlay`}
         >
           <svg
             viewBox={`0 0 ${CURVE_W} ${CURVE_H}`}
@@ -320,7 +350,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           </svg>
           <figcaption style={curveCaptionStyle}>
             <span style={legendRowStyle}>
-              <span aria-hidden="true" style={swatchAccentStyle} /> CIP forecast
+              <span aria-hidden="true" style={swatchAccentStyle} /> CIP forward
             </span>
             <span style={legendRowStyle}>
               <span aria-hidden="true" style={swatchSpotStyle} /> spot overlay
@@ -332,9 +362,10 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           </figcaption>
         </figure>
         <p role="note" style={modelNoteStyle} aria-label="Model note">
-          Model note: forecast = spot·(1+r_q·T)/(1+r_b·T) (covered interest
-          parity); bands = spot·vol·√T are model bands, not vendor analyst
-          forecasts.
+          Model note: CIP forward = spot·(1+r_q·T)/(1+r_b·T) (covered interest
+          parity) is a no-arbitrage level, not a consensus forecast; bands =
+          spot·vol·√T use live realized vol per tenor and are model bands, not
+          vendor analyst forecasts. Bands show as — when no vol source is available.
         </p>
         <DataGrid
           columns={COLS}
@@ -351,12 +382,12 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`FX Forecasts — ${payload?.pair ?? effectivePair}`}
+          title={`CIP Forward — ${payload?.pair ?? effectivePair}`}
           subtitle={`${rows.length} horizons · CIP carry path`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live spot" : isManual ? "manual spot" : "reference spot"}
+              <Pill tone={spotPill.tone} variant="soft">
+                {spotPill.label}
               </Pill>
               <SegmentedControl
                 label="PAIR"
@@ -455,9 +486,41 @@ function fmtDiff(v: number | null | undefined): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(digits)}`;
 }
 
-function fmtNum(v: number | null | undefined, digits: number): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return formatNumberPlain(v, digits);
+function volCaption(
+  source: string | undefined,
+  vol: number | null | undefined,
+): string {
+  if (vol == null || !Number.isFinite(vol)) return "NO VOL SOURCE · BANDS UNAVAILABLE";
+  if (source === "live_realized_vol") return "LIVE REALIZED VOL · MODEL BANDS (spot·vol·√T)";
+  if (source === "user_inputs") return "USER INPUT VOL · MODEL BANDS (spot·vol·√T)";
+  return "MODEL BAND INPUT (spot·vol·√T)";
+}
+
+/* UI-5: a rate differential needs both rates; a missing one is a dash, never
+ * the other rate shown as the spread. */
+function rateSpreadOf(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): number | null {
+  if (typeof quote !== "number" || typeof base !== "number") return null;
+  if (!Number.isFinite(quote) || !Number.isFinite(base)) return null;
+  return quote - base;
+}
+
+function rateSpreadText(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): string {
+  const spread = rateSpreadOf(quote, base);
+  return spread == null ? "—" : `${fmtRate(spread)}%`;
+}
+
+function rateSpreadTone(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): "positive" | "negative" | "neutral" {
+  const spread = rateSpreadOf(quote, base);
+  return spread == null ? "neutral" : spread >= 0 ? "positive" : "negative";
 }
 
 function fmtRate(v: number | null | undefined): string {

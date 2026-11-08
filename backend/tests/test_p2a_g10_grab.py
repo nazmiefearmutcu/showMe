@@ -51,7 +51,7 @@ def test_grab_send_request_is_recorded_and_never_transmitted():
         target="current_pane", recipient="ops@example.com", send=True,
     ))
     email = next(r for r in res.data["rows"] if r["step"] == "email")
-    assert email["status"] == "draft_only"
+    assert email["status"] == "planned"
     assert all(r["status"] != "sent" for r in res.data["rows"])
     assert any("not executed" in w for w in res.warnings)
 

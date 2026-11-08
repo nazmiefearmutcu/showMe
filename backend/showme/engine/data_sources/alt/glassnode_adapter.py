@@ -70,7 +70,7 @@ class GlassnodeAdapter(BaseDataSource):
             r.raise_for_status()
             data = r.json()
         except httpx.HTTPError as e:
-            raise DataSourceError(f"glassnode: {e}")
+            raise DataSourceError(f"glassnode: {str(e) or type(e).__name__}")
         if not data:
             return pd.DataFrame()
         df = pd.DataFrame(data)

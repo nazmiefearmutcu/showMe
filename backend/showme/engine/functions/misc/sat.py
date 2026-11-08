@@ -51,7 +51,9 @@ _GIBS_LAYERS: dict[str, tuple[str, str]] = {
     "ndvi": ("MODIS_Terra_NDVI_8Day", "1km"),
     "moisture": ("MODIS_Terra_CorrectedReflectance_Bands721", "250m"),
     "thermal": ("MODIS_Terra_Land_Surface_Temp_Day", "1km"),
-    "swir": ("MODIS_Terra_CorrectedReflectance_Bands721", "250m"),
+    # SAT#3: distinct product from ``moisture`` (VIIRS SNPP SWIR-NIR-red composite,
+    # listed in the GIBS WMS capabilities); the two labels no longer share a layer.
+    "swir": ("VIIRS_SNPP_CorrectedReflectance_BandsM11-I2-I1", "250m"),
 }
 
 _GIBS_BASE = "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi"
@@ -120,8 +122,9 @@ class SATFunction(BaseFunction):
             "live WMS PNG of the actual area (MODIS/VIIRS daily mosaics, no API key). A tile is "
             "only used when it carries imagery: GIBS returns blank black tiles for days it has "
             "not processed, so SAT walks back to the newest real tile and reports the lag "
-            "(capture_lag_days). Cloud cover is the real value reported by Open-Meteo for the AOI "
-            "centroid on the capture date (keyless), used as the cloud_pct proxy. No synthetic "
+            "(capture_lag_days). Cloud cover is Open-Meteo's modelled daily mean cloud cover for the "
+            "AOI centroid on the capture date (keyless), used as the cloud_pct proxy: a model value, "
+            "not read from the satellite image. No synthetic "
             "tiles and no fabricated cloud percentages: on a real network outage SAT degrades to "
             "provider_unavailable with an honest warning."
         )
@@ -129,7 +132,10 @@ class SATFunction(BaseFunction):
             "capture_utc": "Image capture day (UTC) for the GIBS daily mosaic.",
             "aoi": "Curated area-of-interest label.",
             "layer": "Requested GIBS visualisation layer.",
-            "cloud_pct": "Cloud cover % at the AOI centroid on the capture date (Open-Meteo).",
+            "cloud_pct": (
+                "Modelled cloud cover % (Open-Meteo daily mean at the AOI centroid on the capture date): "
+                "a model proxy, not read from the satellite image."
+            ),
             "tile_url": "Live NASA GIBS WMS PNG tile URL for the AOI + layer + date.",
             "source": "Provider that supplied the tile / metadata.",
         }
@@ -242,6 +248,9 @@ class SATFunction(BaseFunction):
             "aoi_key": aoi_key,
             "layer": layer_key,
             "cloud_pct": round(cloud_pct, 1) if isinstance(cloud_pct, (int, float)) else None,
+            # SAT#4: the cloud number is an Open-Meteo model value, not GIBS's.
+            "cloud_source": "open_meteo_model" if isinstance(cloud_pct, (int, float)) else None,
+            "cloud_label": "Open-Meteo modelled cloud cover" if isinstance(cloud_pct, (int, float)) else None,
             "tile_url": tile_url,
             "source": "nasa_gibs",
             "bbox": ",".join(f"{v:.5f}" for v in bbox),
@@ -496,7 +505,7 @@ async def _check_tile(url: str) -> tuple[str, str]:
     try:
         resp = await _http_get_raw(url)
     except Exception as exc:
-        return "unreachable", f"nasa_gibs: {exc}"
+        return "unreachable", f"nasa_gibs: {str(exc) or type(exc).__name__}"
     try:
         status = int(getattr(resp, "status_code", 0) or 0)
     except (TypeError, ValueError):

@@ -33,6 +33,7 @@ import {
   formatPercent,
   formatPrice,
 } from "@/lib/format";
+import { formatTime } from "@/lib/timezone";
 import { usePortfolioStore, type PortfolioGroup } from "@/lib/portfolio-store";
 import { useExchangeStore } from "@/lib/exchange-store";
 import {
@@ -224,7 +225,7 @@ function PortfolioCommandBar() {
       <div className="port-command-bar__actions">
         <span className="port-subtle">
           {lastFetched
-            ? `Last ${new Date(lastFetched).toLocaleTimeString("en-US", { hour12: false })}`
+            ? `Last ${formatTime(lastFetched, { seconds: true })}`
             : "Not fetched"}
         </span>
         <button className="btn btn--ghost port-icon-btn" type="button" onClick={() => load()} disabled={loading} title="Refresh portfolio">
@@ -549,6 +550,15 @@ function CredentialGroup({ g }: { g: PortfolioGroup }) {
 }
 
 /**
+ * A position's weight against the book total. A row with no market value
+ * (unpriced) has no weight: it is undefined, never a 0% weight.
+ */
+function weightOf(marketValue: unknown, total: number): number | undefined {
+  const mv = marketValue == null ? Number.NaN : Number(marketValue);
+  return total > 0 && Number.isFinite(mv) ? mv / total : undefined;
+}
+
+/**
  * Apply live ticks to the snapshot positions and compute each weight.
  *
  * PORT#4: the weight denominator must be the same total the rows are valued
@@ -588,7 +598,7 @@ export function overlayLivePositions(
   const total = hasOverlay && !guarded ? liveSum : (snapshotMv ?? liveSum);
   return overlaid.map((p) => ({
     ...p,
-    weight: total > 0 ? (Number(p.market_value) || 0) / total : undefined,
+    weight: weightOf(p.market_value, total),
   }));
 }
 
@@ -768,7 +778,7 @@ export function PORTPane({ code }: FunctionPaneProps) {
     const totalMv = rows.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
     return rows.map((p) => ({
       ...p,
-      weight: totalMv > 0 ? (Number(p.market_value) || 0) / totalMv : undefined,
+      weight: weightOf(p.market_value, totalMv),
     }));
   }, [enriched.length, portfolioGroups]);
 
@@ -1005,12 +1015,25 @@ function PORTView({
   const totalMV = totals?.market_value ?? positions.reduce(
     (s, p) => s + (p.market_value ?? 0), 0,
   );
-  const maxPosition = positions.reduce(
-    (best, p) => ((p.weight ?? 0) > (best?.weight ?? -1) ? p : best),
-    null as Position | null,
+  // Only positions with a reported weight can be "largest": a missing weight
+  // is not a 0% weight.
+  const maxPosition = positions.reduce<Position | null>(
+    (best, p) =>
+      p.weight != null && Number.isFinite(p.weight) &&
+      (best == null || (best.weight as number) < p.weight)
+        ? p
+        : best,
+    null,
   );
+  // Largest weight first; a missing weight sorts after every reported one
+  // (including short, negative weights) instead of ranking as 0%.
   const topPositions = [...positions]
-    .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
+    .sort((a, b) => {
+      if (a.weight == null && b.weight == null) return 0;
+      if (a.weight == null) return 1;
+      if (b.weight == null) return -1;
+      return b.weight - a.weight;
+    })
     .slice(0, 5);
 
   // P5 — local column sort. DataGrid supports sortBy/sortDir/onSort but PORT
@@ -1102,7 +1125,7 @@ function PORTView({
           <PortfolioMetric label="Positions" value={formatNumber(positions.length)} />
           <PortfolioMetric
             label="Largest"
-            value={maxPosition ? `${maxPosition.symbol} ${formatPercent((maxPosition.weight ?? 0) * 100)}` : formatMissing}
+            value={maxPosition ? `${maxPosition.symbol} ${formatPercent(maxPosition.weight! * 100)}` : formatMissing}
           />
         </div>
         {/* Honest real metric replaces the former seeded fake sparkline
@@ -1407,6 +1430,8 @@ function positionColumns({
 function WeightFill({ pct }: { pct: number | null }) {
   if (pct == null || !Number.isFinite(pct))
     return <span className="u-text-mute">—</span>;
+  // The bar is clamped to 0..100 for drawing only; the label shows the real
+  // weight, so a leveraged or short-heavy 120% does not read as 100.0%.
   const clamped = Math.max(0, Math.min(100, pct));
   return (
     <span className="port-weight">
@@ -1416,7 +1441,7 @@ function WeightFill({ pct }: { pct: number | null }) {
         style={{ ["--u-empty" as string]: `${100 - clamped}%` }}
       />
       <span className="port-weight__label terminal-grid-numeric">
-        {formatPercent(clamped, { digits: 1 })}
+        {formatPercent(pct, { digits: 1 })}
       </span>
     </span>
   );

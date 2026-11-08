@@ -14,7 +14,6 @@ from typing import Any
 import httpx
 
 from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRequest
-from showme.engine.utils.throttle import throttle
 
 
 class OpenFIGIRateLimited(Exception):
@@ -129,12 +128,26 @@ class OpenFIGIAdapter(BaseDataSource):
                         "error": item.get("error")})
         return out
 
-    @throttle(rps=4.0)
+    async def _pace_single(self) -> None:
+        """Wait for the next free slot in the declared budget (shared with ``lookup_batch``).
+
+        Uses ``rate_limit_rps`` of this instance: anonymous 0.41 (25 per minute),
+        4.0 with an API key. A hard-coded rate here would burst past the anonymous
+        budget and turn the resulting 429 into an unexplained failure.
+        """
+        now = time.monotonic()
+        start = max(now, self._next_slot)
+        wait = start - now
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._next_slot = start + 1.0 / self.rate_limit_rps
+
     async def lookup_by(
         self, *, id_type: str, id_value: str,
         exch_code: str | None = None,
     ) -> list[dict[str, Any]]:
         """Look up by any OpenFIGI idType (ID_ISIN / ID_CUSIP / ID_SEDOL / TICKER)."""
+        await self._pace_single()
         client = await self._client_()
         body: list[dict[str, Any]] = [{"idType": id_type, "idValue": id_value}]
         if exch_code:
@@ -156,9 +169,9 @@ class OpenFIGIAdapter(BaseDataSource):
         first = results[0].get("data") or []
         return first or []
 
-    @throttle(rps=4.0)
     async def lookup(self, ticker: str, exch_code: str | None = None) -> dict[str, Any] | None:
         """Resolve a ticker to its OpenFIGI record. Returns first hit."""
+        await self._pace_single()
         client = await self._client_()
         body = [{"idType": "TICKER", "idValue": ticker.upper()}]
         if exch_code:

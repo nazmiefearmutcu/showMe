@@ -1,13 +1,16 @@
 """DAPI — Data API for Excel/external clients (REST surface specification).
 
 Two-tier resolution:
-  1. If the running sidecar wired a live route-table provider into
-     ``FunctionDeps.dapi_route_provider`` (set by server.py at startup),
-     DAPI returns the actual FastAPI routes — guaranteed in sync.
-  2. Otherwise DAPI falls back to the curated manifest below, which is
-     kept aligned with ``backend/showme/server_routes/*.py``. Audit gate:
+  1. If a live route-table provider is assigned to
+     ``FunctionDeps.dapi_route_provider``, DAPI returns the actual FastAPI
+     routes. NOTE: no startup code in this build assigns it (the engine's
+     deps are created in ``engine/services/function_factory.py``), so every
+     live call reports ``source_mode=curated_manifest``.
+  2. Otherwise DAPI uses the curated manifest below, which is kept aligned
+     with ``backend/showme/server_routes/*.py``. Audit gate:
      ``backend/tests/test_dapi.py::test_curated_manifest_matches_routes``
-     ensures the curated list does not drift from the real router table.
+     guards the curated list against drift from the real router table (the
+     drift check is a test, not a runtime comparison).
 
 Filter resolution (2026-09 fix): the routed ``/api/fn/{code}`` layer merges
 generic agent defaults into EVERY call — for a CRYPTO desk that bundle carries
@@ -46,11 +49,11 @@ DAPI_CURATED_ROUTES: list[dict[str, str]] = [
     {"method": "GET", "path": "/api/state/trades", "purpose": "Local trade-log snapshot.", "request_body": "-", "response_shape": "Trade[]", "mutates_state": "no", "example": "/api/state/trades"},
     {"method": "GET", "path": "/api/state/migrations", "purpose": "Migration status for persisted local state.", "request_body": "-", "response_shape": "{ applied, pending }", "mutates_state": "no", "example": "/api/state/migrations"},
     {"method": "GET", "path": "/api/llm/cost", "purpose": "Aggregate LLM cost telemetry for local sessions.", "request_body": "-", "response_shape": "{ total_usd, by_model }", "mutates_state": "no", "example": "/api/llm/cost"},
-    {"method": "POST", "path": "/api/portfolio/positions/{symbol}/close", "purpose": "Preview or close a local portfolio position.", "request_body": "{ quantity?, dry_run? }", "response_shape": "{ closed, realized_pnl, remaining_qty }", "mutates_state": "yes unless dry_run=true", "example": "/api/portfolio/positions/BTCUSDT/close"},
+    {"method": "POST", "path": "/api/portfolio/positions/{symbol}/close", "purpose": "Preview or close a local portfolio position (dry_run defaults to true).", "request_body": "{ dry_run?, exit_price?, reason?, import_legacy? }", "response_shape": "{ ok, dry_run, record, remaining_positions, closed_symbols, degraded, degraded_reason }", "mutates_state": "yes when dry_run=false", "example": "/api/portfolio/positions/BTCUSDT/close"},
     # ── broker (paper) ──
     {"method": "GET", "path": "/api/broker/info", "purpose": "Paper broker identity/status.", "request_body": "-", "response_shape": "{ broker, mode }", "mutates_state": "no", "example": "/api/broker/info"},
     {"method": "GET", "path": "/api/broker/positions", "purpose": "Paper broker position snapshot.", "request_body": "-", "response_shape": "Position[]", "mutates_state": "no", "example": "/api/broker/positions"},
-    {"method": "POST", "path": "/api/broker/positions/{symbol}/close", "purpose": "Close a paper broker position.", "request_body": "{ quantity?, dry_run? }", "response_shape": "{ closed, realized_pnl }", "mutates_state": "yes unless dry_run=true", "example": "/api/broker/positions/AAPL/close"},
+    {"method": "POST", "path": "/api/broker/positions/{symbol}/close", "purpose": "Submit a closing order for a broker position (typed account-label confirmation required).", "request_body": "{ confirmation_token, quantity?, broker? }", "response_shape": "{ broker, order }", "mutates_state": "yes", "example": "/api/broker/positions/AAPL/close"},
     {"method": "GET", "path": "/api/broker/orders", "purpose": "Paper broker order blotter.", "request_body": "-", "response_shape": "Order[]", "mutates_state": "no", "example": "/api/broker/orders"},
     {"method": "POST", "path": "/api/broker/orders", "purpose": "Create a paper order.", "request_body": "{ symbol, side, qty, type, tif }", "response_shape": "Order", "mutates_state": "yes", "example": "/api/broker/orders"},
     {"method": "DELETE", "path": "/api/broker/orders/{order_id}", "purpose": "Cancel an open paper order.", "request_body": "-", "response_shape": "{ cancelled, order_id }", "mutates_state": "yes", "example": "/api/broker/orders/{order_id}"},
@@ -91,7 +94,7 @@ DAPI_CURATED_ROUTES: list[dict[str, str]] = [
     # ── streaming ──
     {"method": "GET", "path": "/api/stream/stats", "purpose": "WebSocket stream statistics.", "request_body": "-", "response_shape": "{ connections, by_topic }", "mutates_state": "no", "example": "/api/stream/stats"},
     # ── proxy ──
-    {"method": "GET/POST/DELETE", "path": "/api/proxy/{path:path}", "purpose": "Auth-aware proxy to a configured upstream (legacy stub returns 410).", "request_body": "(passthrough)", "response_shape": "(passthrough)", "mutates_state": "depends", "example": "/api/proxy/some/upstream"},
+    {"method": "GET/POST/DELETE", "path": "/api/proxy/{path}", "purpose": "Auth-aware proxy to a configured upstream (legacy stub returns 410).", "request_body": "(passthrough)", "response_shape": "(passthrough)", "mutates_state": "depends", "example": "/api/proxy/some/upstream"},
     # ── assistant ──
     {"method": "POST", "path": "/api/assistant/strategy-from-text", "purpose": "Parse natural-language text into a strategy spec (optionally persisting it).", "request_body": "{ text, save? }", "response_shape": "{ spec, notes, saved_id }", "mutates_state": "yes when save=true", "example": "/api/assistant/strategy-from-text"},
     {"method": "POST", "path": "/api/assistant/explain-strategy", "purpose": "Plain-language explanation for a stored strategy id.", "request_body": "{ strategy_id }", "response_shape": "{ explanation }", "mutates_state": "no", "example": "/api/assistant/explain-strategy"},
@@ -148,8 +151,8 @@ DAPI_CURATED_ROUTES: list[dict[str, str]] = [
 
 
 def _resolve_routes(provider: Any) -> list[dict[str, Any]] | None:
-    """If the sidecar wired in a live ``deps.dapi_route_provider`` callable
-    or list, prefer that over the curated table. The provider must yield
+    """If a live ``deps.dapi_route_provider`` callable or list is assigned
+    (none is in this build), prefer that over the curated table. The provider must yield
     rows in the same shape as ``DAPI_CURATED_ROUTES``."""
     if provider is None:
         return None
@@ -254,7 +257,11 @@ class DAPIFunction(BaseFunction):
             data={
                 "rows": rows,
                 "summary": {
-                    "base_url": "http://127.0.0.1:<sidecar-port>",
+                    # The engine does not know the port the sidecar bound, so no
+                    # base URL is invented here; the pane resolves the real one
+                    # from its sidecar connection.
+                    "base_url": None,
+                    "base_url_note": "Base URL is resolved by the client from its sidecar connection.",
                     "endpoints": len(rows),
                     "total_routes": len(endpoints),
                     # F9 [L]: the pane's "mutating" filter also counts
@@ -269,10 +276,10 @@ class DAPIFunction(BaseFunction):
                     "source_mode": source_mode,
                 },
                 "methodology": (
-                    "DAPI surfaces the ShowMe sidecar's REST manifest. When the running sidecar "
-                    "publishes a live route-introspection callable (deps.dapi_route_provider), DAPI "
-                    "returns the actual FastAPI router table so Excel/external clients see the same "
-                    "shape the engine serves. Otherwise it falls back to the curated manifest in "
+                    "DAPI surfaces the ShowMe sidecar's REST manifest. If a live route-introspection "
+                    "callable is assigned to deps.dapi_route_provider, DAPI returns the actual FastAPI "
+                    "router table; in this build nothing assigns it, so source_mode stays "
+                    "curated_manifest. Otherwise DAPI uses the curated manifest in "
                     "showme/engine/functions/api/dapi.py::DAPI_CURATED_ROUTES — kept aligned with "
                     "backend/showme/server_routes/*.py and audited by tests/test_dapi.py. "
                     "Filtering: pass path_filter=... (or filter=...) to narrow by substring on "

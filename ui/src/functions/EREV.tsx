@@ -1,5 +1,5 @@
 /**
- * EREV — Earnings Revisions.
+ * EREV — Analyst Recommendation Momentum (recommendation buckets, not EPS estimates).
  *
  * Analyst recommendation buckets and revision velocity from Finnhub.
  * Header: status pill + refresh.
@@ -333,7 +333,7 @@ export function EREVPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`Earnings Revisions — ${effectiveSymbol || ""}`}
+          title={`Analyst Recommendation Momentum — ${effectiveSymbol || ""}`}
           subtitle={`${effectiveSymbol || "—"} · ${trend.length} periods`}
           trailing={
             <FunctionControlGroup>

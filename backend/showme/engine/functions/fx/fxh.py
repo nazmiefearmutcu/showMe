@@ -9,18 +9,35 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.services.fx_hedge import SIDE_SIGN, FXExposure, forward_rate, hedge_book
+from showme.engine.services.fx_hedge import (
+    SIDE_SIGN,
+    FXExposure,
+    decimal_rate_error,
+    forward_rate,
+    hedge_book,
+)
 
 # Illustrative-book defaults. The pane exposes explicit inputs for all three;
 # these remain for API callers and are echoed as ``assumed_defaults`` so a
 # synthetic $1M book is never presented as the caller's own exposure.
+DEFAULT_DAYS = 90  # maturity used when neither days nor tenor is given (FXH#4)
 DEFAULT_NOTIONAL = 1_000_000.0
 DEFAULT_BASE_RATE = 0.035
 DEFAULT_HOME_RATE = 0.045
 # Manifest default for the hedge bid-ask (pips), used for hedge_cost.
 DEFAULT_BID_ASK_PIPS = 2.0
-# Manifest tenor options (see fxh_seed.py) mapped to calendar days.
-TENOR_DAYS: dict[str, int] = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
+# Manifest tenor options (see fxh_seed.py) mapped to days. XCON-4-RQ: the same
+# year-fraction convention as FRD (tenor = months/12 or weeks*7/365 of a 365-day
+# year), so FXH and FRD price one pair and tenor identically. 3M is 91.25 days,
+# not a flat 90, and the fractional days feed the ACT/360 accrual unrounded.
+_TENOR_YEAR_DAYS = 365.0
+TENOR_DAYS: dict[str, float] = {
+    "1W": 7.0,
+    "1M": _TENOR_YEAR_DAYS / 12.0,
+    "3M": _TENOR_YEAR_DAYS / 4.0,
+    "6M": _TENOR_YEAR_DAYS / 2.0,
+    "1Y": _TENOR_YEAR_DAYS,
+}
 
 
 @FunctionRegistry.register
@@ -57,7 +74,9 @@ class FXHFunction(BaseFunction):
                 )
             days = TENOR_DAYS[tenor_key]
         else:
-            days = int(params.get("days", 90))
+            days = int(params.get("days", DEFAULT_DAYS))
+        # FXH#4: a maturity nobody chose is an assumption and is echoed as one.
+        days_assumed = _missing(params.get("days")) and _missing(params.get("tenor"))
         # Manifest exposure_side (long_foreign | short_foreign). Per-exposure
         # ``side`` overrides it; an unknown side is an explicit input error.
         exposure_side = str(params.get("exposure_side") or "long_foreign").strip().lower()
@@ -81,7 +100,7 @@ class FXHFunction(BaseFunction):
         else:
             shock = 0.05
         source_mode = "manual_exposure"
-        assumed_defaults: list[str] = []
+        assumed_defaults: list[str] = ["days"] if days_assumed else []
         # explicit exposures override manual defaults; portfolio state is only
         # used when explicitly requested so crypto/stablecoin positions do not
         # masquerade as an FX hedge book.
@@ -118,6 +137,11 @@ class FXHFunction(BaseFunction):
                     f"Unknown exposure side {e['side']!r}; expected long_foreign or short_foreign.",
                 )
             e["side"] = str(e["side"]).strip().lower()
+            # XCON-6: a percent entry (3.5 for 3.5 %) is refused, not used as 3.5x.
+            for rate_key in ("base_rate", "home_rate"):
+                rate_error = decimal_rate_error(rate_key, e.get(rate_key))
+                if rate_error:
+                    return _input_error(self.code, rate_error)
         # Resolve spot rates if missing. _fill_spots returns the list of
         # currencies whose spot could NOT be resolved live and were not
         # supplied manually. We do not substitute 1.0 silently — the hedge
@@ -279,7 +303,7 @@ class FXHFunction(BaseFunction):
         _attach_assumed_values(out, assumed_defaults)
         out["methodology"] = (
             "FXH computes a forward overlay for foreign-currency exposure. "
-            "Forward rate uses covered interest parity: F = S * (1 + home_rate*T) / (1 + base_rate*T). "
+            "Forward rate uses covered interest parity: F = S * (1 + home_rate*T) / (1 + base_rate*T), with T = days/360 (ACT/360, shared with FRD and FXFC). "
             "Hedged notional = exposure * hedge_ratio. Scenario P&L applies shocks to the unhedged residual plus locked-in carry."
         )
         if source_mode == "portfolio_state":
@@ -382,6 +406,8 @@ def _attach_assumed_values(
         values["home_rate"] = DEFAULT_HOME_RATE
     if "bid_ask_pips" in assumed_defaults:
         values["bid_ask_pips"] = DEFAULT_BID_ASK_PIPS
+    if "days" in assumed_defaults:
+        values["days"] = DEFAULT_DAYS
     data["assumed_values"] = values
 
 

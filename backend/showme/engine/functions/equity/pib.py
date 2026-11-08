@@ -53,7 +53,7 @@ class PIBFunction(BaseFunction):
                         self.deps.sec_edgar.cik_for(instrument.symbol), timeout=timeout,
                     )
         except Exception as e:
-            warnings.append(f"sec_edgar: {e}")
+            warnings.append(f"sec_edgar: {str(e) or type(e).__name__}")
         has_feed = isinstance(filings, pd.DataFrame) and not filings.empty
         matched = _filter_filings(filings, months, form_types) if has_feed else pd.DataFrame()
         rows = _pib_rows(instrument.symbol, matched, cik)

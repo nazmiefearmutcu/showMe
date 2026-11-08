@@ -111,7 +111,7 @@ def rpar() -> FunctionManifest:
                 label="Frequency",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Return sampling cadence for Σ.",
+                description="Return sampling cadence for Σ. Only 1d (daily closes) is fetched; other values return input_error.",
                 options=["1d", "1wk", "1mo"],
             ),
             InputSpec(
@@ -212,8 +212,10 @@ def rpar() -> FunctionManifest:
             "multiplicative fixed-point iteration on the risk contributions; method=inverse_vol "
             "is a faster approximation, not true parity. Final weights are then scaled so the "
             "portfolio volatility equals risk_target, so they sum to gross exposure rather than "
-            "1. The lookback is the days parameter; lookback_window is not applied yet, and "
-            "risk_budget is not applied yet (equal-risk parity is used). Failures (singular Σ, "
+            "1. The lookback is the days parameter, or lookback_window (90d, 180d, 1Y, 2Y, 5Y) when days "
+            "is absent. Frequency is daily only (other values return input_error). risk_budget sets the ERC "
+            "risk shares when supplied (inverse_vol ignores it). paper_mode is reported only: RPAR has no "
+            "order path. Failures (singular Σ, "
             "too little history) surface as warnings. This is a research surface — paper_mode "
             "defaults true so the weight vector cannot be wired into any live execution path."
         ),

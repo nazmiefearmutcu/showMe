@@ -8,6 +8,7 @@
  * `summary.portfolio_linked` so the macro table is never misread as real
  * portfolio exposure — surfaced honestly via the mode pill + footer.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import {
   useEffect,
   useMemo,
@@ -255,10 +256,10 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
             <span
               style={refBadgeStyle}
               role="img"
-              aria-label="Published reference (not a live series)"
-              title="Published reference — not a live World Bank series"
+              aria-label="No sourced series; value not reported"
+              title="No free sourced local-currency series is wired"
             >
-              REFERENCE
+              NO SOURCE
             </span>
           </span>
         ),
@@ -497,7 +498,7 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
                 <StatCard
                   label="Avg local ccy"
                   value={fmtPct(kpi.avgLocalShare, 0)}
-                  caption="share issued in local ccy"
+                  caption="no sourced series wired"
                   tone="neutral"
                 />
               </section>
@@ -550,8 +551,9 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
               />
 
               <p style={refFootnoteStyle}>
-                The <strong>Local ccy</strong> column is a published{" "}
-                <em>reference</em>, not a live World Bank series.{" "}
+                The <strong>Local ccy</strong> column has no sourced series: no
+                free local-currency feed is wired, so every value is "—" and no
+                constant is shown.{" "}
                 <strong>Data year</strong> shows the observation vintage —{" "}
                 <code>as of</code> is the fetch time.
               </p>
@@ -741,7 +743,7 @@ function vintageYear(r: DebtRow): string {
 }
 
 function matchesRegion(r: DebtRow, region: RegionId): boolean {
-  return (r.region ?? "").toLowerCase().includes(region);
+  return foldSearchText(r.region ?? "").includes(region);
 }
 
 /** Severity color ramp keyed to the debt-to-GDP reading. */

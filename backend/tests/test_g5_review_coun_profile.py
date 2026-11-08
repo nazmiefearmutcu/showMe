@@ -74,17 +74,20 @@ def test_unknown_country_live_serves_no_reference_numbers(monkeypatch):
     data = result.data
     assert data["rows"] == []
     assert data["cards"] == []
-    assert data["source_mode"] == "reference_country_profile"
+    assert data["source_mode"] == "provider_unavailable"
     assert "country_reference_profile" not in result.sources
 
 
-def test_curated_country_keeps_labelled_reference_rows(monkeypatch):
+def test_curated_country_offline_serves_gap_rows_not_reference_values(monkeypatch):
+    # Reversed by WC1-G04 (COUN-R1): the curated US profile used to be served as
+    # labelled reference rows. Now every metric is an explicit unavailable row.
     _patch_offline(monkeypatch)
-    result = _run(COUNFunction(FunctionDeps()).execute(country="US"))
+    result = _run(COUNFunction(FunctionDeps()).execute(country="US", live=True))
 
     data = result.data
-    assert data["rows"], "a curated country keeps its reference profile"
-    assert all(row["source_mode"] == "country_reference_profile" for row in data["rows"])
+    assert data["rows"], "a curated country shows its metric gaps"
+    assert all(row["value"] is None for row in data["rows"])
+    assert all(row["source_mode"] == "provider_unavailable" for row in data["rows"])
     assert result.metadata.get("country_known") is True
 
 

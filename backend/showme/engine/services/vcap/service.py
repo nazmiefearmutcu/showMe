@@ -140,6 +140,14 @@ class VCAPService:
                 item.update(first_period=item["periods"][0], last_period=item["periods"][-1])
         series = _series(rows)
         warnings = [f"{sid}: {value['reason']}" for sid, value in sorted(access.items()) if value.get("reason")]
+        # A requested geography with a saved release but zero matching periods is
+        # an empty answer, not a value: say so instead of returning a silent gap.
+        warnings += [
+            f"{item['source_id']}: no {item['geography']} observations match the requested "
+            "scope, metric, frequency, stage, unit and period; no value is substituted."
+            for item in coverage.values()
+            if "snapshot_id" in item and not item["periods"]
+        ]
         stale = any(v.get("stale") for v in access.values())
         cached = any(v.get("cached") for v in access.values()) or bool(used) and not any(s in access and not access[s].get("cached", True) for s in query.source_ids)
         status = "ok" if rows else "provider_unavailable" if access and all(v.get("access_status") in {"provider_unavailable", "not_configured"} for v in access.values()) else "empty"
