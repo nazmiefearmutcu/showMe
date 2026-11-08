@@ -717,7 +717,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "SRCH",
-    "name": "Bond Screener",
+    "name": "Sovereign Curve Screener",
     "category": "screen",
     "description": ""
   },

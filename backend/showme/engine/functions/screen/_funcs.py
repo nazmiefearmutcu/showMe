@@ -22,9 +22,9 @@ from showme.quotes import fetch_quote_snapshot
 
 @FunctionRegistry.register
 class SRCHFunction(BaseFunction):
-    """SRCH — Bond Screener (alias of EQS pattern)."""
+    """SRCH — Sovereign curve screener over benchmark curve points (EQS pattern DSL)."""
     code = "SRCH"
-    name = "Bond Screener"
+    name = "Sovereign Curve Screener"
     asset_classes = (AssetClass.BOND,)
     category = "screen"
 
