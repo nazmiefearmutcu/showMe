@@ -1,12 +1,12 @@
 /**
- * SOSC — Social / News Sentiment.
+ * SOSC — Social / News Sentiment for one ticker.
  *
- * Keyless GDELT DOC 2.0 volume+tone blended with the bundled FinBERT
- * headline read into a net sentiment in [-1, +1]. Header: window control
- * (persisted under `showme.sosc.days`) + status pill + refresh. Body:
- * sentiment score cards + per-outlet aggregate table (mentions, mean tone,
- * trend chip). GDELT outages render the backend's honest
- * `provider_unavailable` reason — no fabricated numbers, ever.
+ * Reads awareness news sentiment for the ticker (quality-weighted mean,
+ * positive/negative share, momentum z, dispersion, per-bucket series), the
+ * GDELT tone series on its native scale, the latest headlines and the social
+ * rank row. The methodology line comes from the backend and states exactly
+ * what is computed. Awareness down renders the honest unavailable state; quiet
+ * coverage renders an empty state. Nothing is fabricated.
  */
 import { useMemo, useState, type CSSProperties } from "react";
 import {
@@ -33,64 +33,109 @@ import {
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
+import { AwarenessUnavailable } from "./awareness/AwarenessUnavailable";
+import { ProviderHealthStrip } from "./awareness/ProviderHealthStrip";
+import type { AwarenessMeta } from "./awareness/types";
+import { SentimentBars } from "./awareness/SentimentBars";
+import { formatUtcStamp } from "./awareness/FearGreedGauge";
 
 interface SOSCRow {
   platform?: string;
-  mentions?: number;
-  sentiment?: number;
+  mentions?: number | null;
+  sentiment?: number | null;
   trend?: string;
-  source_mode?: string;
 }
 
-interface SOSCSummary {
-  symbol?: string;
-  net_sentiment?: number | null;
-  label?: string;
-  total_mentions?: number;
-  gdelt_tone?: number;
-  finbert_headline_sentiment?: number | null;
-  window?: string;
-  outlets?: number;
-  source_mode?: string;
+interface SeriesBucket {
+  ts: string;
+  mean: number | null;
+  weighted_mean?: number | null;
+  count?: number;
+  positive?: number;
+  negative?: number;
+  neutral?: number;
+}
+
+interface SOSCNews {
+  count?: number;
+  mean?: number | null;
+  weighted_mean?: number | null;
+  positive_share?: number | null;
+  negative_share?: number | null;
+  momentum_z?: number | null;
+  dispersion?: number | null;
+  latest_at?: string | null;
+  publishers?: string[] | number;
+  series?: SeriesBucket[];
+}
+
+interface SOSCHeadline {
+  title?: string | null;
+  publisher?: string | null;
+  publisher_name?: string | null;
+  published_at?: string | null;
+  url?: string | null;
+  sentiment?: number | null;
+}
+
+interface SOSCSocial {
+  rank?: number | null;
+  mentions?: number | null;
+  mention_change_pct?: number | null;
+  rank_change?: number | null;
+  as_of?: string | null;
+}
+
+interface SOSCToneSample {
+  ts: string;
+  value: number | null;
 }
 
 interface SOSCData {
   status?: string;
-  reason?: string;
+  reason?: string | null;
+  symbol?: string;
+  news?: SOSCNews;
+  headlines?: SOSCHeadline[];
+  social?: SOSCSocial | null;
+  gdelt_tone?: SOSCToneSample[];
   rows?: SOSCRow[];
-  summary?: SOSCSummary;
-  next_actions?: string[];
   methodology?: string;
+  next_actions?: string[];
+  meta?: AwarenessMeta;
 }
 
-const DAYS_OPTIONS = [
-  { value: 1, label: "1d" },
-  { value: 3, label: "3d" },
-  { value: 7, label: "7d" },
-  { value: 14, label: "14d" },
+const WINDOW_OPTIONS = [
+  { value: "1d", label: "1d" },
+  { value: "7d", label: "7d" },
+  { value: "30d", label: "30d" },
 ] as const;
-const DAYS_IDS = DAYS_OPTIONS.map((o) => o.value);
+const WINDOW_IDS = WINDOW_OPTIONS.map((o) => o.value);
 
 export function SOSCPane({ code, symbol }: FunctionPaneProps) {
-  const [days, setDays] = usePersistentOption<number>(
-    "showme.sosc.days",
-    DAYS_IDS,
-    3,
+  const [windowId, setWindowId] = usePersistentOption<string>(
+    "showme.sosc.window",
+    WINDOW_IDS,
+    "7d",
   );
   const [trendFilter, setTrendFilter] = useState("ALL");
-  const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF", "CRYPTO"]);
+  const effectiveSymbol =
+    symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF", "CRYPTO"]);
   const { state, data, error, refetch } = useFunction<SOSCData>({
     code,
     symbol: effectiveSymbol,
-    params: { days },
+    params: { window: windowId },
     enabled: !!effectiveSymbol,
   });
 
   const payload = data?.data;
   const rows = useMemo(() => payload?.rows ?? [], [payload]);
-  const summary = payload?.summary;
+  const news = payload?.news;
+  const tone = payload?.gdelt_tone ?? [];
   const status = payload?.status ?? "—";
   const isUnavailable = status === "provider_unavailable";
+  const count = news?.count ?? 0;
+  const latestTone = lastFinite(tone.map((t) => t.value));
 
   const trends = useMemo(() => {
     const set = new Set<string>();
@@ -108,15 +153,15 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
     [rows, trendFilter],
   );
 
-  const net = summary?.net_sentiment ?? null;
-  const read = summary?.label ?? sentimentLabel(net);
+  const weighted = news?.weighted_mean ?? null;
+  const read = sentimentLabel(weighted);
 
   const COLS: DataGridColumn<SOSCRow>[] = useMemo(
     () => [
       {
         key: "platform",
-        header: "Outlet / platform",
-        width: 260,
+        header: "Source",
+        width: 220,
         sortable: true,
         sortValue: (r) => r.platform ?? "",
         render: (r) => <span style={monoPrimaryStyle}>{r.platform ?? "—"}</span>,
@@ -138,12 +183,7 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
         sortable: true,
         sortValue: (r) => r.sentiment ?? null,
         render: (r) => (
-          <span
-            style={{
-              ...monoStrongStyle,
-              color: toneColor(r.sentiment),
-            }}
-          >
+          <span style={{ ...monoStrongStyle, color: toneColor(r.sentiment) }}>
             {fmtSigned(r.sentiment)}
           </span>
         ),
@@ -179,75 +219,146 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
 
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="SOSC needs an equity or crypto ticker." icon="⌖" />
+  ) : isUnavailable ? (
+    <AwarenessUnavailable
+      reason={payload?.reason ?? null}
+      onRetry={refetch}
+      subject={`news sentiment for ${effectiveSymbol}`}
+    />
   ) : (
     <PaneState
       state={state}
       error={error}
-      empty={isUnavailable || rows.length === 0}
-      emptyTitle={isUnavailable ? "Sentiment provider unavailable" : "No recent coverage"}
-      emptyBody={
-        isUnavailable
-          ? (payload?.reason ??
-            "GDELT is unreachable — no sentiment is shown rather than a fabricated read.")
-          : `No GDELT articles matched ${effectiveSymbol} in the last ${summary?.window ?? `${days}d`} — nothing is fabricated while coverage is quiet.`
-      }
-      emptyIcon={isUnavailable ? "!" : "∅"}
+      empty={count === 0}
+      emptyTitle="No recent coverage"
+      emptyBody={`No scored articles matched ${effectiveSymbol} in the last ${windowId}. Nothing is filled in while coverage is quiet.`}
+      emptyIcon="∅"
       onRetry={refetch}
     >
       <div className="u-grid-gap-14">
+        {payload?.meta ? (
+          <ProviderHealthStrip
+            providers={payload.meta.providers}
+            feedHealth={payload.meta.feed_health}
+            generatedAt={payload.meta.generated_at}
+          />
+        ) : null}
         <section style={kpiGridStyle} aria-label="SOSC sentiment summary">
           <StatCard
-            label="Net sentiment"
-            value={fmtSigned(net)}
-            caption={`${(summary?.window ?? `${days}d`).toUpperCase()} WINDOW · ${read.toUpperCase()}`}
-            tone={sentimentTone(net)}
-          />
-          <StatCard
-            label="Read"
-            value={read}
-            caption={`SOURCE ${summary?.source_mode ?? "—"}`}
-            tone={sentimentTone(net)}
+            label="Weighted mean"
+            value={fmtSigned(weighted)}
+            caption={`${windowId.toUpperCase()} · ${read.toUpperCase()}`}
+            tone={sentimentTone(weighted)}
           />
           <StatCard
             label="Articles"
-            value={fmtInt(summary?.total_mentions)}
-            caption={`${fmtInt(summary?.outlets)} OUTLETS`}
+            value={fmtInt(news?.count)}
+            caption={`POSITIVE ${pct(news?.positive_share)} · NEGATIVE ${pct(news?.negative_share)}`}
             tone="neutral"
           />
           <StatCard
+            label="Momentum z"
+            value={fmtSigned(news?.momentum_z)}
+            caption={`DISPERSION ${fmtNum(news?.dispersion)}`}
+            tone={sentimentTone(news?.momentum_z)}
+          />
+          <StatCard
             label="GDELT tone"
-            value={fmtSigned(summary?.gdelt_tone)}
-            caption={`FINBERT ${fmtSigned(summary?.finbert_headline_sentiment)}`}
-            tone={sentimentTone(summary?.gdelt_tone)}
+            value={fmtSigned(latestTone)}
+            caption="NATIVE GDELT SCALE"
+            tone={sentimentTone(latestTone)}
           />
         </section>
-        <div style={chipRowStyle} role="group" aria-label="Trend filter">
-          {trends.map((t) => {
-            const active = trendFilter === t;
-            return (
-              <button
-                key={t}
-                type="button"
-                className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
-                aria-pressed={active}
-                onClick={() => setTrendFilter(t)}
-                title={`Filter trend ${t}`}
-              >
-                {t}
-              </button>
-            );
-          })}
-        </div>
-        <DataGrid
-          columns={COLS}
-          rows={visible}
-          rowKey={(r, i) => `${r.platform ?? "outlet"}-${i}`}
-          density="compact"
-          ariaLabel="SOSC per-outlet sentiment"
-          defaultSortKey="mentions"
-          defaultSortDir="descending"
-          empty="No outlets match this trend filter"
-        />
+
+        <section aria-labelledby="sosc-entity-title" className="u-grid-gap-14">
+          <h3 id="sosc-entity-title" style={sectionTitleStyle}>
+            News sentiment by bucket
+          </h3>
+          {series(news).length > 0 ? (
+            <SentimentBars
+              series={series(news).map((s) => ({ ts: s.ts, mean: s.mean }))}
+              tone={tone}
+              toneLabel="GDELT tone, native scale"
+              ariaLabel={`${effectiveSymbol} news sentiment buckets with GDELT tone`}
+            />
+          ) : (
+            <p style={mutedStyle}>No scored news buckets for {effectiveSymbol}.</p>
+          )}
+        </section>
+
+        <section aria-labelledby="sosc-headlines-title">
+          <h3 id="sosc-headlines-title" style={sectionTitleStyle}>
+            Latest headlines
+          </h3>
+          {(payload?.headlines ?? []).length === 0 ? (
+            <p style={mutedStyle}>No headlines returned for this window.</p>
+          ) : (
+            <ul className="aw-headlines">
+              {(payload?.headlines ?? []).slice(0, 12).map((h, i) => (
+                <li key={`${h.title ?? "h"}-${i}`}>
+                  <span className="aw-headlines__time">
+                    {formatUtcStamp(h.published_at) || "—"}
+                  </span>
+                  <span>
+                    {h.url ? (
+                      <a href={h.url} target="_blank" rel="noreferrer" className="aw-link">
+                        {h.title ?? "Untitled"}
+                      </a>
+                    ) : (
+                      (h.title ?? "Untitled")
+                    )}
+                    <span style={mutedInlineStyle}>
+                      {" "}
+                      {h.publisher_name ?? h.publisher ?? ""}
+                    </span>
+                  </span>
+                  <span style={{ ...monoStrongStyle, color: toneColor(h.sentiment) }}>
+                    {fmtSigned(h.sentiment)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {rows.length > 0 ? (
+          <>
+            <div style={chipRowStyle} role="group" aria-label="Trend filter">
+              {trends.map((t) => {
+                const active = trendFilter === t;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    className={`fn-segmented__opt${active ? " fn-segmented__opt--active" : ""}`}
+                    aria-pressed={active}
+                    onClick={() => setTrendFilter(t)}
+                    title={`Filter trend ${t}`}
+                  >
+                    {t}
+                  </button>
+                );
+              })}
+            </div>
+            <DataGrid
+              columns={COLS}
+              rows={visible}
+              rowKey={(r, i) => `${r.platform ?? "source"}-${i}`}
+              density="compact"
+              ariaLabel="SOSC per-source sentiment"
+              defaultSortKey="mentions"
+              defaultSortDir="descending"
+              empty="No sources match this trend filter"
+            />
+          </>
+        ) : null}
+
+        {payload?.methodology ? (
+          <details style={mutedStyle}>
+            <summary>Methodology</summary>
+            <p style={{ margin: "6px 0 0" }}>{payload.methodology}</p>
+          </details>
+        ) : null}
       </div>
     </PaneState>
   );
@@ -258,25 +369,25 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Social Sentiment — ${effectiveSymbol || ""}`}
-          subtitle={`${effectiveSymbol || "—"} · ${rows.length} outlets · ${summary?.window ?? `${days}d`} window`}
+          subtitle={`${effectiveSymbol || "—"} · ${count} articles · ${windowId} window`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {fmtInt(summary?.total_mentions)} articles
+                {fmtInt(news?.count)} articles
               </Pill>
               <SegmentedControl
                 label="WINDOW"
-                value={days}
-                options={DAYS_OPTIONS}
-                onChange={setDays}
-                title="GDELT lookback window"
+                value={windowId}
+                options={WINDOW_OPTIONS}
+                onChange={setWindowId}
+                title="Sentiment lookback window"
               />
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
                 disabled={!effectiveSymbol}
-                title="Re-scan social sentiment"
+                title="Re-scan news sentiment"
               />
             </FunctionControlGroup>
           }
@@ -287,18 +398,30 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection label="status" value={status} />
           <StatusDivider />
-          <StatusSection label="outlets" value={rows.length} />
+          <StatusSection label="latest" value={formatUtcStamp(news?.latest_at) || "—"} />
           <StatusDivider />
           <StatusSection
             label="elapsed"
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
           <StatusDivider />
-          <StatusSection label="window" value={summary?.window ?? `${days}d`} tone="accent" />
+          <StatusSection label="window" value={windowId} tone="accent" />
         </PaneFooter>
       </Pane>
     </div>
   );
+}
+
+function series(news: SOSCNews | undefined): SeriesBucket[] {
+  return news?.series ?? [];
+}
+
+function lastFinite(values: Array<number | null | undefined>): number | null {
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    const v = values[i];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return null;
 }
 
 function sentimentLabel(v: number | null | undefined): string {
@@ -320,7 +443,17 @@ function toneColor(v: number | null | undefined): string {
 
 function fmtSigned(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
-  return `${v > 0 ? "+" : ""}${v.toFixed(2)}`;
+  return `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(2)}`;
+}
+
+function fmtNum(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return v.toFixed(2);
+}
+
+function pct(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `${Math.round(v * 100)}%`;
 }
 
 function fmtInt(v: number | null | undefined): string {
@@ -339,6 +472,24 @@ const chipRowStyle: CSSProperties = {
   alignItems: "center",
   gap: 6,
   flexWrap: "wrap",
+};
+
+const sectionTitleStyle: CSSProperties = {
+  margin: 0,
+  fontFamily: "var(--font-display)",
+  fontSize: "var(--font-size-lg)",
+  fontWeight: 600,
+  color: "var(--text-display)",
+};
+
+const mutedStyle: CSSProperties = {
+  fontSize: "var(--font-size-sm)",
+  color: "var(--text-secondary)",
+};
+
+const mutedInlineStyle: CSSProperties = {
+  color: "var(--text-mute)",
+  fontSize: "var(--font-size-2xs)",
 };
 
 const monoStrongStyle: CSSProperties = {
