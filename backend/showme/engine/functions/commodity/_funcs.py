@@ -502,6 +502,7 @@ async def _contract_snapshot(
     volume = _finite(getattr(quote, "volume_24h", None))
     source = getattr(quote, "source", None) or "yfinance"
     as_of = getattr(getattr(quote, "timestamp", None), "isoformat", lambda: None)()
+    as_of_source = "quote_exchange_time" if as_of else None
 
     if last is None and history:
         last = _finite(history[-1].get("close"))
@@ -512,9 +513,15 @@ async def _contract_snapshot(
         volume = _finite(history[-1].get("volume"))
         source = "yfinance_chart"
         as_of = history[-1].get("date")
+        as_of_source = "daily_bar_date"
 
     if last is None:
         return None, history, errors
+    if not as_of:
+        # No exchange time came with the price. The row is labelled as a fetch
+        # time so callers can refuse it; GLCO does (see its ``_one``).
+        as_of = datetime.now(timezone.utc).isoformat()
+        as_of_source = "fetch_time"
 
     change = last - prev if prev not in (None, 0) else None
     change_pct = (last / prev - 1) * 100 if prev not in (None, 0) else None
@@ -535,7 +542,8 @@ async def _contract_snapshot(
         "volume": volume,
         "source": source,
         "source_mode": "live_yfinance",
-        "as_of": as_of or datetime.now(timezone.utc).isoformat(),
+        "as_of": as_of,
+        "as_of_source": as_of_source,
     }, history, errors
 
 
@@ -1671,6 +1679,11 @@ class GLCOFunction(BaseFunction):
                     timeout=quote_timeout,
                     include_history=False,
                 )
+                if row and row.get("as_of_source") == "fetch_time":
+                    # GLCO#2: a price with no exchange time is never served as
+                    # current (a Friday close read on a Sunday looked live).
+                    errors = [*errors, f"{sym} quote: no exchange time on the quote; price not served"]
+                    row = None
                 provider_errors.extend(errors)
                 symbol_errors[sym] = list(errors)
                 return row
