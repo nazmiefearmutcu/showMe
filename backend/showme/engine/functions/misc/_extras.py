@@ -255,8 +255,8 @@ class BMCFunction(BaseFunction):
                     {"label": "Lessons", "value": len(rows)},
                 ],
                 "methodology": (
-                    "BMC is a local market-concepts curriculum. Each row is a concrete lesson with topic, "
-                    "learning objective, example, quiz prompt, and completion state instead of a static module count."
+                    "BMC is a local market-concepts curriculum. Each row is a concrete lesson with module, "
+                    "learning objective, example, and quiz prompt. Completion is tracked in the browser, not here."
                 ),
                 "field_dictionary": {
                     "module": "Curriculum module.",
@@ -497,7 +497,6 @@ def _bmc_lessons() -> list[dict[str, str]]:
                 "objective": objective,
                 "example": example,
                 "quiz": quiz,
-                "progress": "not_started",
             })
     return rows
 
