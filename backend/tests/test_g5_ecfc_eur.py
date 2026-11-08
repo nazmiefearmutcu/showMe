@@ -59,8 +59,26 @@ def test_eur_is_fetched_under_imf_euro_key_and_returns_rows() -> None:
 def test_eur_aliases_normalise_to_imf_euro_key() -> None:
     assert _normalize_country("EUR") == "EURO"
     assert _normalize_country("eur") == "EURO"
-    assert _normalize_country("EU") == "EURO"
     assert _normalize_country("EZ") == "EURO"
     # Existing mappings are untouched.
     assert _normalize_country("US") == "USA"
     assert _normalize_country("EURO") == "EURO"
+
+
+def test_eu_is_not_silently_mapped_to_euro_aggregate() -> None:
+    # EU is the European Union (27 members); EURO is the euro area (20 members).
+    # Serving EURO for EU would answer with another aggregate's data.
+    assert _normalize_country("EU") != "EURO"
+    assert _normalize_country("eu") != "EURO"
+
+
+def test_eu_returns_explicit_needs_input_without_fetching() -> None:
+    fake = _ImfFake()
+    fn = ECFCFunction()
+    fn._http_client = fake
+    result = asyncio.run(fn.execute(country="EU", years=3, indicators=["NGDP_RPCH"]))
+    assert fake.urls == [], "EU must not query IMF under any euro-area key"
+    assert result.data["status"] == "needs_input", result.data
+    assert result.data["rows"] == []
+    assert "EURO" in result.data["reason"] and "European Union" in result.data["reason"]
+    assert result.data["next_actions"], "needs_input must say what to do next"
