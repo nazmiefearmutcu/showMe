@@ -148,3 +148,31 @@ async def test_sector_default_tech_uses_high_equity_share():
     data = res.data
     assert abs(data["equity_weight"] - 0.95) < 1e-9
     assert data["debt_value_source"] == "sector_default_tech"
+
+
+@pytest.mark.asyncio
+async def test_bank_without_erp_does_not_claim_re_capm_is_reported():
+    """WACC#3-RQ: with no ERP the cost of equity is null, so the text must not
+    say it is reported; it names the missing input instead."""
+    raw = {"marketCap": 0.0, "totalDebt": 0.0, "sector": "Banks - Diversified"}
+    deps = FunctionDeps(yfinance=_FakeYf(raw=raw), fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBB": 6.5}))
+    res = await WACCFunction(deps).execute(
+        instrument=Instrument(symbol="BNK", asset_class=AssetClass.EQUITY), beta=1.0)
+    data = res.data
+    assert data["status"] == "not_applicable"
+    assert data.get("re_capm") is None
+    assert "could not be computed" in data["reason"]
+    assert "equity risk premium" in data["reason"]
+    assert not any("is still reported" in w for w in res.warnings)
+
+
+@pytest.mark.asyncio
+async def test_bank_with_erp_reports_re_capm():
+    raw = {"marketCap": 0.0, "totalDebt": 0.0, "sector": "Banks - Diversified"}
+    deps = FunctionDeps(yfinance=_FakeYf(raw=raw), fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBB": 6.5}))
+    res = await WACCFunction(deps).execute(
+        instrument=Instrument(symbol="BNK", asset_class=AssetClass.EQUITY), beta=1.0, market_premium=0.05)
+    data = res.data
+    assert data["status"] == "not_applicable"
+    assert data["re_capm"] is not None
+    assert "is reported" in data["reason"]

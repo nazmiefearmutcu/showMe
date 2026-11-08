@@ -513,10 +513,17 @@ class WACCFunction(BaseFunction):
             missing.append("tax rate (issuer effective rate; the 21% statutory rate is US-only)")
         wacc: float | None = None
         if financial_issuer:
+            # WACC#3-RQ: say re_capm is reported only when it was computed; a
+            # missing ERP / beta / rf leaves it null and is named instead.
+            equity_missing = [m for m in missing if not m.startswith(("cost of debt", "capital structure", "tax rate"))]
+            if re_capm is not None:
+                equity_note = "cost of equity (re_capm) is still reported"
+            else:
+                equity_note = ("cost of equity (re_capm) could not be computed: missing "
+                               + ", ".join(equity_missing or ["CAPM inputs"]))
             warnings.append(
                 "WACC not applicable to a bank or insurer: its liabilities are operating "
-                "funding (deposits, reserves), not capital-structure debt; cost of equity "
-                "(re_capm) is still reported"
+                f"funding (deposits, reserves), not capital-structure debt; {equity_note}"
             )
         elif not missing:
             wacc = ev_ratio * re_capm + dv_ratio * rd * (1 - tax)
@@ -543,10 +550,15 @@ class WACCFunction(BaseFunction):
                 "reason": (
                     "WACC is not applicable to a bank or insurer: deposits and policy reserves "
                     "are operating funding, so the book-debt capital-structure weight is not a "
-                    "meaningful input. The cost of equity (re_capm) is reported."
+                    "meaningful input. "
+                    + ("The cost of equity (re_capm) is reported." if re_capm is not None
+                       else "The cost of equity (re_capm) could not be computed: "
+                       + ", ".join(equity_missing or ["CAPM inputs"]) + " missing.")
                 ),
                 "next_actions": [
-                    "Use the cost of equity (re_capm) for a financial issuer valuation.",
+                    "Use the cost of equity (re_capm) for a financial issuer valuation."
+                    if re_capm is not None
+                    else "Supply the missing CAPM input (for example erp) to get the cost of equity.",
                     "Use a financials-specific model (e.g. excess-return or dividend-discount) instead of WACC.",
                 ],
             }
