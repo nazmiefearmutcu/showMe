@@ -1,137 +1,140 @@
-"""SOSC — Social / News Sentiment.
+"""SOSC — Entity Sentiment (news + social buzz + GDELT tone), read from Awareness.
 
-Real, KEYLESS implementation. The product claim is an aggregate social-sentiment
-read for a symbol. Authenticated social APIs (X, Reddit, StockTwits) need keys
-and are inert in the standard build, so instead of emitting a hardcoded neutral
-baseline we derive a genuine sentiment signal from two keyless sources:
+Every number comes from the awareness-markets service (``/v1/markets/sentiment``):
 
-  * GDELT DOC 2.0 API (https://api.gdeltproject.org/api/v2/doc/doc) — global
-    news/social article volume + per-article *tone* over a rolling window.
-  * The bundled FinBERT analyzer (``showme.finbert_analyzer``) scoring the
-    recent headlines for an independent financial-sentiment read.
+* ``news``: per-entity FinBERT sentiment of Awareness-collected news items over a
+  1d / 7d / 30d window, with its hourly or daily series.
+* ``headlines``: the newest items behind that sentiment.
+* ``social``: the ApeWisdom rank / mention change for the ticker, when listed.
+* ``gdelt_tone``: the GDELT DOC timeline tone series Awareness stored for the entity.
 
-The two are blended into a net sentiment in [-1, +1] with real article counts.
-On a genuine network failure we return ``provider_unavailable`` with an honest
-warning — never a fabricated number.
+No legacy GDELT/FinBERT/StockTwits path remains here. When Awareness is down the
+function returns ``provider_unavailable``; it never invents a sentiment value.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
-from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
+from showme.engine.core.base_function import BaseFunction, FunctionDeps, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.data_sources.awareness import (
+    AwarenessClient,
+    AwarenessResponse,
+    AwarenessUnavailable,
+    awareness_base_url,
+    get_awareness_client,
+)
 
-_UA = {"User-Agent": "showMe research desk admin@showme.app"}
-_GDELT_DOC = "https://api.gdeltproject.org/api/v2/doc/doc"
-
-
-def _truthy(value: Any) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-async def _client():
-    """Shared keyless async HTTP client (httpx) from the provider layer.
-
-    ``get_client`` is an async factory, so it MUST be awaited — returning the
-    bare coroutine would make ``.get`` fail and silently drop SOSC to the
-    provider_unavailable branch on the happy path.
-    """
-    from showme.providers._http import get_client
-
-    return await get_client()
+WINDOW_BUCKETS: dict[str, str] = {"1d": "1h", "7d": "1h", "30d": "1d"}
+DEFAULT_WINDOW = "7d"
+HEADLINE_LIMIT = 25
+UNAVAILABLE_NEXT_ACTIONS = ["Start awareness-markets (SHOWME_AWARENESS_HOME) and retry."]
 
 
-def _finbert():
-    try:
-        from showme.finbert_analyzer import get_finbert_analyzer
-
-        return get_finbert_analyzer()
-    except Exception:
-        return None
-
-
-def _query_for(symbol: str) -> str:
-    """Build a GDELT query — ticker scoped to finance context, English.
-
-    GDELT's query parser is strict: ``(`` may ONLY wrap an OR'd statement, and
-    two adjacent parenthesised groups (the old
-    ``("AAPL" OR "AAPL stock") (stock OR ...)`` shape) are rejected with HTTP
-    200 + ``"Parentheses may only be used around OR'd statements."`` and zero
-    articles. The reliable shape (empirically verified 2026-06-01: 21 articles
-    for AAPL) is a BARE symbol term ANDed with a SINGLE finance OR-group.
-    """
-    sym = symbol.upper()
-    return f"{sym} (stock OR shares OR earnings OR market OR price OR trading OR investors)"
+def _base_symbol(raw: str) -> str:
+    """Crypto quote suffixes are stripped; the match is suffix-anchored so FX-style
+    ``USDJPY`` is left intact. ``BRK.B`` becomes the Awareness entity form ``BRK-B``;
+    BIST ``.IS`` tickers keep their suffix."""
+    sym = str(raw or "").strip().upper()
+    base = sym.removesuffix("USDT").removesuffix("-USD").removesuffix("USD") or sym
+    if base.endswith(".IS"):
+        return base
+    return base.replace(".", "-")
 
 
-async def _gdelt_articles(symbol: str, timespan: str, maxrecords: int) -> list[dict[str, Any]]:
-    """Pull recent articles + tone from GDELT DOC 2.0 (keyless).
-
-    GDELT throttles aggressively ("limit requests to one every 5 seconds")
-    and returns HTTP 429 under bursts. Rather than surfacing a transient 429
-    as a hard provider_unavailable, retry ONCE after honouring the documented
-    cool-off so a quick second click (or a verification burst) still resolves.
-    """
-    import time
-    client = await _client()
-    t_start = time.perf_counter()
-
-    async def _hit(query: str) -> list[dict[str, Any]]:
-        if time.perf_counter() - t_start > 4.0:
-            return []
-        params = {
-            "query": query,
-            "mode": "ArtList",
-            "format": "json",
-            "maxrecords": str(maxrecords),
-            "timespan": timespan,
-            "sort": "DateDesc",
-        }
-        r = None
-        for attempt in range(2):
-            if time.perf_counter() - t_start > 5.0:
-                break
-            try:
-                r = await client.get(_GDELT_DOC, params=params, headers=_UA, timeout=3.0)
-                if r.status_code == 429:
-                    if attempt == 0:
-                        await asyncio.sleep(1.0)
-                        continue
-                    else:
-                        break
-                r.raise_for_status()
-                break
-            except Exception:
-                if attempt == 1:
-                    raise
-                await asyncio.sleep(0.5)
-        if r is None:
-            return []
+def _window_from_params(params: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return ``(window, error)``. ``window`` (1d|7d|30d) is the contract parameter; the
+    legacy ``days`` parameter (still sent by the current pane) is mapped onto it."""
+    raw = params.get("window")
+    if raw not in (None, ""):
+        window = str(raw).strip().lower()
+        if window in WINDOW_BUCKETS:
+            return window, None
+        return None, f"window must be one of 1d, 7d, 30d (got {raw!r})"
+    if params.get("days") not in (None, ""):
         try:
-            payload = r.json()
-        except Exception:
-            return []
-        arts = payload.get("articles") if isinstance(payload, dict) else None
-        return arts if isinstance(arts, list) else []
-
-    arts = await _hit(_query_for(symbol))
-    if not arts and (time.perf_counter() - t_start < 4.0):
-        arts = await _hit(symbol.upper())
-    return arts
+            days = int(float(str(params["days"])))
+        except (TypeError, ValueError):
+            return None, f"days must be a number (got {params['days']!r})"
+        return ("1d" if days <= 1 else "7d" if days <= 7 else "30d"), None
+    return DEFAULT_WINDOW, None
 
 
-def _to_unit_tone(tone: Any) -> float | None:
-    """GDELT tone is roughly [-10, +10]; map to [-1, +1] and clamp."""
-    try:
-        v = float(tone)
-    except (TypeError, ValueError):
+def _trend(value: Any) -> str | None:
+    if value is None:
         return None
-    if v != v:  # NaN
+    v = float(value)
+    return "bullish" if v > 0.05 else "bearish" if v < -0.05 else "flat"
+
+
+def _mention_trend(change_pct: Any) -> str | None:
+    if change_pct is None:
         return None
-    return max(-1.0, min(1.0, v / 10.0))
+    v = float(change_pct)
+    return "rising" if v > 5 else "falling" if v < -5 else "flat"
+
+
+def _headline(item: dict[str, Any]) -> dict[str, Any]:
+    sentiment = item.get("sentiment") or {}
+    return {
+        "id": item.get("id"),
+        "title": item.get("title"),
+        "publisher_name": item.get("publisher_name"),
+        "url": item.get("url"),
+        "published_at": item.get("published_at"),
+        "sentiment": sentiment.get("label"),
+        "sentiment_score": sentiment.get("score"),
+        "sentiment_model": sentiment.get("model"),
+        "quality_label": item.get("quality_label"),
+    }
+
+
+def _social_match(social: Any, base: str) -> dict[str, Any] | None:
+    if not isinstance(social, dict):
+        return None
+    for group in ("stocks", "crypto"):
+        for row in social.get(group) or []:
+            if isinstance(row, dict) and str(row.get("ticker", "")).upper() == base:
+                return {
+                    "rank": row.get("rank"),
+                    "mentions": row.get("mentions"),
+                    "mention_change_pct": row.get("mention_change_pct"),
+                    "rank_change": row.get("rank_change"),
+                    "as_of": row.get("as_of"),
+                }
+    return None
+
+
+def _methodology(base: str, window: str, bucket: str, model: str | None) -> str:
+    scored_by = model or "the FinBERT model recorded per item by Awareness"
+    return (
+        f"SOSC reports Awareness entity sentiment for {base} over the last {window} "
+        f"({bucket} buckets). Each Awareness-collected news item is scored by {scored_by}, "
+        "giving a sentiment score in [-1, +1] per item. news.mean is the arithmetic mean of "
+        "those item scores in each bucket and overall; news.weighted_mean weights each item by "
+        "its FinBERT confidence times its source-quality score, as computed by Awareness. "
+        "positive_share and negative_share are the fractions of items labelled positive or "
+        "negative; momentum_z and dispersion are Awareness statistics and are null when there "
+        "are too few observations. headlines are the newest items behind the score. social is "
+        "the ApeWisdom rank and mention change for the ticker when it is on the ranked list, "
+        "otherwise null. gdelt_tone is the GDELT DOC tone series Awareness stored for the entity, "
+        "in GDELT's native scale (roughly -10 to +10), not rescaled. Nothing is estimated: an "
+        "empty window returns status empty and no sentiment value."
+    )
+
+
+_FIELD_DICT = {
+    "news.mean": "Mean FinBERT item score in [-1, +1] for the window.",
+    "news.weighted_mean": "Confidence x source-quality weighted mean, computed by Awareness.",
+    "news.series": "Bucketed counts and means (hourly for 1d/7d, daily for 30d).",
+    "headlines": "Newest items behind the sentiment, with their item-level label and score.",
+    "social.mention_change_pct": "Change in ApeWisdom mentions versus 24 hours earlier.",
+    "gdelt_tone": "GDELT DOC tone series for the entity (native scale, roughly -10 to +10).",
+    "rows": "Legacy platform table: News, Reddit (ApeWisdom) and GDELT tone rows when present.",
+}
 
 
 @FunctionRegistry.register
@@ -140,169 +143,182 @@ class SOSCFunction(BaseFunction):
     name = "Social Sentiment"
     asset_classes = (AssetClass.EQUITY, AssetClass.CRYPTO)
     category = "news"
+    description = (
+        "Per-symbol news sentiment (FinBERT over Awareness news), social buzz rank and GDELT tone, "
+        "with the headlines behind the score."
+    )
+
+    def __init__(self, deps: FunctionDeps | None = None) -> None:
+        super().__init__(deps)
+        self._awareness: AwarenessClient | None = None
+
+    def _client(self) -> AwarenessClient:
+        return self._awareness or get_awareness_client()
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        sym = (getattr(instrument, "symbol", None) or params.get("symbol") or "AAPL").upper()
-        # crypto symbols arrive as BTCUSDT / BTC-USD — strip to the base token
-        # (HNT-21: suffix-anchored so FX-style "USDJPY" is not mangled to "JPY")
-        base = (
-            sym.removesuffix("USDT")
-            .removesuffix("-USD")
-            .removesuffix("USD")
-        ) or sym
-        days = int(params.get("days", 3) or 3)
-        timespan = f"{max(1, min(days, 14))}d"
-        maxrecords = max(20, min(int(params.get("limit", 75) or 75), 250))
-
-        warnings: list[str] = []
-        try:
-            articles = await _gdelt_articles(base, timespan, maxrecords)
-        except Exception as exc:  # noqa: BLE001
-            reason = str(exc) or exc.__class__.__name__
+        raw_symbol = getattr(instrument, "symbol", None) or params.get("symbol")
+        if not raw_symbol:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "provider_unavailable",
-                    "symbol": sym,
+                    "status": "input_required",
+                    "reason": "Pass a symbol to score.",
                     "rows": [],
-                    "summary": {"symbol": sym, "net_sentiment": None, "total_mentions": 0,
-                                "source_mode": "gdelt_unreachable"},
-                    "reason": f"GDELT request failed: {reason}",
-                    "next_actions": ["Retry once the GDELT endpoint recovers."],
-                    "methodology": "SOSC reads keyless GDELT news/social tone and scores headlines with FinBERT.",
+                    "next_actions": ["Enter a ticker, for example AAPL or BTC."],
+                    "methodology": _methodology("the symbol", DEFAULT_WINDOW, "1h", None),
                     "field_dictionary": _FIELD_DICT,
                 },
-                sources=["no_live_source"],
-                warnings=[f"gdelt: {reason}"],
-                metadata={"symbol": sym, "live": False},
+                sources=[],
+                metadata={"live": False, "fallback": True, "data_mode": "provider_unavailable"},
             )
-
-        if not articles:
+        base = _base_symbol(str(raw_symbol))
+        window, error = _window_from_params(params)
+        if window is None:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "empty",
-                    "symbol": sym,
+                    "status": "input_error",
+                    "reason": error,
+                    "symbol": base,
                     "rows": [],
-                    "summary": {"symbol": sym, "net_sentiment": 0.0, "total_mentions": 0,
-                                "source_mode": "gdelt"},
-                    "methodology": "SOSC reads keyless GDELT news/social tone and scores headlines with FinBERT.",
+                    "next_actions": ["Use window 1d, 7d or 30d."],
+                    "methodology": _methodology(base, DEFAULT_WINDOW, "1h", None),
                     "field_dictionary": _FIELD_DICT,
                 },
-                sources=["gdelt"],
-                warnings=[f"No recent GDELT coverage for {base} in the last {timespan}."],
-                metadata={"symbol": sym, "live": True},
+                sources=[],
+                warnings=[error or "invalid window"],
+                metadata={"symbol": base, "live": False},
             )
+        bucket = WINDOW_BUCKETS[window]
 
-        # ---- GDELT tone leg --------------------------------------------------
-        tones = [t for t in (_to_unit_tone(a.get("tone")) for a in articles) if t is not None]
-        gdelt_tone = round(sum(tones) / len(tones), 4) if tones else 0.0
-        domains: dict[str, dict[str, Any]] = {}
-        headlines: list[str] = []
-        for a in articles:
-            dom = str(a.get("domain") or a.get("sourcecountry") or "unknown")
-            t = _to_unit_tone(a.get("tone"))
-            d = domains.setdefault(dom, {"mentions": 0, "tone_sum": 0.0, "n": 0})
-            d["mentions"] += 1
-            if t is not None:
-                d["tone_sum"] += t
-                d["n"] += 1
-            title = str(a.get("title") or "").strip()
-            if title:
-                headlines.append(title)
+        client = self._client()
+        entity_result, social_result = await asyncio.gather(
+            client.get(f"/sentiment/entity/{quote(base, safe='.-')}", {"window": window, "bucket": bucket}),
+            client.get("/sentiment/social"),
+            return_exceptions=True,
+        )
+        if isinstance(entity_result, AwarenessUnavailable):
+            return self._unavailable(instrument, base, window, bucket, entity_result.reason)
+        if isinstance(entity_result, BaseException):
+            raise entity_result
+        entity: AwarenessResponse = entity_result
 
-        # ---- FinBERT headline leg (independent financial sentiment) ----------
-        finbert_score = None
-        fb = _finbert()
-        if fb is not None and headlines:
-            try:
-                sample = headlines[:8]
-                results = await asyncio.to_thread(
-                    lambda: [fb.analyze_text(h) for h in sample]
-                )
-                signed = []
-                for res in results:
-                    if not isinstance(res, dict):
-                        continue
-                    lbl = str(res.get("label", "")).lower()
-                    sc = float(res.get("score", 0.0) or 0.0)
-                    if "pos" in lbl:
-                        signed.append(sc)
-                    elif "neg" in lbl:
-                        signed.append(-sc)
-                    else:
-                        signed.append(0.0)
-                if signed:
-                    finbert_score = round(sum(signed) / len(signed), 4)
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"finbert: {exc}")
+        errors: list[str] = []
+        social_resp: AwarenessResponse | None = None
+        if isinstance(social_result, AwarenessUnavailable):
+            errors.append(f"social buzz unavailable: {social_result.reason}")
+        elif isinstance(social_result, BaseException):
+            raise social_result
+        else:
+            social_resp = social_result
 
-        # Blend: average the two real signals when both present.
-        legs = [x for x in (gdelt_tone, finbert_score) if x is not None]
-        net = round(sum(legs) / len(legs), 4) if legs else gdelt_tone
+        body = entity.data if isinstance(entity.data, dict) else {}
+        headlines = [_headline(h) for h in (body.get("headlines") or []) if isinstance(h, dict)][:HEADLINE_LIMIT]
+        model = next((h["sentiment_model"] for h in headlines if h.get("sentiment_model")), None)
+        count = int(body.get("count") or 0)
+        mean = body.get("mean")
+        news = {
+            "count": count,
+            "mean": mean,
+            "weighted_mean": body.get("weighted_mean"),
+            "positive_share": body.get("positive_share"),
+            "negative_share": body.get("negative_share"),
+            "momentum_z": body.get("momentum_z"),
+            "dispersion": body.get("dispersion"),
+            "latest_at": body.get("latest_at"),
+            "publishers": body.get("publishers"),
+            "series": [s for s in (body.get("series") or []) if isinstance(s, dict)],
+        }
+        gdelt_tone = [t for t in (body.get("gdelt_tone") or []) if isinstance(t, dict)]
+        social = _social_match(social_resp.data if social_resp else None, base)
 
-        # Per-source rows (real outlet aggregates), top by mention count.
-        rows = []
-        for dom, agg in sorted(domains.items(), key=lambda kv: kv[1]["mentions"], reverse=True)[:25]:
-            mean_tone = round(agg["tone_sum"] / agg["n"], 4) if agg["n"] else 0.0
+        rows: list[dict[str, Any]] = []
+        if count > 0:
+            rows.append({"platform": "News (FinBERT)", "mentions": count, "sentiment": mean, "trend": _trend(mean)})
+        if social is not None:
             rows.append({
-                "platform": dom,
-                "mentions": agg["mentions"],
-                "sentiment": mean_tone,
-                "trend": "bullish" if mean_tone > 0.05 else "bearish" if mean_tone < -0.05 else "flat",
-                "source_mode": "gdelt",
+                "platform": "Reddit (ApeWisdom)",
+                "mentions": social["mentions"],
+                "rank": social["rank"],
+                "trend": _mention_trend(social["mention_change_pct"]),
             })
+        if gdelt_tone:
+            last = gdelt_tone[-1].get("value")
+            rows.append({"platform": "GDELT tone", "mentions": None, "sentiment": last, "trend": _trend(last)})
 
-        def _label(v: float) -> str:
-            return "bullish" if v > 0.05 else "bearish" if v < -0.05 else "neutral"
+        stale = list(entity.stale_providers)
+        if social_resp is not None:
+            stale += [p for p in social_resp.stale_providers if p not in stale]
+        live = not stale
+        notes = list(dict.fromkeys(entity.notes + (social_resp.notes if social_resp else [])))
+        errors += [f"stale or failing provider: {p}" for p in stale]
+        feed_health = body.get("feed_health") or entity.meta.get("feed_health")
+        meta = {
+            "providers": entity.providers,
+            "generated_at": entity.generated_at,
+            "notes": notes,
+            "feed_health": feed_health,
+        }
 
         return FunctionResult(
             code=self.code,
             instrument=instrument,
             data={
-                "status": "ok",
-                "symbol": sym,
+                "status": "ok" if count > 0 else "empty",
+                "symbol": base,
+                "window": window,
+                "news": news,
+                "headlines": headlines,
+                "social": social,
+                "gdelt_tone": gdelt_tone,
                 "rows": rows,
-                "cards": [
-                    {"key": "net_sentiment", "label": "Net sentiment", "value": net},
-                    {"key": "label", "label": "Read", "value": _label(net)},
-                    {"key": "total_mentions", "label": "Articles", "value": len(articles)},
-                    {"key": "gdelt_tone", "label": "GDELT tone", "value": gdelt_tone},
-                    {"key": "finbert", "label": "FinBERT", "value": finbert_score},
-                ],
-                "summary": {
-                    "symbol": sym,
-                    "net_sentiment": net,
-                    "label": _label(net),
-                    "total_mentions": len(articles),
-                    "gdelt_tone": gdelt_tone,
-                    "finbert_headline_sentiment": finbert_score,
-                    "window": timespan,
-                    "outlets": len(domains),
-                    "source_mode": "gdelt+finbert" if finbert_score is not None else "gdelt",
-                },
-                "methodology": (
-                    "SOSC measures real news/social sentiment for the symbol. Article volume and per-article "
-                    "tone come from the keyless GDELT DOC 2.0 API over a rolling window; tone is mapped from "
-                    "GDELT's [-10,+10] scale to [-1,+1]. Recent headlines are independently scored by the bundled "
-                    "FinBERT financial-sentiment model, and the two legs are averaged into a net read. Rows show "
-                    "the top outlets by mention count with their mean tone."
-                ),
+                "methodology": _methodology(base, window, bucket, model),
                 "field_dictionary": _FIELD_DICT,
+                "meta": meta,
             },
-            sources=["gdelt", "finbert"] if finbert_score is not None else ["gdelt"],
-            warnings=warnings,
-            metadata={"symbol": sym, "live": True, "window": timespan,
-                      "article_count": len(articles)},
+            sources=["awareness:sentiment"],
+            warnings=list(dict.fromkeys(notes + errors)),
+            metadata={
+                **entity.provenance(),
+                "symbol": base,
+                "window": window,
+                "bucket": bucket,
+                "data_mode": "live_official" if live else "cached_snapshot",
+                "live": live,
+                "provider_errors": errors,
+                "feed_health": feed_health,
+                "service_url": awareness_base_url(),
+            },
         )
 
-
-_FIELD_DICT = {
-    "platform": "News/social outlet (GDELT source domain).",
-    "mentions": "Article count from that outlet in the window.",
-    "sentiment": "Mean tone for that outlet, mapped to [-1, +1].",
-    "trend": "Bullish / bearish / flat from the mean tone.",
-    "net_sentiment": "Blended GDELT + FinBERT sentiment in [-1, +1].",
-}
+    def _unavailable(
+        self,
+        instrument: Instrument | None,
+        base: str,
+        window: str,
+        bucket: str,
+        reason: str,
+    ) -> FunctionResult:
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data={
+                "status": "provider_unavailable",
+                "reason": reason,
+                "symbol": base,
+                "window": window,
+                "rows": [],
+                "headlines": [],
+                "gdelt_tone": [],
+                "social": None,
+                "next_actions": list(UNAVAILABLE_NEXT_ACTIONS),
+                "methodology": _methodology(base, window, bucket, None),
+                "field_dictionary": _FIELD_DICT,
+                "meta": {"providers": [], "generated_at": None, "notes": [], "feed_health": None},
+            },
+            sources=["no_live_source"],
+            warnings=[f"awareness: {reason}"],
+            metadata={"symbol": base, "fallback": True, "live": False, "data_mode": "provider_unavailable"},
+        )

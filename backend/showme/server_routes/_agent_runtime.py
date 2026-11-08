@@ -603,6 +603,18 @@ def _function_usage(
             ],
             "example": _standalone_function_defaults("OSA"),
         }
+    if upper == "MSENT":
+        return {
+            "purpose": "Market-wide sentiment dashboard: CNN and crypto Fear & Greed, VIX term structure and social buzz from Awareness.",
+            "scope": "market",
+            "inputs": ["history_days"],
+            "steps": [
+                "Run to read the CNN Fear & Greed gauge with its components and history.",
+                "Read the crypto Fear & Greed gauge, the VIX term structure and the social buzz movers.",
+                "Null sections mean Awareness has no value yet; no default gauge is shown.",
+            ],
+            "example": {"history_days": 90},
+        }
     if upper == "MLSIG":
         return {
             "purpose": "Train a directional classifier for one symbol and explain the feature drivers.",

@@ -665,16 +665,20 @@ def test_port_whatif_uses_unique_temp_path(monkeypatch, tmp_path) -> None:
 
 
 def test_sosc_base_symbol_stripping_is_suffix_anchored(monkeypatch) -> None:
+    import httpx
+
+    from showme.engine.data_sources.awareness import AwarenessClient
     from showme.engine.functions.news import sosc as sosc_mod
 
     captured: list[str] = []
 
-    async def _capture(symbol, timespan, maxrecords):
-        captured.append(symbol)
-        return []
+    def _capture(request: httpx.Request) -> httpx.Response:
+        if "/sentiment/entity/" in request.url.path:
+            captured.append(request.url.path.rsplit("/", 1)[-1])
+        raise httpx.ConnectError("offline", request=request)
 
-    monkeypatch.setattr(sosc_mod, "_gdelt_articles", _capture)
     fn = sosc_mod.SOSCFunction()
+    fn._awareness = AwarenessClient("http://aw.test", transport=httpx.MockTransport(_capture), autostart=False)
     for sym, asset_class in (
         ("BTCUSDT", AssetClass.CRYPTO),
         ("BTC-USD", AssetClass.CRYPTO),
