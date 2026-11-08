@@ -72,8 +72,10 @@ class STRSFunction(BaseFunction):
         # and with the lookup off no sector shock ever reached a position.
         raw_include = params.get("include_sectors")
         include_sectors = True if raw_include is None else _truthy(raw_include)
+        sector_failures: dict[str, str] = {}
         if include_sectors and self.deps.yfinance:
-            await self._sectors(symbols, sector_lookup, timeout=min(quote_timeout, 2.0))
+            await self._sectors(symbols, sector_lookup, timeout=min(quote_timeout, 2.0),
+                                failures=sector_failures)
         positions_payload: list[dict[str, Any]] = []
         # STRS#6: state which basis each position was valued on. A live-mode position
         # with no quote falls back to average cost and is flagged, never silent.
@@ -95,7 +97,10 @@ class STRSFunction(BaseFunction):
                 "sector": sector_lookup.get(sym),
             })
         price_source = _price_source(price_basis, refresh_prices)
-        price_warnings = _price_warnings(price_basis, refresh_prices)
+        price_warnings = [
+            *_price_warnings(price_basis, refresh_prices),
+            *_sector_warnings(include_sectors, bool(self.deps.yfinance), sector_failures),
+        ]
         # The manifest's `scenario_magnitudes` input is the scale factor; `scale` is kept
         # as the older spelling.
         scale_raw = params.get("scale")
@@ -267,7 +272,15 @@ class STRSFunction(BaseFunction):
         await asyncio.gather(*(_one(s, k) for s in symbols for k in keys))
         return out
 
-    async def _sectors(self, symbols: list[str], lookup: dict[str, str], timeout: float = 2.0) -> None:
+    async def _sectors(
+        self, symbols: list[str], lookup: dict[str, str], timeout: float = 2.0,
+        failures: dict[str, str] | None = None,
+    ) -> None:
+        """Fill ``lookup`` with sectors; record each symbol that got none in ``failures``.
+
+        STRS#2: a failed or empty REFDATA answer is never swallowed. It is recorded
+        with its reason so the handler can say the asset-class shock was used.
+        """
         async def _s(sym: str) -> None:
             try:
                 inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
@@ -282,9 +295,27 @@ class STRSFunction(BaseFunction):
                 sector = getattr(meta, "sector", None)
                 if sector:
                     lookup[sym] = str(sector)
-            except Exception:
-                pass
+                elif failures is not None:
+                    failures[sym] = "no sector reported"
+            except Exception as exc:
+                if failures is not None:
+                    failures[sym] = f"lookup failed ({type(exc).__name__})"
         await asyncio.gather(*(_s(s) for s in symbols))
+
+
+def _sector_warnings(
+    include_sectors: bool, has_adapter: bool, failures: dict[str, str],
+) -> list[str]:
+    """Why sector shocks may not have reached positions, stated in the result."""
+    if not include_sectors:
+        return []
+    if not has_adapter:
+        return ["sector lookup unavailable: no market data adapter; "
+                "sector shocks not applied, asset-class shocks used"]
+    return [
+        f"{sym}: sector unavailable ({reason}); asset-class shock used, not a sector shock"
+        for sym, reason in sorted(failures.items())
+    ]
 
 
 def _asset_class_for_quote(symbol: str) -> AssetClass:

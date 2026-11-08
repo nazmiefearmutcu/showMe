@@ -137,3 +137,48 @@ def test_matched_sector_emits_no_taxonomy_warning(monkeypatch):
     deps = SimpleNamespace(yfinance=_FakeRefdata({"AAPL": "Technology"}))
     res = asyncio.run(strs_mod.STRSFunction(deps).execute(action="scenario", scenario="GFC_2008"))
     assert not [w for w in res.warnings if "sector" in w.lower()], res.warnings
+
+
+def test_default_run_failed_refdata_lookup_is_reported(monkeypatch):
+    # STRS#2 review: a failed REFDATA call on the default path must not silently
+    # fall back to the asset-class shock. The lookup failure is named in warnings.
+    _use_positions(monkeypatch, [_Position("AAPL", AssetClass.EQUITY, 100.0, 100.0)])
+    deps = SimpleNamespace(yfinance=_FakeRefdata({}))  # every REFDATA request raises
+    res = asyncio.run(strs_mod.STRSFunction(deps).execute(action="scenario", scenario="GFC_2008"))
+    row = _row(res, "AAPL")
+    assert row["sector"] is None
+    assert row["shock"] == pytest.approx(-0.55)  # asset-class fallback, now declared
+    assert any("AAPL" in w and "sector" in w.lower() for w in res.warnings), res.warnings
+
+
+def test_default_run_sector_not_reported_is_reported(monkeypatch):
+    # A lookup that answers but carries no sector is the same honest gap.
+    _use_positions(monkeypatch, [_Position("AAPL", AssetClass.EQUITY, 100.0, 100.0)])
+    deps = SimpleNamespace(yfinance=_FakeRefdata({"AAPL": ""}))
+    res = asyncio.run(strs_mod.STRSFunction(deps).execute(action="scenario", scenario="GFC_2008"))
+    assert _row(res, "AAPL")["sector"] is None
+    assert any("AAPL" in w and "sector" in w.lower() for w in res.warnings), res.warnings
+
+
+def test_default_run_without_market_adapter_is_reported(monkeypatch):
+    _use_positions(monkeypatch, [_Position("AAPL", AssetClass.EQUITY, 100.0, 100.0)])
+    res = asyncio.run(strs_mod.STRSFunction(SimpleNamespace(yfinance=None)).execute(
+        action="scenario", scenario="GFC_2008",
+    ))
+    assert _row(res, "AAPL")["shock"] == pytest.approx(-0.55)
+    assert any("sector" in w.lower() and "adapter" in w.lower() for w in res.warnings), res.warnings
+
+
+def test_equity_without_sector_warns_in_apply_scenario():
+    # The engine itself must not take the asset-class shock for a sector-less equity
+    # without saying so, whatever the caller did.
+    positions = [{"symbol": "AAPL", "asset_class": "EQUITY", "market_value": 100.0}]
+    out = stress.apply_scenario(positions, stress.SCENARIOS["GFC_2008"])
+    assert out["positions"][0]["shock"] == pytest.approx(-0.55)
+    assert any("AAPL" in w and "sector" in w.lower() for w in out["warnings"]), out["warnings"]
+
+
+def test_non_equity_without_sector_does_not_warn_about_sector():
+    positions = [{"symbol": "BTC-USD", "asset_class": "CRYPTO", "market_value": 100.0}]
+    out = stress.apply_scenario(positions, stress.SCENARIOS["CRYPTO_WINTER"])
+    assert not [w for w in out["warnings"] if "sector" in w.lower()], out["warnings"]

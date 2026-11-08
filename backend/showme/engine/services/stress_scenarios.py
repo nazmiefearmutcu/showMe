@@ -330,6 +330,12 @@ def apply_scenario(
                         f"{sym}: sector {sector} has no shock in {scenario.name}; "
                         f"asset-class shock {ac} used"
                     )
+                elif sector is None and ac == "EQUITY" and scenario.sector_shocks:
+                    # STRS#2: no sector at all (lookup failed, unavailable or unreported)
+                    # on a path where a sector shock would apply. Never silent.
+                    warnings.append(
+                        f"{sym}: sector unknown; asset-class shock {ac} used, not a sector shock"
+                    )
                 shock = scenario.asset_class_shocks.get(ac, 0.0)
         if shock is None:
             unpriced += 1
