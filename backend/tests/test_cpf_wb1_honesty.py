@@ -63,3 +63,21 @@ def test_forecast_1y_card_is_only_the_twelve_month_point(monkeypatch) -> None:
     long_ = _run(horizon="1Y")
     assert long_.data["cards"]["forecast_1y"] == long_.data["forecast"][11]["value"]
     assert long_.data["cards"]["forecast_at_horizon"] == long_.data["forecast"][-1]["value"]
+
+
+# CPF#8 — forecast points are calendar months after the last actual, not 30-day
+# steps (the old 30-day step put the 12th point at +360 days).
+def test_forecast_dates_step_by_calendar_months(monkeypatch) -> None:
+    _patch_history(monkeypatch, _history(end=date(2026, 11, 6)))
+    result = _run(horizon="1Y")
+    dates = [p["date"] for p in result.data["forecast"]]
+    assert dates[0] == "2026-12-06"
+    assert dates[5] == "2027-05-06"
+    assert dates[11] == "2027-11-06"
+
+
+def test_forecast_month_end_clamps_to_last_day_of_month(monkeypatch) -> None:
+    _patch_history(monkeypatch, _history(end=date(2026, 1, 31)))
+    result = _run(horizon="6M")
+    dates = [p["date"] for p in result.data["forecast"]]
+    assert dates[:3] == ["2026-02-28", "2026-03-31", "2026-04-30"]

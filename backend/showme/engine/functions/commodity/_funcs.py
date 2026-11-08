@@ -812,6 +812,20 @@ CPF_SERIES_MAP: dict[str, dict[str, Any]] = {
 }
 
 
+def _add_calendar_months(anchor: datetime, months: int) -> datetime:
+    """``anchor`` shifted by whole calendar months, day clamped to month end.
+
+    CPF#8: the forecast steps are calendar months (2026-01-31 + 1M is
+    2026-02-28), not fixed 30-day offsets that drift across the year.
+    """
+    total = anchor.year * 12 + (anchor.month - 1) + months
+    year, month_index = divmod(total, 12)
+    month = month_index + 1
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    last_day = (datetime(next_year, next_month, 1) - timedelta(days=1)).day
+    return anchor.replace(year=year, month=month, day=min(anchor.day, last_day))
+
+
 @FunctionRegistry.register
 class CPFFunction(BaseFunction):
     """CPF — Commodity Price Forecast (live Yahoo actual + trend forecast)."""
@@ -1077,7 +1091,7 @@ class CPFFunction(BaseFunction):
         cur = last_val
         for m in range(1, months + 1):
             cur = cur * monthly_growth
-            dt = last_dt + timedelta(days=30 * m)
+            dt = _add_calendar_months(last_dt, m)
             points.append({"date": dt.date().isoformat(), "value": round(cur, 6)})
         forecast_vintage = str(last_date_str)[:10] if last_date_str else None
         return points, forecast_vintage
