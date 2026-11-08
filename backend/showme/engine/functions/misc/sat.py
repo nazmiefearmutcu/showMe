@@ -131,7 +131,10 @@ class SATFunction(BaseFunction):
             "capture_utc": "Image capture day (UTC) for the GIBS daily mosaic.",
             "aoi": "Curated area-of-interest label.",
             "layer": "Requested GIBS visualisation layer.",
-            "cloud_pct": "Cloud cover % at the AOI centroid on the capture date (Open-Meteo).",
+            "cloud_pct": (
+                "Modelled cloud cover % (Open-Meteo daily mean at the AOI centroid on the capture date): "
+                "a model proxy, not read from the satellite image."
+            ),
             "tile_url": "Live NASA GIBS WMS PNG tile URL for the AOI + layer + date.",
             "source": "Provider that supplied the tile / metadata.",
         }
@@ -244,6 +247,9 @@ class SATFunction(BaseFunction):
             "aoi_key": aoi_key,
             "layer": layer_key,
             "cloud_pct": round(cloud_pct, 1) if isinstance(cloud_pct, (int, float)) else None,
+            # SAT#4: the cloud number is an Open-Meteo model value, not GIBS's.
+            "cloud_source": "open_meteo_model" if isinstance(cloud_pct, (int, float)) else None,
+            "cloud_label": "Open-Meteo modelled cloud cover" if isinstance(cloud_pct, (int, float)) else None,
             "tile_url": tile_url,
             "source": "nasa_gibs",
             "bbox": ",".join(f"{v:.5f}" for v in bbox),

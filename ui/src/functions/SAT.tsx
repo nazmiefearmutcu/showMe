@@ -75,6 +75,8 @@ interface SATRow {
   aoi?: string;
   layer?: string;
   cloud_pct?: number;
+  /** SAT#4: who produced `cloud_pct` (an Open-Meteo model value, not the image). */
+  cloud_label?: string | null;
   tile_url?: string;
   value?: string | number;
   detail?: string;
@@ -401,7 +403,7 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
         header: "Detail",
         render: (r) => (
           <span className="u-text-secondary">
-            {r.detail ?? r.source ?? r.layer ?? "—"}
+            {r.detail ?? r.cloud_label ?? r.source ?? r.layer ?? "—"}
           </span>
         ),
       },
@@ -537,6 +539,14 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
                     ) : null}
                     {cloudDay !== null ? (
                       <span style={metaText}>{fmt(cloudDay, 0)}% cloud</span>
+                    ) : null}
+                    {cloudDay !== null ? (
+                      <span
+                        style={metaText}
+                        title="Open-Meteo daily mean cloud cover for the AOI centroid: a model value, not read from the satellite image."
+                      >
+                        model value (Open-Meteo)
+                      </span>
                     ) : null}
                     {!hasConditions ? (
                       <span style={metaText}>conditions unavailable</span>
