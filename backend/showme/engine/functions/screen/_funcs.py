@@ -97,7 +97,9 @@ class SRCHFunction(BaseFunction):
             sources=sources,
             field_dictionary=_BOND_FIELDS,
             warnings=warnings,
-            reference=live_rows + monthly_rows == 0,
+            # SRCH#3 follow-up: monthly OECD observations are not live, so a
+            # table with no live tenor is labelled reference (H-6).
+            reference=live_rows == 0,
             reference_note=reference_note,
             status=status_override,
             metadata_extra=(
