@@ -63,7 +63,7 @@ class RVFunction(BaseFunction):
                     "roe": raw.get("returnOnEquity"),
                     "roa": raw.get("returnOnAssets"),
                     "debt_equity": raw.get("debtToEquity"),
-                    "div_yield": raw.get("dividendYield"),
+                    "div_yield": _dividend_yield_fraction(raw.get("dividendYield")),
                     "source_mode": "live_yfinance",
                 })
         if not rows:
@@ -101,6 +101,16 @@ class RVFunction(BaseFunction):
             sources=["finnhub", "yfinance"] if self.deps.yfinance else ["relative_value_model"],
             metadata={"peers": peers},
         )
+
+
+def _dividend_yield_fraction(value: Any) -> float | None:
+    """yfinance ``dividendYield`` is in percent units (AAPL 0.32 = 0.32%).
+
+    Returned as a decimal fraction (0.0032) like every other ratio field, so the
+    pane does not have to guess the unit from the magnitude.
+    """
+    pct = finite(value)
+    return None if pct is None else pct / 100.0
 
 
 def _rank_rows(rows: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:

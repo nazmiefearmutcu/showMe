@@ -84,7 +84,7 @@ const METRICS: MetricDef[] = [
   { key: "roe", header: "ROE", better: "high", fmt: (v) => fmtRatioPct(v) },
   { key: "roa", header: "ROA", better: "high", fmt: (v) => fmtRatioPct(v) },
   { key: "debt_equity", header: "D/E", better: "low", fmt: (v) => fmtDePct(v) },
-  { key: "div_yield", header: "Div yld", better: "high", fmt: (v) => fmtRatioPct(v) },
+  { key: "div_yield", header: "Div yld", better: "high", fmt: (v) => fmtYieldPct(v) },
 ];
 
 const MEDIAN_LABEL = "Median (peer set, computed)";
@@ -424,6 +424,13 @@ function fmtRatioPct(v: unknown): string {
   if (n == null) return "—";
   const pct = Math.abs(n) <= 3 ? n * 100 : n;
   return `${pct.toFixed(1)}%`;
+}
+
+/** Dividend yield is always a decimal fraction from the backend (0.0032 = 0.32%). */
+function fmtYieldPct(v: unknown): string {
+  const n = finite(v);
+  if (n == null) return "—";
+  return `${(n * 100).toFixed(2)}%`;
 }
 
 /** yfinance debtToEquity is percent-like (145 = 145%); normalize. */
