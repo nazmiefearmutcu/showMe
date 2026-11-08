@@ -74,6 +74,8 @@ interface SpotData {
   /** BOIL: each leg's own closes, keyed by symbol (BOIL#1). */
   history_by_symbol?: Record<string, SpotHistoryPoint[] | null | undefined>;
   spread?: number | null;
+  /** Envelope-level quote date (yfinance tier); rows carry their own as_of. */
+  as_of?: string | null;
   next_actions?: string[];
   methodology?: string;
 }
