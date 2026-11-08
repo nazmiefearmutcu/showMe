@@ -178,3 +178,24 @@ def test_surface_states_snapshot_basis_and_warns_on_short_front_expiry() -> None
     assert "as_of_basis" in body and "iv_convention" in body
     assert body["summary"]["front_days_to_expiry"] <= 2
     assert any("calendar day" in w for w in body["warnings"])
+
+
+# ── T10 placeholder_value on the reference=true branch ─────────────────────
+
+
+def test_reference_branch_without_live_spot_returns_honest_state_not_template() -> None:
+    """reference=true must not emit the synthetic spot 100 or a templated surface when no live price exists."""
+    result = asyncio.run(
+        IVOLFunction(deps=_Deps(yfinance=_Down())).execute(instrument=_spy(), reference=True))
+    body = result.data
+    # RED before fix: status was "reference", spot 100.0 and a 30-cell constant-IV template were returned.
+    assert body["status"] == "provider_unavailable"
+    assert body["spot"] is None
+    assert body["data_state"] == "synthetic_anchor"
+    assert body["surface"] == [] and body["rows"] == []
+    assert "calls_grid" not in body and "puts_grid" not in body
+    assert "black_scholes_reference_formula" not in result.sources
+    assert body["reason"] and body["next_actions"]
+    findings = truth.check_response_placeholders(
+        body, request_params={"reference": True}, cfg=truth.load_config(), code="IVOL")
+    assert findings == []

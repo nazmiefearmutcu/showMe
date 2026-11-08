@@ -759,6 +759,15 @@ class IVOLFunction(BaseFunction):
         # as live. Genuine provider failure returns the explicit
         # provider_unavailable shape below, never a template.
         if _truthy(params.get("reference")):
+            if spot_state == "synthetic_anchor":
+                # T10 placeholder_value: the template needs a real underlying to anchor strikes.
+                # With no live price the 100 anchor would be published as spot, so report the gap.
+                return _ivol_unavailable(
+                    instrument, spot=spot, spot_state=spot_state,
+                    reason="reference=true needs a live underlying price to anchor the template; none was returned, so no surface is shown.",
+                    next_actions=["Retry when the quote adapter responds, or pass an explicit spot."],
+                    sources=["yfinance"], provider_errors=["no live underlying price"],
+                )
             synthetic = _surface_template(spot)
             return FunctionResult(
                 code=self.code,
