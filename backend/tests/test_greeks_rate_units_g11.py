@@ -33,7 +33,9 @@ def test_plain_rate_between_point_two_and_one_is_refused():
     res = _run(r=0.5)
     assert res.data["status"] == "input_error"
     assert "ambiguous" in res.data["reason"]
-    assert "rate_pct=0.5" in res.data["reason"]
+    # The pane only sends the decimal `rate` field, so the refusal must name the
+    # decimal form the user can type there (0.005 = 0.5%), not rate_pct.
+    assert "r=0.005 for 0.5%" in res.data["reason"]
 
 
 def test_plain_decimal_rate_is_labelled_as_decimal():

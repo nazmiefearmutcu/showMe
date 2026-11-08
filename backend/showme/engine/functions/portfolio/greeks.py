@@ -150,8 +150,8 @@ def normalize_position(position: dict[str, Any], today: date | None = None) -> t
         elif abs(rate) > _MAX_PLAIN_DECIMAL_RATE:
             # 0.5 typed by a user who means 0.5 percent would be priced as 50%.
             problems.append(
-                f"rate {rate:g} is ambiguous (decimal {rate:g} = {rate * 100:g}%): pass "
-                f"rate_pct={rate:g} for {rate:g}% or r={rate / 100:g} for a decimal rate")
+                f"rate {rate:g} is ambiguous (read as a decimal it is {rate * 100:g}%): enter "
+                f"r={rate / 100:g} for {rate:g}% (decimal form), or rate_pct={rate:g} through the API")
             out["r"] = rate
         else:
             out["r"] = rate
