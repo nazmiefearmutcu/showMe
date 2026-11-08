@@ -81,7 +81,8 @@ def _load_alerts() -> tuple[list[Alert], str | None]:
     try:
         raw = json.loads(store.read_text())
         return [Alert(**a) for a in raw], None
-    except (json.JSONDecodeError, TypeError, KeyError) as exc:
+    # UnicodeDecodeError is a ValueError; OSError covers a store that cannot be read.
+    except (OSError, ValueError, TypeError, KeyError) as exc:
         LOG.warning("ALRT store unreadable at %s: %s", store, exc)
         return [], f"alerts.json unreadable ({type(exc).__name__}); review {store}"
 
