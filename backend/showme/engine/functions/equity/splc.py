@@ -10,6 +10,7 @@ nothing.
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import re
 from typing import Any
 
@@ -70,7 +71,7 @@ class SPLCFunction(BaseFunction):
                                     r = await cli.get(url)
                                     if r.status_code == 200:
                                         import re as _re
-                                        text = _re.sub(r"<[^>]+>", " ", r.text)
+                                        text = _html.unescape(_re.sub(r"<[^>]+>", " ", r.text))
                                         from showme.engine.core.sec_taxonomy import (
                                             TENK_CUSTOMER_PATTERNS,
                                             TENK_DEBT_MATURITY_PATTERNS,
@@ -80,9 +81,11 @@ class SPLCFunction(BaseFunction):
                                         debt_section = find_section_window(text, TENK_DEBT_MATURITY_PATTERNS, window=2000)
                                         # SPLC#1: scan every concentration match, not only the first window.
                                         headings = _concentration_headings(
-                                            text, TENK_CUSTOMER_PATTERNS, TENK_SUPPLIER_PATTERNS)
+                                            text, TENK_CUSTOMER_PATTERNS, TENK_SUPPLIER_PATTERNS,
+                                            [_REVENUE_CONCENTRATION])
                                         customers = _extract_concentration(
-                                            text, TENK_CUSTOMER_PATTERNS, headings)
+                                            text, [*TENK_CUSTOMER_PATTERNS, _REVENUE_CONCENTRATION],
+                                            headings)
                                         suppliers = _extract_concentration(
                                             text, TENK_SUPPLIER_PATTERNS, headings)
                             except Exception as e:
@@ -153,6 +156,13 @@ class SPLCFunction(BaseFunction):
                 _as_relationship_rows(data.get("suppliers") or [], "supplier"), relationship, min_pct)
             if relationship != "both" or min_pct > 0:
                 data["filters_applied"] = {"relationship": relationship, "min_pct": min_pct}
+                if not data["rows"]:
+                    # Filters removed every row: say so rather than keep an upstream status.
+                    data["status"] = "empty"
+                    data["reason"] = (
+                        f"No extracted counterparty matches relationship={relationship} "
+                        f"with min_pct={min_pct:g}; the filing may disclose none at that share."
+                    )
         data["methodology"] = "SPLC approximates supply-chain relationships by scanning recent 10-K sections for customer/supplier concentration language. Reference rows are labelled when extraction finds no explicit counterparty rows. Rows with a disclosed share below min_pct, or without one when min_pct is set, are dropped."
         data["field_dictionary"] = {
             "relationship": "customer, supplier, competitor, filing-evidence, or unavailable state.",
@@ -199,6 +209,15 @@ def _min_pct_param(value: Any) -> tuple[float, str | None]:
 # so "Foo, Inc. represented" keeps its full name.
 _CLAUSE_SPLIT = re.compile(r"[;:]\s+|,\s+(?=[a-z])|\.\s+(?=[A-Z])")
 _DIRECT_CUSTOMER = re.compile(r"((?:one|another)\s+direct\s+customer)\s*$", re.IGNORECASE)
+# "sales to Foo Corp" / "net revenues from Foo Corp": the verb phrase is not part of the name.
+_LEAD_SALES_PHRASE = re.compile(r"^(?:net\s+)?(?:sales|revenues?)\s+(?:to|from)\s+", re.IGNORECASE)
+_MAX_LABEL_CHARS = 60
+# NVIDIA-style MD&A heading: "Concentration of Revenue" introduces the percentage sentences.
+_REVENUE_CONCENTRATION = re.compile(r"concentration\s+of\s+(?:revenues?|sales)\b", re.IGNORECASE)
+# Longest distance searched after a heading. The 10-K percentage sentence can sit
+# several thousand characters after its heading; 20,000 covers the disclosed
+# concentration blocks while still stopping at an unrelated section.
+_CONCENTRATION_WINDOW_CHARS = 20000
 
 
 def _clean_counterparty(raw: Any) -> str | None:
@@ -207,17 +226,20 @@ def _clean_counterparty(raw: Any) -> str | None:
     The concentration regex captures up to 40 characters before "represented",
     so a capture can start mid-clause ("l year 2026, sales to one direct
     customer") or span a sentence ("of net sales. Gamma Ltd"). Only the last
-    clause is kept; "one/another direct customer" becomes the explicit label;
-    anything not starting with a capital letter is dropped rather than guessed.
+    clause is kept; a leading "sales to" / "revenue from" is removed;
+    "one/another direct customer" becomes the explicit label; anything that
+    does not start with a capital letter, or runs past _MAX_LABEL_CHARS, is
+    dropped rather than guessed.
     """
     segment = _CLAUSE_SPLIT.split(str(raw or "").strip())[-1].strip()
+    segment = _LEAD_SALES_PHRASE.sub("", segment).strip()
     if not segment:
         return None
     m = _DIRECT_CUSTOMER.search(segment)
     if m:
         label = m.group(1)
         return label[0].upper() + label[1:].lower()
-    if not segment[0].isupper():
+    if not segment[0].isupper() or len(segment) > _MAX_LABEL_CHARS:
         return None
     return segment
 
@@ -237,32 +259,35 @@ def _extract_concentration(
 ) -> list[dict[str, Any]]:
     """Run concentration extraction over every match of every pattern (SPLC#1).
 
-    Each heading match gets its own window running from the heading to the next
-    customer/supplier heading (capped at 3000 characters), so a percentage
-    sentence outside the first hit's window is still scanned, and a customer
-    window never reads into the supplier section. Identical (name, pct) pairs
-    are kept once.
+    Each heading match gets a window from the heading to the next heading of any
+    customer/supplier kind (or to _CONCENTRATION_WINDOW_CHARS, whichever is
+    shorter), so a percentage sentence well after the first hit is still scanned
+    and a customer window never reads into the supplier section. Windows are
+    processed in document order and each counterparty label is reported once,
+    with the first disclosure found, so a later fiscal year's repeat of the same
+    label does not appear as a second current share.
     """
     from showme.engine.core.sec_taxonomy import extract_customer_concentration
 
-    out: list[dict[str, Any]] = []
-    seen: set[tuple[str, float]] = set()
+    candidates: list[tuple[int, dict[str, Any]]] = []
     for pattern in patterns:
         for match in pattern.finditer(text):
-            end = min(len(text), match.end() + 3000)
+            end = min(len(text), match.start() + _CONCENTRATION_WINDOW_CHARS)
             following = [h for h in headings if h > match.start()]
             if following:
                 end = min(end, following[0])
             window = text[match.start():end]
             for item in extract_customer_concentration(window):
-                name = _clean_counterparty(item.get("name"))
-                if name is None:
-                    continue
-                key = (name.lower(), float(item["pct"]))
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append({"name": name, "pct": float(item["pct"])})
+                candidates.append((match.start(), item))
+
+    out: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+    for _, item in sorted(candidates, key=lambda c: c[0]):
+        name = _clean_counterparty(item.get("name"))
+        if name is None or name.lower() in seen_labels:
+            continue
+        seen_labels.add(name.lower())
+        out.append({"name": name, "pct": float(item["pct"])})
     return out
 
 
