@@ -58,7 +58,8 @@ def bql() -> FunctionManifest:
                 required=True,
                 description=(
                     "BQL-style DSL: get(field, ...) for([symbol, ...]) by(date) "
-                    "[start=YYYY-MM-DD end=YYYY-MM-DD interval=1d]."
+                    "[with(start='YYYY-MM-DD', end='YYYY-MM-DD', interval='1d')]. "
+                    "The window and bar size are set in the query text; the pane has no separate controls."
                 ),
             ),
             InputSpec(
@@ -71,44 +72,10 @@ def bql() -> FunctionManifest:
                     "(provider_unavailable): BQL has no offline data model."
                 ),
             ),
-            InputSpec(
-                name="limit",
-                label="Row limit",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Cap on rows returned (engine clamp: 10 to 1000).",
-                min=1.0,
-                max=1000.0,
-                step=50.0,
-            ),
-            InputSpec(
-                name="start",
-                label="Start date",
-                control=ControlKind.DATE_RANGE,
-                required=False,
-                description="Optional start date for time-axis queries (live yfinance window).",
-            ),
-            InputSpec(
-                name="end",
-                label="End date",
-                control=ControlKind.DATE_RANGE,
-                required=False,
-                description="Optional end date for time-axis queries (live yfinance window).",
-            ),
-            InputSpec(
-                name="interval",
-                label="Interval",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Bar interval for the by(date) axis (live yfinance bars).",
-                options=["1d", "1wk", "1mo"],
-            ),
         ],
         defaults={
             "query": "get(close, volume) for(['AAPL']) by(date)",
             "live_query": True,
-            "limit": 200,
-            "interval": "1d",
         },
         # Editor-style surface — primary is internal (query parser). Rows come
         # from yfinance; without provider data the function degrades to an

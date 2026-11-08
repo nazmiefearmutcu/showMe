@@ -10,10 +10,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
 import pandas as pd
+import pytest
 
 from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.data_sources.equity.yfinance_adapter import YFinanceAdapter
 from showme.engine.functions.api import bql as bql_mod
 from showme.manifest.registry import REGISTRY
 from showme.manifest.seeds import load_seeds
@@ -149,11 +152,102 @@ def test_symbol_beats_router_injected_peer_symbols_for_no_for_query():
     assert res.data["summary"]["symbols"] == 1
 
 
-def test_limit_seed_max_matches_the_engine_clamp():
-    """BQL#7: the seed must not advertise a limit the engine clamps away."""
+def test_limit_is_clamped_to_1000_and_not_advertised_by_the_seed():
+    """BQL#7/#5: the engine clamps the row limit to 1000; the seed no longer declares
+    a limit input the pane cannot send, so nothing advertises a larger cap."""
     load_seeds()
     manifest = REGISTRY.get("BQL")
-    limit = next(i for i in manifest.inputs if i.name == "limit")
-    assert limit.max == 1000.0
+    assert all(i.name != "limit" for i in manifest.inputs)
     rows = [{"symbol": "A", "date": str(i)} for i in range(1500)]
     assert len(bql_mod._limit_rows(rows, 10000)) == 1000
+
+
+class _FakeChartClient:
+    """Stands in for the Yahoo chart httpx client; records the query params sent."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def get(self, url: str, params: dict[str, Any] | None = None, **_: Any) -> httpx.Response:
+        self.calls.append({"url": url, "params": dict(params or {})})
+        body = {
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": [1767225600, 1767830400],  # 2026-01-01, 2026-01-08 UTC
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [340.0, 341.0],
+                                    "high": [343.0, 344.0],
+                                    "low": [339.0, 340.5],
+                                    "close": [342.0, 342.37],
+                                    "volume": [50_000_000, 48_000_000],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+        return httpx.Response(200, json=body, request=httpx.Request("GET", f"https://yahoo.test{url}"))
+
+
+def _real_yahoo_adapter(monkeypatch: pytest.MonkeyPatch) -> tuple[YFinanceAdapter, _FakeChartClient]:
+    """The real YFinanceAdapter with only its HTTP transport replaced."""
+    adapter = YFinanceAdapter()
+    chart = _FakeChartClient()
+
+    async def _client_():
+        return chart
+
+    monkeypatch.setattr(adapter, "_chart_client_", _client_)
+    return adapter, chart
+
+
+def test_start_end_window_reaches_yahoo_request_without_default_period(monkeypatch: pytest.MonkeyPatch):
+    """BQL#5 end-to-end: seed start/end/interval must become period1/period2 on the wire, not range=1mo."""
+    adapter, chart = _real_yahoo_adapter(monkeypatch)
+    fn = bql_mod.BQLFunction(FunctionDeps(yfinance=adapter))
+    res = _run(
+        fn,
+        instrument=AAPL,
+        query="get(close) for(['AAPL']) by(date)",
+        live=True,
+        interval="1wk",
+        start="2026-01-01",
+        end="2026-02-01",
+    )
+    assert len(chart.calls) == 1
+    sent = chart.calls[0]["params"]
+    assert sent["interval"] == "1wk"
+    assert "range" not in sent
+    assert sent["period1"] == int(pd.Timestamp("2026-01-01", tz="UTC").timestamp())
+    assert sent["period2"] == int(pd.Timestamp("2026-02-01", tz="UTC").timestamp())
+    assert res.metadata["mode"] == "live"
+    assert res.data["rows"]
+
+
+def test_with_start_end_in_dsl_also_skips_default_period(monkeypatch: pytest.MonkeyPatch):
+    """BQL#5: the same window written in with(...) must not be widened to range=1mo."""
+    adapter, chart = _real_yahoo_adapter(monkeypatch)
+    fn = bql_mod.BQLFunction(FunctionDeps(yfinance=adapter))
+    _run(
+        fn,
+        instrument=AAPL,
+        query="get(close) for(['AAPL']) with(start='2026-01-01', end='2026-02-01', interval='1wk') by(date)",
+        live=True,
+    )
+    sent = chart.calls[0]["params"]
+    assert "range" not in sent
+    assert "period1" in sent and "period2" in sent
+
+
+def test_no_window_keeps_the_one_month_default_range(monkeypatch: pytest.MonkeyPatch):
+    """BQL#5 control: without start/end the runtime 90-day default range still applies."""
+    adapter, chart = _real_yahoo_adapter(monkeypatch)
+    fn = bql_mod.BQLFunction(FunctionDeps(yfinance=adapter))
+    _run(fn, instrument=AAPL, query="get(close) for(['AAPL']) by(date)", live=True)
+    sent = chart.calls[0]["params"]
+    assert sent["range"] == "90d"  # _apply_runtime_window default (days=90)
+    assert "period1" not in sent

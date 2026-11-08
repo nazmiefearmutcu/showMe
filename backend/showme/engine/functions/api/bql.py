@@ -310,13 +310,30 @@ class BQLFunction(BaseFunction):
 
         from showme.engine.core.instrument import Instrument as I
         import asyncio
+        # An explicit window (start and/or end) is sent as period1/period2. A
+        # range period would silently replace it on the wire, so it is dropped.
+        window_warnings: list[str] = []
+        request_start = pd.to_datetime(q.params["start"]) if q.params.get("start") else None
+        request_end = pd.to_datetime(q.params["end"]) if q.params.get("end") else None
+        request_period: str | None = None
+        if request_start is not None or request_end is not None:
+            if q.params.get("period"):
+                window_warnings.append(
+                    f"period={q.params['period']}: ignored because start/end are set"
+                )
+            if request_start is None:
+                # The yfinance adapter would fall back to a 6-month range and drop end.
+                request_start = request_end - pd.Timedelta(days=180)
+                window_warnings.append("end without start: window starts 180 days before end")
+        else:
+            request_period = q.params.get("period") or "1mo"
         tasks = [self.deps.yfinance.fetch(DataRequest(
             kind=DataKind.OHLCV,
             instrument=I(symbol=s, asset_class=_infer_asset_class(s)),
-            start=pd.to_datetime(q.params.get("start")) if q.params.get("start") else None,
-            end=pd.to_datetime(q.params.get("end")) if q.params.get("end") else None,
+            start=request_start,
+            end=request_end,
             interval=q.params.get("interval", "1d"),
-            extra={"period": q.params.get("period", "1mo"), "timeout": float(params.get("yfinance_timeout", 6))},
+            extra={"period": request_period, "timeout": float(params.get("yfinance_timeout", 6))},
         )) for s in q.universe]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         provider_errors: list[str] = []
@@ -336,8 +353,9 @@ class BQLFunction(BaseFunction):
                     if source_col is not None:
                         d[f] = float(row[source_col])
                 rows.append(d)
-        warnings = provider_errors + field_warnings
-        rows = _limit_rows(rows, params.get("limit"))
+        warnings = provider_errors + window_warnings + field_warnings
+        # 200 rows is the default cap (the seed no longer declares a limit input).
+        rows = _limit_rows(rows, params.get("limit", 200))
         if not rows:
             return FunctionResult(
                 code=self.code,
