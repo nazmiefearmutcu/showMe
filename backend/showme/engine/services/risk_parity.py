@@ -29,40 +29,44 @@ def equal_risk_contribution(
     tol: float = 1e-9,
     max_iter: int = 5000,
 ) -> tuple[np.ndarray, dict]:
-    """Iterative ERC solver (cyclical update, Spinu 2013 / Maillard et al.).
+    """Iterative ERC solver (Spinu 2013 cyclical coordinate descent).
 
-    Each step sets ``w_i <- b_i * sigma_p / (Sigma w)_i`` and renormalizes, so
-    the risk-contribution share of asset i becomes ``b_i`` at that step. The
-    loop stops only when the largest absolute gap between the realized risk
-    shares and ``b`` is below ``tol``. ``info["converged"]`` is False when the
-    iteration budget runs out, and ``info["residual"]`` is that gap in share
-    units (decimal), so callers can flag a non-converged answer.
+    Each sweep solves every coordinate exactly, so that at the fixed point the
+    risk-contribution share of asset i equals ``b_i``. The loop stops only when
+    the largest absolute gap between the realized risk shares and ``b`` is
+    below ``tol``. ``info["converged"]`` is False when the iteration budget runs
+    out, and ``info["residual"]`` is that gap in share units (decimal), so
+    callers can flag a non-converged answer.
     """
     n = cov.shape[0]
     if target is None:
         target = np.ones(n) / n
     target = np.asarray(target, dtype=float)
     target = target / target.sum()
-    w = naive_inverse_vol(cov)
+    # Spinu (2013) cyclical coordinate descent on the convex problem
+    #   min 0.5 x'Sigma x - sum_i b_i log x_i,
+    # whose optimum satisfies x_i (Sigma x)_i = b_i. Each coordinate has a
+    # closed-form positive root of a_i x^2 + c_i x - b_i = 0 with
+    # a_i = Sigma_ii and c_i = sum_{j != i} Sigma_ij x_j. The final weights are
+    # x / sum(x), so the risk shares are scale-free.
+    diag = np.diag(cov).astype(float)
+    x = naive_inverse_vol(cov).astype(float)
     err = float("inf")
     iterations = 0
     for it in range(max_iter):
         iterations = it + 1
+        for i in range(n):
+            a = max(float(diag[i]), 1e-20)
+            c = float(cov[i] @ x - diag[i] * x[i])
+            x[i] = (-c + np.sqrt(c * c + 4.0 * a * target[i])) / (2.0 * a)
+        w = x / x.sum()
         sw = cov @ w
         port_var = float(w @ sw)
-        port_vol = float(np.sqrt(max(port_var, 1e-20)))
-        # Realized risk shares s_i = w_i (Sigma w)_i / sigma_p^2 (sum to 1).
-        shares = (w * sw) / max(port_var, 1e-20)
-        err = float(np.max(np.abs(shares - target)))
+        err = float(np.max(np.abs((w * sw) / max(port_var, 1e-20) - target)))
         if err < tol:
             break
-        # Cyclical update: w_i <- b_i * sigma_p / (Sigma w)_i, then normalize.
-        denom = np.where(np.abs(sw) < 1e-20, 1e-20, sw)
-        w = target * port_vol / denom
-        w = np.where(w < 1e-12, 1e-12, w)
-        w = w / w.sum()
-    # Measure the gap for the weights actually returned (the last update may
-    # have run after the final check).
+    # Gap for the weights actually returned.
+    w = x / x.sum()
     sw = cov @ w
     port_var = float(w @ sw)
     err = float(np.max(np.abs((w * sw) / max(port_var, 1e-20) - target)))
