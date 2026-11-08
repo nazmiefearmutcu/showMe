@@ -192,10 +192,10 @@ describe("YAS pane — headline cards", () => {
 });
 
 describe("YAS pane — inputs are optional overrides", () => {
-  it("sends no demo bond: a generic tenor goes out with only the frequency", () => {
+  it("sends no demo bond: a generic tenor goes out with only the frequency and the BOND asset class", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<YASPane code="YAS" />);
-    expect(lastParams).toEqual({ freq: 2 });
+    expect(lastParams).toEqual({ asset_class: "BOND", freq: 2 });
     expect(lastSymbol).toBe("US10Y");
   });
 
@@ -254,7 +254,7 @@ describe("YAS pane — inputs are optional overrides", () => {
       target: { value: "US2Y" },
     });
     expect(lastSymbol).toBe("US2Y");
-    expect(lastParams).toEqual({ freq: 2 });
+    expect(lastParams).toEqual({ asset_class: "BOND", freq: 2 });
   });
 
   it("keeps the inputs visible and shows the reason when the backend needs them", () => {
@@ -305,5 +305,32 @@ describe("YAS pane — grid CSV export", () => {
     render(<YASPane code="YAS" />);
     expect(screen.getByTitle("Download CSV")).toBeDisabled();
     expect(downloadGridCsv).not.toHaveBeenCalled();
+  });
+});
+
+describe("YAS pane — asset class and unsupported-asset honesty (YAS#3)", () => {
+  it("tells the sidecar the asset is a BOND so a CUSIP is not inferred as EQUITY", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<YASPane code="YAS" symbol="912828ZT2" />);
+    expect(lastParams).toMatchObject({ asset_class: "BOND" });
+    expect(lastSymbol).toBe("912828ZT2");
+  });
+
+  it("shows the unsupported-asset reason instead of the generic empty message", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "unsupported_asset",
+          reason: "YAS does not support EQUITY",
+          rows: [],
+          curve: [],
+        },
+      },
+    });
+    render(<YASPane code="YAS" symbol="912828ZT2" />);
+    expect(screen.getByText(/Asset not supported/i)).toBeInTheDocument();
+    expect(screen.getByText(/YAS does not support EQUITY/i)).toBeInTheDocument();
+    expect(screen.queryByText(/check the bond inputs/i)).toBeNull();
   });
 });
