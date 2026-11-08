@@ -149,15 +149,15 @@ function mapInterval(interval: IntervalId): string {
  * the engine serves no such history. Never a substitute: the engine's
  * normaliser turns an unknown id into daily bars and "1M" (month) into "1m"
  * (minute), so an unmapped id must withhold the rail instead of being sent.
+ * 2h and 3m are left out on purpose: the engine's Yahoo leg has no such
+ * interval and falls back to daily bars without saying so.
  */
 const ENGINE_INTERVAL_BY_CHART_ID: Readonly<Record<string, string>> = {
   "1m": "1m",
-  "3m": "3m",
   "5m": "5m",
   "15m": "15m",
   "30m": "30m",
   "1h": "1h",
-  "2h": "2h",
   "4h": "4h",
   "1D": "1d",
   "1W": "1w",

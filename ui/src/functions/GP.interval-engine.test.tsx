@@ -109,7 +109,7 @@ describe("GP requests the chart timeframe's own engine id (GP#5)", () => {
     expect(calls.opts.at(-1)?.params?.interval).toBe("1d");
   });
 
-  it.each(["1s", "5s", "30s", "6h", "8h", "12h"])(
+  it.each(["1s", "5s", "30s", "2h", "3m", "6h", "8h", "12h"])(
     "withholds the rail for %s instead of requesting daily bars",
     (id) => {
       chart.interval = id;
