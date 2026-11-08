@@ -590,6 +590,43 @@ export function overlayLivePositions(
   }));
 }
 
+/**
+ * PORT#2: snapshot totals re-derived from the live overlay. `total_equity` is
+ * recomputed as live market value + cash, with the backend's rule: it is
+ * withheld while cash is untracked or any position is unpriced. Without this
+ * the headline kept the snapshot equity while the marks moved. A live sum more
+ * than 3x away from the snapshot is treated as bad data, and the snapshot
+ * totals object is returned unchanged (same reference).
+ */
+export function overlayLiveTotals(
+  totals: PortData["totals"] | undefined,
+  enriched: Position[],
+  hasOverlay: boolean,
+): PortData["totals"] | undefined {
+  if (!hasOverlay) return totals;
+  const mv = enriched.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
+  const cost = enriched.reduce(
+    (s, p) => s + (Number(p.quantity) || 0) * (positionEntryPrice(p) ?? 0),
+    0,
+  );
+  const snapshotMv = totals?.market_value ?? 0;
+  if (snapshotMv > 0 && (mv > snapshotMv * 3 || mv < snapshotMv / 3)) {
+    return totals;
+  }
+  const cash =
+    typeof totals?.cash === "number" && Number.isFinite(totals.cash) ? totals.cash : null;
+  const unpriced = enriched.filter(
+    (p) => typeof p.market_value !== "number" || !Number.isFinite(p.market_value),
+  ).length;
+  return {
+    ...totals,
+    market_value: mv,
+    cost_basis: cost,
+    unrealized_pnl: mv - cost,
+    total_equity: cash != null && unpriced === 0 ? mv + cash : null,
+  };
+}
+
 export function PORTPane({ code }: FunctionPaneProps) {
   const portfolioGroups = usePortfolioStore((s) => s.groups);
   const credentialsCount = useExchangeStore((s) => s.credentials.length);
@@ -661,24 +698,10 @@ export function PORTPane({ code }: FunctionPaneProps) {
     [positions, totals, live],
   );
 
-  const liveTotals = useMemo(() => {
-    if (Object.keys(live).length === 0) return totals;
-    const mv = enriched.reduce((s, p) => s + (Number(p.market_value) || 0), 0);
-    const cost = enriched.reduce(
-      (s, p) => s + (Number(p.quantity) || 0) * (positionEntryPrice(p) ?? 0),
-      0,
-    );
-    const snapshotMv = totals?.market_value ?? 0;
-    if (snapshotMv > 0 && (mv > snapshotMv * 3 || mv < snapshotMv / 3)) {
-      return totals;
-    }
-    return {
-      ...totals,
-      market_value: mv,
-      cost_basis: cost,
-      unrealized_pnl: mv - cost,
-    };
-  }, [enriched, totals, live]);
+  const liveTotals = useMemo(
+    () => overlayLiveTotals(totals, enriched, Object.keys(live).length > 0),
+    [enriched, totals, live],
+  );
 
   const liveCount = Object.values(streamStatus).filter((s) => s === "live").length;
   const hasLiveOverlay = Object.keys(live).length > 0;

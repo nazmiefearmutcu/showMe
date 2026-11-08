@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { overlayLivePositions } from "./PORT";
+import { overlayLivePositions, overlayLiveTotals } from "./PORT";
 
 type Positions = Parameters<typeof overlayLivePositions>[0];
 type Totals = Parameters<typeof overlayLivePositions>[2];
@@ -41,5 +41,41 @@ describe("overlayLivePositions (PORT#4 live weight denominator)", () => {
     const out = overlayLivePositions(snapshot, { AAPL: { price: 1_000_000, ts: 1 } }, totals);
 
     expect(out[1]?.weight).toBeCloseTo(1000 / 2000, 10);
+  });
+});
+
+describe("overlayLiveTotals (PORT#2 total equity under the live overlay)", () => {
+  const withCash = {
+    market_value: 2000,
+    cost_basis: 2000,
+    unrealized_pnl: 0,
+    cash: 500,
+    total_equity: 2500,
+  } as Totals;
+
+  it("recomputes total_equity from live market value plus cash", () => {
+    const enriched = overlayLivePositions(snapshot, { AAPL: { price: 150, ts: 1 } }, withCash);
+    const out = overlayLiveTotals(withCash, enriched, true);
+
+    expect(out?.market_value).toBe(2500);
+    // The snapshot equity (2500) must not survive while the marks move.
+    expect(out?.total_equity).toBe(3000);
+  });
+
+  it("returns the snapshot totals unchanged without a live overlay", () => {
+    expect(overlayLiveTotals(withCash, snapshot, false)).toBe(withCash);
+  });
+
+  it("withholds total_equity when cash is not tracked", () => {
+    const noCash = { market_value: 2000, cost_basis: 2000, unrealized_pnl: 0, total_equity: null } as Totals;
+    const enriched = overlayLivePositions(snapshot, { AAPL: { price: 150, ts: 1 } }, noCash);
+
+    expect(overlayLiveTotals(noCash, enriched, true)?.total_equity).toBeNull();
+  });
+
+  it("keeps the snapshot reference when the live sum fails the sanity guard", () => {
+    const enriched = overlayLivePositions(snapshot, { AAPL: { price: 1_000_000, ts: 1 } }, withCash);
+
+    expect(overlayLiveTotals(withCash, enriched, true)).toBe(withCash);
   });
 });
