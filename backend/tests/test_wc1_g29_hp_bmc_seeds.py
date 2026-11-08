@@ -34,11 +34,14 @@ def test_hp_seed_declares_no_input_the_handler_ignores() -> None:
 
 
 def test_hp_seed_declared_inputs_are_handled() -> None:
-    """Every declared HP input is either read by the handler or a pane-only control."""
-    pane_only = {"chart_style", "compare", "provider_mode"}
+    """Every declared HP input is read by the handler; the HP pane sends only these."""
     declared = {spec.name for spec in hp.inputs}
-    unknown = declared - HP_HANDLER_PARAMS - pane_only
+    unknown = declared - HP_HANDLER_PARAMS
     assert not unknown, f"HP seed declares inputs nothing reads: {sorted(unknown)}"
+    # The pane (HP.tsx) never references compare, provider_mode or chart_style,
+    # so none of them may remain declared as user controls.
+    assert {"compare", "provider_mode", "chart_style"}.isdisjoint(declared)
+    assert {"chart_style", "provider_mode"}.isdisjoint(hp.defaults)
 
 
 def test_hp_methodology_describes_the_real_race() -> None:

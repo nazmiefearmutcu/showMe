@@ -2,7 +2,7 @@
 
 Server-side this is an alias for the price-history pipeline (server.py
 ``_execute_price_history_alias``) — same underlying OHLCV fetcher as GP
-but with deeper bars, range/interval/chart-style controls, and a
+but with deeper bars, range/interval controls, and a
 key-levels right-rail in the UI. Asset coverage matches GP.
 """
 from __future__ import annotations
@@ -80,39 +80,10 @@ def hp() -> FunctionManifest:
                 options=["1m", "5m", "15m", "1h", "4h", "1d", "1w"],
                 depends_on=["range"],
             ),
-            InputSpec(
-                name="chart_style",
-                label="Chart style",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Render style for the price pane.",
-                options=["candle", "line", "area"],
-            ),
-            InputSpec(
-                name="compare",
-                label="Compare with",
-                control=ControlKind.SYMBOL_PICKER,
-                required=False,
-                description="Overlay a second instrument normalized to 100 at range start.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_EXCHANGE.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
             "range": "1Y",
             "interval": "1d",
-            "chart_style": "candle",
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
         },
         provider_chain=ProviderChain(
             primary="yfinance",
@@ -147,7 +118,7 @@ def hp() -> FunctionManifest:
                 PaneGrammar(name="volume", series_kind="histogram", height_pct=25),
             ],
             overlay_support=True,
-            compare_support=True,
+            compare_support=False,
         ),
         table_schema=TableSchema(
             columns=[
