@@ -68,4 +68,17 @@ describe("OVME pane — no demo option priced", () => {
     });
     expect(lastParams().vol).toBeCloseTo(0.25, 10);
   });
+
+  it("shows the four option inputs empty until the user enters them", () => {
+    localStorage.setItem("showme.ovme.spot", "150");
+    render(<OVMEPane code="OVME" symbol="SPY" />);
+    for (const label of [
+      "Underlying spot price",
+      "Option strike price",
+      "Years to expiry",
+      "Implied volatility percent",
+    ]) {
+      expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe("");
+    }
+  });
 });

@@ -88,6 +88,19 @@ function okPayload() {
 
 /* ── harness ───────────────────────────────────────────────────────── */
 
+/** The four option inputs are shown empty until the user enters them; the
+ *  ok-surface tests below are about a priced option, so they enter one. */
+function enterOptionInputs() {
+  localStorage.setItem("showme.ovme.spot", "100");
+  localStorage.setItem("showme.ovme.spot.set", "1");
+  localStorage.setItem("showme.ovme.strike", "100");
+  localStorage.setItem("showme.ovme.strike.set", "1");
+  localStorage.setItem("showme.ovme.years", "0.25");
+  localStorage.setItem("showme.ovme.years.set", "1");
+  localStorage.setItem("showme.ovme.vol", "30");
+  localStorage.setItem("showme.ovme.vol.set", "1");
+}
+
 beforeEach(() => {
   localStorage.clear();
   setMockFn({ state: "idle", data: undefined });
@@ -133,6 +146,7 @@ describe("OVME pane — load states", () => {
 
 describe("OVME pane — ok surface", () => {
   it("renders 4 KPIs, the value curve with inline vega/rho and the sensitivity grid", () => {
+    enterOptionInputs();
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<OVMEPane code="OVME" symbol="SPY" />);
 
@@ -185,6 +199,7 @@ describe("OVME pane — ok surface", () => {
   });
 
   it("renders editable numeric values with en-US dot decimals (no tr-TR commas)", () => {
+    enterOptionInputs();
     setMockFn({ state: "ok", ...okPayload() });
     render(<OVMEPane code="OVME" symbol="SPY" />);
     // FIX R2-#3: `type="number"` displayed OS-locale separators ("0,25").
@@ -199,6 +214,7 @@ describe("OVME pane — ok surface", () => {
   });
 
   it("keeps the value curve at the trimmed 120px height (below-fold budget)", () => {
+    enterOptionInputs();
     setMockFn({ state: "ok", ...okPayload() });
     const { container } = render(<OVMEPane code="OVME" symbol="SPY" />);
     // FIX R2-#9: the curve height was 150px; the sensitivity grid gains a row
@@ -210,12 +226,21 @@ describe("OVME pane — ok surface", () => {
 
 describe("OVME pane — interactions", () => {
   it("toggling CALL/PUT persists the type and relabels the header", () => {
+    enterOptionInputs();
     setMockFn({ state: "ok", ...okPayload() });
     render(<OVMEPane code="OVME" symbol="SPY" />);
     expect(screen.getByText(/CALL 100 · ATM/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("PUT"));
     expect(localStorage.getItem("showme.ovme.type")).toBe("PUT");
     expect(screen.getByText(/PUT 100 · ATM/)).toBeInTheDocument();
+  });
+
+  it("shows an em-dash header and empty inputs for an option nobody has entered", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<OVMEPane code="OVME" symbol="SPY" />);
+    expect(screen.getByText(/CALL — · —/)).toBeInTheDocument();
+    expect((screen.getByLabelText("Underlying spot price") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Years to expiry") as HTMLInputElement).value).toBe("");
   });
 
   it("editing the spot input persists it", () => {
