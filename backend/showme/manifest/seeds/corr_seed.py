@@ -81,8 +81,8 @@ def corr() -> FunctionManifest:
                 label="Frequency",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Return sampling cadence.",
-                options=["1h", "1d", "1wk", "1mo"],
+                description="Return sampling cadence. Hourly returns are not supported; CORR answers 1h with input_error.",
+                options=["1d", "1wk", "1mo"],
             ),
             InputSpec(
                 name="window",
@@ -116,10 +116,11 @@ def corr() -> FunctionManifest:
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
                 description="Preferred data mode; chain may downgrade and report it.",
+                # CORR#7: no cached-snapshot store exists, so that mode is not offered;
+                # a direct cached_snapshot request is answered with input_error.
                 options=[
                     DataMode.LIVE_EXCHANGE.value,
                     DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
         ],

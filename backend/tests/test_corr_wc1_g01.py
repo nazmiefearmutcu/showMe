@@ -21,6 +21,21 @@ from showme.engine.functions.portfolio.corr import CORRFunction
 END = "2026-09-18"  # a Friday
 
 
+def _brute_tau_b(x: Any, y: Any) -> float:
+    """Reference Kendall tau-b over all pairs (no scipy needed)."""
+    import math
+
+    s = tx = ty = 0.0
+    for i in range(len(x)):
+        for j in range(i + 1, len(x)):
+            a = float(np.sign(x[i] - x[j]))
+            b = float(np.sign(y[i] - y[j]))
+            s += a * b
+            tx += a * a
+            ty += b * b
+    return s / math.sqrt(tx * ty)
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -226,3 +241,110 @@ def test_corr7_seed_provider_chain_names_handler_adapters() -> None:
     assert "cached_snapshot" not in names
     assert names <= {"ccxt_failover", "coingecko", "yfinance"}
     assert chain.primary == "yfinance"
+
+
+# ── CORR#2 residual: the selected pair carries each symbol's own realized vol ──
+
+
+def test_corr2_selected_pair_reports_per_symbol_annualized_vol_not_nominal_factor() -> None:
+    fn = CORRFunction(FunctionDeps(yfinance=_CalendarYf()))
+    res = _run(fn.execute(symbols=["AAPL", "BTCUSDT"], live_correlation=True, days=120))
+
+    sel = res.data["impactor"]["selected_pair"]
+    assert sel is not None
+    assert "annualization_factor" not in sel
+    for side in ("left", "right"):
+        symbol = sel[side]
+        assert abs(sel[f"{side}_annualized_volatility"] - res.data["annualized_vol"][symbol]) < 1e-4
+
+
+# ── CORR#7 residual: declared method / as_of / provider_mode are honoured or rejected ──
+
+
+def test_corr7_pair_stats_uses_the_requested_correlation_kernel() -> None:
+    rng = np.random.default_rng(3)
+    idx = pd.date_range("2026-01-01", periods=60, freq="B")
+    x = rng.normal(size=60)
+    y = np.exp(x) + rng.normal(scale=0.01, size=60)  # monotone but non-linear
+    frame = pd.DataFrame({"X": x, "Y": y}, index=idx)
+
+    kendall = corr_mod._pair_stats(frame, "X", "Y", method="kendall")["correlation"]
+    pearson = corr_mod._pair_stats(frame, "X", "Y")["correlation"]
+    assert abs(kendall - _brute_tau_b(x, y)) < 1e-9
+    assert abs(kendall - pearson) > 1e-6
+
+
+def test_corr7_kendall_method_is_reported_and_drives_the_headline_matrix() -> None:
+    fn = CORRFunction(FunctionDeps(yfinance=_CalendarYf()))
+    res = _run(fn.execute(symbols=["AAPL", "BTCUSDT"], live_correlation=True, days=120, method="kendall"))
+
+    assert res.data.get("status") != "input_error"
+    assert res.data["correlation_method"] == "kendall"
+    assert res.data["impactor"]["options"]["correlation_method"] == "kendall"
+    assert any("kendall" in w.lower() for w in res.warnings)
+
+
+def test_corr7_unknown_method_is_an_explicit_input_error() -> None:
+    res = _run(CORRFunction(FunctionDeps()).execute(symbols=["SPY", "QQQ"], method="ward"))
+    assert res.data["status"] == "input_error"
+    assert "method" in res.data["reason"]
+
+
+def test_corr7_as_of_before_today_is_an_explicit_input_error() -> None:
+    res = _run(CORRFunction(FunctionDeps()).execute(symbols=["SPY", "QQQ"], as_of="2020-01-03"))
+    assert res.data["status"] == "input_error"
+    assert "as_of" in res.data["reason"]
+
+
+def test_corr7_unparsable_as_of_is_an_explicit_input_error() -> None:
+    res = _run(CORRFunction(FunctionDeps()).execute(symbols=["SPY", "QQQ"], as_of="last tuesday"))
+    assert res.data["status"] == "input_error"
+
+
+def test_corr7_as_of_today_is_accepted() -> None:
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    res = _run(CORRFunction(FunctionDeps()).execute(symbols=["SPY", "QQQ"], as_of=today))
+    assert res.data.get("status") != "input_error"
+
+
+def test_corr7_cached_snapshot_mode_is_an_explicit_input_error() -> None:
+    from showme.manifest.enums import DataMode
+
+    res = _run(
+        CORRFunction(FunctionDeps()).execute(
+            symbols=["SPY", "QQQ"], provider_mode=DataMode.CACHED_SNAPSHOT.value
+        )
+    )
+    assert res.data["status"] == "input_error"
+    assert "provider_mode" in res.data["reason"]
+
+
+def test_corr7_seed_options_do_not_advertise_unsupported_values() -> None:
+    from showme.manifest.enums import DataMode
+    from showme.manifest.seeds.corr_seed import corr as corr_manifest
+
+    specs = {spec.name: spec for spec in corr_manifest.inputs}
+    assert "1h" not in specs["frequency"].options
+    assert DataMode.CACHED_SNAPSHOT.value not in specs["provider_mode"].options
+
+
+# ── CORR outage honesty: an empty provider_unavailable envelope is never live ──
+
+
+def test_corr_outage_envelope_metadata_is_not_live() -> None:
+    res = _run(CORRFunction(FunctionDeps(yfinance=_OutageYf())).execute(
+        symbols=["SPY", "QQQ"], live_correlation=True, days=90
+    ))
+    assert res.data["status"] == "provider_unavailable"
+    assert res.metadata["live"] is False
+
+
+# ── CORR-R2 residual: the methodology states the shared calendar ──
+
+
+def test_corr_r2_methodology_states_the_shared_return_calendar() -> None:
+    fn = CORRFunction(FunctionDeps(yfinance=_CalendarYf()))
+    res = _run(fn.execute(symbols=["AAPL", "BTCUSDT"], live_correlation=True, days=120))
+    assert "shared return calendar" in res.data["methodology"]

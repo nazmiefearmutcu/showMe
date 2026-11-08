@@ -11,7 +11,7 @@ import json
 import logging
 import math
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -30,6 +30,7 @@ from showme.engine.core.instrument import AssetClass, Instrument
 
 
 MARKET_TYPES = ("Equity", "Index", "FX", "Crypto", "Commodity", "Rates", "Credit")
+CORRELATION_METHODS = ("pearson", "spearman", "kendall")
 DEFAULT_IMPACT_SYMBOLS = ["AAPL", "SPX", "EURUSD", "BTCUSDT", "GC=F", "US10Y", "CDXIG"]
 
 SAMPLE_MARKET_BETA = {
@@ -137,6 +138,25 @@ class CORRFunction(BaseFunction):
         if days is None:
             return _input_error_result(
                 f"Unsupported window {params.get('window')!r}; use a day count such as 90d or a year count such as 1Y.",
+                instrument,
+                symbols,
+            )
+        # CORR#7 residual: method, as_of and provider_mode are read here. Each one is
+        # either honoured or refused with an explicit input_error; none is ignored.
+        method = str(params.get("method") or "pearson").strip().lower()
+        if method not in CORRELATION_METHODS:
+            return _input_error_result(
+                f"Unsupported method {params.get('method')!r}; use pearson, spearman or kendall.",
+                instrument,
+                symbols,
+            )
+        as_of_error = _as_of_error(params.get("as_of"))
+        if as_of_error:
+            return _input_error_result(as_of_error, instrument, symbols)
+        if str(params.get("provider_mode") or "").strip().lower() == "cached_snapshot":
+            return _input_error_result(
+                "provider_mode cached_snapshot is not served by CORR (no snapshot store); "
+                "use live_exchange or delayed_reference, or omit it.",
                 instrument,
                 symbols,
             )
@@ -311,6 +331,7 @@ class CORRFunction(BaseFunction):
             sources=sources,
             coverage_status=coverage_status,
             min_overlap=min_overlap,
+            method=method,
         )
         # B6: surface the dropped list both on the payload and as a warning
         # so the UI can render a chip.
@@ -328,6 +349,12 @@ class CORRFunction(BaseFunction):
                 0,
                 f"Rejected {len(rejected_pairs)} pair(s) with fewer than {min_overlap} overlapping "
                 "observations; their correlations are null.",
+            )
+        if method != "pearson":
+            warnings.insert(
+                0,
+                f"Headline correlations (impactor matrix, ranked pairs, selected pair) use the {method} "
+                "kernel; the Pearson, Spearman and Downside views are unchanged.",
             )
         if not data.get("downside_observations"):
             warnings.append(
@@ -358,6 +385,7 @@ class CORRFunction(BaseFunction):
                 "return_method": return_method,
                 "frequency": frequency,
                 "missing_data_policy": missing_policy,
+                "correlation_method": method,
                 "impactor_integrated": True,
             },
             warnings=warnings,
@@ -509,7 +537,8 @@ def _live_unavailable_result(
         metadata={
             "days": days,
             "symbols": list(symbols),
-            "live": True,
+            # CORR#outage: no series was served, so the envelope is not a live result.
+            "live": False,
             "return_method": return_method,
             "frequency": frequency,
             "missing_data_policy": missing_policy,
@@ -532,6 +561,7 @@ def _correlation_payload(
     sources: list[str],
     coverage_status: dict[str, dict[str, Any]],
     min_overlap: int = 30,
+    method: str = "pearson",
 ) -> dict[str, Any]:
     ordered_symbols = [symbol for symbol in symbols if symbol in frame.columns]
     if not ordered_symbols:
@@ -565,9 +595,11 @@ def _correlation_payload(
         coverage_status=coverage_status,
         rejected_pairs=rejected,
         min_overlap=min_overlap,
+        method=method,
     )
     return {
         "symbols": ordered_symbols,
+        "correlation_method": method,
         "pearson": pearson,
         "spearman": spearman,
         "downside": downside,
@@ -603,6 +635,7 @@ def _correlation_payload(
             "symbols": len(ordered_symbols),
             "samples": int(impactor["observation_range"]["max"]),
             "method": "correlation_impact_matrix",
+            "correlation_method": method,
             "return_method": return_method,
             "frequency": frequency,
             "missing_data_policy": missing_policy,
@@ -611,7 +644,9 @@ def _correlation_payload(
         "methodology": (
             "Resolve the selected universe, fetch or build close price series, resample to the selected "
             "frequency, compute log or simple returns, apply the selected missing-data policy, then estimate "
-            "Pearson, Spearman, downside correlation, covariance, and ranked positive/negative pairs."
+            "Pearson, Spearman, downside correlation, covariance, and ranked positive/negative pairs. "
+            f"The impactor matrix and ranked pairs use the {method} correlation kernel. Every symbol is "
+            "measured on one shared return calendar, so all series span the same dates."
         ),
         "field_dictionary": {
             "pearson": "Linear return correlation from -1 to +1.",
@@ -640,9 +675,10 @@ def _build_impactor_payload(
     coverage_status: dict[str, dict[str, Any]],
     rejected_pairs: list[tuple[str, str, int]] | None = None,
     min_overlap: int = 30,
+    method: str = "pearson",
 ) -> dict[str, Any]:
     price_by_symbol = {series["asset"]["symbol"]: series for series in price_series}
-    matrix = _impactor_matrix(frame, symbols)
+    matrix = _impactor_matrix(frame, symbols, method)
     rejected_keys = {frozenset((left, right)) for left, right, _ in (rejected_pairs or [])}
     for cell in matrix:
         if cell["left"] != cell["right"] and frozenset((cell["left"], cell["right"])) in rejected_keys:
@@ -661,6 +697,7 @@ def _build_impactor_payload(
         symbols,
         positive_pairs[0] if positive_pairs else None,
         frequency,
+        method,
     )
     bug_analysis = _bug_analysis(symbols, coverage, matrix, observation_range, sources, live)
     steps = _analysis_steps(
@@ -696,6 +733,7 @@ def _build_impactor_payload(
             "source_mode": "live_with_transparent_fallback" if live else "computed_reference",
             "sources": sources,
             "min_overlap": min_overlap,
+            "correlation_method": method,
         },
         "provider_contract": {
             "asset": ["symbol", "name", "market", "currency", "venue"],
@@ -941,15 +979,7 @@ def _annualized_vol_by_symbol(
     the rows table and the return summary agree. An undefined volatility (fewer
     than two observations) is None, never zero (CORR#8).
     """
-    out: dict[str, float | None] = {}
-    for symbol in symbols:
-        values = pd.to_numeric(frame[symbol], errors="coerce").dropna() if symbol in frame else pd.Series(dtype=float)
-        factor = _realized_annualization_factor(values, frequency)
-        if values.shape[0] > 1 and factor is not None:
-            out[symbol] = _round_or_none(float(values.std() * factor))
-        else:
-            out[symbol] = None
-    return out
+    return {symbol: _symbol_annualized_vol(frame, symbol, frequency) for symbol in symbols}
 
 
 def _realized_annualization_factor(values: pd.Series, frequency: str) -> float | None:
@@ -974,11 +1004,11 @@ def _realized_annualization_factor(values: pd.Series, frequency: str) -> float |
     return math.sqrt(obs_per_year)
 
 
-def _impactor_matrix(frame: pd.DataFrame, symbols: list[str]) -> list[dict[str, Any]]:
+def _impactor_matrix(frame: pd.DataFrame, symbols: list[str], method: str = "pearson") -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for y in symbols:
         for x in symbols:
-            detail = _pair_stats(frame, y, x)
+            detail = _pair_stats(frame, y, x, method)
             rows.append(
                 {
                     "y": y,
@@ -995,7 +1025,13 @@ def _impactor_matrix(frame: pd.DataFrame, symbols: list[str]) -> list[dict[str, 
     return rows
 
 
-def _pair_stats(frame: pd.DataFrame, left: str, right: str) -> dict[str, Any]:
+def _pair_stats(frame: pd.DataFrame, left: str, right: str, method: str = "pearson") -> dict[str, Any]:
+    """Pair statistics; ``correlation`` uses the requested kernel (CORR#7).
+
+    Covariance and volatilities stay sample moments of the overlap. Spearman and
+    Kendall come from pandas on the same overlap, so the kernel is never silently
+    replaced by Pearson.
+    """
     if left not in frame or right not in frame:
         return {"correlation": None, "covariance": None, "observations": 0, "left_vol": None, "right_vol": None, "overlap": []}
     if left == right:
@@ -1020,7 +1056,13 @@ def _pair_stats(frame: pd.DataFrame, left: str, right: str) -> dict[str, Any]:
     left_vol = float(left_values.std())
     right_vol = float(right_values.std())
     denominator = left_vol * right_vol
-    corr = None if denominator == 0 else covariance / denominator
+    if method == "pearson":
+        corr = None if denominator == 0 else covariance / denominator
+    elif method == "kendall":
+        corr = _kendall_tau_b(left_values.to_numpy(dtype=float), right_values.to_numpy(dtype=float))
+    else:
+        rank_value = float(left_values.corr(right_values, method=method))
+        corr = rank_value if math.isfinite(rank_value) else None
     return {
         "correlation": corr,
         "covariance": covariance,
@@ -1029,6 +1071,28 @@ def _pair_stats(frame: pd.DataFrame, left: str, right: str) -> dict[str, Any]:
         "right_vol": right_vol,
         "overlap": overlap,
     }
+
+
+def _kendall_tau_b(x: np.ndarray, y: np.ndarray) -> float | None:
+    """Kendall tau-b with tie correction, computed with numpy only.
+
+    pandas' kendall path needs scipy, which the sidecar does not ship, so the
+    concordance sum is built from sign matrices instead. Returns None when either
+    series has no variation (tau-b is undefined there).
+    """
+    if x.shape[0] < 2 or y.shape[0] < 2:
+        return None
+    dx = np.sign(x[:, None] - x[None, :]).astype(np.int8)
+    dy = np.sign(y[:, None] - y[None, :]).astype(np.int8)
+    # Each unordered pair appears twice in the full sign matrices; halve the sums.
+    concordance = float(np.sum(dx * dy, dtype=np.int64)) / 2.0
+    untied_x = float(np.sum(dx * dx, dtype=np.int64)) / 2.0
+    untied_y = float(np.sum(dy * dy, dtype=np.int64)) / 2.0
+    denominator = math.sqrt(untied_x * untied_y)
+    if denominator == 0.0:
+        return None
+    tau = concordance / denominator
+    return tau if math.isfinite(tau) else None
 
 
 def _top_pairs(matrix: list[dict[str, Any]], limit: int = 8) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1058,6 +1122,7 @@ def _selected_pair_detail(
     symbols: list[str],
     pair: dict[str, Any] | None,
     frequency: str,
+    method: str = "pearson",
 ) -> dict[str, Any] | None:
     if pair:
         left = pair["left"]
@@ -1066,7 +1131,11 @@ def _selected_pair_detail(
         left, right = symbols[0], symbols[1]
     else:
         return None
-    detail = _pair_stats(frame, left, right)
+    detail = _pair_stats(frame, left, right, method)
+    # CORR#2 residual: each side is annualized on its own realized calendar, the same
+    # factor and full-series volatility that annualized_vol uses for that symbol.
+    left_annualized = _symbol_annualized_vol(frame, left, frequency)
+    right_annualized = _symbol_annualized_vol(frame, right, frequency)
     overlap = detail.get("overlap")
     preview: list[dict[str, Any]] = []
     if isinstance(overlap, pd.DataFrame) and not overlap.empty:
@@ -1088,9 +1157,19 @@ def _selected_pair_detail(
         "observations": int(detail["observations"]),
         "left_volatility": _round_or_none(detail["left_vol"], 8),
         "right_volatility": _round_or_none(detail["right_vol"], 8),
-        "annualization_factor": _annualization_factor(frequency),
+        "left_annualized_volatility": left_annualized,
+        "right_annualized_volatility": right_annualized,
         "overlap_sample": preview,
     }
+
+
+def _symbol_annualized_vol(frame: pd.DataFrame, symbol: str, frequency: str) -> float | None:
+    """Annualized volatility of one symbol's full return series (same as annualized_vol)."""
+    values = pd.to_numeric(frame[symbol], errors="coerce").dropna() if symbol in frame else pd.Series(dtype=float)
+    factor = _realized_annualization_factor(values, frequency)
+    if values.shape[0] > 1 and factor is not None:
+        return _round_or_none(float(values.std() * factor))
+    return None
 
 
 def _heatmap_rows(symbols: list[str], pearson: dict[str, dict[str, float | None]]) -> list[dict[str, Any]]:
@@ -1360,6 +1439,30 @@ def _parse_symbols(raw: Any) -> list[str]:
         out.append(symbol)
         seen.add(symbol)
     return out[:30]
+
+
+def _as_of_error(value: Any) -> str | None:
+    """CORR#7: an as_of anchor is honoured only when it is today or later.
+
+    CORR always measures the window ending at the latest close. A past anchor
+    would otherwise be silently replaced by that window, so it is refused.
+    """
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        return "as_of must be a single date (YYYY-MM-DD); CORR cannot anchor a list or a range."
+    text = value.strip()
+    try:
+        anchor = date.fromisoformat(text[:10])
+    except ValueError:
+        return f"Unparsable as_of {value!r}; use a date such as 2026-11-07."
+    today = datetime.now(timezone.utc).date()
+    if anchor < today:
+        return (
+            f"as_of {anchor.isoformat()} is before today; CORR measures the window ending at the "
+            "latest close and does not anchor historical windows yet."
+        )
+    return None
 
 
 def _truthy(value: Any) -> bool:
