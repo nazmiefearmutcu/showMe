@@ -314,12 +314,14 @@ def _normalise_finra_rows(rows: list[Any]) -> list[dict[str, Any]]:
     for r in rows:
         if not isinstance(r, dict):
             continue
+        # ATS_W_SMBL rows are per-symbol, per-tier aggregates with no venue
+        # identity (MPID is null on the live feed). The tier code is not a venue,
+        # so the aggregate is labelled ALL_ATS instead.
         venue = (
             r.get("MPID")
             or r.get("mpid")
             or r.get("firmCRDNumber")
             or r.get("marketParticipantName")
-            or r.get("tierIdentifier")
             or "ALL_ATS"
         )
         week = (

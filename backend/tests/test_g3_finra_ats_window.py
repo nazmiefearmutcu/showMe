@@ -185,3 +185,17 @@ def test_dpf_empty_feed_ships_no_synthetic_volumes(monkeypatch) -> None:
     assert not any(
         r.get("source_mode") == "labelled_current_shape_model" for r in data["weekly"]
     )
+
+
+def test_dark_venue_label_is_not_a_tier_identifier(monkeypatch) -> None:
+    """ATS_W_SMBL rows carry no MPID; the aggregate must not be labelled by tier."""
+    fake = FakeFinra(_dataset())
+    _patch_direct_finra(monkeypatch, fake)
+    monkeypatch.setattr(DARKFunction, "_weekly_total_volume", lambda self, sym: _no_yfinance())
+
+    result = _run(DARKFunction(deps=FunctionDeps()).execute(symbol="AAPL", weeks=8))
+    data = result.data
+
+    assert data["status"] == "ok", data.get("reason")
+    venues = {row["venue"] for row in data["venues"]}
+    assert venues == {"ALL_ATS"}, venues
