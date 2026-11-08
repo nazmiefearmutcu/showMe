@@ -582,7 +582,7 @@ def _balance_sheet_long_term_debt(facts: dict[str, Any]) -> tuple[float | None, 
         return round(total[0] / 1e9, 4), total[1]
     current = _first_fact(facts, ("LongTermDebtCurrent",))
     noncurrent = _first_fact(facts, ("LongTermDebtNoncurrent",))
-    if current is not None and noncurrent is not None:
+    if current is not None and noncurrent is not None and current[1] == noncurrent[1]:
         return round((current[0] + noncurrent[0]) / 1e9, 4), noncurrent[1]
     return None, None
 
