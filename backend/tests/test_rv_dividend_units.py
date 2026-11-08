@@ -44,10 +44,10 @@ def _row(res, symbol):
 
 def test_rv1_dividend_yield_is_returned_as_fraction():
     res = _run_rv({
-        "AAPL": {"dividendYield": 0.32, "trailingPE": 30.0},
-        "MSFT": {"dividendYield": 0.74, "trailingPE": 25.0},
+        "AAPL": {"dividendYield": 0.32, "dividendRate": 1.08, "currentPrice": 342.37, "trailingPE": 30.0},
+        "MSFT": {"dividendYield": 0.74, "dividendRate": 3.00, "currentPrice": 405.0, "trailingPE": 25.0},
     })
-    # yfinance 0.32 is percent -> 0.0032 as a fraction (0.32%).
+    # yfinance 0.32 is percent -> 0.0032 as a fraction (0.32%), settled by dividendRate/price.
     assert _row(res, "AAPL")["div_yield"] == pytest.approx(0.0032)
     assert _row(res, "MSFT")["div_yield"] == pytest.approx(0.0074)
 
@@ -81,14 +81,52 @@ def test_rv1_percent_form_is_recognised_by_the_rate_and_price_cross_check():
     assert _row(res, "MSFT")["div_yield"] == pytest.approx(0.0074, rel=1e-3)
 
 
-def test_rv1_without_cross_check_uses_the_des_rule():
-    # No rate or price: same rule as DES (values above 0.2 are percent).
+def test_rv1_without_cross_check_the_unit_is_unresolved_not_guessed():
+    # No dividendRate or price: 0.32 could be 0.32% or 32%, and 0.0074 could be
+    # either too. RV must not divide by 100 on a magnitude guess; it returns an
+    # explicit unit_unresolved state and keeps the raw reading.
     res = _run_rv({
         "AAPL": {"dividendYield": 0.32},
         "MSFT": {"dividendYield": 0.0074},
     })
-    assert _row(res, "AAPL")["div_yield"] == pytest.approx(0.0032)
-    assert _row(res, "MSFT")["div_yield"] == pytest.approx(0.0074)
+    for sym in ("AAPL", "MSFT"):
+        row = _row(res, sym)
+        assert row["div_yield"] is None, row
+        assert row["div_yield_status"] == "unit_unresolved", row
+
+
+def test_rv1_a_large_unverifiable_reading_is_not_guessed_as_percent():
+    # 0.15 with no cross-check is exactly the case the old magnitude rule got wrong.
+    res = _run_rv({"AAPL": {"dividendYield": 0.15}, "MSFT": {"dividendYield": 0.15}})
+    assert _row(res, "AAPL")["div_yield"] is None
+    assert _row(res, "AAPL")["div_yield_status"] == "unit_unresolved"
+
+
+def test_rv1_zero_yield_is_unit_free_and_resolved():
+    res = _run_rv({"AAPL": {"dividendYield": 0}, "MSFT": {"dividendYield": 0.74}})
+    assert _row(res, "AAPL")["div_yield"] == pytest.approx(0.0)
+    assert _row(res, "AAPL")["div_yield_status"] == "ok"
+
+
+def test_rv1_reading_inconsistent_with_rate_and_price_is_unresolved():
+    # rate/price = 0.01% (0.0001). Percent reading 0.005 is 50x off, decimal 0.5 is 5000x off.
+    res = _run_rv({
+        "AAPL": {"dividendYield": 0.5, "dividendRate": 0.01, "currentPrice": 100.0},
+        "MSFT": {"dividendYield": 0.74, "dividendRate": 3.00, "currentPrice": 405.0},
+    })
+    assert _row(res, "AAPL")["div_yield"] is None
+    assert _row(res, "AAPL")["div_yield_status"] == "unit_unresolved"
+    assert _row(res, "MSFT")["div_yield_status"] == "ok"
+
+
+def test_rv1_resolved_rows_report_status_ok():
+    res = _run_rv({
+        "AAPL": {"dividendYield": 0.32, "dividendRate": 1.08, "currentPrice": 342.37},
+        "MSFT": {"trailingPE": 25.0},
+    })
+    assert _row(res, "AAPL")["div_yield_status"] == "ok"
+    assert _row(res, "MSFT")["div_yield"] is None
+    assert _row(res, "MSFT")["div_yield_status"] == "missing"
 
 
 def test_rv1_negative_dividend_yield_is_missing():
