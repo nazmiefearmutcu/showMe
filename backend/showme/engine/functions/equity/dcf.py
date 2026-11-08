@@ -33,6 +33,10 @@ class DDMFunction(BaseFunction):
         g = float(params.get("growth_rate", 0.03))
         r = params.get("required_return")
         forward_indicated: float | None = None
+        # No caller value and no provider answer yet: the dividend is unknown
+        # until the provider returns a usable payload (T10: a failed or empty
+        # provider must never read as "pays no dividend, value 0, status ok").
+        provider_failed = d0 is None
         # Try to source D0 from yfinance
         if d0 is None and self.deps.yfinance:
             try:
@@ -41,18 +45,50 @@ class DDMFunction(BaseFunction):
                     kind=DataKind.REFDATA, instrument=instrument
                 ))
                 raw = (rd.extras or {}).get("raw", {}) if hasattr(rd, "extras") else {}
-                # D0 is the TRAILING dividend. dividendRate is the forward
-                # indicated annual rate (not yet paid): growing it by (1+g)
-                # again would double-count one year of growth (DDM#1).
-                d0 = raw.get("trailingAnnualDividendRate") or 0
-                forward_indicated = raw.get("dividendRate")
-                sources.append("yfinance")
+                # The adapter swallows info failures and returns raw holding
+                # only info_error (or nothing): that is no data, not a payer.
+                if not raw or raw.get("info_error"):
+                    provider_failed = True
+                    warnings.append(f"yfinance: {raw.get('info_error') or 'no reference data returned'}")
+                else:
+                    provider_failed = False
+                    # D0 is the TRAILING dividend. dividendRate is the forward
+                    # indicated annual rate (not yet paid): growing it by (1+g)
+                    # again would double-count one year of growth (DDM#1).
+                    d0 = raw.get("trailingAnnualDividendRate") or 0
+                    forward_indicated = raw.get("dividendRate")
+                    sources.append("yfinance")
             except Exception as e:
+                provider_failed = True
                 warnings.append(f"yfinance: {e}")
         d0 = float(d0 or 0)
         if d0 <= 0:
-            warnings.append(
-                "dividend_ttm: provider returned 0 or no dividend; DDM is not applicable for non-dividend payers. Pass dividend_ttm explicitly to override."
+            if provider_failed:
+                status = "provider_unavailable"
+                reason = "Dividend reference data is unavailable, so the trailing dividend is unknown. Pass dividend_ttm explicitly."
+            elif forward_indicated is not None and float(forward_indicated) > 0:
+                status = "needs_input"
+                reason = "Provider reports a forward dividend but no trailing 12-month dividend. Pass dividend_ttm explicitly."
+            else:
+                status = "not_applicable"
+                reason = "Provider reports no trailing dividend, so DDM is not applicable for non-dividend payers."
+                warnings.append(
+                    "dividend_ttm: provider returned 0 or no dividend; DDM is not applicable for non-dividend payers. Pass dividend_ttm explicitly to override."
+                )
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={
+                    "status": status,
+                    "reason": reason,
+                    "next_actions": ["Pass dividend_ttm explicitly (trailing annual dividend per share)."],
+                    "dividend_ttm": None,
+                    "dividend_forward_indicated": forward_indicated,
+                    "next_dividend": None,
+                    "growth": g, "required_return": None,
+                    "fair_value_per_share": None,
+                    "rows": [], "surface": [],
+                },
+                sources=list(set(sources)), warnings=warnings,
             )
             # No positive dividend means no Gordon value: report the missing
             # input explicitly instead of a fake 0.0 fair value with status ok.

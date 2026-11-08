@@ -438,7 +438,9 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code == "DCF":
         params.update({"growth_high": 0.08, "growth_terminal": 0.025})
     elif code == "DDM":
-        params.update({"growth_rate": 0.03, "required_return": 0.08})
+        # No required_return here: a router-injected constant (was 0.08) made
+        # DDM value at a silent rate and skip the WACC model (WACC policy, T10).
+        params.update({"growth_rate": 0.03})
     elif code == "WACC":
         params.update({"erp": 0.05, "beta_timeout": 2})
     elif code == "REBA":

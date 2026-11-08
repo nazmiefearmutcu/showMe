@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.equity.dcf import DDMFunction
@@ -41,13 +43,7 @@ def test_surface_cells_recompute_d1_for_each_growth_column() -> None:
             continue
         expected = d0 * (1 + grow) / (req - grow)
         # Red before the fix: the g-column cells reuse the base-case D1.
-        assert value == expected_approx(expected), (req, grow, value, expected)
-
-
-def expected_approx(x: float):
-    import pytest
-
-    return pytest.approx(x, rel=1e-9)
+        assert value == pytest.approx(expected, rel=1e-9), (req, grow, value, expected)
 
 
 class _YfRaw:
@@ -72,3 +68,36 @@ def test_d0_is_trailing_dividend_not_forward_indicated_rate() -> None:
     assert res.data["next_dividend"] == 3.71 * 1.03
     assert res.data["rows"][0]["value"] == 3.71
     assert res.data["fair_value_per_share"] == 3.71 * 1.03 / (0.09 - 0.03)
+
+
+def test_offline_provider_without_data_is_explicit_state_not_live_ok() -> None:
+    """T10: with the provider unreachable, DDM must not return ok/live.
+
+    yfinance's REFDATA adapter swallows an info failure and returns raw with
+    only ``info_error``. DDM must report provider_unavailable with no value
+    (never ok with a zero dividend). The router must also not inject a
+    constant required_return (see test_ddm_router_injects_no_constant_return).
+    """
+    deps = FunctionDeps(yfinance=_YfRaw({"info_error": "connection refused"}))
+    res = asyncio.run(DDMFunction(deps).execute(MSFT))
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["fair_value_per_share"] is None
+    assert res.data["required_return"] is None
+    assert res.data["reason"]
+    assert res.data["next_actions"]
+
+
+def test_ddm_router_injects_no_constant_return() -> None:
+    """T10 root cause: the router injected required_return=0.08, so DDM never
+    reached the WACC model and valued at a silent constant (WACC policy)."""
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("DDM", {"symbol": "AAPL"})
+    assert "required_return" not in routed
+
+
+def test_ddm_non_payer_is_not_applicable_not_ok() -> None:
+    deps = FunctionDeps(yfinance=_YfRaw({"sector": "Technology", "marketCap": 1.0}))
+    res = asyncio.run(DDMFunction(deps).execute(MSFT, required_return=0.09, growth_rate=0.03))
+    assert res.data["status"] == "not_applicable"
+    assert res.data["fair_value_per_share"] is None
