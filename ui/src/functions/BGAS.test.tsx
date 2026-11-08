@@ -208,6 +208,18 @@ describe("BGAS pane — data honesty", () => {
     expect(screen.getByText(/^last quote$/i)).toBeInTheDocument();
     expect(screen.getAllByText(/AS OF 2026-09-07/).length).toBeGreaterThanOrEqual(1);
   });
+
+  it("labels an EIA row as a dated EIA print, never a live quote", () => {
+    // BGAS#2 follow-up: EIA prints are official period prices with a lag.
+    const today = new Date().toISOString().slice(0, 10);
+    const p = livePayload();
+    p.data.data.source_mode = "live_eia";
+    p.data.data.rows = [{ ...SPOT_ROW, source_mode: "live_eia", as_of: today }];
+    setMockFn({ state: "ok", ...p });
+    render(<BGASPane code="BGAS" symbol="NG=F" />);
+    expect(screen.queryByText(/^live quote$/i)).toBeNull();
+    expect(screen.getByText(`EIA print · ${today}`)).toBeInTheDocument();
+  });
 });
 
 describe("BGAS pane — interaction", () => {
@@ -276,7 +288,9 @@ describe("commodity-spot shared body — audit fixes (BGAS)", () => {
     // The old `last`-only filter dropped every EIA row -> empty grid.
     expect(screen.queryByText(/No spot rows returned/i)).toBeNull();
     expect(screen.getAllByText("3.110").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/live quote/i)).toBeInTheDocument();
+    // An EIA period print is labelled as such, never as a live quote.
+    expect(screen.getByText(/^EIA print · 2026-09-10$/)).toBeInTheDocument();
+    expect(screen.queryByText(/^live quote$/i)).toBeNull();
     expect(screen.getByText(/AS OF 2026-09-10/)).toBeInTheDocument();
     // The percent caption survived the value/period normalization.
     expect(screen.getByText(/\+0.650%/)).toBeInTheDocument();

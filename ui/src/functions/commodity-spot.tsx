@@ -183,8 +183,12 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
     sourceMode === "live_yfinance" &&
     quoteDay !== "" &&
     quoteDay !== new Date().toISOString().slice(0, 10);
+  // BGAS#2 follow-up: an EIA row is an official daily (or weekly) print
+  // dated by its period, published with a lag, so it is never a "live quote";
+  // it is labelled as the EIA print with its own date.
+  const isEiaPrint = sourceMode === "live_eia";
   const isLive =
-    status === "ok" && /^live_/.test(sourceMode) && !isPriorSessionQuote;
+    status === "ok" && /^live_/.test(sourceMode) && !isPriorSessionQuote && !isEiaPrint;
   const spread =
     typeof payload?.spread === "number" ? (payload.spread as number) : null;
 
@@ -364,9 +368,11 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
                     ? "provider down"
                     : isLive
                       ? "live quote"
-                      : isPriorSessionQuote
-                        ? "last quote"
-                        : sourceMode}
+                      : isEiaPrint && status === "ok"
+                        ? `EIA print${quoteDay ? ` · ${quoteDay}` : ""}`
+                        : isPriorSessionQuote
+                          ? "last quote"
+                          : sourceMode}
               </Pill>
               {isRangeWindow ? (
                 <SegmentedControl
