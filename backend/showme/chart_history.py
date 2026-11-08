@@ -17,8 +17,10 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from io import StringIO
+import logging
 import math
 import os
+import re
 from typing import Any
 
 import httpx
@@ -26,6 +28,23 @@ import httpx
 from showme.crypto_aliases import split_crypto_symbol
 
 STOOQ_API_KEY_ENV = "STOOQ_API_KEY"
+
+_STOOQ_APIKEY_PARAM = re.compile(r"(apikey=)[^&\s\"'<>]+")
+
+
+class _RedactStooqApiKey(logging.Filter):
+    """httpx logs each request URL at INFO; blank the Stooq apikey query value (SEC-1)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "apikey=" in message and "stooq.com" in message:
+            record.msg = _STOOQ_APIKEY_PARAM.sub(r"\1[redacted]", message)
+            record.args = ()
+        return True
+
+
+if not any(isinstance(f, _RedactStooqApiKey) for f in logging.getLogger("httpx").filters):
+    logging.getLogger("httpx").addFilter(_RedactStooqApiKey())
 
 
 INTERVAL_SECONDS: dict[str, int] = {
