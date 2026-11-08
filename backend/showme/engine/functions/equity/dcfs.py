@@ -52,8 +52,12 @@ class DCFSensitivityFunction(BaseFunction):
             "shares_outstanding": base_data.get("shares_outstanding"),
         }
         shared = {k: v for k, v in shared.items() if v is not None}
+        base_fv = base_data.get("fair_value_per_share")
+        # DCFS#1: a negative base value is not a valuation, so the grid is
+        # withheld rather than published as a sensitivity surface of negatives.
+        grid_withheld = base_fv is not None and base_fv < 0
         grid: list[dict[str, Any]] = []
-        for w in wacc_range:
+        for w in ([] if grid_withheld else wacc_range):
             for g in g_range:
                 try:
                     grid_params = {
@@ -76,7 +80,6 @@ class DCFSensitivityFunction(BaseFunction):
                                   "fair_value_per_share": None,
                                   "bucket": f"WACC {float(w):.1%} / g {float(g):.1%}"})
         # Tornado: which input has biggest effect at ±20% perturbation
-        base_fv = base_data.get("fair_value_per_share")
         tornado: list[dict[str, Any]] = []
         if base_fv is not None and base_fv > 0:
             # HNT-04 fix: the DCF payload publishes ``g_terminal``/``g_high``
@@ -144,7 +147,7 @@ class DCFSensitivityFunction(BaseFunction):
             status = "negative_value"
             warnings.append(
                 "base_fair_value: the DCF implies a negative value per share at these inputs; "
-                "no valuation or sensitivity grid is reported for it."
+                "no sensitivity grid or tornado is reported for it."
             )
         elif base_data.get("status", "ok") != "ok":
             status = "needs_input"

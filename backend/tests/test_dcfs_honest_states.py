@@ -107,3 +107,20 @@ def test_seed_assumptions_contract_matches_handler_echo() -> None:
     stale = [a for a in assertion_names if "grid_width" in a or "discount_rate" in a]
     assert not stale, f"semantic tests assert retired echo keys: {stale}"
     assert "assumptions_wacc_equals_input" in assertion_names
+
+
+def test_negative_base_withholds_grid_and_tornado_payload() -> None:
+    """DCFS#1: when the base value is negative the payload must not carry a
+    grid, surface, rows or tornado, and the warning must say exactly that.
+    A warning claiming 'no grid is reported' while 30 negative grid cells are
+    in the payload is a false statement about the output."""
+    res = _run(fcfe=-1_000_000_000, shares_outstanding=10_000_000, wacc=0.10,
+               growth_high=0.05, years=5)
+    assert res.data["base_fair_value"] < 0
+    assert res.data["grid"] == [], "negative base must withhold the grid"
+    assert res.data["surface"] == [], "negative base must withhold the surface"
+    assert res.data["rows"] == [], "negative base must withhold the rows"
+    assert res.data["tornado"] == []
+    text = " ".join(res.warnings)
+    assert "no sensitivity grid" in text, res.warnings
+    assert "tornado" in text, res.warnings
