@@ -63,7 +63,7 @@ class RVFunction(BaseFunction):
                     "roe": raw.get("returnOnEquity"),
                     "roa": raw.get("returnOnAssets"),
                     "debt_equity": raw.get("debtToEquity"),
-                    "div_yield": _dividend_yield_fraction(raw.get("dividendYield")),
+                    "div_yield": _dividend_yield_fraction(raw.get("dividendYield"), raw),
                     "source_mode": "live_yfinance",
                 })
         if not rows:
@@ -103,14 +103,39 @@ class RVFunction(BaseFunction):
         )
 
 
-def _dividend_yield_fraction(value: Any) -> float | None:
-    """yfinance ``dividendYield`` is in percent units (AAPL 0.32 = 0.32%).
+def _dividend_yield_fraction(value: Any, raw: dict[str, Any] | None = None) -> float | None:
+    """Dividend yield as a decimal fraction (0.0032 = 0.32%).
 
-    Returned as a decimal fraction (0.0032) like every other ratio field, so the
-    pane does not have to guess the unit from the magnitude.
+    yfinance ``dividendYield`` is percent units in current releases (AAPL 0.32),
+    but older releases shipped a decimal, so the unit is settled per row:
+
+    * when annual ``dividendRate`` and a price are present, the reading (percent or
+      decimal) closer to ``dividendRate / price`` wins;
+    * otherwise the DES rule applies: values above 0.2 are percent.
+
+    A negative or non-numeric yield is missing, not zero.
     """
-    pct = finite(value)
-    return None if pct is None else pct / 100.0
+    v = finite(value)
+    if v is None or v < 0:
+        return None
+    implied = _implied_yield_fraction(raw or {})
+    if implied is not None:
+        as_percent, as_decimal = v / 100.0, v
+        return as_percent if abs(as_percent - implied) <= abs(as_decimal - implied) else as_decimal
+    return v / 100.0 if v > 0.2 else v
+
+
+def _implied_yield_fraction(raw: dict[str, Any]) -> float | None:
+    """``dividendRate / price`` as a fraction, or None when either is missing."""
+    rate = finite(raw.get("dividendRate"))
+    price = None
+    for key in ("currentPrice", "regularMarketPrice", "previousClose"):
+        price = finite(raw.get(key))
+        if price is not None and price > 0:
+            break
+    if rate is None or rate <= 0 or price is None or price <= 0:
+        return None
+    return rate / price
 
 
 def _rank_rows(rows: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
