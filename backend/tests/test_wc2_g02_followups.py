@@ -73,3 +73,43 @@ def test_aim_distinct_orders_under_unresolved_names_are_not_merged(monkeypatch):
     res = _run(_aim(SimpleNamespace()).execute())
     assert len(res.data["rows"]) == 2
     assert res.data["cards"]["total_notional"] == 380.0
+
+
+class _WetrRecordingOpenMeteo:
+    def __init__(self) -> None:
+        self.calls: list[tuple[float, float]] = []
+
+    async def onecall(self, lat: float, lon: float, days: int = 10) -> dict[str, Any]:  # noqa: ARG002
+        self.calls.append((lat, lon))
+        from datetime import datetime, timezone
+
+        return {
+            "daily": [
+                {
+                    "dt": datetime(2026, 11, 8, tzinfo=timezone.utc).timestamp(),
+                    "temp": {"day": 12.0, "min": 8.0, "max": 16.0},
+                    "precipitation": 0.0,
+                }
+            ]
+        }
+
+
+def test_wetr_undeclared_coordinate_overrides_do_not_relabel_region(monkeypatch):
+    """WETR#4-RQ: lat/lon/commodity are not declared inputs and the pane cannot
+    send them. A caller that passes them must not get another place's coordinates
+    under the requested region's label: the region preset is authoritative."""
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.commodity._funcs import LOCATION_PRESETS, WETRFunction
+
+    preset = LOCATION_PRESETS["US_GULF"]
+    fake = _WetrRecordingOpenMeteo()
+    res = _run(
+        WETRFunction(FunctionDeps(open_meteo=fake)).execute(
+            location="US_GULF", lat=41.01, lon=-74.0, commodity="NOT_A_PRESET"
+        )
+    )
+    assert fake.calls, "the live provider must be queried"
+    lat, lon = fake.calls[0]
+    assert abs(lat - float(preset["lat"])) < 1e-9 and abs(lon - float(preset["lon"])) < 1e-9, fake.calls
+    assert res.data["location"] == "US_GULF"
+    assert res.data["commodity_context"] == preset["commodity_context"], res.data["commodity_context"]

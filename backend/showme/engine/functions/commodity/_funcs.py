@@ -1691,11 +1691,12 @@ class WETRFunction(BaseFunction):
                 warnings=[f"unsupported location {location_key}"],
                 metadata={"supported_locations": supported},
             )
-        lat = _finite(params.get("lat")) if params.get("lat") not in (None, "") else None
-        lon = _finite(params.get("lon")) if params.get("lon") not in (None, "") else None
-        lat = lat if lat is not None else float(preset["lat"])
-        lon = lon if lon is not None else float(preset["lon"])
-        commodity = str(params.get("commodity") or preset["commodity_context"]).strip()
+        # WETR#4-RQ: lat/lon/commodity are not declared inputs (the pane cannot send
+        # them). The region preset is authoritative, so an undeclared override can
+        # never put another place's coordinates under this region's label.
+        lat = float(preset["lat"])
+        lon = float(preset["lon"])
+        commodity = str(preset["commodity_context"]).strip()
         # Default polarity (2026-09-11, L5): attempt the live weather chain by
         # default. The keyless Open-Meteo adapter is bound by FunctionFactory,
         # so WETR no longer needs an OpenWeatherMap key to serve live rows;
