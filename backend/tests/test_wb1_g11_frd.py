@@ -62,7 +62,7 @@ def fred_down(monkeypatch):
 
 
 def test_frd_policy_rates_come_from_live_fred_series(fred) -> None:
-    res = _run(FRDFunction().execute(spot=1.10, tenors="3M"))
+    res = _run(FRDFunction().execute(pair="EURUSD", spot=1.10, tenors="3M"))
     d = res.data
     # EUR base -> ECB deposit rate 2.50 (percent) -> 0.025 decimal.
     assert d["r_base"] == pytest.approx(0.025)
@@ -79,7 +79,7 @@ def test_frd_no_live_rate_is_unavailable_not_a_stale_constant(fred_down) -> None
 
     The 2024-06 constants (USD 4.5%, EUR 3.5%) must never be used as current rates.
     """
-    res = _run(FRDFunction().execute(spot=1.10, tenors="3M"))
+    res = _run(FRDFunction().execute(pair="EURUSD", spot=1.10, tenors="3M"))
     d = res.data
     assert d["status"] == "provider_unavailable"
     assert d["rows"] == []
@@ -102,7 +102,7 @@ def test_frd_one_live_leg_and_one_missing_leg_is_unavailable(monkeypatch) -> Non
         return _series(3.88) if series_id == "DFF" else None
 
     monkeypatch.setattr(fx, "fetch_fred_csv_series", _only_dff)
-    res = _run(FRDFunction().execute(spot=1.10, tenors="3M"))
+    res = _run(FRDFunction().execute(pair="EURUSD", spot=1.10, tenors="3M"))
     assert res.data["status"] == "provider_unavailable"
     assert res.data["rows"] == []
     assert res.data["rate_sources"]["quote"] == "fred:DFF"
@@ -110,7 +110,7 @@ def test_frd_one_live_leg_and_one_missing_leg_is_unavailable(monkeypatch) -> Non
 
 
 def test_frd_explicit_rates_win_and_skip_the_live_lookup(fred) -> None:
-    res = _run(FRDFunction().execute(spot=1.10, tenors="3M", r_base=0.02, r_quote=0.05))
+    res = _run(FRDFunction().execute(pair="EURUSD", spot=1.10, tenors="3M", r_base=0.02, r_quote=0.05))
     d = res.data
     assert d["r_base"] == pytest.approx(0.02)
     assert d["r_quote"] == pytest.approx(0.05)
@@ -119,7 +119,7 @@ def test_frd_explicit_rates_win_and_skip_the_live_lookup(fred) -> None:
 
 
 def test_frd_live_false_skips_policy_lookup_and_is_unavailable(fred) -> None:
-    res = _run(FRDFunction().execute(spot=1.10, tenors="3M", live=False))
+    res = _run(FRDFunction().execute(pair="EURUSD", spot=1.10, tenors="3M", live=False))
     assert fred == []
     assert res.data["status"] == "provider_unavailable"
     assert res.data["rate_sources"]["base"] == "unavailable"

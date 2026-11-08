@@ -626,7 +626,10 @@ class FRDFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         params = _frd_canonical_params(params)
-        base, quote, pair = _frd_pair(instrument, params)
+        resolved = _frd_pair(instrument, params)
+        if resolved is None:
+            return _frd_pair_error(self.code, instrument, params)
+        base, quote, pair = resolved
         rate_error = _rate_input_error(params)
         if rate_error:
             return _rate_error_result(self.code, instrument, pair, base, quote, rate_error, day_count=_FRD_DAY_COUNT)
@@ -812,14 +815,63 @@ def _ccy_code(value: Any) -> str | None:
     return text if len(text) == 3 and text.isalpha() else None
 
 
-def _frd_pair(instrument: Instrument | None, params: dict[str, Any]) -> tuple[str, str, str]:
-    """Pair precedence: explicit pair, then base+quote inputs, then symbol/instrument."""
-    if not params.get("pair"):
+def _strict_pair(raw: str) -> tuple[str, str, str] | None:
+    """A BASEQUOTE pair, or None. Unlike _normalize_pair there is no default (XCON-5-RQ)."""
+    value = raw.upper().strip().replace("/", "").replace("-", "").replace(" ", "").replace("=X", "")
+    if len(value) >= 6 and value[:3].isalpha() and value[3:6].isalpha() and value[:3] != value[3:6]:
+        return value[:3], value[3:6], value[:6]
+    return None
+
+
+def _frd_pair(instrument: Instrument | None, params: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Strict FRD pair precedence: explicit pair, then base+quote, then symbol/instrument.
+
+    XCON-5-RQ: FRD never substitutes a default pair. None means the inputs do not
+    name a valid pair, and the caller returns an explicit state instead of pricing one.
+    """
+    if params.get("pair") not in (None, ""):
+        return _strict_pair(str(params["pair"]))
+    if params.get("base") not in (None, "") or params.get("quote") not in (None, ""):
         base_ccy = _ccy_code(params.get("base"))
         quote_ccy = _ccy_code(params.get("quote"))
         if base_ccy and quote_ccy and base_ccy != quote_ccy:
             return base_ccy, quote_ccy, base_ccy + quote_ccy
-    return _pair_from(instrument, params)
+        return None
+    raw = params.get("symbol") or (instrument.symbol if instrument else None)
+    if raw in (None, ""):
+        return None
+    return _strict_pair(str(raw))
+
+
+def _frd_pair_error(
+    code: str, instrument: Instrument | None, params: dict[str, Any]
+) -> FunctionResult:
+    """Explicit state for an FRD call with no valid pair: needs_input if nothing was
+    given, input_error if a pair or currency was given but is not usable."""
+    supplied = any(params.get(key) not in (None, "") for key in ("pair", "base", "quote", "symbol"))
+    reason = (
+        "FRD needs a pair: give base and quote as 3-letter ISO codes (e.g. EUR and USD) "
+        "or pair as BASEQUOTE (e.g. EURUSD). No default pair is assumed."
+    )
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error" if supplied else "needs_input",
+            "reason": reason,
+            "pair": None,
+            "base": None,
+            "quote": None,
+            "rows": [],
+            "curve": [],
+            "forecast": [],
+            "next_actions": ["Enter base and quote (e.g. EUR and USD), or pair (e.g. EURUSD)."],
+            "day_count": _FRD_DAY_COUNT,
+        },
+        sources=["covered_interest_parity_formula"],
+        warnings=[reason],
+        metadata={"data_mode": "explicit_unavailable"},
+    )
 
 
 async def _frd_policy_rate(

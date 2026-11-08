@@ -145,3 +145,30 @@ def test_fxip_mixed_rate_basis_warns_only_about_the_reference_currency() -> None
     assert len(vintage) == 1, res.warnings
     assert "EUR" in vintage[0]
     assert "USD" not in vintage[0]
+
+
+# ── XCON-5-RQ: FRD never prices EURUSD in place of a missing or invalid pair ──
+
+
+def test_frd_invalid_base_code_is_input_error_not_eurusd() -> None:
+    """Base 'GB' is not an ISO code. FRD used to price EURUSD silently instead."""
+    res = _run(fx.FRDFunction().execute(base="GB", quote="JPY", tenor="1M", spot=190.0, live=False,
+                                        r_base=0.04, r_quote=0.005))
+    assert res.data["status"] == "input_error", res.data
+    assert res.data["rows"] == []
+    assert res.data.get("pair") is None
+    assert all(row.get("pair") != "EURUSD" for row in res.data.get("rows", []))
+
+
+def test_frd_with_no_pair_or_currencies_needs_input_not_eurusd() -> None:
+    res = _run(fx.FRDFunction().execute(spot=1.10, tenors="3M", live=False, r_base=0.035, r_quote=0.045))
+    assert res.data["status"] == "needs_input", res.data
+    assert res.data["rows"] == []
+    assert res.data.get("pair") is None
+
+
+def test_frd_malformed_pair_is_input_error_not_eurusd() -> None:
+    res = _run(fx.FRDFunction().execute(pair="XYZ", spot=1.10, tenors="3M", live=False,
+                                        r_base=0.035, r_quote=0.045))
+    assert res.data["status"] == "input_error", res.data
+    assert res.data["rows"] == []
