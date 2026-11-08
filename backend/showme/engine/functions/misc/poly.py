@@ -23,6 +23,14 @@ from showme.engine.core.instrument import Instrument
 
 _GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 
+# status -> (Gamma active flag, Gamma closed flag). None = do not send the flag.
+_STATUS_API: dict[str, tuple[bool | None, bool | None]] = {
+    "open": (True, False),
+    "closed": (None, True),
+    "resolved": (None, True),
+    "all": (None, None),
+}
+
 
 @FunctionRegistry.register
 class POLYFunction(BaseFunction):
@@ -36,9 +44,14 @@ class POLYFunction(BaseFunction):
         include_closed = _truthy(params.get("include_closed") or params.get("closed"))
         # manifest `status` select: open | closed | resolved | all
         status = str(params.get("status") or ("all" if include_closed else "open")).strip().lower()
-        if status in {"closed", "resolved", "all"}:
-            include_closed = True
-        active = not include_closed
+        if status not in _STATUS_API:
+            status = "open"
+        if include_closed and status == "open":
+            status = "all"
+        # Gamma query flags per status. `closed` is a hard server-side filter:
+        # `all` must send neither flag, or every open market disappears.
+        api_active, api_closed = _STATUS_API[status]
+        include_closed = status != "open"
         try:
             limit = int(params.get("limit", 100))
         except (TypeError, ValueError):
@@ -57,8 +70,8 @@ class POLYFunction(BaseFunction):
         if adapter is not None and hasattr(adapter, "search"):
             try:
                 raw_rows = await asyncio.wait_for(
-                    adapter.search(query, limit=max(limit * 4, 100), active=active,
-                                   closed=include_closed, min_liquidity=min_liq),
+                    adapter.search(query, limit=max(limit * 4, 100), active=api_active,
+                                   closed=api_closed, min_liquidity=min_liq),
                     timeout=timeout,
                 )
             except Exception as e:  # noqa: BLE001 - fall through to keyless HTTP
@@ -69,8 +82,8 @@ class POLYFunction(BaseFunction):
         if raw_rows is None:
             try:
                 raw_rows = await asyncio.wait_for(
-                    _fetch_gamma_markets(query, limit=limit, active=active,
-                                         closed=include_closed, min_liquidity=min_liq),
+                    _fetch_gamma_markets(query, limit=limit, active=api_active,
+                                         closed=api_closed, min_liquidity=min_liq),
                     timeout=timeout,
                 )
             except Exception as e:  # noqa: BLE001 - real network outage
@@ -88,7 +101,12 @@ class POLYFunction(BaseFunction):
         compact: list[dict[str, Any]] = []
         for r in raw_rows:
             row = _shape_market(r)
-            if not include_closed and (r.get("closed") is True or _is_past(row.get("end_date"))):
+            if status == "open" and (r.get("closed") is True or _is_past(row.get("end_date"))):
+                continue
+            if status == "closed" and r.get("closed") is not True:
+                continue
+            # `closed` alone is not resolution: resolved needs the UMA status.
+            if status == "resolved" and not row["resolved"]:
                 continue
             if min_liq and (row.get("liquidity") is None or row["liquidity"] < min_liq):
                 continue
@@ -116,6 +134,10 @@ class POLYFunction(BaseFunction):
         if not compact and query:
             result_warnings.append(
                 f"Gamma returned open markets, but none matched the topic filter {str(query)!r}."
+            )
+        if not compact and status == "resolved" and raw_rows:
+            result_warnings.append(
+                "Gamma returned closed markets, but none carried umaResolutionStatus=resolved."
             )
 
         return FunctionResult(
@@ -150,9 +172,12 @@ class POLYFunction(BaseFunction):
                 "market_count": len(compact),
                 "total_liquidity_usd": total_liquidity,
                 "methodology": (
-                    "POLY reads the keyless Polymarket Gamma /markets endpoint, filters closed/past-end markets "
-                    "by default (status=open), parses raw outcomes/outcomePrices JSON into per-outcome rows, "
-                    "computes implied_prob = price * 100, and keeps slugs/end dates visible for source inspection. "
+                    "POLY reads the keyless Polymarket Gamma /markets endpoint. status=open keeps active, "
+                    "unclosed, not-past-end markets; status=closed keeps Gamma closed=true markets; "
+                    "status=resolved keeps closed markets whose umaResolutionStatus is 'resolved' (closed is "
+                    "not the same as resolved); status=all sends no closed filter. It parses raw "
+                    "outcomes/outcomePrices JSON into per-outcome rows, computes implied_prob = price * 100, "
+                    "and keeps slugs/end dates visible for source inspection. "
                     "On a network outage it returns provider_unavailable with empty rows — never synthetic odds."
                 ),
                 "field_dictionary": {
@@ -175,7 +200,7 @@ class POLYFunction(BaseFunction):
 
 
 async def _fetch_gamma_markets(
-    query: Any, *, limit: int, active: bool, closed: bool, min_liquidity: float = 0
+    query: Any, *, limit: int, active: bool | None, closed: bool | None, min_liquidity: float = 0
 ) -> list[dict[str, Any]]:
     """Fetch live markets from the keyless Polymarket Gamma API."""
     from showme.providers._http import get_client
@@ -278,6 +303,8 @@ def _shape_market(row: dict[str, Any]) -> dict[str, Any]:
         "end_date": row.get("endDate"),
         "active": row.get("active"),
         "closed": row.get("closed"),
+        "uma_resolution_status": row.get("umaResolutionStatus"),
+        "resolved": str(row.get("umaResolutionStatus") or "").strip().lower() == "resolved",
         "category": category,
         "source_mode": "polymarket_gamma",
     }
