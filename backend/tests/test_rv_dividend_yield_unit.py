@@ -20,7 +20,7 @@ def _column(code: str, key: str):
 
 
 def test_rv_dividend_yield_column_declares_ratio_unit() -> None:
-    col = _column("RV", "dividend_yield")
+    col = _column("RV", "div_yield")
     assert col.kind == "percent"
     assert col.unit == "ratio", (
         "dividend_yield is a decimal fraction; without unit='ratio' the percent "
@@ -29,6 +29,6 @@ def test_rv_dividend_yield_column_declares_ratio_unit() -> None:
 
 
 def test_rv_dividend_yield_unit_matches_eqs_contract() -> None:
-    rv_col = _column("RV", "dividend_yield")
+    rv_col = _column("RV", "div_yield")
     eqs_col = _column("EQS", "dividend_yield")
     assert rv_col.unit == eqs_col.unit == "ratio"
