@@ -4,11 +4,16 @@ Format:
     get(price, volume) for(['AAPL','MSFT']) with(start='2024-01-01', end='2024-12-31') by(date)
 
 Bu sürüm parser'ı oldukça basit (regex tabanlı). Phase 7'de pyparsing/lark.
+
+BQL returns provider data only. There is no offline price model: when live
+mode is not requested the function reports ``provider_unavailable`` with no
+rows, and a missing universe reports ``input_required`` (never a substitute
+symbol).
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -21,6 +26,12 @@ from showme.engine.core.instrument import AssetClass, Instrument
 
 
 _BLOCK = re.compile(r"(\w+)\s*\(([^)]*)\)")
+
+# yfinance OHLCV columns BQL can serve, and the template-vocabulary aliases
+# that BQL maps onto them (reported as a warning when used).
+_OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
+_FIELD_ALIASES = {"px_last": "close", "last": "close", "price": "close"}
+_SEED_QUERY_KEYS = ("start", "end", "interval")
 
 
 @dataclass
@@ -64,6 +75,16 @@ def _infer_asset_class(symbol: str) -> AssetClass:
 
 
 def _default_universe(instrument: Instrument | None, params: dict[str, Any]) -> list[str]:
+    """Universe when the query has no for([...]) clause.
+
+    An explicit symbol from the caller (``__explicit_symbol``, set by the
+    router) wins over the router's injected peer ``symbols`` default, so the
+    pane's symbol is what gets queried. Otherwise the caller's own
+    ``symbols``/``universe`` are used, then the instrument. An empty list
+    means the caller must supply a universe; nothing is substituted.
+    """
+    if params.get("__explicit_symbol") and instrument and instrument.symbol:
+        return [instrument.symbol]
     raw = params.get("symbols") or params.get("universe")
     if isinstance(raw, str):
         values = [s.strip() for s in raw.split(",")]
@@ -77,50 +98,28 @@ def _default_universe(instrument: Instrument | None, params: dict[str, Any]) -> 
     if instrument and instrument.symbol:
         return [instrument.symbol]
     symbol = str(params.get("symbol") or "").strip()
-    return [symbol] if symbol else ["BTCUSDT"]
+    return [symbol] if symbol else []
 
 
-def _template_rows(query: BQLQuery, instrument: Instrument | None, params: dict[str, Any]) -> list[dict[str, Any]]:
-    fields = query.fields or ["close", "volume"]
-    universe = query.universe or _default_universe(instrument, params)
-    today = datetime.now(timezone.utc).date()
-    rows: list[dict[str, Any]] = []
-    for offset in range(21, -1, -1):
-        day = today - timedelta(days=offset)
-        for idx, sym in enumerate(universe):
-            seed = sum(ord(ch) for ch in sym.upper()) % 1000
-            close = round(50 + seed / 13 + (21 - offset) * (0.15 + idx * 0.03), 4)
-            row: dict[str, Any] = {"symbol": sym, "date": day.isoformat()}
-            for field in fields:
-                key = field.lower()
-                if key in {"px_last", "last", "price", "close"}:
-                    row[field] = close
-                elif key in {"open"}:
-                    row[field] = round(close * 0.997, 4)
-                elif key in {"high"}:
-                    row[field] = round(close * 1.012, 4)
-                elif key in {"low"}:
-                    row[field] = round(close * 0.988, 4)
-                elif key in {"volume", "turnover"}:
-                    row[field] = int(100_000 + seed * 173 + (21 - offset) * 900)
-                elif key in {"return", "chg_pct", "change_pct"}:
-                    row[field] = round((idx + 1) * 0.0015 + (21 - offset) * 0.0002, 6)
-                else:
-                    # No model for this field: null, never a copy of another
-                    # series (p2a-g08 FLDS#1). _unmodeled_fields() names it.
-                    row[field] = None
-            rows.append(row)
-    return rows
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
-_TEMPLATE_MODELED_FIELDS = frozenset({
-    "px_last", "last", "price", "close", "open", "high", "low",
-    "volume", "turnover", "return", "chg_pct", "change_pct",
-})
+def _live_requested(params: dict[str, Any]) -> bool:
+    """Live mode unless the caller explicitly turns it off.
 
-
-def _unmodeled_fields(fields: list[str]) -> list[str]:
-    return [f for f in fields if f.lower() not in _TEMPLATE_MODELED_FIELDS]
+    ``live_query`` (the seed input) takes precedence over ``live``, which the
+    router injects as True by default. Explicit ``false`` values, including
+    the string ``"false"`` from a GET query string, switch live mode off.
+    """
+    for key in ("live_query", "live"):
+        value = params.get(key)
+        if value is None or value == "":
+            continue
+        return _truthy(value)
+    return True
 
 
 def _apply_runtime_window(query: BQLQuery, params: dict[str, Any]) -> None:
@@ -215,12 +214,28 @@ def _format_payload(
             "query": "Visible DSL text sent to the backend.",
             "symbol": "Security identifier from the for([...]) universe.",
             "date": "Provider timestamp for the OHLCV row.",
-            "close": "Closing/last price from the provider.",
+            "close": "Closing price from the yfinance OHLCV row (px_last, last and price map to close).",
             "volume": "Provider-reported session volume.",
-            "mode": "live when provider data is used; computed_model only for explicit offline fallback.",
+            "mode": "live when yfinance rows are returned; unavailable when no provider rows exist.",
         },
         "warnings": warnings or [],
     }
+
+
+def _unavailable(q: BQLQuery, reason: str, next_actions: list[str], status: str = "provider_unavailable") -> FunctionResult:
+    return FunctionResult(
+        code=BQLFunction.code,
+        instrument=None,
+        data={
+            "status": status,
+            "reason": reason,
+            "rows": [],
+            "next_actions": next_actions,
+        },
+        sources=[],
+        warnings=[],
+        metadata={"parsed": q.__dict__, "rows": 0, "mode": "unavailable"},
+    )
 
 
 @FunctionRegistry.register
@@ -236,24 +251,25 @@ class BQLFunction(BaseFunction):
             q.universe = _default_universe(instrument, params)
         if not q.fields:
             q.fields = ["close", "volume"]
+        # Seed inputs for the time window and bar size apply unless the
+        # query's own with(...) block sets them.
+        for key in _SEED_QUERY_KEYS:
+            value = params.get(key)
+            if not q.params.get(key) and value not in (None, ""):
+                q.params[key] = str(value).strip()
         _apply_runtime_window(q, params)
-        rows: list[dict[str, Any]] = []
-        if not (params.get("live_query") or params.get("live")):
-            rows = _template_rows(q, instrument, params)
-            rows = _limit_rows(rows, params.get("limit"))
-            unmodeled = _unmodeled_fields(q.fields)
-            template_warnings = [
-                f"BQL computed_model has no model for '{f}': its value is null, "
-                "not a provider value (live mode returns OHLCV fields only)."
-                for f in unmodeled
-            ]
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data=_format_payload(q, rows, "computed_model", template_warnings),
-                warnings=template_warnings,
-                sources=["showme_query_model"],
-                metadata={"parsed": q.__dict__, "rows": len(rows), "mode": "computed_model"},
+        if not _live_requested(params):
+            return _unavailable(
+                q,
+                "BQL has no offline data model: live=false returns no rows. Only yfinance OHLCV is served.",
+                ["Run the query with live set to true to read yfinance OHLCV rows."],
+            )
+        if not q.universe:
+            return _unavailable(
+                q,
+                "BQL needs a universe: add for(['AAPL']) to the query or select an instrument.",
+                ["Use query like get(close, volume) for(['AAPL']) with(period='1mo') by(date)."],
+                status="input_required",
             )
         if not self.deps.yfinance:
             return FunctionResult(
@@ -268,6 +284,30 @@ class BQLFunction(BaseFunction):
                 warnings=["no yfinance"],
                 metadata={"parsed": q.__dict__, "rows": 0, "mode": "unavailable"},
             )
+
+        # Map requested fields onto yfinance OHLCV columns. Anything else is
+        # reported, never silently dropped.
+        field_column: dict[str, str] = {}
+        field_warnings: list[str] = []
+        for f in q.fields:
+            key = f.lower()
+            column = _FIELD_ALIASES.get(key, key)
+            if column in _OHLCV_COLUMNS:
+                field_column[f] = column
+                if column != key:
+                    field_warnings.append(f"{f}: mapped to yfinance {column}")
+            else:
+                field_warnings.append(
+                    f"{f}: not provided by yfinance OHLCV (available: {', '.join(_OHLCV_COLUMNS)}); column omitted"
+                )
+        if not field_column:
+            return _unavailable(
+                q,
+                "None of the requested fields are provided by yfinance OHLCV.",
+                [f"Request fields from: {', '.join(_OHLCV_COLUMNS)}."],
+                status="input_error",
+            )
+
         from showme.engine.core.instrument import Instrument as I
         import asyncio
         tasks = [self.deps.yfinance.fetch(DataRequest(
@@ -280,6 +320,7 @@ class BQLFunction(BaseFunction):
         )) for s in q.universe]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         provider_errors: list[str] = []
+        rows: list[dict[str, Any]] = []
         for sym, df in zip(q.universe, results):
             if isinstance(df, Exception) or df is None or df.empty:
                 if isinstance(df, Exception):
@@ -287,13 +328,15 @@ class BQLFunction(BaseFunction):
                 else:
                     provider_errors.append(f"{sym}: no rows")
                 continue
+            columns = {str(c).lower(): c for c in df.columns}
             for ts, row in df.iterrows():
                 d = {"symbol": sym, "date": ts.isoformat()}
-                for f in q.fields:
-                    if f.lower() in row.index.str.lower():
-                        col = row.index[row.index.str.lower() == f.lower()][0]
-                        d[f] = float(row[col])
+                for f, column in field_column.items():
+                    source_col = columns.get(column)
+                    if source_col is not None:
+                        d[f] = float(row[source_col])
                 rows.append(d)
+        warnings = provider_errors + field_warnings
         rows = _limit_rows(rows, params.get("limit"))
         if not rows:
             return FunctionResult(
@@ -310,7 +353,7 @@ class BQLFunction(BaseFunction):
                     ],
                 },
                 sources=["yfinance"],
-                warnings=provider_errors,
+                warnings=warnings,
                 metadata={
                     "parsed": q.__dict__,
                     "rows": 0,
@@ -321,8 +364,8 @@ class BQLFunction(BaseFunction):
         return FunctionResult(
             code=self.code,
             instrument=None,
-            data=_format_payload(q, rows, "live", provider_errors),
+            data=_format_payload(q, rows, "live", warnings),
             sources=["yfinance"],
-            warnings=provider_errors,
+            warnings=warnings,
             metadata={"parsed": q.__dict__, "rows": len(rows), "mode": "live"},
         )
