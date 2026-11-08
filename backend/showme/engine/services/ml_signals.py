@@ -158,18 +158,26 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
         except Exception:
             pass
     if pred_test is None:
-        # Logistic baseline (pure NumPy)
-        Xt = X_train.values
+        # Linear probability baseline (pure NumPy). Features are standardised on
+        # the training slice so |coefficient| is comparable across units; the
+        # affine change leaves OLS predictions unchanged.
+        mu = X_train.mean()
+        sd = X_train.std(ddof=0).replace(0.0, 1.0).fillna(1.0)
+
+        def _standardise(frame: pd.DataFrame) -> np.ndarray:
+            return ((frame - mu) / sd).to_numpy(dtype=float)
+
+        Z_train = _standardise(X_train)
         yt = y_train.replace({-1: 0, 0: 0, 1: 1}).values.astype(float)
-        Xt = np.column_stack([np.ones(len(Xt)), Xt])
+        Zt = np.column_stack([np.ones(len(Z_train)), Z_train])
         try:
-            beta, *_ = np.linalg.lstsq(Xt, yt, rcond=None)
-            Xtest_aug = np.column_stack([np.ones(len(X_test)), X_test.values])
-            pred_test = np.where(Xtest_aug @ beta > 0.5, 1, -1)
-            latest_aug = np.column_stack([np.ones(len(X_latest)), X_latest.values])
+            beta, *_ = np.linalg.lstsq(Zt, yt, rcond=None)
+            Ztest_aug = np.column_stack([np.ones(len(X_test)), _standardise(X_test)])
+            pred_test = np.where(Ztest_aug @ beta > 0.5, 1, -1)
+            latest_aug = np.column_stack([np.ones(len(X_latest)), _standardise(X_latest)])
             pred_latest = np.where(latest_aug @ beta > 0.5, 1, -1)
             feat_imp = dict(zip(X.columns, np.abs(beta[1:]).tolist()))
-            backend = "lstsq_logistic"
+            backend = "lstsq_linear_probability"
         except Exception:
             return {"error": "no ML backend available"}
 

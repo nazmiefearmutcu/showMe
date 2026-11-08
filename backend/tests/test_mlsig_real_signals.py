@@ -66,7 +66,7 @@ def test_strategy_sharpe_uses_oos_positions_times_next_bar_returns(no_ml_backend
     strat = pd.Series(pos * next_ret.iloc[split:].to_numpy(dtype=float))
     expected = float(strat.mean() / strat.std() * (252 ** 0.5))
 
-    assert report["backend"] == "lstsq_logistic"
+    assert report["backend"] == "lstsq_linear_probability"
     assert report["strategy_sharpe"] == pytest.approx(expected, rel=1e-9, abs=1e-9)
 
 
