@@ -8,6 +8,7 @@ All network access is patched: the FX spot fetch goes through a fake
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 import requests
@@ -76,7 +77,9 @@ def _install_fake_yahoo(monkeypatch, served: dict[str, float], seen: list[str]):
         payload = {
             "chart": {
                 "result": [{
-                    "meta": {"regularMarketPrice": px, "previousClose": px - 0.001},
+                    # FXGO#1: a live label needs the provider quote time.
+                    "meta": {"regularMarketPrice": px, "previousClose": px - 0.001,
+                             "regularMarketTime": int(time.time())},
                     "indicators": {"quote": [{"close": [px - 0.001, px]}]},
                 }],
             },
