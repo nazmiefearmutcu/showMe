@@ -122,8 +122,9 @@ class SATFunction(BaseFunction):
             "live WMS PNG of the actual area (MODIS/VIIRS daily mosaics, no API key). A tile is "
             "only used when it carries imagery: GIBS returns blank black tiles for days it has "
             "not processed, so SAT walks back to the newest real tile and reports the lag "
-            "(capture_lag_days). Cloud cover is the real value reported by Open-Meteo for the AOI "
-            "centroid on the capture date (keyless), used as the cloud_pct proxy. No synthetic "
+            "(capture_lag_days). Cloud cover is Open-Meteo's modelled daily mean cloud cover for the "
+            "AOI centroid on the capture date (keyless), used as the cloud_pct proxy: a model value, "
+            "not read from the satellite image. No synthetic "
             "tiles and no fabricated cloud percentages: on a real network outage SAT degrades to "
             "provider_unavailable with an honest warning."
         )
