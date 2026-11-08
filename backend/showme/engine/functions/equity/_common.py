@@ -29,12 +29,12 @@ REFERENCE_PROFILES: dict[str, dict[str, Any]] = {
         "icb": "1010 - Technology",
         "peers": AAPL_PEERS,
         "customers": [
-            {"relationship": "customer/channel", "counterparty": "Consumer direct and retail channels", "exposure": "high", "confidence": 0.72, "source": "10-K business model language"},
-            {"relationship": "customer/channel", "counterparty": "Third-party cellular network carriers", "exposure": "medium", "confidence": 0.64, "source": "10-K distribution language"},
+            {"relationship": "customer/channel", "counterparty": "Consumer direct and retail channels", "exposure": "high", "source": "static_reference_undated"},
+            {"relationship": "customer/channel", "counterparty": "Third-party cellular network carriers", "exposure": "medium", "source": "static_reference_undated"},
         ],
         "suppliers": [
-            {"relationship": "supplier/partner", "counterparty": "Semiconductor foundry and component suppliers", "exposure": "high", "confidence": 0.66, "source": "10-K supply-chain risk language"},
-            {"relationship": "supplier/partner", "counterparty": "Assembly and logistics partners", "exposure": "high", "confidence": 0.62, "source": "10-K supply-chain risk language"},
+            {"relationship": "supplier/partner", "counterparty": "Semiconductor foundry and component suppliers", "exposure": "high", "source": "static_reference_undated"},
+            {"relationship": "supplier/partner", "counterparty": "Assembly and logistics partners", "exposure": "high", "source": "static_reference_undated"},
         ],
     }
 }

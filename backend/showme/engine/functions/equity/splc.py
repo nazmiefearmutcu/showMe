@@ -110,7 +110,7 @@ class SPLCFunction(BaseFunction):
         if not customers and not suppliers:
             ref = reference_profile(instrument.symbol)
             ref_rows = [
-                {"symbol": instrument.symbol, "source_url": None, **item, "disclosed_pct": None, "source_mode": "reference_supply_chain_10k_language"}
+                {"symbol": instrument.symbol, "source_url": None, **item, "disclosed_pct": None, "source_mode": "reference_supply_chain_static"}
                 for item in [*ref.get("customers", []), *ref.get("suppliers", [])]
             ]
             comp_rows = [
