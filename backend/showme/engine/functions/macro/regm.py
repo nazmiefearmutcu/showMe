@@ -103,42 +103,32 @@ class REGMFunction(BaseFunction):
             if np.count_nonzero(np.isfinite(close)) < 2:
                 raise RuntimeError(f"yfinance returned no usable closes for {sym}")
         except Exception as exc:
-            # S12 BugHunt: never masquerade a synthetic sine wave as a live
-            # benchmark series — the UI used to display a "regime model" that
-            # was literally `100 + t*0.04 + sin(t/14)*3`. Now we either return
-            # the deterministic reference series with an explicit
-            # provider_unavailable status, or — if the caller opted in via
-            # `allow_model=true` — return a clearly-labeled fallback.
+            # Data policy: no benchmark means no regime. A synthetic series is
+            # never substituted, not even when a caller passes allow_model=true
+            # (S12 BugHunt: a sine wave once displayed as a live "regime model").
             provider_error = f"{type(exc).__name__}: {exc}"[:200]
-            df = None
-            allow_model = _truthy(params.get("allow_model"))
-            if not allow_model:
-                return FunctionResult(
-                    code=self.code,
-                    instrument=instrument,
-                    data={
-                        "symbol": sym,
-                        "status": "provider_unavailable",
-                        "provider_error": provider_error,
-                        "rows": [],
-                        "history": [],
-                        "current": {},
-                        "cards": [
-                            {"label": "Regime", "value": "—"},
-                            {"label": "Trend", "value": "—"},
-                            {"label": "Vol", "value": "—"},
-                            {"label": "Curve", "value": "—"},
-                        ],
-                    },
-                    # No provider produced the benchmark, so no source is claimed.
-                    sources=[],
-                    warnings=[f"yfinance benchmark unavailable: {provider_error}"],
-                    metadata={"live": False, "fallback": False, "provider_error": provider_error},
-                )
-            periods = max(252, min(days, 756))
-            t = np.arange(periods, dtype=float)
-            close = 100 + t * 0.04 + np.sin(t / 14) * 3
-            sources = ["regime_model"]
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "symbol": sym,
+                    "status": "provider_unavailable",
+                    "provider_error": provider_error,
+                    "rows": [],
+                    "history": [],
+                    "current": {},
+                    "cards": [
+                        {"label": "Regime", "value": "—"},
+                        {"label": "Trend", "value": "—"},
+                        {"label": "Vol", "value": "—"},
+                        {"label": "Curve", "value": "—"},
+                    ],
+                },
+                # No provider produced the benchmark, so no source is claimed.
+                sources=[],
+                warnings=[f"yfinance benchmark unavailable: {provider_error}"],
+                metadata={"live": False, "fallback": False, "provider_error": provider_error},
+            )
         current = rgm.classify(close, spread_2s10s_bp=spread_bp)
         if action == "current":
             history = _regime_history(close, spread_bp, df)
@@ -150,6 +140,7 @@ class REGMFunction(BaseFunction):
                 code=self.code, instrument=instrument,
                 data={
                     "symbol": sym,
+                    "status": "ok",
                     "current": current,
                     "data_state": current.get("data_state", "ok"),
                     "confidence": current.get("confidence", 0.0),
@@ -214,14 +205,6 @@ class REGMFunction(BaseFunction):
             },
             sources=sources,
         )
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _component_rows(symbol: str, current: dict[str, Any], sources: list[str]) -> list[dict[str, Any]]:

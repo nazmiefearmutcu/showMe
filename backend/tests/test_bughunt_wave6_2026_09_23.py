@@ -197,6 +197,16 @@ class _FakeFredCSVClient:
         raise AssertionError(f"unexpected FRED series requested: {url}")
 
 
+class _BenchmarkYahoo:
+    """yfinance-shaped fake: a rising close series so REGM has a real benchmark
+    to classify (the curve leg under test runs alongside it)."""
+
+    async def fetch(self, request):
+        closes = [100.0 + i * 0.5 for i in range(300)]
+        idx = pd.date_range(end="2026-09-20", periods=len(closes), freq="D")
+        return pd.DataFrame({"close": closes}, index=idx)
+
+
 class _FakeKeyedFred:
     """FREDAdapter-shaped fake: keyed fetch returns a date-indexed frame."""
 
@@ -217,8 +227,8 @@ def test_regm_keyed_fred_path_computes_curve() -> None:
     raised AttributeError; it must read the returned DataFrame directly."""
     from showme.engine.functions.macro.regm import REGMFunction
 
-    fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([3.4] * 5, [4.2] * 5)))
-    out = _run(fn.execute(symbol="SPY", allow_model=True))
+    fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([3.4] * 5, [4.2] * 5), yfinance=_BenchmarkYahoo()))
+    out = _run(fn.execute(symbol="SPY"))
     current = out.data["current"]
     assert current.get("curve") == "INVERTED"
     assert current.get("curve_2s10s_bp") == pytest.approx(-80.0)
@@ -231,9 +241,12 @@ def test_regm_keyless_adapter_falls_through_to_csv_shim(monkeypatch) -> None:
 
     reset_fred_csv_cache()
     try:
-        fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([9.9] * 5, [9.9] * 5, api_key="")))
+        fn = REGMFunction(FunctionDeps(
+            fred=_FakeKeyedFred([9.9] * 5, [9.9] * 5, api_key=""),
+            yfinance=_BenchmarkYahoo(),
+        ))
         fn._http_client = _FakeFredCSVClient(dgs10="3.40", dgs2="4.20")
-        out = _run(fn.execute(symbol="SPY", allow_model=True))
+        out = _run(fn.execute(symbol="SPY"))
         current = out.data["current"]
         # The keyed fake would give +570bp; the shim's CSV values give -80bp.
         assert current.get("curve_2s10s_bp") == pytest.approx(-80.0)

@@ -60,3 +60,20 @@ def test_empty_benchmark_never_reports_live_regime_cards():
     result = _run_empty_benchmark("ZZZQX9")
     values = {card["label"]: card["value"] for card in result.data["cards"]}
     assert values == {"Regime": "—", "Trend": "—", "Vol": "—", "Curve": "—"}, values
+
+
+def test_allow_model_never_substitutes_a_synthetic_series():
+    """REGM#1 follow-up: allow_model=true used to classify a synthetic sine
+    series (100 + t*0.04 + sin(t/14)*3) for a ticker with no price history.
+    The data policy forbids templated values, so the flag must not change the
+    outcome: no regime is classified and no regime_model source is claimed."""
+    reset_fred_csv_cache()
+    fn = REGMFunction(FunctionDeps(yfinance=_EmptyYahoo()))
+    fn._http_client = _FakeFredClient()
+    result = asyncio.run(fn.execute(symbol="ZZZQX9", days=1095, allow_model=True))
+    assert result.data["status"] == "provider_unavailable", result.data
+    assert result.data["current"] == {}
+    assert result.data["rows"] == []
+    assert "regime_model" not in result.sources, result.sources
+    values = {card["label"]: card["value"] for card in result.data["cards"]}
+    assert values == {"Regime": "—", "Trend": "—", "Vol": "—", "Curve": "—"}, values

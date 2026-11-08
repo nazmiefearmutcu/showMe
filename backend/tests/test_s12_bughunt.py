@@ -32,13 +32,14 @@ def test_regm_returns_provider_unavailable_when_yfinance_missing() -> None:
     assert any("yfinance" in w for w in out.warnings)
 
 
-def test_regm_allow_model_flag_still_returns_template_with_warning() -> None:
+def test_regm_allow_model_flag_never_serves_a_synthetic_series() -> None:
     from showme.engine.functions.macro.regm import REGMFunction
 
+    # Data policy: allow_model=true no longer substitutes a templated series.
     out = asyncio.run(REGMFunction().execute(symbol="SPY", allow_model=True))
-    # When the caller opts in to the synthetic model, we serve it but log it.
-    assert out.data.get("status") != "provider_unavailable"
-    assert "regime_model" in out.sources
+    assert out.data["status"] == "provider_unavailable"
+    assert out.data["current"] == {}
+    assert "regime_model" not in out.sources
 
 
 # ----------------------- RPAR -----------------------
