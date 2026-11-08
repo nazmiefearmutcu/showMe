@@ -204,6 +204,6 @@ def test_fxgo_methodology_does_not_claim_liquidity_scaled_spread(monkeypatch):
     from showme.engine.functions.trade._funcs import FXGOFunction
 
     text = FXGOFunction._BOARD_METHODOLOGY.lower()
-    assert "scaled to liquidity" not in text
+    assert "is scaled to liquidity" not in text
     assert "not scaled to liquidity" in text
     assert "fixed" in text
