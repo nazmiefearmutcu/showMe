@@ -80,6 +80,33 @@ def _dividends_on_bars(index: pd.DatetimeIndex, events: Any) -> pd.Series:
     return out
 
 
+_STOOQ_QUOTE_TZ = "America/New_York"
+
+
+def _stooq_quote_time(date_text: Any, time_text: Any) -> datetime | None:
+    """Exchange time of a Stooq quote row (Date/Time columns) as UTC.
+
+    Stooq's US listings are stamped in US Eastern. A row without a usable date
+    or time returns None so the caller can refuse it instead of stamping fetch
+    time on a price that may be a prior session's close (ASOF-4).
+    """
+    day = str(date_text or "").strip()
+    clock = str(time_text or "").strip()
+    if not day or not clock or "N/D" in (day, clock):
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                local = datetime.strptime(f"{day} {clock}", fmt)
+            except ValueError:
+                continue
+            return local.replace(tzinfo=ZoneInfo(_STOOQ_QUOTE_TZ)).astimezone(timezone.utc)
+        return None
+    except Exception:
+        return None
+
+
 def _chart_market_time(value: Any) -> datetime | None:
     """Epoch seconds from a chart ``meta.regularMarketTime`` as a UTC datetime."""
     ts = _to_float(value)
@@ -370,10 +397,13 @@ class YFinanceAdapter(BaseDataSource):
             close = _to_float(row.get("Close"))
             if close is None:
                 return None
+            market_time = _stooq_quote_time(row.get("Date"), row.get("Time"))
+            if market_time is None:
+                return None
             return Quote(
                 symbol=symbol.upper(),
-                timestamp=utcnow(),
-                timestamp_source="fetch_time",
+                timestamp=market_time,
+                timestamp_source="upstream_market_time",
                 last=close,
                 open_24h=_to_float(row.get("Open")),
                 high_24h=_to_float(row.get("High")),
