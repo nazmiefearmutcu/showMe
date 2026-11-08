@@ -162,8 +162,11 @@ describe("HP#2 — the requested window is disclosed when the bar cap cuts it", 
     expect(notice.textContent).toMatch(/hours/);
   });
 
-  it("stays silent when the loaded rows cover the requested window", () => {
-    mockState.payload = payloadWith({}, makeRows(30));
+  it("stays silent when the cap is full but the rows cover the requested window", () => {
+    // 1000 daily bars span ~999 days, well past the 3M (~90 day) window, so
+    // the 1000-row cap did not cut anything and no notice may appear. Using
+    // fewer rows than the cap would make this silence trivially true.
+    mockState.payload = payloadWith({}, makeRows(1000));
     render(<HPPane code="HP" symbol="AAPL" />);
     expect(screen.queryByTestId("hp-window-truncated")).toBeNull();
   });
