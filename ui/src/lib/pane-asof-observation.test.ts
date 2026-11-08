@@ -58,7 +58,9 @@ describe("pane freshness stamp is the observation time (ASOF-2 follow-up)", () =
     const snap = usePaneContractStore.getState().byKey["ECST::CPIAUCSL"];
     // Red before the fix: asOf was fetched_at (now), so the monthly print read as current.
     expect(snap?.asOf).toBe("2026-09-01");
-    expect(paneHealthTier(snap!, Date.now())).toBe("stale");
+    // A date-only print has no known cadence: it reads degraded, never live, and is not
+    // judged against the 5-minute intraday window (which would mark it stale forever).
+    expect(paneHealthTier(snap!, Date.now())).toBe("degraded");
   });
 
   it("does not stamp fetched_at as the observation time when the envelope declares none", async () => {
