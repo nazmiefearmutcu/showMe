@@ -10,6 +10,7 @@ Returns hits with accession + filing date + form type + cik + ticker.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import httpx
@@ -17,6 +18,35 @@ import httpx
 from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
+
+
+_TICKER_IN_NAME = re.compile(r"\(([A-Z][A-Z0-9.\-]{0,9})\)")
+
+
+def _ticker_from_display_names(names: Any) -> str | None:
+    """EFTS carries no ``tickers`` field; the issuer ticker sits in display_names
+    as ``"NAME  (TICK)  (CIK 0000000000)"``. CIK parentheses contain a space so
+    they do not match."""
+    if not isinstance(names, list):
+        return None
+    for name in names:
+        m = _TICKER_IN_NAME.search(str(name or ""))
+        if m:
+            return m.group(1)
+    return None
+
+
+def _matched_text(source: dict[str, Any], highlight: Any) -> str | None:
+    """Matched filing text only. ``inc_states`` is an incorporation state and is
+    never filing text, so it is not used as a snippet."""
+    if not isinstance(highlight, dict):
+        return None
+    parts: list[str] = []
+    for values in highlight.values():
+        for v in values if isinstance(values, list) else [values]:
+            if isinstance(v, str) and v.strip():
+                parts.append(v.strip())
+    return " | ".join(parts[:2]) if parts else None
 
 
 class SECFullTextSearch(BaseDataSource):
@@ -72,9 +102,10 @@ class SECFullTextSearch(BaseDataSource):
                 "filing_date": src.get("file_date") or src.get("filing_date"),
                 "company": src.get("display_names", [None])[0] if isinstance(src.get("display_names"), list) else None,
                 "cik": (src.get("ciks") or [None])[0] if isinstance(src.get("ciks"), list) else None,
-                "ticker": (src.get("tickers") or [None])[0] if isinstance(src.get("tickers"), list) else None,
+                "ticker": ((src.get("tickers") or [None])[0] if isinstance(src.get("tickers"), list) else None)
+                          or _ticker_from_display_names(src.get("display_names")),
                 "score": h.get("_score"),
-                "snippet": (h.get("_source") or {}).get("inc_states") or "",
+                "snippet": _matched_text(src, h.get("highlight")),
             })
         return out
 

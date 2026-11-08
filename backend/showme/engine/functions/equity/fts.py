@@ -91,7 +91,7 @@ class FTSFunction(BaseFunction):
 def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, Any]]:
     raw_rows = hits if isinstance(hits, list) else []
     rows: list[dict[str, Any]] = []
-    symbol = instrument.symbol.upper() if instrument else None
+    instrument_symbol = instrument.symbol.upper() if instrument else None
     for item in raw_rows:
         if not isinstance(item, dict):
             continue
@@ -99,8 +99,11 @@ def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, 
         snippet = item.get("snippet") or item.get("snippets") or item.get("description")
         if isinstance(snippet, list):
             snippet = " | ".join(str(s) for s in snippet[:2])
+        # Each row carries the issuer of THAT filing, never the instrument's symbol.
+        hit_symbol = str(item.get("ticker") or item.get("symbol") or "").strip().upper() or None
         row = {
-            "symbol": symbol,
+            "symbol": hit_symbol,
+            "cik": item.get("cik"),
             "company": company,
             "form": item.get("form") or item.get("formType"),
             "filing_date": item.get("filing_date") or item.get("filedAt") or item.get("filingDate"),
@@ -110,8 +113,9 @@ def _normalise_hits(hits: Any, instrument: Instrument | None) -> list[dict[str, 
             "snippet": snippet,
             "source_mode": "sec_efts",
         }
-        if symbol and (symbol not in str(company or "").upper()) and (symbol not in str(snippet or "").upper()):
-            row["symbol_match"] = "query_scoped_not_direct_snippet"
+        # True/False when both the filing issuer ticker and the instrument are
+        # known; None when the hit does not name a ticker (no guess is made).
+        row["issuer_match"] = (hit_symbol == instrument_symbol) if (hit_symbol and instrument_symbol) else None
         rows.append(row)
     return rows
 
