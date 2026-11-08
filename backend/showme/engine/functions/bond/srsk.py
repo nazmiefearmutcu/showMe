@@ -203,7 +203,6 @@ class SRSKFunction(BaseFunction):
             countries = [str(item).strip().upper() for item in raw_countries if str(item).strip()]
         countries = countries[:12] or ["TR"]
         recovery = float(params.get("recovery", 0.4))
-        fallback_spread = float(params.get("proxy_spread_pct", 3.25))
 
         warnings: list[str] = []
         rows: list[dict[str, Any]] = []
@@ -282,9 +281,14 @@ class SRSKFunction(BaseFunction):
                 source_mode = "worldbank"
                 row_note: str | None = "; ".join(macro_notes) if macro_notes else None
             else:
-                proxy_spread = fallback_spread
-                source_mode = "sovereign_risk_model"
-                row_note = f"no live World Bank macro for {country}; using fallback proxy_spread_pct={fallback_spread}"
+                # No live macro legs: there is no score to map onto a spread, so
+                # none is invented. The row stays unranked with null spread/PD.
+                proxy_spread = None
+                source_mode = "unavailable"
+                row_note = (
+                    f"no live World Bank macro for {country}; no risk score, spread or PD "
+                    "computed (unranked)"
+                )
 
             # Refine with a real yield differential when FRED is available.
             fid = sovereign_fred_ids.get(country)
@@ -300,7 +304,12 @@ class SRSKFunction(BaseFunction):
                     proxy_spread = round(target_y - ust_y, 4)
                     source_mode = "fred+worldbank" if risk_score is not None else "fred"
 
-            pd_1y = proxy_spread / 100 / max(0.01, (1 - recovery))
+            if proxy_spread is not None:
+                pd_1y: float | None = proxy_spread / 100 / max(0.01, (1 - recovery))
+                pd_1y_pct: float | None = pd_1y * 100
+            else:
+                pd_1y = None
+                pd_1y_pct = None
             rows.append(
                 {
                     "country": country,
@@ -311,7 +320,7 @@ class SRSKFunction(BaseFunction):
                     "risk_score": risk_score,
                     "proxy_spread_pct": proxy_spread,
                     "pd_1y_proxy": pd_1y,
-                    "pd_1y_pct": pd_1y * 100,
+                    "pd_1y_pct": pd_1y_pct,
                     "recovery": recovery,
                     "source_mode": source_mode,
                     "as_of": macro.get("as_of"),
@@ -365,9 +374,11 @@ class SRSKFunction(BaseFunction):
             )
 
         # Rank: highest risk first for the bar ladder / cards.
+        # Unscored rows (no live macro, no PD) never lead the cards.
         scored = [r for r in rows if r.get("risk_score") is not None]
+        priced = [r for r in rows if r.get("pd_1y_pct") is not None]
         highest = max(scored, key=lambda r: r["risk_score"]) if scored else (
-            max(rows, key=lambda r: r["pd_1y_pct"]) if rows else None
+            max(priced, key=lambda r: r["pd_1y_pct"]) if priced else None
         )
 
         as_of = next((r.get("as_of") for r in rows if r.get("as_of")), None)
@@ -392,7 +403,7 @@ class SRSKFunction(BaseFunction):
                     "recovery": recovery,
                     "formula": "PD ~= spread / (1 - recovery)",
                     "worldbank_countries": wb_success,
-                    "fallback_countries": sum(1 for r in rows if r["source_mode"] == "sovereign_risk_model"),
+                    "unscored_countries": sum(1 for r in rows if r["source_mode"] == "unavailable"),
                     "highest_risk_country": highest["country"] if highest else None,
                 },
                 "methodology": (
@@ -406,8 +417,9 @@ class SRSKFunction(BaseFunction):
                     "CDS-style proxy spread (0 score -> ~0.1%, 100 -> ~12%); when a FRED key is "
                     "present the spread is refined to a real country-10Y minus UST-10Y differential "
                     "(US pinned to zero). The Hull approximation PD_1Y ~= spread / (1 - recovery) then "
-                    "yields a one-year default-probability proxy. Only a full World Bank outage with no "
-                    "FRED key returns provider_unavailable."
+                    "yields a one-year default-probability proxy. A country with no live macro data is kept "
+                    "unranked with null spread and PD (source_mode 'unavailable'); no value is substituted. "
+                    "Only a full World Bank outage with no FRED key returns provider_unavailable."
                 ),
                 "field_dictionary": self._field_dictionary(),
             },
@@ -434,7 +446,7 @@ class SRSKFunction(BaseFunction):
             "pd_1y_proxy": "One-year default-probability proxy as a decimal.",
             "pd_1y_pct": "One-year default-probability proxy in percent.",
             "recovery": "Assumed recovery rate in the Hull reduced-form approximation.",
-            "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'sovereign_risk_model' for the fallback spread.",
+            "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'unavailable' when no live macro data exists (score, spread and PD are null, row unranked).",
             "as_of": "Observation year of the latest World Bank data point used.",
-            "note": "Per-row caveat: missing macro legs, US self-spread, or fallback applied.",
+            "note": "Per-row caveat: missing macro legs, US self-spread, or unscored (unavailable) row.",
         }

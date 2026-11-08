@@ -77,7 +77,7 @@ interface SRSKData {
     recovery?: number;
     formula?: string;
     worldbank_countries?: number;
-    fallback_countries?: number;
+    unscored_countries?: number;
     highest_risk_country?: string | null;
   };
   methodology?: string;
@@ -300,18 +300,23 @@ export function SRSKPane({ code }: FunctionPaneProps) {
         width: 180,
         render: (r) =>
           r.source_mode ? (
-            <Pill
-              tone={
-                r.source_mode === "worldbank" ||
-                r.source_mode.startsWith("fred")
-                  ? "accent"
-                  : "muted"
-              }
-              variant="soft"
-              withDot={false}
-            >
-              {r.source_mode}
-            </Pill>
+            <span style={unscoredCellStyle}>
+              <Pill
+                tone={
+                  r.source_mode === "worldbank" ||
+                  r.source_mode.startsWith("fred")
+                    ? "accent"
+                    : "muted"
+                }
+                variant="soft"
+                withDot={false}
+              >
+                {r.source_mode}
+              </Pill>
+              {r.source_mode === "unavailable" && r.note ? (
+                <span style={unscoredNoteStyle}>{r.note}</span>
+              ) : null}
+            </span>
           ) : (
             <span className="u-text-mute">—</span>
           ),
@@ -380,7 +385,7 @@ export function SRSKPane({ code }: FunctionPaneProps) {
           <StatCard
             label="Ranked countries"
             value={String(stats.rankedCount)}
-            caption={`${stats.totalCount} requested · ${stats.fallbackCount} fallback`}
+            caption={`${stats.totalCount} requested · ${stats.unscoredCount} unscored`}
             tone="neutral"
           />
           <StatCard
@@ -504,9 +509,8 @@ function deriveStats(rows: RankedRow[], cards?: SRSKCards) {
     worstPd: worst?.pd_1y_pct ?? cards?.highest_pd ?? null,
     rankedCount: rows.filter((r) => typeof r.risk_score === "number").length,
     totalCount: rows.length,
-    fallbackCount: rows.filter(
-      (r) => r.source_mode === "sovereign_risk_model",
-    ).length,
+    // Rows with no live macro data: no score, spread or PD was computed.
+    unscoredCount: rows.filter((r) => r.source_mode === "unavailable").length,
     recovery: cards?.recovery ?? rows[0]?.recovery ?? null,
     asOf: cards?.as_of ?? rows.find((r) => r.as_of)?.as_of ?? null,
   };
@@ -578,4 +582,18 @@ const monoMutedStyle: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontVariantNumeric: "tabular-nums",
   color: "var(--text-mute)",
+};
+
+const unscoredCellStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "flex-start",
+  gap: 4,
+};
+
+// The visible reason an unscored country has no spread or PD.
+const unscoredNoteStyle: CSSProperties = {
+  ...monoMutedStyle,
+  fontSize: "var(--font-size-2xs)",
+  whiteSpace: "normal",
 };

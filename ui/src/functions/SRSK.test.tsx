@@ -107,7 +107,7 @@ function livePayload(rows: Record<string, unknown>[] = CORE_ROWS) {
           recovery: 0.4,
           formula: "PD ~= spread / (1 - recovery)",
           worldbank_countries: rows.length,
-          fallback_countries: 0,
+          unscored_countries: 0,
           highest_risk_country: "TR",
         },
       },
@@ -184,7 +184,7 @@ describe("SRSK pane — ranked table", () => {
     setMockFn({
       state: "ok",
       ...livePayload([
-        srskRow({ country: "XX", risk_score: null, source_mode: "sovereign_risk_model" }),
+        srskRow({ country: "XX", risk_score: null, source_mode: "unavailable" }),
         ...CORE_ROWS,
       ]),
     });
@@ -193,7 +193,39 @@ describe("SRSK pane — ranked table", () => {
     expect(rows.length).toBe(4);
     const last = rows[rows.length - 1].textContent ?? "";
     expect(last).toContain("XX");
-    expect(last).toContain("sovereign_risk_model");
+    expect(last).toContain("unavailable");
+  });
+
+  it("shows the visible reason and no spread or PD for an unscored country", () => {
+    const note =
+      "no live World Bank macro for XX; no risk score, spread or PD computed (unranked)";
+    setMockFn({
+      state: "ok",
+      ...livePayload([
+        srskRow({
+          country: "XX",
+          risk_score: null,
+          proxy_spread_pct: null,
+          pd_1y_pct: null,
+          debt_to_gdp: null,
+          reserves_months: null,
+          current_account_gdp: null,
+          inflation_pct: null,
+          source_mode: "unavailable",
+          note,
+        }),
+        ...CORE_ROWS,
+      ]),
+    });
+    const { container } = render(<SRSKPane code="SRSK" />);
+    const last = container.querySelectorAll("tbody tr")[3];
+    const text = last.textContent ?? "";
+    // The reason is visible in the row, not only in a title tooltip.
+    expect(text).toContain(note);
+    // No spread or PD was invented: the numeric cells render the dash.
+    const cells = Array.from(last.querySelectorAll("td")).map((td) => td.textContent ?? "");
+    expect(cells.filter((c) => c === "—").length).toBeGreaterThanOrEqual(2);
+    expect(text).not.toContain("3.25");
   });
 
   it("caps the table at 10 rows with an honest showing-note", () => {
