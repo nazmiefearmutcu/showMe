@@ -570,7 +570,7 @@ def _shape_market_bars(
                 "impulse_vs_median": round(impulse_ratio, 2) if impulse_ratio is not None else None,
                 "return_pct": round(ret_pct, 4) if ret_pct is not None else None,
                 "direction": "up" if (ret_pct or 0) > 0 else "down" if (ret_pct or 0) < 0 else "flat",
-                "severity": _severity(notional or (abs(ret_pct or 0) * 1_000_000), threshold_usd),
+                "severity": _row_severity(notional, threshold_usd, impulse_ratio),
                 "source_mode": source_mode,
                 "explanation": (
                     "Public chart proxy. This is not a broker tape print; it flags unusually large "
@@ -579,7 +579,9 @@ def _shape_market_bars(
             }
         )
     if not rows:
-        rows = _top_market_rows(enriched, symbol, yahoo_symbol, market, threshold_usd, row_limit)
+        rows = _top_market_rows(
+            enriched, symbol, yahoo_symbol, market, threshold_usd, row_limit, baseline_return
+        )
     # Min-USD contract for the proxy path: a row whose known notional is
     # below the requested threshold must never render — including the
     # "top window" fallback. Rows with no USD value at all (SEC filings,
@@ -619,6 +621,7 @@ def _top_market_rows(
     market: str,
     threshold_usd: float,
     row_limit: int,
+    baseline_return: float | None = None,
 ) -> list[dict[str, Any]]:
     ordered = sorted(
         enriched,
@@ -629,6 +632,7 @@ def _top_market_rows(
     for row in ordered[:row_limit]:
         notional = _to_float(row.get("notional_usd"))
         ret_pct = _to_float(row.get("return_pct"))
+        impulse_ratio = (abs(ret_pct) / baseline_return) if (ret_pct is not None and baseline_return) else None
         rows.append(
             {
                 "alert_type": "top_volume_window" if notional is not None else "top_impulse_window",
@@ -643,7 +647,7 @@ def _top_market_rows(
                 "threshold_crossed": _threshold_test(notional, threshold_usd),
                 "return_pct": round(ret_pct, 4) if ret_pct is not None else None,
                 "direction": "up" if (ret_pct or 0) > 0 else "down" if (ret_pct or 0) < 0 else "flat",
-                "severity": _severity(notional or (abs(ret_pct or 0) * 1_000_000), threshold_usd),
+                "severity": _row_severity(notional, threshold_usd, impulse_ratio),
                 "source_mode": "yahoo_chart_top_window",
                 "explanation": "Largest public chart window observed; no threshold-crossing flow was found.",
             }
@@ -919,6 +923,24 @@ def _proxy_mode(market: str, bars: list[dict[str, Any]]) -> str:
     if any(_to_float(row.get("volume")) for row in bars):
         return "volume_notional"
     return "price_impulse"
+
+
+def _row_severity(notional: float | None, threshold_usd: float, impulse_ratio: float | None) -> str:
+    """USD-based rating when a notional exists; otherwise the impulse versus the recent median."""
+    if notional is not None:
+        return _severity(notional, threshold_usd)
+    return _impulse_severity(impulse_ratio)
+
+
+def _impulse_severity(impulse_ratio: float | None) -> str:
+    """Rating for rows with no USD value, from the move versus the recent median move."""
+    if impulse_ratio is None:
+        return "unrated"
+    if impulse_ratio >= 5.0:
+        return "high"
+    if impulse_ratio >= 2.5:
+        return "medium"
+    return "low"
 
 
 def _severity(value: float | None, threshold_usd: float) -> str:
