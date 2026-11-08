@@ -73,6 +73,9 @@ SANCTIONED_DATA_MODES = frozenset({
     # CPF (2026-11-08): actual leg = Yahoo futures proxy, forecast = trend
     # extrapolation; neither official, so not live_official.
     "futures_proxy_trend",
+    # MARS (2026-11-08): some legs live, others not available; labelled so
+    # the factor fit is not read as fully live.
+    "partial_live",
     "user_input",
     "user_supplied",
     # honest failure / absence states

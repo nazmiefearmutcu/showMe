@@ -498,8 +498,7 @@
       "keys": [
         "callsign",
         "country",
-        "limit",
-        "live_flight"
+        "limit"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1523,7 +1522,7 @@
       "why": "params expression not resolvable (Identifier)"
     },
     {
-      "where": "ui/src/functions/DEBT.tsx:129",
+      "where": "ui/src/functions/DEBT.tsx:130",
       "why": "params expression not resolvable (ConditionalExpression)"
     },
     {

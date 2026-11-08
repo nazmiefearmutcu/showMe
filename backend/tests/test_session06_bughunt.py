@@ -103,7 +103,8 @@ def test_fts_no_live_returns_empty_rows() -> None:
     fn = fts_mod.FTSFunction(deps=_Deps())
     instrument = Instrument(symbol="MSFT", asset_class=AssetClass.EQUITY)
     result = asyncio.run(fn.execute(instrument=instrument, query="risk", live=False))
-    assert result.data["status"] == "provider_unavailable"
+    # A user-chosen live=false skips the provider: an empty state, not an outage.
+    assert result.data["status"] == "empty"
     assert result.data["rows"] == []
 
 
