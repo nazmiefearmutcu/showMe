@@ -156,3 +156,28 @@ def test_omon2_no_trade_timestamp_is_not_live(monkeypatch) -> None:
     assert result.metadata["live"] is False
     assert result.metadata["as_of"] is None
     assert result.metadata["data_mode"] != "live_yfinance"
+
+
+# ── OMON#3 ─────────────────────────────────────────────────────────────────
+
+
+def _run_with(monkeypatch, **params):
+    calls, puts = _basic_chain(datetime.now(timezone.utc) - timedelta(minutes=5))
+    _patch_chain(monkeypatch, calls, puts)
+    return asyncio.run(OMONFunction().execute(underlier="SPY", **params))
+
+
+def test_omon3_explicit_spot_wins_over_the_chain_spot(monkeypatch) -> None:
+    """A caller's spot must price moneyness and delta, not the chain's 735.29."""
+    # RED before fix: the chain spot always won, so spot stayed 735.29.
+    result = _run_with(monkeypatch, spot=700)
+    assert result.data["spot"] == 700
+    assert result.data["spot_source"] == "user_override"
+    row = _row(result.data["rows"], 740.0)
+    assert row["moneyness"] == round(740.0 / 700.0, 4)
+
+
+def test_omon3_chain_spot_is_used_and_labelled_when_no_spot_is_given(monkeypatch) -> None:
+    result = _run_with(monkeypatch)
+    assert result.data["spot"] == SPOT
+    assert result.data["spot_source"] == "chain"

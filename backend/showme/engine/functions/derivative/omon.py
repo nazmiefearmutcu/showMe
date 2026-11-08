@@ -36,30 +36,39 @@ _IV_FLOOR = 0.001
 # trades are the last trading session or a delayed feed and are labelled so.
 _LIVE_TRADE_WINDOW = timedelta(minutes=60)
 
-async def _resolve_spot(
+def _explicit_spot(params: dict[str, Any]) -> float | None:
+    """The caller's ``spot`` param when it is a finite, positive number, else None."""
+    if "spot" not in params or params.get("spot") is None:
+        return None
+    try:
+        value = float(params["spot"])
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 and math.isfinite(value) else None
+
+
+async def _resolve_spot_with_source(
     deps: Any, instrument: Instrument, params: dict[str, Any],
-) -> float | None:
-    """Resolve the underlying spot for the option monitor.
+) -> tuple[float | None, str]:
+    """Resolve the underlying spot and say where it came from.
 
     Resolution order:
 
-    1. An explicit, finite, positive ``params["spot"]`` always wins.
+    1. An explicit, finite, positive ``params["spot"]`` always wins
+       (``spot_source`` = ``user_override``).
     2. Otherwise the live spot is pulled from the yfinance QUOTE adapter
-       (``deps.yfinance`` -> :class:`DataKind.QUOTE` -> ``.last``).
-    3. When neither signal yields a price, returns ``None``. No placeholder is
-       substituted: moneyness and delta must not be computed around a
-       made-up underlier price (ASOF-1).
+       (``deps.yfinance`` -> :class:`DataKind.QUOTE` -> ``.last``), labelled
+       ``live_quote``.
+    3. When neither signal yields a price, returns ``(None, "unavailable")``. No
+       placeholder is substituted: moneyness and delta must not be computed
+       around a made-up underlier price (ASOF-1).
     """
-    if "spot" in params and params.get("spot") is not None:
-        try:
-            value = float(params["spot"])
-        except (TypeError, ValueError):
-            value = None
-        if value is not None and value > 0 and math.isfinite(value):
-            return value
+    explicit = _explicit_spot(params)
+    if explicit is not None:
+        return explicit, "user_override"
     yfinance = getattr(deps, "yfinance", None)
     if yfinance is None:
-        return None
+        return None, "unavailable"
     try:
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 3)), 4.0))
     except (TypeError, ValueError):
@@ -73,7 +82,7 @@ async def _resolve_spot(
             timeout=timeout + 0.5,
         )
     except Exception:
-        return None
+        return None, "unavailable"
     # The QUOTE adapter exposes ``.last`` on its result object; tolerate a
     # dict-shaped quote too so a mock that returns a plain dict still works.
     last: Any = None
@@ -87,10 +96,18 @@ async def _resolve_spot(
     try:
         value = float(last) if last is not None else 0.0
     except (TypeError, ValueError):
-        return None
+        return None, "unavailable"
     if value > 0 and math.isfinite(value):
-        return value
-    return None
+        return value, "live_quote"
+    return None, "unavailable"
+
+
+async def _resolve_spot(
+    deps: Any, instrument: Instrument, params: dict[str, Any],
+) -> float | None:
+    """Resolve the underlying spot for the option monitor (see ``_resolve_spot_with_source``)."""
+    value, _source = await _resolve_spot_with_source(deps, instrument, params)
+    return value
 
 
 def _num(value: Any) -> float | None:
@@ -299,18 +316,26 @@ class OMONFunction(BaseFunction):
             )
 
         expiry: str = chain["expiry"]
+        # OMON#3: an explicit caller spot beats the chain's own spot (as the
+        # _resolve_spot contract says); the chain spot is used only otherwise.
         spot = _num(chain.get("spot"))
-        if spot is None or spot <= 0:
+        if _explicit_spot(params) is not None:
+            spot, spot_source = _explicit_spot(params), "user_override"
+        elif spot is not None and spot > 0:
+            spot_source = "chain"
+        else:
             # The chain didn't carry a usable underlying price — anchor on the
-            # live quote adapter (or an explicit `spot` param) instead of
-            # leaving greeks/moneyness blank.
+            # live quote adapter instead of leaving greeks/moneyness blank.
             spot_instrument = instrument or Instrument(
                 symbol=underlier, asset_class=AssetClass.EQUITY
             )
-            resolved = await _resolve_spot(self.deps, spot_instrument, params)
+            resolved, spot_source = await _resolve_spot_with_source(
+                self.deps, spot_instrument, params
+            )
             spot = _num(resolved)
         if spot is not None and spot <= 0:
             spot = None
+            spot_source = "unavailable"
         # No real spot: moneyness, ATM IV and delta stay blank rather than being
         # computed around an invented price, and the chain is not labelled live.
         spot_unavailable = spot is None
@@ -473,6 +498,7 @@ class OMONFunction(BaseFunction):
                 "expiry": expiry,
                 "expiries": chain.get("expiries", []),
                 "spot": round(spot, 4) if spot else None,
+                "spot_source": spot_source,
                 "rows": rows,
                 "series": series,
                 "cards": cards,
