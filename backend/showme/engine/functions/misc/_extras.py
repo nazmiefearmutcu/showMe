@@ -84,12 +84,29 @@ class LANGFunction(BaseFunction):
     category = "misc"
     SUPPORTED = ("tr", "en", "de", "fr", "es", "it", "pt", "ru", "zh", "ja", "ko", "ar")
 
+    _SUPPORTED_ACTION = (
+        "Use one of the supported language codes: " + ", ".join(SUPPORTED) + "."
+    )
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        target = (params.get("lang") or "tr").lower()
-        if target not in self.SUPPORTED:
+        raw = params.get("lang")
+        # LANG#1: the preference is written only from an explicit code. A call
+        # without one must not overwrite the saved runtime/lang.txt.
+        if raw is None or not str(raw).strip():
+            reason = "lang is required: pass one supported language code to persist."
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"status": "input_error", "supported": list(self.SUPPORTED)},
-                                  warnings=[f"unsupported language {target}"])
+                                  data={"status": "input_error", "reason": reason,
+                                        "supported": list(self.SUPPORTED),
+                                        "next_actions": [self._SUPPORTED_ACTION]},
+                                  warnings=[reason])
+        target = str(raw).strip().lower()
+        if target not in self.SUPPORTED:
+            reason = f"unsupported language {target}"
+            return FunctionResult(code=self.code, instrument=None,
+                                  data={"status": "input_error", "reason": reason,
+                                        "supported": list(self.SUPPORTED),
+                                        "next_actions": [self._SUPPORTED_ACTION]},
+                                  warnings=[reason])
         from showme.app_paths import runtime_path
         runtime_path("lang.txt").write_text(target)
         rows = [
@@ -97,7 +114,9 @@ class LANGFunction(BaseFunction):
                 "lang": code,
                 "label": _language_label(code),
                 "selected": code == target,
-                "coverage": "core_labels",
+                # LANG#2: the sidecar does not read the UI catalogs, so it does
+                # not claim a coverage tier. The pane computes shell coverage.
+                "coverage": None,
                 "requires_reload": code == target,
             }
             for code in self.SUPPORTED
@@ -114,17 +133,18 @@ class LANGFunction(BaseFunction):
                     {"label": "Languages", "value": len(self.SUPPORTED)},
                 ],
                 "methodology": (
-                    "LANG persists the selected runtime language in runtime/lang.txt and reports supported "
-                    "language coverage. Shell-wide text changes require preference-aware UI surfaces to read "
-                    "the saved value and may require pane reload."
+                    "LANG persists the selected runtime language in runtime/lang.txt and lists the supported "
+                    "language codes. It does not read the UI translation catalogs, so coverage is null here; "
+                    "the pane computes shell coverage from those catalogs. Shell-wide text changes require "
+                    "preference-aware UI surfaces to read the saved value and may require pane reload."
                 ),
                 "field_dictionary": {
                     "lang": "IETF-style language code.",
-                    "coverage": "Translation coverage currently available in ShowMe.",
+                    "coverage": "Not computed by the sidecar (null); the UI derives shell coverage from its catalogs.",
                     "requires_reload": "Whether the selected preference needs a pane reload to become visible.",
                 },
             },
-            sources=["showme_i18n_registry"],
+            sources=["local_locale_catalog"],
         )
 
 

@@ -85,17 +85,18 @@ def lang() -> FunctionManifest:
             "LANG is the runtime i18n preference primitive. The selected language code is "
             "written to runtime/lang.txt; the response echoes it and returns one row per "
             "supported locale (12 today: tr, en, de, fr, es, it, pt, ru, zh, ja, ko, ar) with "
-            "the human label, selected flag, current coverage tier, and whether a pane "
-            "reload is required for the switch to render. An unsupported code returns "
-            "status=input_error with the supported list and an explicit warning instead of "
-            "silently falling back. Shell-wide text still depends on preference-aware "
-            "surfaces reading the saved value."
+            "the human label, selected flag, and whether a pane reload is required for the "
+            "switch to render. Coverage is null in these rows because the sidecar does not read "
+            "the UI translation catalogs. A call without a lang, or with an unsupported code, "
+            "returns status=input_error with the supported list, a reason and next actions, and "
+            "never overwrites the saved preference. Shell-wide text still depends on "
+            "preference-aware surfaces reading the saved value."
         ),
         field_dict={
             "lang": FieldDef(description="IETF-style language code.", source="preference_store"),
             "rows[].label": FieldDef(description="Human-readable language name.", source="catalog"),
             "rows[].selected": FieldDef(description="True for the persisted language.", source="computed"),
-            "coverage": FieldDef(description="Translation coverage currently available in ShowMe (core_labels).", source="catalog"),
+            "coverage": FieldDef(description="Not computed by the sidecar (null); the UI derives shell coverage from its translation catalogs.", source="computed"),
             "requires_reload": FieldDef(description="Whether the selected preference needs a pane reload to become visible.", source="computed"),
         },
         provenance=ProvenanceSpec(
