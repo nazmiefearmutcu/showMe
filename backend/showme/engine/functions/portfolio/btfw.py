@@ -225,24 +225,19 @@ def _truthy(value: Any) -> bool:
 
 
 def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str, Any]:
-    """Illustrative placeholder shown when no backtest was actually run.
+    """Empty payload returned when no backtest was actually run.
 
-    Every number here is INVENTED — a smooth synthetic ramp with hardcoded
-    Sharpe/drawdown/trade counts. It exists so the pane has a shape to render
-    before the user opts into a live backtest. It is flagged on every level
-    that a consumer might read (status, is_placeholder, each metric block, the
-    methodology string and a warning) so it can never be mistaken for a
-    measured result.
+    No equity curve and no final equity are shipped: a drawn ramp would be
+    an invented series (the old 1.0015^n template). Metrics are None and the
+    payload is flagged on every level a consumer might read. The caller is
+    told to re-run with live=true for a measured out-of-sample curve.
     """
-    curve = [
-        {"ts": f"template-{idx + 1:03d}", "equity": round(cash * (1 + idx * 0.0015), 2)}
-        for idx in range(30)
-    ]
-    final_equity = curve[-1]["equity"]
+    curve: list[dict[str, Any]] = []
+    final_equity = None
     disclaimer = (
-        "PLACEHOLDER — not a backtest. These numbers are invented for layout "
-        "purposes and say nothing about this strategy or this symbol. Re-run "
-        "with live=true to compute a real out-of-sample result."
+        "PLACEHOLDER — no backtest was run, so there is no equity curve and no "
+        "metrics for this strategy or symbol. Re-run with live=true to compute a "
+        "real out-of-sample result."
     )
     return {
         "status": "placeholder",
@@ -277,12 +272,14 @@ def _walk_forward_template(symbol: str, strategy: str, cash: float) -> dict[str,
             "note": disclaimer,
         },
         "methodology": (
-            "No backtest was run. The curve below is an invented placeholder "
-            "used only to give the pane a shape; it is not derived from market "
-            "data and no metrics are reported from it."
+            "No backtest was run. No equity curve is shown and no metrics are reported; "
+            "a curve is only produced by a live run on market data."
         ),
         "field_dictionary": {
-            "is_placeholder": "True when the payload is illustrative rather than measured.",
-            "equity_curve": "Synthetic ramp for layout only — carries no information.",
+            "is_placeholder": "True when no backtest was run; the payload carries no measured values.",
+            "equity_curve": "Empty until a live (live=true) run completes on market data.",
         },
+        "next_actions": [
+            "Run BTFW with live=true to compute a real out-of-sample equity curve.",
+        ],
     }
