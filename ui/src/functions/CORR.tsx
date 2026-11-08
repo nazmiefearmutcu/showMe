@@ -301,8 +301,23 @@ export function CORRPane({ code }: FunctionPaneProps) {
     return count;
   }, [matrix]);
 
-  const liveSourceMode =
-    state === "ok" && (data as { cached?: boolean } | undefined)?.cached !== true;
+  // CORR#3: the source pill reflects what the backend actually served, never the
+  // request state. A Ref (model) run or an outage envelope must not read "live".
+  const cachedRun = (data as { cached?: boolean } | undefined)?.cached === true;
+  const servedLive =
+    state === "ok" &&
+    !!impact &&
+    !cachedRun &&
+    (data?.metadata as { live?: unknown } | undefined)?.live === true;
+  const servedLabel = servedLive
+    ? "live"
+    : cachedRun
+      ? "cached"
+      : state === "ok" && impact
+        ? "model"
+        : state === "ok"
+          ? "unavailable"
+          : state;
 
   const run = (overrideWindow?: WindowChoice) => {
     // Double-submit guard: ignore re-entrant Run/window clicks while a request
@@ -391,6 +406,7 @@ export function CORRPane({ code }: FunctionPaneProps) {
         <SyntheticWarning
           symbols={Array.from(syntheticSymbols)}
           metricLabel={METRIC_LABELS[activeMetric]}
+          referenceMode={impact.options?.source_mode === "computed_reference"}
         />
 
         <LowNWarning count={lowNPairCount} threshold={LOW_N_THRESHOLD} />
@@ -570,15 +586,11 @@ export function CORRPane({ code }: FunctionPaneProps) {
             Watchlist ({symbols.length})
           </Pill>
           <Pill
-            tone={liveSourceMode ? "positive" : "warn"}
+            tone={servedLive ? "positive" : "warn"}
             variant="soft"
             withDot
           >
-            {liveSourceMode
-              ? "live"
-              : (data as { cached?: boolean } | undefined)?.cached
-                ? "cached"
-                : state}
+            {servedLabel}
           </Pill>
           {data?.elapsed_ms != null && (
             <Pill tone="muted" variant="soft" withDot={false}>
@@ -1001,12 +1013,33 @@ function SyntheticMark() {
 function SyntheticWarning({
   symbols,
   metricLabel,
+  referenceMode,
 }: {
   symbols: string[];
   metricLabel: string;
+  referenceMode: boolean;
 }) {
   if (!symbols.length) return null;
   const names = symbols.join(", ");
+  if (referenceMode) {
+    // CORR#9: Ref mode never attempts a live fetch, so the banner must not say one failed.
+    return (
+      <div
+        data-testid="corr-synthetic-warning"
+        role="status"
+        style={syntheticWarningStyle}
+      >
+        <strong style={syntheticWarningTitleStyle}>
+          ⚠ Reference series used (Ref mode) — synthetic, not real market data
+        </strong>
+        <span style={syntheticWarningBodyStyle}>
+          Ref mode does not fetch live prices. These symbols use a deterministic
+          reference model: <strong>{names}</strong>. All {metricLabel}{" "}
+          correlations involving them describe that model, not market prices.
+        </span>
+      </div>
+    );
+  }
   return (
     <div
       data-testid="corr-synthetic-warning"

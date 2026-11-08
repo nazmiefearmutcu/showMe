@@ -347,3 +347,73 @@ describe("CORR — formatter sentinel (DI1)", () => {
     expect(nullCell.textContent).toContain("—");
   });
 });
+
+/* ── SOURCE PILL + REF BANNER (CORR#3, CORR#9) ─────────────────────── */
+
+describe("CORR — served-source pill and Ref-mode banner (CORR#3/CORR#9)", () => {
+  it("shows model, not live, when the backend served a Ref (model) run", () => {
+    const payload = okPayload();
+    payload.data.data.impactor.options.source_mode = "computed_reference";
+    for (const row of payload.data.data.impactor.market_coverage) {
+      row.status = "computed_reference";
+    }
+    (payload.data as unknown as { metadata: Record<string, unknown> }).metadata = {
+      live: false,
+      data_state: "model",
+    };
+    mockReturn.current = { state: "ok", ...payload };
+    render(<CORRPane code="CORR" />);
+
+    const pill = screen.getByText("model").closest(".ds-pill");
+    expect(pill?.className).toMatch(/ds-pill--tone-warn/);
+    expect(screen.queryByText("live")).toBeNull();
+  });
+
+  it("shows live with the positive tone only when the backend reports a live run", () => {
+    const payload = okPayload();
+    (payload.data as unknown as { metadata: Record<string, unknown> }).metadata = {
+      live: true,
+    };
+    payload.data.data.impactor.market_coverage[1].status = "live";
+    mockReturn.current = { state: "ok", ...payload };
+    render(<CORRPane code="CORR" />);
+
+    // The toolbar source pill sits right after the Watchlist pill.
+    const served = screen.getByText(/^Watchlist \(/).closest(".ds-pill")?.nextElementSibling;
+    expect(served?.textContent).toBe("live");
+    expect(served?.className).toMatch(/ds-pill--tone-positive/);
+  });
+
+  it("never labels a provider outage envelope as live", () => {
+    mockReturn.current = {
+      state: "ok",
+      data: {
+        code: "CORR",
+        instrument: null,
+        data: { status: "provider_unavailable", reason: "no data", pearson: {}, rows: [] },
+        metadata: { live: true },
+        sources: [],
+        warnings: [],
+        elapsed_ms: 5,
+        cached: false,
+      },
+      error: null,
+      refetch: vi.fn(),
+    };
+    render(<CORRPane code="CORR" />);
+    expect(screen.queryByText("live")).toBeNull();
+  });
+
+  it("describes Ref mode as a reference model, not as a failed live fetch", () => {
+    const payload = okPayload();
+    payload.data.data.impactor.options.source_mode = "computed_reference";
+    payload.data.data.impactor.market_coverage[1].status = "computed_reference";
+    mockReturn.current = { state: "ok", ...payload };
+    render(<CORRPane code="CORR" />);
+
+    const banner = screen.getByTestId("corr-synthetic-warning");
+    expect(banner.textContent).toMatch(/Ref mode/);
+    expect(banner.textContent).not.toMatch(/could not be fetched live/i);
+    expect(banner.textContent).not.toMatch(/substituted/i);
+  });
+});
