@@ -8,7 +8,7 @@
  * That keeps the pane within the "do not execute trades" guardrail while
  * still demonstrating that the backend round-trip works.
  */
-import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   Empty,
   Pane,
@@ -65,27 +65,46 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
   const [result, setResult] = useState<FunctionCallResult<unknown> | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
+  // Follow the linked symbol: the ticket must not keep the first symbol it saw.
+  useEffect(() => {
+    if (symbol) setTicketSymbol(symbol);
+  }, [symbol]);
+
+  // Number('') is 0 and finite, so a blank field used to reach the sidecar as
+  // quantity 0 / price 0. Only a real positive number counts as entered.
+  const qtyNumber = useMemo(() => {
+    const n = Number(quantity);
+    return quantity.trim() !== "" && Number.isFinite(n) && n > 0 ? n : null;
+  }, [quantity]);
+  const priceNumber = useMemo(() => {
+    const n = Number(price);
+    return price.trim() !== "" && Number.isFinite(n) && n > 0 ? n : null;
+  }, [price]);
+  const ticketReady =
+    !!ticketSymbol.trim() &&
+    qtyNumber != null &&
+    (orderType === "MARKET" || priceNumber != null);
+
   const payload = useMemo<TSOXPayload>(() => {
     const d = result?.data;
     return d && typeof d === "object" && !Array.isArray(d) ? (d as TSOXPayload) : {};
   }, [result]);
 
   const preview = useCallback(async () => {
+    if (!ticketReady || qtyNumber == null) return;
     setState("loading");
     setError(null);
     try {
-      const qty = Number(quantity);
-      const limitPrice = orderType === "LIMIT" ? Number(price) : undefined;
       const params: Record<string, unknown> = {
         side,
-        quantity: Number.isFinite(qty) ? qty : 0,
+        quantity: qtyNumber,
         order_type: orderType,
         tif,
         submit: false,
       };
-      if (limitPrice != null && Number.isFinite(limitPrice)) params.price = limitPrice;
+      if (orderType === "LIMIT" && priceNumber != null) params.price = priceNumber;
       const res = await runFunction(code, {
-        symbol: ticketSymbol,
+        symbol: ticketSymbol.trim(),
         asset_class: "BOND",
         params,
       });
@@ -95,7 +114,7 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
       setError(e instanceof Error ? e : new Error(String(e)));
       setState("error");
     }
-  }, [code, side, orderType, tif, quantity, price, ticketSymbol]);
+  }, [code, side, orderType, tif, qtyNumber, priceNumber, ticketReady, ticketSymbol]);
 
   const inputRequired = payload.status === "input_required";
   const previewOk = payload.status === "preview" || (payload.broker === "paper" && !inputRequired);
@@ -115,7 +134,7 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
               <button
                 type="button"
                 onClick={preview}
-                disabled={state === "loading" || !quantity.trim()}
+                disabled={state === "loading" || !ticketReady}
                 style={primaryActionStyle}
               >
                 {state === "loading" ? "Sending…" : "Preview ticket"}
