@@ -123,6 +123,9 @@ class FXHFunction(BaseFunction):
         # supplied manually. We do not substitute 1.0 silently — the hedge
         # book would otherwise compute fictitious notionals and carry P&L.
         spot_failed, fetched_live = await self._fill_spots(exposures, home)
+        # Remember whether the portfolio had any foreign exposure BEFORE spot
+        # failures drop rows: "nothing to hedge" and "spot unavailable" differ.
+        had_exposures = bool(exposures)
         warnings: list[str] = []
         if spot_failed:
             warnings.append(
@@ -134,7 +137,7 @@ class FXHFunction(BaseFunction):
                 e for e in exposures
                 if e.get("spot_rate") and e["currency"].upper() not in {c.upper() for c in spot_failed}
             ]
-        if not exposures and source_mode == "portfolio_state":
+        if not had_exposures and source_mode == "portfolio_state":
             # Portfolio mode found no non-home-currency positions: there is
             # nothing to hedge, which is not a spot-provider problem.
             return FunctionResult(
