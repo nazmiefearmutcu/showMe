@@ -236,7 +236,17 @@ def efficient_frontier(returns: pd.DataFrame, *, points: int = 40,
             ))
         except Exception:
             continue
-    return out
+    # Targets above the attainable return all map to the same corner portfolio;
+    # keep one point per distinct (vol, return) pair so the frontier is not padded.
+    unique: list[PortfolioResult] = []
+    seen: set[tuple[float, float]] = set()
+    for point in out:
+        key = (round(point.volatility, 10), round(point.expected_return, 10))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(point)
+    return unique
 
 
 _ERC_TOL = 1e-9   # max_i |RC_i - 1/n| below this counts as converged
