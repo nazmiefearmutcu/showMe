@@ -307,3 +307,50 @@ def test_raw_binance_kline_rows_feed_the_benchmark(tmp_path, monkeypatch):
     # typical price = (110 + 90 + 100) / 3 = 100
     assert row["benchmark_px"] == pytest.approx(100.0)
     assert row["benchmark_source"] == "binance"
+
+
+# ---------------------------------------------------------------------------
+# TCA-R1 — orders that never produced a broker-confirmed fill are excluded, and
+# the exclusion must be visible (count + warning), not silent.
+# ---------------------------------------------------------------------------
+def test_excluded_unfilled_orders_are_counted_and_warned(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+    from showme.engine.services import order_history
+
+    _use_temp_home(tmp_path, monkeypatch)
+    # manual order that never executed
+    order_history.record_order(
+        broker="binance", order_id="ord-300", symbol="BTCUSDT", side="BUY",
+        quantity=1.0, asset_class="CRYPTO", price=190.0,
+        type="LIMIT", status="submitted", metadata={},
+    )
+    BotStore.fresh().save(BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="binance",
+        symbol="BTCUSDT", timeframe="1h", mode="live", enabled=True,
+        signal_log=[
+            SignalEntry(bar_index=0, bar_time="2026-09-11T00:00:00Z", kind="entry",
+                        price=150.0, action="placed", order_id="x1",
+                        fill_price=None, qty=1.0),          # placed, no fill price
+            SignalEntry(bar_index=1, bar_time="2026-09-11T01:00:00Z", kind="exit",
+                        price=150.0, action="placed", order_id="x2",
+                        fill_price=151.0, qty=None),        # no executed size
+            SignalEntry(bar_index=2, bar_time="2026-09-11T02:00:00Z", kind="entry",
+                        price=150.0, action="shadow", order_id="x3",
+                        fill_price=None, qty=1.0),          # simulation, not an order
+            SignalEntry(bar_index=3, bar_time="2026-09-11T03:00:00Z", kind="entry",
+                        price=150.0, action="placed", order_id="x4",
+                        fill_price=152.0, qty=2.0),         # real fill
+        ],
+    ))
+
+    res = _run(TCAFunction(deps=FunctionDeps(binance=_TwoBarBinance())).execute(
+        symbol="BTCUSDT", benchmark="VWAP"))
+    data = res.data
+
+    assert data["summary"]["fill_count"] == 1
+    assert data["excluded_orders"]["total"] == 3, data["excluded_orders"]
+    assert data["excluded_orders"]["reasons"] == {
+        "unfilled_no_execution": 1, "no_fill_price": 1, "no_positive_qty": 1,
+    }, data["excluded_orders"]
+    assert any("Excluded 3" in w for w in res.warnings), res.warnings

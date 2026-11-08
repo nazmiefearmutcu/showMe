@@ -66,6 +66,8 @@ _FIELD_DICTIONARY = {
     "cost_usd": "slippage_bps * notional / 10000 (execution cost).",
     "filled_at": "ISO-8601 timestamp of the fill.",
     "benchmark_source": "Provider of the intraday bars for the fill's session, or 'arrival' fallback.",
+    "excluded_orders": "Orders left out of the analysis because they had no broker-confirmed "
+        "fill or executed size: total count and reasons.",
 }
 
 
@@ -114,6 +116,32 @@ def _day_bounds_ms(day: date) -> tuple[int, int]:
     start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     start_ms = int(start.timestamp() * 1000)
     return start_ms, start_ms + 86_400_000 - 1
+
+
+_EXCLUSION_LABELS = {
+    "unfilled_no_execution": "no recorded execution",
+    "no_fill_price": "placed but no broker fill price",
+    "no_positive_qty": "no positive executed size",
+    "outside_window": "outside the requested window",
+    "timestamp_missing": "no timestamp to apply the window to",
+}
+
+
+def _excluded_payload(excluded: dict[str, int]) -> dict[str, Any]:
+    reasons = {k: v for k, v in excluded.items() if v}
+    return {"total": sum(reasons.values()), "reasons": reasons}
+
+
+def _exclusion_warnings(excluded_orders: dict[str, Any]) -> list[str]:
+    total = int(excluded_orders.get("total") or 0)
+    if not total:
+        return []
+    parts = ", ".join(
+        f"{_EXCLUSION_LABELS.get(k, k)}: {v}"
+        for k, v in excluded_orders.get("reasons", {}).items()
+    )
+    return [f"Excluded {total} order(s) from the analysis ({parts}); they are not "
+            "counted as fills."]
 
 
 def _normalise_klines(rows: Any) -> list[dict[str, Any]]:
@@ -224,6 +252,7 @@ class TCAFunction(BaseFunction):
                     "cards": self._cards(summary={}, benchmark=benchmark,
                                          as_of=as_of, data_mode="provider_unavailable"),
                     "summary": {"benchmark": benchmark, "fill_count": 0, "reason": reason},
+                    "excluded_orders": {"total": 0, "reasons": {}},
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "next_actions": [
@@ -243,7 +272,10 @@ class TCAFunction(BaseFunction):
             limit = 200
 
         # ---- 1) Load REAL fills (bot ledger first, then manual order_history).
-        fills = self._load_fills(symbol=symbol, broker=broker, limit=limit)
+        excluded: dict[str, int] = {}
+        fills = self._load_fills(symbol=symbol, broker=broker, limit=limit, excluded=excluded)
+        excluded_orders = _excluded_payload(excluded)
+        exclusion_warnings = _exclusion_warnings(excluded_orders)
 
         if not fills:
             return FunctionResult(
@@ -257,6 +289,7 @@ class TCAFunction(BaseFunction):
                     "cards": self._cards(summary={}, benchmark=benchmark,
                                          as_of=as_of, data_mode="no_fills"),
                     "summary": {"benchmark": benchmark, "fill_count": 0},
+                    "excluded_orders": excluded_orders,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "next_actions": [
@@ -266,11 +299,12 @@ class TCAFunction(BaseFunction):
                     ],
                 },
                 sources=["bot_fills", "order_history"],
-                warnings=["No executed fills available for trade cost analysis."],
+                warnings=["No executed fills available for trade cost analysis.",
+                          *exclusion_warnings],
             )
 
         # ---- 2) Resolve live VWAP benchmark per distinct symbol.
-        benchmark_warnings: list[str] = []
+        benchmark_warnings: list[str] = list(exclusion_warnings)
         provider_failed = False
         sources: set[str] = {"bot_fills", "order_history"}
         # TCA#3: TWAP selects the time-weighted bar mean; every other live
@@ -430,6 +464,7 @@ class TCAFunction(BaseFunction):
                 "cards": self._cards(summary=summary, benchmark=benchmark,
                                      as_of=as_of, data_mode=data_mode),
                 "summary": summary,
+                "excluded_orders": excluded_orders,
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
                 "next_actions": [
@@ -446,6 +481,7 @@ class TCAFunction(BaseFunction):
 
     def _load_fills(
         self, *, symbol: str | None, broker: str | None, limit: int,
+        excluded: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         """Return normalised real fills from the bot ledger + order_history.
 
@@ -469,6 +505,10 @@ class TCAFunction(BaseFunction):
         """
         out: list[dict[str, Any]] = []
         want_sym = symbol.upper() if symbol else None
+        skipped: dict[str, int] = excluded if excluded is not None else {}
+
+        def _skip(reason: str) -> None:
+            skipped[reason] = skipped.get(reason, 0) + 1
 
         # Autonomous bot fill ledger (showme/bots — BotStore JSON records).
         try:
@@ -493,6 +533,7 @@ class TCAFunction(BaseFunction):
                     if qty <= 0:
                         # No fabricated default size — a fill without a size
                         # cannot contribute honest notional/cost numbers.
+                        _skip("no_positive_qty")
                         continue
                     # Only a broker-confirmed execution price is a fill. The
                     # signal price (entry.price) is the arrival benchmark, not
@@ -500,6 +541,7 @@ class TCAFunction(BaseFunction):
                     # unfilled and is excluded instead of booked at signal px.
                     fill_px = entry.fill_price
                     if not fill_px or fill_px <= 0:
+                        _skip("no_fill_price")
                         continue
                     side = "BUY" if entry.kind == "entry" else "SELL"
                     # arrival/decision reference = the signal-bar close, which
@@ -531,6 +573,7 @@ class TCAFunction(BaseFunction):
                     # No recorded execution (submitted / open / cancelled):
                     # not a fill. Never fall back to the limit price or the
                     # ordered quantity here.
+                    _skip("unfilled_no_execution")
                     continue
                 # Arrival is only what the order recorded. The limit price is
                 # an order instruction, not a market benchmark: when it is
