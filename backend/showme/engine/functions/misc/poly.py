@@ -103,7 +103,8 @@ class POLYFunction(BaseFunction):
         compact: list[dict[str, Any]] = []
         for r in raw_rows:
             row = _shape_market(r)
-            if status == "open" and (r.get("closed") is True or _is_past(row.get("end_date"))):
+            if status == "open" and (r.get("closed") is True or r.get("active") is False
+                                     or _is_past(row.get("end_date"))):
                 continue
             if status == "closed" and r.get("closed") is not True:
                 continue
