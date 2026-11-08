@@ -338,7 +338,11 @@ def _promote_raw_fields(data: dict[str, Any], raw: dict[str, Any]) -> None:
     elif percent_form is not None:
         normalized = percent_form
     else:
-        normalized = _normalize_dividend_yield(data.get("dividendYield"))
+        # A dividendYield already on the record has no field name that says
+        # its unit, so it is dropped rather than magnitude-guessed (DES#3).
+        normalized = None
+        if data.get("dividendYield") not in (None, ""):
+            data["dividendYield"] = None
     if normalized is not None:
         data["dividendYield"] = normalized
 

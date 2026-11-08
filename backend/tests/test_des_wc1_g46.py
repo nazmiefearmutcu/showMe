@@ -102,3 +102,17 @@ def test_des_provider_exhausted_reports_no_sources_but_attempted_list() -> None:
     assert result.data["status"] == "provider_unavailable"
     assert result.sources == []
     assert result.metadata["attempted_providers"] == ["yfinance"]
+
+
+def test_bare_dividend_yield_without_field_name_is_not_magnitude_guessed() -> None:
+    # A dividendYield already on the record has no yfinance field name to say
+    # its unit. A magnitude guess read 0.15 as 15%, so it is dropped instead.
+    data: dict[str, Any] = {"dividendYield": 0.15}
+    _promote_raw_fields(data, {})
+    assert data["dividendYield"] is None
+
+
+def test_bare_decimal_dividend_yield_is_not_rescaled_by_magnitude() -> None:
+    data: dict[str, Any] = {"dividendYield": 0.25}
+    _promote_raw_fields(data, {})
+    assert data["dividendYield"] is None
