@@ -611,8 +611,7 @@ const tabBarStyle: CSSProperties = {
   background: "var(--surface-2)",
 };
 
-// P2 honesty — a real history series renders solid; the procedural fallback
-// is de-emphasized so it cannot masquerade as real history.
+// P2 honesty — the only sparkline drawn is a real per-row history series.
 const sparkRealStyle: CSSProperties = {
   display: "inline-flex",
 };
