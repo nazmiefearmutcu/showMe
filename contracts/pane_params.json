@@ -384,6 +384,7 @@
       "keys": [
         "compare_with",
         "date_range",
+        "frequency",
         "series_id",
         "transform"
       ],
@@ -1557,7 +1558,7 @@
       "why": "params expression not resolvable (AsExpression)"
     },
     {
-      "where": "ui/src/functions/commodity-spot.tsx:131",
+      "where": "ui/src/functions/commodity-spot.tsx:133",
       "why": "code not resolvable to a registry entry"
     },
     {
