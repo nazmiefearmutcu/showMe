@@ -273,3 +273,18 @@ describe("FA pane — ratios tab humanizes ratio labels", () => {
     expect(within(grid as HTMLElement).queryByText("gross_margin")).toBeNull();
   });
 });
+
+describe("FA pane — ratio grid units (CRVF/FA#7)", () => {
+  it("renders margin and return ratios as percentages, not bare decimals", () => {
+    mockTab = "ratios";
+    setMockFn({ state: "ok", ...okPayload() });
+    const { container } = render(<FAPane code="FA" symbol="AAPL" />);
+    const grid = container.querySelector(".fa-ratio-grid") as HTMLElement;
+    expect(grid).not.toBeNull();
+    // gross_margin 0.46 is a fraction of revenue: must read 46.0%, not 0.46.
+    expect(within(grid).getByText("46.0%")).toBeInTheDocument();
+    expect(within(grid).queryByText("0.46")).toBeNull();
+    // return_on_equity 1.5 is a fraction too (150.0%).
+    expect(within(grid).getByText("150.0%")).toBeInTheDocument();
+  });
+});
