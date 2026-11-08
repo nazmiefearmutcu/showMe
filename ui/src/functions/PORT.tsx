@@ -115,6 +115,8 @@ interface PortData {
     cost_basis?: number;
     unrealized_pnl?: number;
     cash?: number;
+    /** Every cash balance in base ccy (foreign balances converted); null when one has no FX rate. */
+    cash_total_base?: number | null;
     n_positions?: number;
     /** Cash + market value; null/absent when cash is untracked or a row is unpriced. */
     total_equity?: number | null;
@@ -613,8 +615,12 @@ export function overlayLiveTotals(
   if (snapshotMv > 0 && (mv > snapshotMv * 3 || mv < snapshotMv / 3)) {
     return totals;
   }
-  const cash =
-    typeof totals?.cash === "number" && Number.isFinite(totals.cash) ? totals.cash : null;
+  // Same cash basis as the backend: every balance in base ccy. A null
+  // cash_total_base means a balance has no FX rate, so equity is withheld
+  // rather than falling back to stable cash alone.
+  const cashBase =
+    totals && "cash_total_base" in totals ? totals.cash_total_base : totals?.cash;
+  const cash = typeof cashBase === "number" && Number.isFinite(cashBase) ? cashBase : null;
   const unpriced = enriched.filter(
     (p) => typeof p.market_value !== "number" || !Number.isFinite(p.market_value),
   ).length;
