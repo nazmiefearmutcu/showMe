@@ -209,3 +209,27 @@ def test_crypto_payload_declares_trend_and_current_score() -> None:
     assert result.data["trend_status"] == "not_applicable_crypto"
     assert result.data["current_score"] == result.data["metrics"]["consensus_score"]
     assert result.data["current_score"] is not None
+
+
+def test_partial_finnhub_target_is_merged_per_field_with_yfinance() -> None:
+    # ANR#4 residual: a Finnhub payload carrying only a mean target must not hide
+    # the yfinance high/low/median statistics; each field keeps its own provenance.
+    finnhub = _FakeFinnhub(
+        recs=[{"period": "2026-10-01", "strongBuy": 3, "buy": 2, "hold": 1, "sell": 0, "strongSell": 0}],
+        target={"targetMean": 250.0, "lastUpdated": "2026-10-02"},
+    )
+    result = _run(_raw_with_targets(), finnhub=finnhub)
+    target = result.data["price_target"]
+    assert target["targetMean"] == 250.0
+    assert target["targetHigh"] == 280.0
+    assert target["targetLow"] == 180.0
+    assert target["targetMedian"] == 238.0
+    assert result.data["target_price_source"]["mode"] == "live_analyst_targets"
+    assert result.data["target_field_sources"] == {
+        "targetMean": "finnhub",
+        "targetHigh": "yfinance_analyst_targets",
+        "targetLow": "yfinance_analyst_targets",
+        "targetMedian": "yfinance_analyst_targets",
+    }
+    assert "yfinance_targets" in result.sources
+    assert "finnhub" in result.sources

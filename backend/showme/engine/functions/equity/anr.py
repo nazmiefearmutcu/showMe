@@ -261,6 +261,43 @@ def _target_from_yfinance_raw(raw: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+_TARGET_STATS = ("targetHigh", "targetLow", "targetMean", "targetMedian")
+
+
+def _adopt_target(state: dict[str, Any], incoming: Any, origin: str) -> bool:
+    """Per-field target merge (ANR#4).
+
+    Each target statistic comes from the first provider that supplies it, so a
+    partial Finnhub payload never hides yfinance's other statistics. The origin
+    of every statistic is recorded in ``state["target_field_sources"]``.
+    Returns True when ``incoming`` contributed at least one statistic.
+    """
+    if not isinstance(incoming, dict):
+        return False
+    current = dict(state.get("target") or {})
+    had_stats = any(finite(current.get(key)) is not None for key in _TARGET_STATS)
+    origins = state.setdefault("target_field_sources", {})
+    added = False
+    for key in _TARGET_STATS:
+        value = finite(incoming.get(key))
+        if finite(current.get(key)) is None and value is not None:
+            current[key] = value
+            origins[key] = origin
+            added = True
+    if not added:
+        return False
+    for key in _TARGET_STATS:
+        current.setdefault(key, None)
+    if had_stats:
+        current.setdefault("source_mode", incoming.get("source_mode"))
+        current.setdefault("lastUpdated", incoming.get("lastUpdated"))
+    else:
+        current["source_mode"] = incoming.get("source_mode")
+        current["lastUpdated"] = incoming.get("lastUpdated")
+    state["target"] = current
+    return True
+
+
 def _analyst_rows_from_yfinance_raw(raw: dict[str, Any], cutoff: datetime, *, limit: int = 30) -> list[dict[str, Any]]:
     records = raw.get("upgrades_downgrades") or []
     if not isinstance(records, list):
@@ -351,6 +388,7 @@ class ANRFunction(BaseFunction):
             "sources": [],
             "recs": [],
             "target": {},
+            "target_field_sources": {},
             "spot": None,
             "yfinance_raw": {},
             "trend_months": _clamp_months(params.get("months")),
@@ -375,21 +413,22 @@ class ANRFunction(BaseFunction):
         if fh_state["recs"]:
             state["recs"] = fh_state["recs"]
             state["sources"].extend(fh_state["sources"])
-            state["target"] = fh_state["target"]
-            # ANR#4: Finnhub recommendations with an empty price-target payload
-            # must not hide real yfinance targets; take the first usable target.
-            if not any(finite(v) for v in state["target"].values()) and yf_state["target"]:
-                state["target"] = yf_state["target"]
-                if "yfinance_targets" not in state["sources"]:
-                    state["sources"].append("yfinance_targets")
-        else:
-            if yf_state["recs"]:
-                state["recs"] = yf_state["recs"]
-                state["sources"].extend(yf_state["sources"])
-            if yf_state["target"]:
-                state["target"] = yf_state["target"]
-                if "yfinance_targets" not in state["sources"]:
-                    state["sources"].append("yfinance_targets")
+        elif yf_state["recs"]:
+            state["recs"] = yf_state["recs"]
+            state["sources"].extend(yf_state["sources"])
+        # ANR#4: targets merge per statistic. Finnhub goes first when it supplied
+        # the recommendations (its precedence); yfinance fills whatever is missing.
+        target_providers = [
+            ("finnhub", fh_state["target"]),
+            ("yfinance_analyst_targets", yf_state["target"]),
+        ]
+        if not fh_state["recs"]:
+            target_providers.reverse()
+        for origin, incoming in target_providers:
+            if _adopt_target(state, incoming, origin):
+                source = "finnhub" if origin == "finnhub" else "yfinance_targets"
+                if source not in state["sources"]:
+                    state["sources"].append(source)
 
         state["spot"] = yf_state["spot"]
         state["yfinance_raw"] = yf_state["yfinance_raw"]
@@ -484,10 +523,7 @@ class ANRFunction(BaseFunction):
                 for source in ("yfinance_recommendations", "yfinance"):
                     if source not in state["sources"]:
                         state["sources"].append(source)
-            retry_target = _target_from_yfinance_raw(retry_raw)
-            target = state["target"]
-            if (not target or not any(finite(v) for v in target.values())) and retry_target:
-                state["target"] = retry_target
+            if _adopt_target(state, _target_from_yfinance_raw(retry_raw), "yfinance_analyst_targets"):
                 if "yfinance_targets" not in state["sources"]:
                     state["sources"].append("yfinance_targets")
             if state["spot"] is None:
@@ -516,6 +552,7 @@ class ANRFunction(BaseFunction):
             "targetMedian": None,
             "source_mode": "price_target_unavailable",
         }
+        state["target_field_sources"] = {}
 
     def _collect_signals(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Stage 2 — apply the 365-day staleness rule and aggregate buckets."""
@@ -755,6 +792,7 @@ class ANRFunction(BaseFunction):
                 "recommendations": inputs["recs"],
                 "consensus_recommendations": signals["consensus_recs"],
                 "price_target": target,
+                "target_field_sources": dict(inputs.get("target_field_sources") or {}),
                 "analyst_count": analyst_count,
                 "spot": inputs["spot"],
                 "source_details": source_details,
