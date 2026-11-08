@@ -114,7 +114,7 @@ class REBAFunction(BaseFunction):
                     src.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst)),
                     timeout=max(1.0, min(float(params.get("quote_timeout", 2.5)), 3.0)),
                 )
-                return sym, float(q.last or 0), asset_class
+                return sym, _finite_price(q.last), asset_class
             except Exception:
                 return sym, 0.0, asset_class
         for sym, px, asset_class in await asyncio.gather(*(_px(s) for s in all_syms)):
@@ -446,6 +446,16 @@ def _rebalance_model(targets: dict[str, float], cash_cap: Any) -> dict[str, Any]
     else:
         data["next_actions"].append("Supply max_notional (capital) to see target dollar allocations.")
     return data
+
+
+def _finite_price(value: Any) -> float:
+    """A usable quote, or 0.0 for "no quote". NaN and inf count as no quote,
+    so they can neither size an order nor leak into the weights."""
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def _positive_float(value: Any) -> float | None:
