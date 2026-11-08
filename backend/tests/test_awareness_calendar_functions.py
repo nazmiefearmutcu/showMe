@@ -878,6 +878,41 @@ def test_m3_trdh_default_set_is_requested_when_no_codes_given(monkeypatch):
     assert "default set" in result.data["methodology"]
 
 
+@pytest.mark.parametrize("venue", ["BINANCE", "binance", "FX", "COMEX"])
+def test_trdh_round_the_clock_venue_answers_the_default_set(monkeypatch, venue):
+    # The agent runtime routes a crypto/FX/commodity candidate's venue as ``exchange``: no input_error.
+    _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 1, 0, tzinfo=UTC))
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/sessions": {"timezone": "Asia/Tokyo", "sessions": _tokyo_sessions()},
+                            "/calendar/holidays": []})
+    result = _run(fn.execute(exchange=venue))
+    asked = [params["exchange"] for path, params in fn._awareness.calls if path == "/calendar/sessions"]
+    assert asked == trdh_mod.DEFAULT_MICS
+    assert result.data["status"] == "ok"
+    assert [row["venue"] for row in result.data["round_the_clock"]] == [venue.upper()]
+    assert any("no exchange session calendar" in w for w in result.warnings)
+    assert "Showing the default exchange set." in result.warnings
+
+
+def test_trdh_round_the_clock_venue_next_to_a_real_exchange_asks_only_that_exchange(monkeypatch):
+    _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 1, 0, tzinfo=UTC))
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/sessions": {"timezone": "Asia/Tokyo", "sessions": _tokyo_sessions()},
+                            "/calendar/holidays": []})
+    result = _run(fn.execute(exchanges="BINANCE,XTKS,BINANCE"))
+    asked = [params["exchange"] for path, params in fn._awareness.calls if path == "/calendar/sessions"]
+    assert asked == ["XTKS"]
+    assert [row["venue"] for row in result.data["round_the_clock"]] == ["BINANCE"]
+    assert "Showing the default exchange set." not in result.warnings
+
+
+def test_trdh_garbage_code_is_still_an_input_error():
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes(down="x")
+    result = _run(fn.execute(exchanges="bad!!"))
+    assert result.data["status"] == "input_error"
+
+
 def test_m3_trdh_invalid_timezone_is_a_row_error_not_a_crash(monkeypatch):
     _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 1, 0, tzinfo=UTC))
     fn = trdh_mod.TRDHFunction(FunctionDeps())

@@ -35,6 +35,14 @@ LEGACY_MIC: dict[str, str] = {
     "SSE": "XSHG", "TSX": "XTSE", "ASX": "XASX", "SIX": "XSWX", "BIST": "XIST", "IST": "XIST",
 }
 DEFAULT_MICS = ["XNYS", "XNAS", "XLON", "XFRA", "XTKS", "XHKG", "XASX", "XIST"]
+# Venues that trade (nearly) around the clock have no exchange session calendar. The agent runtime routes
+# a crypto, FX or commodity candidate's venue here, so TRDH notes that and answers the default set.
+ROUND_THE_CLOCK_VENUES: dict[str, str] = {
+    "BINANCE": "Binance trades crypto 24/7",
+    "CRYPTO": "Crypto markets trade 24/7",
+    "FX": "Spot FX trades around the clock on weekdays",
+    "COMEX": "COMEX futures trade nearly 24 hours a day on CME Globex, Sunday to Friday",
+}
 EXCHANGE_NAMES: dict[str, str] = {
     "XNYS": "New York Stock Exchange", "XNAS": "Nasdaq", "XLON": "London Stock Exchange",
     "XFRA": "Frankfurt Stock Exchange", "XETR": "Xetra", "XPAR": "Euronext Paris",
@@ -49,8 +57,10 @@ _METHODOLOGY = (
     "break next_close_utc is the break start. today is the session whose exchange-local date is today (null on closed "
     "days). closures are holidays and early closes from the same calendar. Early closes carry "
     "early_close=true and their local close time. A request without exchange codes answers the default set "
-    "(XNYS, XNAS, XLON, XFRA, XTKS, XHKG, XASX, XIST); unknown codes are skipped with a warning. An exchange "
-    "with an invalid timezone carries error and today=null; its open and close instants stay exact."
+    "(XNYS, XNAS, XLON, XFRA, XTKS, XHKG, XASX, XIST); unknown codes are skipped with a warning. A round-the-clock "
+    "venue (BINANCE, CRYPTO, FX, COMEX) has no session calendar: it is listed under round_the_clock, and when "
+    "nothing else was asked the default set is answered. An exchange with an invalid timezone carries error and "
+    "today=null; its open and close instants stay exact."
 )
 
 
@@ -151,13 +161,23 @@ class TRDHFunction(BaseFunction):
         requested = parse_csv(params.get("exchanges") or params.get("exchange"))
         mics: list[str] = []
         warnings: list[str] = []
+        round_the_clock: list[dict[str, str]] = []
         for token in (requested or DEFAULT_MICS):
+            venue_note = ROUND_THE_CLOCK_VENUES.get(token.upper())
+            if venue_note:
+                if all(row["venue"] != token.upper() for row in round_the_clock):
+                    round_the_clock.append({"venue": token.upper(), "note": venue_note})
+                    warnings.append(f"{venue_note}; {token.upper()} has no exchange session calendar.")
+                continue
             mic = _resolve_mic(token)
             if not (len(mic) == 4 and mic.isalpha() and mic.isupper()):
                 warnings.append(f"Unknown exchange code skipped: {token}")
                 continue
             if mic not in mics:
                 mics.append(mic)
+        if not mics and round_the_clock:
+            mics = list(DEFAULT_MICS)
+            warnings.append("Showing the default exchange set.")
         if not mics:
             # Nothing was asked of Awareness, so this is a bad request, not a provider outage.
             reason = "No recognised exchange codes were requested."
@@ -204,6 +224,7 @@ class TRDHFunction(BaseFunction):
             data={
                 "status": "ok" if blocks else "empty",
                 "exchanges": blocks,
+                "round_the_clock": round_the_clock,
                 "open_now": sum(1 for block in blocks if block["is_open_now"]),
                 "meta": data_meta(responses),
                 "window": window,
