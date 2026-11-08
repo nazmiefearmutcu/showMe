@@ -261,13 +261,16 @@ class DARKFunction(BaseFunction):
         or an empty list when nothing is reported.
         """
         # Wired adapter path (kept for parity with existing wiring / tests).
+        # The adapter is the FINRA query: an empty frame is the answer, so do
+        # not re-request the same endpoint (DARK-R1). Errors still propagate.
         adapter = getattr(self.deps, "finra", None)
         if adapter is not None and hasattr(adapter, "ats_weekly"):
             df = await adapter.ats_weekly(symbol=symbol, limit=weeks)
-            if df is not None and len(df) > 0:
-                return _normalise_adapter_frame(df)
+            if df is None or len(df) == 0:
+                return []
+            return _normalise_adapter_frame(df)
 
-        # Direct keyless FINRA Query API.
+        # Direct keyless FINRA Query API (no adapter wired).
         from showme.providers._http import get_client
 
         client = await get_client()
