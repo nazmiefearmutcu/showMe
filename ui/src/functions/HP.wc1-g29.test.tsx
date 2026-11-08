@@ -130,3 +130,21 @@ describe("HP#4 — range high/low use the bar highs and lows", () => {
     expect(railValue(container, "Range low")).toBe("99.00");
   });
 });
+
+/* ── HP#3 — the 23.6% / 78.6% levels are labelled as Fibonacci ─────── */
+
+describe("HP#3 — retracement levels are labelled with their method", () => {
+  it("labels the 23.6% and 78.6% levels as Fibonacci retracements", () => {
+    mockState.payload = payloadWith({});
+    const { container } = render(<HPPane code="HP" symbol="AAPL" />);
+    // The unlabelled "Support"/"Resistance" names implied a signal the
+    // computation (a fixed fraction of the range) does not make.
+    expect(screen.queryByText("Support")).toBeNull();
+    expect(screen.queryByText("Resistance")).toBeNull();
+    expect(screen.getByText("Fib 23.6%")).toBeInTheDocument();
+    expect(screen.getByText("Fib 78.6%")).toBeInTheDocument();
+    const fibLabel = screen.getByText("Fib 23.6%");
+    expect(fibLabel.parentElement?.getAttribute("title") ?? "").toMatch(/retracement/i);
+    expect(railValue(container, "Fib 78.6%")).not.toBeNull();
+  });
+});

@@ -627,8 +627,18 @@ function RightRail({
   return (
     <aside style={rightRailStyle}>
       <RailSection title="Key levels">
-        <RailKv label="Support" value={fmtNum(support)} tone="positive" />
-        <RailKv label="Resistance" value={fmtNum(resist)} tone="negative" />
+        <RailKv
+          label="Fib 23.6%"
+          value={fmtNum(support)}
+          tone="positive"
+          title="Fibonacci 23.6% retracement of the selected range (low to high). A computed level, not a support signal."
+        />
+        <RailKv
+          label="Fib 78.6%"
+          value={fmtNum(resist)}
+          tone="negative"
+          title="Fibonacci 78.6% retracement of the selected range (low to high). A computed level, not a resistance signal."
+        />
         <RailKv
           label={highLabel}
           value={fmtNum(week52?.high ?? stats?.high)}
@@ -712,10 +722,12 @@ function RailKv({
   label,
   value,
   tone = "neutral",
+  title,
 }: {
   label: string;
   value: string;
   tone?: "positive" | "negative" | "neutral" | "accent";
+  title?: string;
 }) {
   const color =
     tone === "positive"
@@ -726,7 +738,7 @@ function RailKv({
           ? "var(--accent)"
           : "var(--text-primary)";
   return (
-    <div style={railKvRowStyle}>
+    <div style={railKvRowStyle} title={title}>
       <span style={railKvLabelStyle}>{label}</span>
       <span style={{ ...railKvValueStyle, color }}>{value}</span>
     </div>
