@@ -180,3 +180,16 @@ def test_agent_usage_example_for_ovme_carries_no_demo_contract() -> None:
     for key in ("spot", "strike", "years_to_expiry", "vol"):
         assert key not in example or isinstance(example[key], str), (key, example)
         assert not isinstance(example.get(key), (int, float)), (key, example)
+
+
+def test_btune_every_path_reports_measured_latency() -> None:
+    cases = {
+        "needs_input": _btune(FunctionDeps()),
+        "provider_unavailable": _btune(FunctionDeps(), live_backtest=True, grid=_SMALL_GRID),
+        "input_error": _btune(FunctionDeps(), live_backtest=True, metric="bogus"),
+        "ok": _btune(FunctionDeps(yfinance=_BtuneFakeYF(_btune_frame())),
+                     live_backtest=True, grid=_SMALL_GRID),
+    }
+    for label, res in cases.items():
+        latency = res.data.get("latency_ms")
+        assert isinstance(latency, (int, float)) and latency >= 0, (label, latency)

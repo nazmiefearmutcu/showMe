@@ -15,6 +15,7 @@ import asyncio
 import itertools
 import random
 import statistics
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -73,6 +74,15 @@ class BTUNEFunction(BaseFunction):
     description = "Hyperparameter sweep over a strategy grid; rank by the train-slice Sharpe / total return / Calmar and report the out-of-sample value."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        # The seed's provenance requires latency_ms on every path. It is the
+        # measured wall time of this call, never an estimate.
+        started = time.perf_counter()
+        result = await self._execute(instrument, **params)
+        if isinstance(result.data, dict):
+            result.data["latency_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+        return result
+
+    async def _execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("BTUNE requires an instrument symbol")
         spec, error = _resolve_spec(params)
