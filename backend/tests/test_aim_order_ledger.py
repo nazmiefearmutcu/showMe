@@ -170,3 +170,49 @@ def test_notional_label_is_not_usd_when_nothing_is_priced(monkeypatch):
     assert cards["total_notional"] == 0
     assert cards["priced_count"] == 0
     assert cards["unpriced_count"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# AIM#4 — provider_mode is honoured and the methodology describes the real loop.
+# --------------------------------------------------------------------------- #
+class _CountingBroker(_Broker):
+    def __init__(self, name: str, open_orders: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(name, open_orders)
+        self.calls = 0
+
+    async def get_open_orders(self) -> list[dict[str, Any]]:
+        self.calls += 1
+        return await super().get_open_orders()
+
+
+def test_provider_mode_cached_snapshot_skips_live_polling(monkeypatch):
+    _install_history(monkeypatch, [_hist("h-1", status="filled")])
+    broker = _CountingBroker("alpaca-paper", [{"order_id": "live-1", "symbol": "AAPL", "side": "BUY",
+                                              "quantity": 1, "price": 1.0, "status": "open"}])
+    deps = SimpleNamespace(alpaca_broker=broker)
+    res = _run(_aim(deps).execute(provider_mode="cached_snapshot"))
+    assert broker.calls == 0
+    assert res.data["data_mode"] == "cached_snapshot"
+    assert res.data["provider_mode"] == "cached_snapshot"
+    assert [r["order_id"] for r in res.data["rows"]] == ["h-1"]
+
+
+def test_unknown_provider_mode_is_reported_not_silently_used(monkeypatch):
+    _install_history(monkeypatch, [])
+    res = _run(_aim(SimpleNamespace()).execute(provider_mode="bogus"))
+    assert any("provider_mode" in str(w) and "bogus" in str(w) for w in res.warnings)
+
+
+def test_methodology_does_not_claim_parallel_fan_out():
+    from showme.engine.functions.trade._funcs import AIMFunction
+
+    assert "in parallel" not in AIMFunction._METHODOLOGY
+    assert "sequential" in AIMFunction._METHODOLOGY
+
+
+def test_seed_methodology_does_not_claim_parallel_fan_out():
+    from showme.manifest.seeds.aim_seed import aim
+
+    manifest = aim  # the @manifest decorator registers the FunctionManifest object itself
+    assert "in parallel" not in manifest.methodology
+    assert "sequential" in manifest.methodology

@@ -92,7 +92,7 @@ def aim() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
+                description="cached_snapshot skips live broker polling and shows only the local history tail; live_exchange polls every configured adapter.",
                 options=[
                     DataMode.LIVE_EXCHANGE.value,
                     DataMode.CACHED_SNAPSHOT.value,
@@ -161,8 +161,9 @@ def aim() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda), calling "
-            "get_open_orders() in parallel and collecting per-broker results. Provider failures are "
+            "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda) one at a time "
+            "(sequential, not parallel), calling get_open_orders() and collecting per-broker results. "
+            "provider_mode=cached_snapshot skips live polling. Provider failures are "
             "recorded as warnings without dropping rows from working brokers. The persisted local "
             "order_history store contributes a configurable tail of recent orders so the user sees a "
             "cross-broker chronological ledger even when individual brokers are momentarily down. "

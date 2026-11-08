@@ -268,8 +268,9 @@ class AIMFunction(BaseFunction):
     }
 
     _METHODOLOGY = (
-        "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda), calling "
-        "get_open_orders() and collecting per-broker results. Provider failures are recorded as "
+        "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda) one at a time "
+        "(sequential, not parallel), calling get_open_orders() and collecting per-broker results. "
+        "provider_mode=cached_snapshot skips live polling. Provider failures are recorded as "
         "warnings without dropping rows from working brokers. The persisted local order_history "
         "store contributes a configurable tail of recent orders so the user sees a cross-broker "
         "chronological ledger even when individual brokers are momentarily down. AIM never mutates "
@@ -328,7 +329,15 @@ class AIMFunction(BaseFunction):
             broker_filter = [broker_filter]
         targets = [b for b in self._BROKERS if (not broker_filter or b in broker_filter)]
 
-        for name in targets:
+        # provider_mode=cached_snapshot skips live adapter polling entirely and
+        # serves only the local history tail; any other value polls live.
+        provider_mode = str(params.get("provider_mode") or "").strip().lower()
+        skip_live = provider_mode == "cached_snapshot"
+        if provider_mode and provider_mode not in {"live_exchange", "cached_snapshot"}:
+            warnings.append(f"AIM: unsupported provider_mode={provider_mode!r}; live broker polling was used.")
+        polled = [] if skip_live else list(targets)
+
+        for name in polled:
             broker = getattr(self.deps, name, None)
             if broker is None:
                 continue
@@ -429,7 +438,7 @@ class AIMFunction(BaseFunction):
             )
 
         data_mode = "live_exchange" if brokers_online else "not_configured"
-        if not brokers_online and history_rows:
+        if (not brokers_online and history_rows) or skip_live:
             data_mode = "cached_snapshot"
 
         cards = {
@@ -455,7 +464,8 @@ class AIMFunction(BaseFunction):
                     "rows": [],
                     "orders": [],
                     "cards": cards,
-                    "brokers_checked": list(targets),
+                    "brokers_checked": list(polled),
+                    "provider_mode": provider_mode or None,
                     "data_mode": data_mode,
                     "as_of": cards["as_of"],
                     "methodology": self._METHODOLOGY,
@@ -481,8 +491,9 @@ class AIMFunction(BaseFunction):
                 "rows": rows,
                 "orders": rows,
                 "cards": cards,
-                "brokers_checked": list(targets),
+                "brokers_checked": list(polled),
                 "brokers_online": brokers_online,
+                "provider_mode": provider_mode or None,
                 "data_mode": data_mode,
                 "as_of": cards["as_of"],
                 "methodology": self._METHODOLOGY,
