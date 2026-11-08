@@ -195,6 +195,16 @@ describe("WEI terminal-grade", () => {
     // both the header pill and the KPI caption — assert at least one match.
     expect(screen.getAllByText(/10:11 UTC/).length).toBeGreaterThan(0);
   });
+
+  it("never calls a snapshot live when the provider reports no session state (WEI#1)", () => {
+    // No as_of and rows with market_state "unknown": the header must read
+    // "snapshot" and label the clock as fetch time, not a live quote time.
+    mockOk([makeRow({ market_state: "unknown" })], { as_of: undefined });
+    render(<WEIPane code="WEI" />);
+    expect(screen.queryByText(/^live$/)).toBeNull();
+    expect(screen.getByText("snapshot")).toBeTruthy();
+    expect(screen.getAllByText(/fetched /).length).toBeGreaterThan(0);
+  });
 });
 
 describe("WEI visibility poll + honesty (live adoption)", () => {

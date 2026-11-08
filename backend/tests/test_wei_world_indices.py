@@ -126,7 +126,7 @@ def test_partial_live_fetch_never_drops_unresolved_symbols() -> None:
     assert {row["symbol"] for row in rows} == set(_world_index_symbols())
     by_symbol = {row["symbol"]: row for row in rows}
     assert by_symbol["^GSPC"]["last"] == 100.0
-    assert by_symbol["^GSPC"]["market_state"] == "live"
+    assert by_symbol["^GSPC"]["market_state"] == "unknown"  # no provider session state (WEI#1)
     unresolved = [row for row in rows if row["symbol"] not in {"^GSPC", "^N225"}]
     assert unresolved, "test needs unresolved rows"
     for row in unresolved:

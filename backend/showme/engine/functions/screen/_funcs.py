@@ -592,7 +592,15 @@ class WEIFunction(BaseFunction):
                         "resolved": resolved,
                         "unresolved": unresolved,
                         "source_mode": "yfinance_live",
-                        "as_of": _utc_now_iso(),
+                        # The quote provider reports no market (quote) time and no
+                        # exchange session state, so ``as_of`` is withheld rather than
+                        # stamped with the request clock. ``fetched_at`` is retrieval time.
+                        "quote_time": None,
+                        "fetched_at": _utc_now_iso(),
+                        "quote_time_note": (
+                            "The quote provider did not report a market time; rows show "
+                            "retrieval time (fetched_at), not the last trade time."
+                        ),
                     },
                     metadata={
                         "live": True,
@@ -2669,7 +2677,9 @@ def _enrich_world_index_row(row: dict[str, Any]) -> dict[str, Any]:
         **row,
         "name": row.get("name") or meta.get("name"),
         "region": row.get("region") or meta.get("region"),
-        "market_state": row.get("market_state") or "live",
+        # No session state is reported by the quote provider, so the default is
+        # "unknown" — never a live claim the provider did not make.
+        "market_state": row.get("market_state") or "unknown",
     }
 
 
