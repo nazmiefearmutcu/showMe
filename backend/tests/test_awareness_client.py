@@ -80,6 +80,27 @@ def test_errors_become_awareness_unavailable() -> None:
         asyncio.run(_client(not_envelope).get("/news"))
 
 
+def test_messageless_retry_error_after_autostart_names_the_exception_type() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            raise httpx.ConnectError("refused", request=request)
+        raise httpx.ReadTimeout("", request=request)  # httpx timeouts can carry no message
+
+    client = _client(handler)
+
+    async def autostarted() -> bool:
+        return True
+
+    client._try_autostart = autostarted  # type: ignore[method-assign]
+    with pytest.raises(AwarenessUnavailable) as exc:
+        asyncio.run(client.get("/news"))
+    assert len(calls) == 2
+    assert exc.value.reason == "awareness service did not answer after autostart: ReadTimeout"
+
+
 def test_news_row_keeps_legacy_keys_with_real_attribution() -> None:
     row = news_row(ITEM)
     assert row["source"] == "CNBC" and row["url"] == row["link"] == "https://www.cnbc.com/x"

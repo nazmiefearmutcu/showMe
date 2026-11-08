@@ -159,7 +159,10 @@ class AwarenessClient:
                 try:
                     return await self._request("GET", full, params=params)
                 except httpx.HTTPError as retry_exc:
-                    raise AwarenessUnavailable(f"awareness service did not answer after autostart: {retry_exc}") from retry_exc
+                    # A timeout can carry an empty message: name the exception type instead.
+                    raise AwarenessUnavailable(
+                        f"awareness service did not answer after autostart: {str(retry_exc) or type(retry_exc).__name__}"
+                    ) from retry_exc
             raise AwarenessUnavailable(
                 f"awareness service is not running at {self.base_url} "
                 f"(start it with `awareness-markets` in {awareness_home()})"
