@@ -277,6 +277,19 @@ class BLAKFunction(BaseFunction):
                 warnings=["tau or delta out of range"],
             )
         market_caps = params.get("market_caps") or {}  # symbol → mcap
+        if isinstance(market_caps, str):
+            # BLAK#5: the pane sends the overrides as "SYMBOL:USD, ..." text.
+            market_caps, caps_error = _parse_market_cap_text(market_caps)
+            if caps_error:
+                return FunctionResult(
+                    code=self.code, instrument=None,
+                    data={
+                        "status": "input_error",
+                        "reason": caps_error,
+                        "next_actions": ["Write market caps as SYMBOL:USD, for example AAPL:3900000000000, or leave blank."],
+                    },
+                    warnings=[f"unparsable market cap: {caps_error}"],
+                )
         views = list(params.get("views") or [])
         if params.get("views_text") is not None:
             parsed_views, view_error = _parse_view_text(params.get("views_text"))
@@ -286,7 +299,7 @@ class BLAKFunction(BaseFunction):
                     data={
                         "status": "input_error",
                         "reason": view_error,
-                        "next_actions": ["Write views as SYMBOL:percent, for example AAPL:8, SPY:5."],
+                        "next_actions": ["Write views as SYMBOL:percent or LONG>SHORT:percent, for example AAPL:8, AAPL>SPY:2."],
                     },
                     warnings=[f"unparsable view: {view_error}"],
                 )
@@ -429,6 +442,12 @@ class BLAKFunction(BaseFunction):
                         P_rows.append(row)
                         Q.append(expected)
             else:
+                # A spread with a leg outside the aligned universe is not the view
+                # the user typed: applying the remaining leg alone would silently
+                # turn it into a one-sided view. The whole view is skipped and the
+                # symbol is named in the unmatched-views warning below.
+                if any(s not in cols for s in longs + shorts):
+                    continue
                 row = [0.0] * len(cols)
                 for s in longs:
                     if s in cols:
@@ -464,6 +483,13 @@ class BLAKFunction(BaseFunction):
             if src not in sources:
                 sources.append(src)
         warnings: list[str] = list(mcap_warnings)
+        requested_upper = {str(s).upper() for s in symbols}
+        ignored_caps = sorted(str(s) for s in market_caps if str(s).upper() not in requested_upper)
+        if ignored_caps:
+            warnings.append(
+                "market cap override for " + ", ".join(ignored_caps)
+                + " ignored: symbol not in the requested universe"
+            )
         excluded_no_returns = [s for s in symbols if s not in cols]
         if excluded_no_returns:
             warnings.append(
@@ -551,7 +577,11 @@ class BLAKFunction(BaseFunction):
                         "Its sum is optimal_weight_raw_sum (equal to 1/(1+tau) when no views are active)."
                     ),
                     "view_active": "Whether the symbol participates in at least one submitted view row.",
-                    "market_cap_data_state": "'real' when every requested symbol has a market value, 'partial' or 'approximate' when the equal-weight fallback fires.",
+                    "market_cap_data_state": (
+                        "'real' when every requested symbol has a market value (provider or user override), "
+                        "'proxy' when every symbol has a value but an ETF or fund uses its totalAssets (AUM) as the "
+                        "market-value proxy, 'partial' or 'approximate' when the equal-weight fallback fires."
+                    ),
                     "prior_covariance_estimator": "Estimator applied to the return series: sample_cov, ledoit_wolf (Ledoit-Wolf 2004 shrinkage toward mu*I) or exp_cov (EWMA, span 180 days).",
                     "shrinkage_intensity": "Ledoit-Wolf weight on the mu*I target (0 to 1); null for sample_cov and exp_cov.",
                     "prior_covariance": "Annualized prior covariance matrix actually used for pi and the posterior.",
@@ -562,11 +592,19 @@ class BLAKFunction(BaseFunction):
         )
 
 
-def _parse_view_text(text: Any) -> tuple[list[dict[str, Any]], str | None]:
-    """BLAK#5: parse the pane's absolute views, "SYMBOL:percent" comma-separated.
+_VIEW_FORMAT_REASON = (
+    "must be SYMBOL:percent (absolute) or LONG>SHORT:percent (relative), "
+    "for example AAPL:8 or AAPL>SPY:2"
+)
 
-    Percent is the expected annual return (AAPL:8 means 8% a year). Returns
-    ``(views, None)`` or ``([], reason)`` for the first malformed token.
+
+def _parse_view_text(text: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """BLAK#5: parse the pane's views, comma-separated.
+
+    ``SYMBOL:percent`` is an absolute view: the expected annual return (AAPL:8
+    means 8% a year). ``LONG>SHORT:percent`` is a relative view: LONG is expected
+    to beat SHORT by that many percent a year, a spread row (long minus short).
+    Returns ``(views, None)`` or ``([], reason)`` for the first malformed token.
     """
     views: list[dict[str, Any]] = []
     for token in str(text or "").split(","):
@@ -574,21 +612,55 @@ def _parse_view_text(text: Any) -> tuple[list[dict[str, Any]], str | None]:
         if not token:
             continue
         parts = [p.strip() for p in token.split(":")]
-        if len(parts) != 2 or not parts[0]:
-            return [], f"view {token!r} must be SYMBOL:percent, for example AAPL:8"
+        if len(parts) != 2:
+            return [], f"view {token!r} {_VIEW_FORMAT_REASON}"
+        legs = [leg.strip().upper() for leg in parts[0].split(">")]
+        if len(legs) > 2 or not all(legs):
+            return [], f"view {token!r} {_VIEW_FORMAT_REASON}"
+        if len(legs) == 2 and legs[0] == legs[1]:
+            return [], f"view {token!r} names the same symbol on both sides"
         try:
             pct = float(parts[1])
         except ValueError:
             return [], f"view {token!r} has a non-numeric expected return"
         if not np.isfinite(pct):
             return [], f"view {token!r} has a non-finite expected return"
-        views.append({
-            "long": [parts[0].upper()],
-            "short": [],
-            "expected": pct / 100.0,
-            "view_type": "absolute",
-        })
+        if len(legs) == 1:
+            views.append({
+                "long": [legs[0]], "short": [], "expected": pct / 100.0,
+                "view_type": "absolute",
+            })
+        else:
+            views.append({
+                "long": [legs[0]], "short": [legs[1]], "expected": pct / 100.0,
+                "view_type": "spread",
+            })
     return views, None
+
+
+def _parse_market_cap_text(text: Any) -> tuple[dict[str, float], str | None]:
+    """BLAK#5: the pane's market-cap overrides, "SYMBOL:USD" comma-separated.
+
+    Values are USD market values (AAPL:3.9e12 is accepted). Returns
+    ``(caps, None)`` or ``({}, reason)`` for the first malformed or non-positive
+    token. A blank text means no overrides.
+    """
+    caps: dict[str, float] = {}
+    for token in str(text or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        parts = [p.strip() for p in token.split(":")]
+        if len(parts) != 2 or not parts[0]:
+            return {}, f"market cap {token!r} must be SYMBOL:USD, for example AAPL:3900000000000"
+        try:
+            value = float(parts[1])
+        except ValueError:
+            return {}, f"market cap {token!r} has a non-numeric value"
+        if not np.isfinite(value) or value <= 0:
+            return {}, f"market cap {token!r} must be a positive USD value"
+        caps[parts[0].upper()] = value
+    return caps, None
 
 
 def _truthy(value: Any) -> bool:
