@@ -27,6 +27,21 @@ def _fx_now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Asset classes that can never describe a ``=F`` futures contract (EMSX#4).
+_FUTURES_INCOMPATIBLE_CLASSES = frozenset({
+    "EQUITY", "ETF", "REIT", "FUND", "INDEX", "CRYPTO", "FX", "MACRO",
+})
+
+
+def _futures_asset_class_conflict(instrument: Instrument) -> str | None:
+    """Return the declared class when it contradicts a ``=F`` futures symbol."""
+    symbol = str(instrument.symbol or "").strip().upper()
+    if not symbol.endswith("=F"):
+        return None
+    declared = str(getattr(instrument.asset_class, "value", instrument.asset_class)).upper()
+    return declared if declared in _FUTURES_INCOMPATIBLE_CLASSES else None
+
+
 def _select_broker(deps: Any, asset_class: AssetClass) -> Any:
     """Map asset class → broker adapter from deps."""
     pref = {
@@ -119,6 +134,35 @@ class EMSXFunction(BaseFunction):
                     self.code, instrument, ticket_error,
                     side=side, quantity=quantity, order_type=order_type, tif=tif,
                 )
+        # EMSX#4: the caller-declared asset_class overrides the symbol resolver,
+        # so a futures ticket declared as an equity/fund/FX class would reach the
+        # wrong broker. Refuse before any broker is selected or contacted.
+        futures_conflict = _futures_asset_class_conflict(instrument)
+        if futures_conflict is not None:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "reason": (
+                        f"{instrument.symbol} is a futures contract but the ticket asset_class is "
+                        f"{futures_conflict}; no broker was contacted. Futures tickets route as DERIVATIVE."
+                    ),
+                    "broker": None,
+                    "symbol": instrument.symbol,
+                    "asset_class": futures_conflict,
+                    "side": side,
+                    "quantity": quantity,
+                    "order_type": order_type,
+                    "time_in_force": tif,
+                    "tif": tif,
+                    "next_actions": [
+                        "Set asset_class to DERIVATIVE for CME futures and preview again.",
+                    ],
+                },
+                sources=["paper_ticket"],
+                metadata={"preview_only": True, "provider_errors": []},
+            )
         broker = _select_broker(self.deps, instrument.asset_class)
         if broker is None and live_armed:
             return FunctionResult(
