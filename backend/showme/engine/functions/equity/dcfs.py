@@ -144,7 +144,7 @@ class DCFSensitivityFunction(BaseFunction):
             status = "negative_value"
             warnings.append(
                 "base_fair_value: the DCF implies a negative value per share at these inputs; "
-                "the grid is shown for diagnosis, not as a valuation."
+                "no valuation or sensitivity grid is reported for it."
             )
         elif base_data.get("status", "ok") != "ok":
             status = "needs_input"

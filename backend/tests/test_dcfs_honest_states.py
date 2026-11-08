@@ -80,3 +80,30 @@ def test_tornado_rows_match_manifest_table_schema() -> None:
         assert not missing, f"tornado row {row.get('input')} lacks schema keys {missing}"
     spread = next(c for c in schema.columns if c.key == "delta")
     assert "USD" in spread.label or "$" in spread.label, spread.label
+
+
+def test_negative_warning_does_not_claim_a_grid_is_shown() -> None:
+    """DCFS#1: the UI withholds the grid for a negative base, so the warning
+    must not tell the operator that a grid is displayed."""
+    res = _run(fcfe=-1_000_000_000, shares_outstanding=10_000_000, wacc=0.10,
+               growth_high=0.05, years=5)
+    text = " ".join(res.warnings).lower()
+    assert "negative value per share" in text
+    assert "grid is shown" not in text, f"warning claims a grid is shown: {res.warnings}"
+    assert "for diagnosis" not in text, f"warning promises a diagnostic grid: {res.warnings}"
+
+
+def test_seed_assumptions_contract_matches_handler_echo() -> None:
+    """DCFS#5 / cross-cutting: the seed must describe the echoed assumptions
+    the handler really returns, not the retired grid_width / discount_rate keys."""
+    load_seeds()
+    manifest = REGISTRY.get("DCFS")
+    description = manifest.field_dict["assumptions"].description
+    assert "grid width" not in description.lower()
+    assert "wacc" in description and "g_terminal" in description
+    assertion_names = [
+        a for t in manifest.semantic_tests for a in t.assertions
+    ]
+    stale = [a for a in assertion_names if "grid_width" in a or "discount_rate" in a]
+    assert not stale, f"semantic tests assert retired echo keys: {stale}"
+    assert "assumptions_wacc_equals_input" in assertion_names

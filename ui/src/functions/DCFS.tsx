@@ -182,7 +182,7 @@ export function DCFSPane({ code, symbol }: FunctionPaneProps) {
   ) : isNegative ? (
     <Empty
       title="Negative fair value"
-      body={`The DCF implies ${fmtMoney(payload?.base_fair_value)} per share at these inputs, so the sensitivity grid is shown for diagnosis, not as a valuation.${warnings.length ? ` ${warnings.join(" ")}` : ""} Enter a wacc / fcfe override above to test other inputs.`}
+      body={`The DCF implies ${fmtMoney(payload?.base_fair_value)} per share at these inputs, so no valuation or sensitivity grid is shown.${warnings.length ? ` ${warnings.join(" ")}` : ""} Enter a wacc / fcfe override above to test other inputs.`}
       icon="!"
       action={
         <button onClick={refetch} className="btn">
