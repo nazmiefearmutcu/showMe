@@ -59,6 +59,24 @@ def test_zn_future_declared_derivative_still_previews_on_ibkr_route() -> None:
     assert res.data.get("status") != "input_error", res.data
 
 
+def test_tsox_inherits_emsx_without_futures_guard() -> None:
+    """EMSX#4 is scoped to EMSX: TSOX (a subclass sharing execute) keeps its behaviour.
+
+    The futures-class refusal was added to the shared EMSX execute path, which
+    TSOX/FXGO/BBGT inherit. Only EMSX may refuse here; TSOX must not return the
+    EMSX#4 futures input_error for a ZN=F ticket.
+    """
+    from showme.engine.functions.trade._funcs import TSOXFunction
+
+    inst = Instrument(symbol="ZN=F", asset_class=AssetClass.EQUITY)
+    alpaca, ibkr = _Broker("alpaca_broker"), _Broker("ibkr_broker")
+    deps = SimpleNamespace(alpaca_broker=alpaca, ibkr_broker=ibkr)
+    res = asyncio.run(TSOXFunction(deps).execute(instrument=inst, quantity=1, side="BUY", type="MARKET"))
+    reason = str(res.data.get("reason", ""))
+    assert "is a futures contract but the ticket asset_class" not in reason, res.data
+    assert alpaca.orders == [] and ibkr.orders == []
+
+
 def test_equity_symbol_declared_equity_is_unchanged() -> None:
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
     res, alpaca, ibkr = _run(inst)

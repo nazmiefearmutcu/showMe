@@ -136,8 +136,11 @@ class EMSXFunction(BaseFunction):
                 )
         # EMSX#4: the caller-declared asset_class overrides the symbol resolver,
         # so a futures ticket declared as an equity/fund/FX class would reach the
-        # wrong broker. Refuse before any broker is selected or contacted.
-        futures_conflict = _futures_asset_class_conflict(instrument)
+        # wrong broker. Refuse before any broker is selected or contacted. Scoped
+        # to EMSX: TSOX/FXGO/BBGT inherit this method and keep their behaviour.
+        futures_conflict = (
+            _futures_asset_class_conflict(instrument) if self.code == "EMSX" else None
+        )
         if futures_conflict is not None:
             return FunctionResult(
                 code=self.code,
