@@ -26,13 +26,13 @@ from showme.engine.functions.calendar._common import (
 )
 from showme.engine.functions.equity._common import FIELD_DICTIONARIES, series_rows
 
-_FILINGS_MAX_DAYS = 90
+_FILINGS_MAX_DAYS = 365
 _METHODOLOGY = (
     "CACT merges dividends and splits from the Awareness corporate calendar (Yahoo event series as a "
-    "supplement) with 8-K filings from the Awareness SEC index (the most recent 90 days only). Rows carry "
+    "supplement) with 8-K filings from the Awareness SEC index (up to the most recent 365 days). Rows carry "
     "their source. Dividends and splits are de-duplicated across providers on (action type, date, value); "
     "8-K filings are de-duplicated by accession, so distinct filings on one date all stay. Dividend and "
-    "split values are as published."
+    "split values are as published. events_8k carries one entry per 8-K filing with all of its item codes."
 )
 
 
@@ -93,20 +93,31 @@ def _filing_row(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _events_8k(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One entry per decoded 8-K item (consumed by LITM's litigation/governance filter)."""
+    """One entry per 8-K filing, carrying every decoded item code (consumed by LITM).
+
+    A filing whose first item is 2.02 still exposes its 5.02, so no item is dropped here. ``code`` and
+    ``category`` keep the first item for backward compatibility; ``items`` is the comma-joined code list.
+    """
     out: list[dict[str, Any]] = []
     for row in rows:
         if row.get("action_type") != "8-K":
             continue
-        for item in row.get("items") or []:
-            out.append({
-                "code": item.get("code"),
-                "category": item.get("label"),
-                "filing_date": row.get("event_date"),
-                "accession": row.get("accession"),
-                "document": row.get("url"),
-                "source": "awareness:filings",
-            })
+        decoded = [i for i in (row.get("items") or []) if isinstance(i, dict)]
+        codes = [str(i["code"]) for i in decoded if i.get("code")]
+        labels = [str(i["label"]) for i in decoded if i.get("label")]
+        first = decoded[0] if decoded else {}
+        out.append({
+            "accession": row.get("accession"),
+            "filing_date": row.get("event_date"),
+            "document": row.get("url"),
+            "form": row.get("form"),
+            "items": ",".join(codes),
+            "item_codes": codes,
+            "labels": labels,
+            "code": first.get("code"),
+            "category": first.get("label"),
+            "source": "awareness:filings",
+        })
     return out
 
 
@@ -231,6 +242,7 @@ class CACTFunction(BaseFunction):
                 "rows": unique,
                 "timeline": unique,
                 "events_8k": _events_8k(unique),
+                "filings_error": filings_error,
                 "counts": {
                     "dividend": sum(1 for r in unique if r["action_type"] == "dividend"),
                     "split": sum(1 for r in unique if r["action_type"] == "split"),

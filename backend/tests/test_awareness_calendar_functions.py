@@ -552,8 +552,49 @@ def test_cact_exposes_decoded_8k_items_for_litm() -> None:
                              {"code": "9.01", "label": "Financial Statements and Exhibits"}]},
     })
     events = _events_8k([row])
-    assert [e["code"] for e in events] == ["5.02", "9.01"]
-    assert events[0]["filing_date"] == "2026-11-05" and events[0]["accession"] == "0001-26-1"
+    # One entry per 8-K filing, carrying every item code.
+    assert len(events) == 1
+    event = events[0]
+    assert event["code"] == "5.02" and event["category"] == "Departure/Election of Directors or Officers"
+    assert event["items"] == "5.02,9.01"
+    assert event["item_codes"] == ["5.02", "9.01"]
+    assert event["labels"] == ["Departure/Election of Directors or Officers", "Financial Statements and Exhibits"]
+    assert event["filing_date"] == "2026-11-05" and event["accession"] == "0001-26-1"
+    assert event["document"] == "https://www.sec.gov/x" and event["form"] == "8-K"
+    assert event["source"] == "awareness:filings"
+
+
+def test_cact_events_8k_is_one_entry_per_filing_so_later_items_survive() -> None:
+    fn = CACTFunction(FunctionDeps())
+    filing = {"id": "f1", "type": "filing", "symbol": None, "company": "Acme", "date": _day(-30),
+              "time_of_day": None, "status": "filed",
+              "fields": {"form": "8-K", "accession": "0001-26-9", "url": "https://sec.example/m",
+                         "items": [{"code": "2.02", "label": "Results of Operations"},
+                                   {"code": "5.02", "label": "Departure of officers"}]},
+              "sources": []}
+    fn._awareness = Routes({"/filings": [filing], "/calendar/corporate": []})
+    result = _run(fn.execute(symbol="ACME"))
+    events = result.data["events_8k"]
+    assert len(events) == 1, "one entry per 8-K filing, not per item"
+    assert events[0]["items"] == "2.02,5.02"
+    assert events[0]["code"] == "2.02", "code keeps the first item for backward compatibility"
+    assert "5.02" in events[0]["item_codes"], "a later item must not be dropped"
+
+
+def test_cact_requests_365_days_of_8k_filings_and_warns_only_beyond_that() -> None:
+    fn = CACTFunction(FunctionDeps())
+    fn._awareness = Routes({"/filings": [], "/calendar/corporate": []})
+    result = _run(fn.execute(symbol="AAPL"))
+    filings_params = [p for path, p in fn._awareness.calls if path == "/filings"][0]
+    assert filings_params["days"] == 365
+    assert not any("cover the most recent" in w for w in result.warnings)
+
+    fn = CACTFunction(FunctionDeps())
+    fn._awareness = Routes({"/filings": [], "/calendar/corporate": []})
+    result = _run(fn.execute(symbol="AAPL", days_back=400))
+    filings_params = [p for path, p in fn._awareness.calls if path == "/filings"][0]
+    assert filings_params["days"] == 365, "the filings request is capped at the 365-day window"
+    assert any("8-K filings cover the most recent 365 days only." in w for w in result.warnings)
 
 
 def test_routed_defaults_never_narrow_ern_to_a_peer_group() -> None:

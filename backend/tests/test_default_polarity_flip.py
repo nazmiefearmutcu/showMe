@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -127,10 +127,14 @@ def test_ee_default_failure_is_labelled_placeholder():
     assert rows and rows[0]["source_mode"] == "earnings_calendar_unavailable"
 
 
-def test_litm_default_failure_is_labelled():
+def test_litm_default_failure_is_provider_unavailable():
+    # The default live path reads Awareness through CACT; with Awareness down it is an honest
+    # provider_unavailable (never the labelled model, never a silent empty).
     from showme.engine.functions.misc._bonus import LITMFunction
     result = _run(LITMFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.sources == ["litigation_monitor_model"]
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["reason"]
+    assert result.sources == ["no_live_source"]
     assert result.metadata.get("fallback") is True
     assert result.metadata.get("live") is False
     assert result.warnings
@@ -335,19 +339,19 @@ def test_litm_default_live_with_mocked_cact():
                     "filing_date": "2026-08-01", "accession": "0001",
                     "document": "https://sec.gov/x",
                 }]},
-                sources=["sec_edgar"],
+                sources=["awareness:filings"],
             )
 
     import showme.engine.functions.equity.cact as cact_mod
     original = cact_mod.CACTFunction
     cact_mod.CACTFunction = _FakeCACT
     try:
-        result = _run(LITMFunction(FunctionDeps(sec_edgar=object())).execute(instrument=EQ))
+        result = _run(LITMFunction(FunctionDeps()).execute(instrument=EQ))
     finally:
         cact_mod.CACTFunction = original
     assert result.data["status"] == "ok"
     assert result.data["rows"][0]["item_code"] == "1.03"
-    assert "sec_edgar" in result.sources
+    assert result.sources == ["awareness:filings"]
 
 
 @pytest.fixture(autouse=True)

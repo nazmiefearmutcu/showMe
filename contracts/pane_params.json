@@ -68,6 +68,7 @@
     },
     "BETA": {
       "keys": [
+        "benchmark",
         "rolling_window"
       ],
       "conditional": [],
@@ -231,14 +232,6 @@
         "ui/src/functions/CRPR.tsx"
       ]
     },
-    "CRVF": {
-      "keys": [],
-      "conditional": [],
-      "dynamic": false,
-      "files": [
-        "ui/src/functions/CRVF.tsx"
-      ]
-    },
     "CSRC": {
       "keys": [
         "limit",
@@ -313,14 +306,6 @@
       "dynamic": false,
       "files": [
         "ui/src/functions/DDM.tsx"
-      ]
-    },
-    "DEBT": {
-      "keys": [],
-      "conditional": [],
-      "dynamic": false,
-      "files": [
-        "ui/src/functions/DEBT.tsx"
       ]
     },
     "DES": {
@@ -765,6 +750,7 @@
     },
     "ISIN": {
       "keys": [
+        "id_type",
         "ids"
       ],
       "conditional": [],
@@ -1502,6 +1488,7 @@
     },
     "YAS": {
       "keys": [
+        "asset_class",
         "benchmark_rate",
         "coupon",
         "freq",
@@ -1529,11 +1516,19 @@
       "why": "params expression not resolvable (AsExpression)"
     },
     {
-      "where": "ui/src/functions/commodity-spot.tsx:102",
+      "where": "ui/src/functions/commodity-spot.tsx:120",
       "why": "code not resolvable to a registry entry"
     },
     {
-      "where": "ui/src/functions/portfolio/PerformanceAttribution.tsx:226",
+      "where": "ui/src/functions/CRVF.tsx:86",
+      "why": "params expression not resolvable (Identifier)"
+    },
+    {
+      "where": "ui/src/functions/DEBT.tsx:129",
+      "why": "params expression not resolvable (ConditionalExpression)"
+    },
+    {
+      "where": "ui/src/functions/portfolio/PerformanceAttribution.tsx:228",
       "why": "params expression not resolvable (Identifier)"
     },
     {

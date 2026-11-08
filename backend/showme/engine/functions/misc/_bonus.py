@@ -1,6 +1,6 @@
 """Bonus fonksiyonlar — Plan §26.2 'Spec'te olmayan' davetine cevap.
 
-LITM — Litigation Monitor (SEC EDGAR 8-K Item 1.03 / 1.04 + 10-Q legal proceedings)
+LITM — Litigation Monitor (8-K Item 1.03 / 1.04 / 3.03 / 5.02 / 5.03 from the Awareness SEC filing index, via CACT)
 MOSS — Most Volatile (annualized vol ranking)
 CHGS — Chart Studies preset (TECH'in hızlı çağrı sürümü)
 APPL — Applicable Industry/Sector codes (GICS lookup)
@@ -15,32 +15,28 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions.calendar._common import NO_LIVE_SOURCE, UNAVAILABLE_NEXT_ACTION
 from showme.engine.functions.equity._common import EXCHANGE_LEGEND, reference_profile
 
 
 @FunctionRegistry.register
 class LITMFunction(BaseFunction):
-    """LITM — Litigation Monitor."""
+    """LITM — Litigation Monitor. Reads only CACT's Awareness 8-K events (events_8k)."""
     code = "LITM"
     name = "Litigation Monitor"
     asset_classes = (AssetClass.EQUITY,)
     category = "equity"
-    description = "Recent 8-K Item 1.03/1.04/3.03 filings — bankruptcy, mine safety, security holder rights."
+    description = "Recent 8-K Item 1.03/1.04/3.03/5.02/5.03 filings — bankruptcy, mine safety, security holder rights."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("LITM requires an instrument symbol")
-        # Default-polarity flip (2026-09-08): LITM now hits the live SEC
-        # EDGAR feed by default; ``reference=true`` opts back into the
-        # labelled local model template.
+        # Default-polarity flip (2026-09-08): LITM now reads the live 8-K feed by default;
+        # ``reference=true`` opts back into the labelled local model template.
         live = not _truthy(params.get("reference"))
-        if not live or instrument.asset_class.value != "EQUITY" or not self.deps.sec_edgar:
-            reason = (
-                "LITM live SEC EDGAR feed is not applicable for this asset class."
-                if instrument.asset_class.value != "EQUITY"
-                else "SEC EDGAR adapter unavailable; litigation monitor is showing its labelled local model."
-            )
-            warnings = [reason] if live else []
+        if not live or instrument.asset_class.value != "EQUITY":
+            reason = "LITM live 8-K feed is not applicable for this asset class."
+            warnings = [reason] if live and instrument.asset_class.value != "EQUITY" else []
             return FunctionResult(code=self.code, instrument=instrument,
                                   data=_fallback_litm(instrument),
                                   sources=["litigation_monitor_model"],
@@ -48,21 +44,23 @@ class LITMFunction(BaseFunction):
                                   metadata={"live": False, "fallback": True,
                                             "data_mode": "modeled"})
         from showme.engine.functions.equity.cact import CACTFunction
-        cact = CACTFunction(self.deps)
-        timeout = max(1.0, min(float(params.get("sec_timeout", 3)), 5.0))
-        # Scan every 8-K row of the EDGAR filing frame, not just the newest one.
+        # Scan every 8-K filing CACT reports (Awareness filings index, up to 365 days), not just the newest one.
         scan_limit = max(1, min(int(params.get("max_documents") or _LITM_SCAN_LIMIT), _LITM_SCAN_LIMIT))
-        res = await cact.execute(instrument=instrument, sec_timeout=timeout,
-                                 yfinance_timeout=max(1.0, min(float(params.get("yfinance_timeout", 3)), 5.0)),
-                                 max_documents=scan_limit)
-        events = (res.data or {}).get("events_8k", []) or []
-        frame = (res.data or {}).get("sec_filings")
-        frame_has_items = (
-            frame is not None and hasattr(frame, "columns")
-            and "form" in frame.columns and "items" in frame.columns
+        res = await CACTFunction(self.deps).execute(
+            instrument=instrument,
+            yfinance_timeout=params.get("yfinance_timeout", 3),
         )
-        scanned = _scan_8k_candidates(events, frame if frame_has_items else None, scan_limit)
-        classifiable = frame_has_items or any(e.get("item_codes") or e.get("code") for e in events)
+        cact_data = res.data or {}
+        cact_status = str(cact_data.get("status") or "")
+        filings_error = cact_data.get("filings_error")
+        if cact_status == "provider_unavailable" or filings_error:
+            reason = str(filings_error or cact_data.get("reason") or "Awareness filings feed is unavailable.")
+            return _unavailable_result(instrument, reason)
+
+        events = cact_data.get("events_8k") or []
+        scanned = _scan_8k_candidates(events, None, scan_limit)
+        unclassified = sum(1 for e in scanned if not e["item_codes"])
+        item_codes_available = unclassified < len(scanned)
         keep = _LITM_KEEP_ITEMS
         litm = []
         for e in scanned:
@@ -77,26 +75,14 @@ class LITMFunction(BaseFunction):
             "item_code": e.get("code"),
             "filing_date": e.get("filing_date") or e.get("report_date"),
             "severity": "review",
-            "source_mode": "sec_edgar_8k",
+            "source_mode": "awareness_sec_8k",
             "accession": e.get("accession"),
             "document": e.get("document"),
         } for e in litm]
-        if not classifiable:
-            status = "provider_unavailable"
-            rows = [{
-                "symbol": instrument.symbol,
-                "event_type": "item_codes_unavailable",
-                "item_code": None,
-                "filing_date": None,
-                "severity": "unknown",
-                "source_mode": "sec_edgar_items_missing",
-                "all_8k_events": len(scanned),
-            }]
-            reason = ("SEC EDGAR filing rows carry no 8-K item codes, so litigation items cannot be "
-                      "classified; this is not a verified absence of events.")
-        elif not rows and not scanned:
+        reason: str | None = None
+        if not scanned:
             status = "empty"
-            reason = ("The SEC filing feed has no 8-K filings in the scanned window, so there were no 8-K "
+            reason = ("The Awareness filings feed has no 8-K filings in the scanned window, so there were no 8-K "
                       "items to classify; this is not a verified absence of litigation events.")
             rows = [{
                 "symbol": instrument.symbol,
@@ -104,28 +90,42 @@ class LITMFunction(BaseFunction):
                 "item_code": None,
                 "filing_date": None,
                 "severity": "none",
-                "source_mode": "sec_edgar_no_8k_rows",
+                "source_mode": "awareness_sec_8k",
                 "all_8k_events": 0,
                 "scanned_8k": 0,
                 "scan_window": None,
             }]
+        elif not item_codes_available:
+            status = "provider_unavailable"
+            rows = [{
+                "symbol": instrument.symbol,
+                "event_type": "item_codes_unavailable",
+                "item_code": None,
+                "filing_date": None,
+                "severity": "unknown",
+                "source_mode": "awareness_sec_8k",
+                "all_8k_events": len(scanned),
+            }]
+            reason = ("Awareness 8-K filing rows carry no item codes, so litigation items cannot be "
+                      "classified; this is not a verified absence of events.")
         elif not rows:
             status = "empty"
-            reason = None
             rows = [{
                 "symbol": instrument.symbol,
                 "event_type": "no_litigation_event_found",
                 "item_code": None,
                 "filing_date": None,
                 "severity": "none",
-                "source_mode": "sec_edgar_no_matching_8k_item",
+                "source_mode": "awareness_sec_8k",
                 "all_8k_events": len(scanned),
                 "scanned_8k": len(scanned),
                 "scan_window": scan_window,
             }]
         else:
             status = "ok"
-            reason = None
+        if status == "empty" and unclassified:
+            reason = (f"{unclassified} of {len(scanned)} 8-K filings carry no item codes and could not be "
+                      "classified; the empty result does not cover them.")
         payload = {
             "status": status,
             "rows": rows,
@@ -133,24 +133,59 @@ class LITMFunction(BaseFunction):
             "kept_item_codes": sorted(keep),
             "all_8k_events": len(scanned),
             "scanned_8k": len(scanned),
+            "unclassified_8k": unclassified,
             "scan_window": scan_window,
-            "item_codes_available": bool(frame_has_items),
-            "methodology": "LITM reads the 8-K item codes of every 8-K row in the SEC EDGAR filing feed and keeps items 1.03, 1.04, 3.03, 5.02, and 5.03. An empty result is reported only after the full scan (scanned_8k rows); without item codes the status is provider_unavailable.",
+            "item_codes_available": item_codes_available,
+            "methodology": "LITM reads the 8-K item codes of every 8-K filing CACT reports from the Awareness SEC filing index (events_8k, up to 365 days) and keeps items 1.03, 1.04, 3.03, 5.02, and 5.03. An empty result is reported only after the full scan (scanned_8k filings); filings without item codes are counted as unclassified, and when no filing carries item codes the status is provider_unavailable.",
             "field_dictionary": {
                 "item_code": "SEC 8-K item code(s) matched by the filter.",
                 "event_type": "Normalized litigation/governance category.",
                 "severity": "ShowMe review flag, not legal advice.",
-                "source_mode": "SEC evidence state for the row.",
-                "scanned_8k": "Number of 8-K filing rows examined.",
+                "source_mode": "Evidence state for the row (awareness_sec_8k: Awareness SEC filing index).",
+                "scanned_8k": "Number of 8-K filings examined.",
             },
         }
         if reason:
             payload["reason"] = reason
-            payload["next_actions"] = ["Retry once the SEC EDGAR filing feed returns item codes."]
+            payload["next_actions"] = ([UNAVAILABLE_NEXT_ACTION] if status == "provider_unavailable"
+                                       else ["Retry once the Awareness filings feed returns item codes."])
+        meta = dict(res.metadata or {})
+        if status == "provider_unavailable":
+            meta.update({"live": False, "fallback": True, "data_mode": "provider_unavailable"})
+        sources = [s for s in (res.sources or []) if str(s).startswith("awareness:")] or [NO_LIVE_SOURCE]
         return FunctionResult(code=self.code, instrument=instrument,
                               data=payload,
-                              sources=res.sources or ["litigation_monitor_model"],
-                              metadata={"provider_errors": (res.metadata or {}).get("provider_errors", [])})
+                              sources=sources,
+                              metadata=meta)
+
+
+def _unavailable_result(instrument: Instrument, reason: str) -> FunctionResult:
+    """Honest envelope when CACT could not read the Awareness 8-K filings at all."""
+    payload = {
+        "status": "provider_unavailable",
+        "reason": reason,
+        "rows": [{
+            "symbol": instrument.symbol,
+            "event_type": "provider_unavailable",
+            "item_code": None,
+            "filing_date": None,
+            "severity": "unknown",
+            "source_mode": "awareness_sec_8k",
+        }],
+        "litigation_filings": [],
+        "kept_item_codes": sorted(_LITM_KEEP_ITEMS),
+        "all_8k_events": 0,
+        "scanned_8k": 0,
+        "unclassified_8k": 0,
+        "scan_window": None,
+        "item_codes_available": False,
+        "next_actions": [UNAVAILABLE_NEXT_ACTION],
+    }
+    return FunctionResult(code="LITM", instrument=instrument, data=payload,
+                          sources=[NO_LIVE_SOURCE],
+                          warnings=[reason],
+                          metadata={"fallback": True, "live": False, "data_mode": "provider_unavailable",
+                                    "provider": "awareness", "provider_errors": [reason]})
 
 
 _LITM_SCAN_LIMIT = 1000
@@ -166,8 +201,12 @@ def _split_item_codes(raw: Any) -> list[str]:
 
 
 def _scan_8k_candidates(events: list[dict[str, Any]], frame: Any, scan_limit: int) -> list[dict[str, Any]]:
-    """Every 8-K candidate with its item codes; frame rows win over CACT event rows
-    for the same accession. Rows without a code list contribute no codes."""
+    """Every 8-K candidate with its item codes, one per accession.
+
+    ``events`` is CACT's ``events_8k`` (one entry per filing, all item codes in ``item_codes``). ``frame`` is
+    an optional EDGAR-shaped filing frame; when given, its rows win over event rows for the same accession.
+    Rows without a code list contribute no codes.
+    """
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     if frame is not None and hasattr(frame, "iterrows"):
@@ -185,9 +224,8 @@ def _scan_8k_candidates(events: list[dict[str, Any]], frame: Any, scan_limit: in
     for e in events:
         if not isinstance(e, dict):
             continue
-        # CACT puts a placeholder ({category, status: provider_unavailable})
-        # into events_8k when the feed has no 8-K rows: that is not a filing
-        # and must never count as a scanned 8-K (review of LITM#1).
+        # A placeholder ({status: provider_unavailable}) is not a filing and must never count as a
+        # scanned 8-K.
         if str(e.get("status") or "").lower() in {"provider_unavailable", "unavailable", "empty"} or not (
             e.get("accession") or e.get("filing_date") or e.get("document")
         ):
@@ -197,7 +235,11 @@ def _scan_8k_candidates(events: list[dict[str, Any]], frame: Any, scan_limit: in
             continue
         if acc:
             seen.add(acc)
-        codes = _split_item_codes(e.get("items")) or _split_item_codes(e.get("code"))
+        raw_codes = e.get("item_codes")
+        if isinstance(raw_codes, list):
+            codes = [str(c).strip() for c in raw_codes if str(c).strip()]
+        else:
+            codes = _split_item_codes(e.get("items")) or _split_item_codes(e.get("code"))
         out.append({
             "accession": e.get("accession"),
             "filing_date": e.get("filing_date"),
@@ -205,7 +247,7 @@ def _scan_8k_candidates(events: list[dict[str, Any]], frame: Any, scan_limit: in
             "document": e.get("document"),
             "item_codes": codes,
         })
-    return out
+    return out[:scan_limit]
 
 
 def _fallback_litm(instrument: Instrument) -> dict[str, Any]:
@@ -228,7 +270,7 @@ def _fallback_litm(instrument: Instrument) -> dict[str, Any]:
             "status": status,
         }],
         "all_8k_events": 0,
-        "methodology": "LITM requires SEC 8-K filing/event rows and filters them by litigation/governance item code.",
+        "methodology": "LITM requires Awareness 8-K filing rows and filters them by litigation/governance item code.",
     }
 
 
