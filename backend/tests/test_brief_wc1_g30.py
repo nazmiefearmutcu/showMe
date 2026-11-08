@@ -146,3 +146,23 @@ def test_articles_expose_the_evidence_url_documented_in_the_field_dictionary(stu
     for art in res.data["articles"]:
         assert art.get("url"), art
         assert art["url"] == art["link"]
+
+
+def test_empty_brief_markdown_renders_only_the_requested_section(stub, monkeypatch):
+    """With zero articles the markdown still honours ``sections`` (no unrequested heading)."""
+
+    async def _empty_top(self, **kwargs):
+        return SimpleNamespace(data={"items": []}, sources=["rss"], metadata={})
+
+    monkeypatch.setattr(top_mod.TOPFunction, "execute", _empty_top)
+
+    res = _run(brief_mod.BRIEFFunction(None).execute(watchlist=["AAPL"], sections=["watchlist"]))
+    assert res.data["status"] == "provider_unavailable"
+    md = res.data["markdown"]
+    assert "## Watchlist" in md
+    assert "## Top Stories" not in md
+
+    res = _run(brief_mod.BRIEFFunction(None).execute(watchlist=["AAPL"], sections=["top_stories"]))
+    md = res.data["markdown"]
+    assert "## Top Stories" in md
+    assert "## Watchlist" not in md

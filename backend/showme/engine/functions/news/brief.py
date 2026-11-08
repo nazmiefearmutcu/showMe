@@ -480,12 +480,19 @@ def _compose_markdown(
         "",
     ]
     if not articles:
+        # BRIEF#3: with no rows, still honour ``sections`` -- each requested
+        # section gets its own heading and an honest empty line, nothing else.
+        empty_lines = {
+            "watchlist": ("Watchlist", "- No live watchlist headlines were returned."),
+            "top_stories": ("Top Stories", "- No live top-story headlines were returned."),
+        }
+        for key in ("watchlist", "top_stories"):
+            if key not in wanted:
+                continue
+            heading, empty_line = empty_lines[key]
+            lines.extend([f"## {heading}", "", empty_line, ""])
         lines.extend(
             [
-                "## Top Stories",
-                "",
-                "- No live watchlist headlines were returned.",
-                "",
                 "## Next actions",
                 "",
                 "- Check RSS/news provider availability.",
