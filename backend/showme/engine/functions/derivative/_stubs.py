@@ -784,6 +784,39 @@ class IVOLFunction(BaseFunction):
                     raw_puts.append({"expiry": exp, **r.to_dict()})
         dropped_cells: list[dict[str, Any]] = []
         surface_rows = _surface_rows(raw_calls, raw_puts, spot=spot, dropped=dropped_cells)
+        if not surface_rows and dropped_cells:
+            # Every chain cell was a solver failure or below intrinsic. There is
+            # no live IV to show, and the reference template would substitute
+            # invented constant IVs, so report the empty state explicitly.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "Every option-chain cell lacked a usable implied volatility (solver failure or mid below intrinsic).",
+                    "symbol": instrument.symbol,
+                    "spot": spot,
+                    "data_state": spot_state,
+                    "expiries": targets,
+                    "rows": [],
+                    "surface": [],
+                    "series": [],
+                    "dropped_cells": dropped_cells,
+                    "summary": {
+                        "contracts": 0,
+                        "expiries": 0,
+                        "source_mode": "provider_unavailable",
+                        "dropped_invalid_iv": len(dropped_cells),
+                    },
+                    "methodology": "Live implied volatility surface from option-chain impliedVolatility. Cells with IV below 1 percent or a quoted mid below intrinsic value are dropped.",
+                    "field_dictionary": _IVOL_FIELDS,
+                    "next_actions": ["Retry during market hours or with a different expiry set; no usable implied vol was quoted."],
+                },
+                sources=["yfinance"],
+                metadata={"live": False, "fallback": True,
+                          "spot_source": spot_state,
+                          "provider_errors": ["yfinance implied volatility cells all dropped"]},
+            )
         if not surface_rows:
             # Chains came back but carried no usable implied-vol rows. yfinance
             # is present, so fall back to the spot-anchored reference surface

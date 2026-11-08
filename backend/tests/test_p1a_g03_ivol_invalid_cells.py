@@ -98,6 +98,49 @@ def test_mid_below_intrinsic_cells_are_dropped() -> None:
     assert ("CALL", 720.0) not in kept
 
 
+class _AllInvalidYF:
+    """Every cell is a solver failure: iv 0 / 1e-5 or mid below intrinsic."""
+
+    async def fetch(self, request: DataRequest) -> Any:
+        if not request.extra or "expiry" not in request.extra:
+            return {"underlyingPrice": SPOT, "expiries": [EXPIRY]}
+        calls = pd.DataFrame({
+            "strike": [720.0, 725.0],
+            "impliedVolatility": [0.0, 1e-5],
+            "bid": [22.00, 17.00],
+            "ask": [22.60, 17.60],
+            "lastPrice": [22.30, 17.30],
+            "volume": [10, 10],
+            "openInterest": [100, 100],
+        })
+        puts = pd.DataFrame({
+            "strike": [750.0, 760.0],
+            "impliedVolatility": [1e-5, 0.0],
+            "bid": [14.14, 23.46],
+            "ask": [14.40, 24.32],
+            "lastPrice": [14.27, 23.89],
+            "volume": [10, 10],
+            "openInterest": [100, 100],
+        })
+        return {"calls": calls, "puts": puts}
+
+
+def test_all_cells_dropped_returns_honest_status_not_template() -> None:
+    fn = IVOLFunction(deps=_Deps(yfinance=_AllInvalidYF()))
+    result = asyncio.run(fn.execute(Instrument(symbol="SPY", asset_class=AssetClass.ETF)))
+    data = result.data
+    # RED before fix: the all-dropped path fell back to the reference template,
+    # which carried invented constant IVs (0.32 + skew, 0.35 + skew) at volume 0.
+    assert data["status"] == "provider_unavailable", data.get("status")
+    assert data["surface"] == []
+    assert data["rows"] == []
+    assert "calls_grid" not in data and "puts_grid" not in data
+    assert "black_scholes_reference_formula" not in result.sources
+    assert len(data["dropped_cells"]) == 4
+    assert data["summary"]["dropped_invalid_iv"] == 4
+    assert data["next_actions"]
+
+
 def test_valid_cells_are_kept_and_dropped_count_is_reported() -> None:
     result = _run()
     kept = {(row["option_type"], float(row["strike"])) for row in result.data["surface"]}
