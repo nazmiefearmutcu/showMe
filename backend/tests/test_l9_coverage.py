@@ -299,8 +299,19 @@ def test_most_default_without_provider_is_failure_labelled() -> None:
     assert _body(result)["data_state"] != "live"
 
 
-def test_most_default_with_provider_is_live() -> None:
+def test_most_default_with_provider_is_live(monkeypatch) -> None:
+    import showme.engine.functions.screen._funcs as funcs
     from showme.engine.functions.screen._funcs import MOSTFunction
+
+    # wb1-g17 / MOST#3: stub quotes carry no provider time; pin an open session
+    # so the "live" assertion does not depend on the day the suite runs.
+    monkeypatch.setattr(funcs, "_most_utc_now", lambda: datetime(2026, 11, 9, 15, 0, tzinfo=timezone.utc))
+
+    async def _no_binance_batch(*_args, **_kwargs):
+        # No network in tests: an empty batch sends crypto down the stubbed quote path.
+        return []
+
+    monkeypatch.setattr(funcs, "_binance_top_crypto_rows", _no_binance_batch)
 
     provider = _FakeQuoteProvider()
     result = _run(MOSTFunction(deps=FunctionDeps(yfinance=provider)).execute(sort="volume"))

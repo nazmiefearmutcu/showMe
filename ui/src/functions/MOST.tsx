@@ -65,6 +65,10 @@ interface MostRow {
   dollar_volume?: number;
   market_cap?: number;
   quote_state?: string;
+  /** Provider quote timestamp (ISO, UTC) for this row's price, when stamped. */
+  quote_time?: string | null;
+  /** "24h_open" for crypto (change vs the 24h open); "previous_close" otherwise. */
+  change_basis?: string;
   activity_score?: number;
 }
 
@@ -76,7 +80,11 @@ interface MostPayload {
   asset_class_filter?: string;
   sort?: string;
   live?: boolean;
-  as_of?: string;
+  /** Newest provider quote time across rows; null when no provider stamped one. */
+  as_of?: string | null;
+  /** When the backend served this payload (not a market timestamp). */
+  requested_at?: string;
+  market_session?: { equity?: string; fx?: string; crypto?: string };
   reason?: string | null;
   methodology?: string;
   field_dictionary?: Array<{ field?: string; meaning?: string }>;
@@ -177,6 +185,11 @@ export function MOSTPane({ code }: FunctionPaneProps) {
     () => rows.filter((r) => r.quote_state === "live").length,
     [rows],
   );
+  // wb1-g17 / MOST#3: a closed-session quote is the last close, not a live print.
+  const lastCloseCount = useMemo(
+    () => rows.filter((r) => r.quote_state === "last_close").length,
+    [rows],
+  );
   const medianAbsChange = useMemo(
     () =>
       median(
@@ -199,7 +212,7 @@ export function MOSTPane({ code }: FunctionPaneProps) {
     [rows],
   );
   const maxDollarVolume = useMemo(
-    () => Math.max(0, maxOf(rows.map((r) => Number(r.dollar_volume ?? estimateDollar(r))))),
+    () => Math.max(0, maxOf(rows.map((r) => Number(r.dollar_volume ?? estimateDollar(r) ?? 0)))),
     [rows],
   );
 
@@ -309,7 +322,15 @@ export function MOSTPane({ code }: FunctionPaneProps) {
             );
           return (
             <FlashValue value={numOrNull(v)} className="terminal-grid-numeric">
-              <DeltaChip value={Number(v)} format="percent" fractionDigits={2} />
+              <span
+                title={
+                  r.change_basis === "24h_open"
+                    ? "Crypto: change versus the 24h open"
+                    : undefined
+                }
+              >
+                <DeltaChip value={Number(v)} format="percent" fractionDigits={2} />
+              </span>
             </FlashValue>
           );
         },
@@ -340,6 +361,13 @@ export function MOSTPane({ code }: FunctionPaneProps) {
         render: (r) => {
           const estimated = r.dollar_volume == null;
           const dollar = r.dollar_volume ?? estimateDollar(r);
+          // wb1-g17 / MOST#5: no price x volume (FX publishes none) means no value, not zero.
+          if (dollar == null)
+            return (
+              <span className="u-text-mute terminal-grid-numeric">
+                {formatMissing}
+              </span>
+            );
           const ratio = maxDollarVolume > 0 ? dollar / maxDollarVolume : 0;
           const label = formatCompactNumber(dollar, { fixedDigits: 2 });
           return (
@@ -362,7 +390,7 @@ export function MOSTPane({ code }: FunctionPaneProps) {
             variant="soft"
             withDot={r.quote_state === "live"}
           >
-            {r.quote_state ?? (payload?.live ? "live" : "reference")}
+            {quoteStateLabel(r.quote_state, payload?.live)}
           </Pill>
         ),
       },
@@ -395,7 +423,11 @@ export function MOSTPane({ code }: FunctionPaneProps) {
                 variant="soft"
                 withDot={liveCount > 0}
               >
-                {liveCount > 0 ? `LIVE ${liveCount}` : "REFERENCE"}
+                {liveCount > 0
+                  ? `LIVE ${liveCount}`
+                  : lastCloseCount > 0
+                    ? `LAST CLOSE ${lastCloseCount}`
+                    : "REFERENCE"}
               </Pill>
               <Pill tone="muted" variant="soft" withDot={false}>
                 BY {sortLabel(sort)} ↓
@@ -749,7 +781,7 @@ function sortVal(r: MostRow, key: SortKey): number {
   if (key === "abs_change")
     return Math.abs(Number(r.change_pct ?? r.changePercent ?? 0));
   if (key === "dollar_volume")
-    return Number(r.dollar_volume ?? estimateDollar(r));
+    return Number(r.dollar_volume ?? estimateDollar(r) ?? 0);
   return 0;
 }
 
@@ -767,15 +799,24 @@ function formatSortValue(r: MostRow, key: SortKey): string {
   if (key === "dollar_volume") {
     const estimated = r.dollar_volume == null;
     const dollar = r.dollar_volume ?? estimateDollar(r);
+    if (dollar == null) return "—";
     const label = formatCompactNumber(dollar, { fixedDigits: 2 });
     return estimated ? `≈ ${label}` : label;
   }
   return formatCompactNumber(r.volume, { fixedDigits: 2 });
 }
 
-function estimateDollar(r: MostRow): number {
+/** Human label for a row's quote state; unknown states keep the raw value. */
+function quoteStateLabel(state: string | undefined, live: boolean | undefined): string {
+  if (state === "last_close") return "LAST CLOSE";
+  if (state === "stale") return "STALE";
+  return state ?? (live ? "live" : "reference");
+}
+
+/** price x volume when both are reported; null when either is unknown. */
+function estimateDollar(r: MostRow): number | null {
   const p = r.last ?? r.price;
-  if (p == null || r.volume == null) return 0;
+  if (p == null || r.volume == null) return null;
   return p * r.volume;
 }
 

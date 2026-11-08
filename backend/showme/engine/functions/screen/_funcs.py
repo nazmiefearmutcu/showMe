@@ -422,7 +422,7 @@ class MOSTFunction(BaseFunction):
                     merged.extend(batch_rows)
                     provider_sources.append("binance")
                 else:
-                    fallback_quotes, fallback_warnings = await _screen_quote_rows(
+                    fallback_quotes, fallback_warnings = await _most_screen_quote_rows(
                         self.deps.yfinance,
                         [str(row["symbol"]) for row in crypto_rows],
                         timeout=_float_param(params, "quote_timeout", 4.0),
@@ -438,7 +438,7 @@ class MOSTFunction(BaseFunction):
                         "Binance batch ticker unavailable; crypto quotes fell back per symbol"
                     )
             if other_rows:
-                quote_rows, quote_warnings = await _screen_quote_rows(
+                quote_rows, quote_warnings = await _most_screen_quote_rows(
                     self.deps.yfinance,
                     [str(row["symbol"]) for row in other_rows],
                     timeout=_float_param(params, "quote_timeout", 4.0),
@@ -448,7 +448,9 @@ class MOSTFunction(BaseFunction):
                 merged.extend(_merge_live_most_rows(other_rows, quote_rows, keep_unresolved=True))
                 warnings.extend(quote_warnings)
                 provider_sources.append("yfinance")
-            resolved = sum(1 for row in merged if row.get("quote_state") == "live")
+            # wb1-g17 / MOST#3: a closed-session or stale quote is not "live".
+            _most_apply_quote_states(merged, _most_utc_now())
+            resolved = sum(1 for row in merged if row.get("quote_state") in _MOST_USABLE_QUOTE_STATES)
             unavailable = len(merged) - resolved
             if unavailable:
                 warnings.append(
@@ -685,10 +687,13 @@ _MOST_FIELDS = [
     {"field": "name", "meaning": "Human-readable security or pair name from ShowMe's reference universe."},
     {"field": "asset_class", "meaning": "Market bucket used by the All/Equities/Crypto/FX tabs."},
     {"field": "last", "meaning": "Latest provider price."},
-    {"field": "change_pct", "meaning": "Percent move versus previous close when available."},
-    {"field": "volume", "meaning": "Latest session or 24-hour volume from the quote provider."},
-    {"field": "dollar_volume", "meaning": "Approximate traded notional: latest price multiplied by volume."},
-    {"field": "quote_state", "meaning": "live when provider data was returned; reference only in deterministic non-live mode."},
+    {"field": "change_pct", "meaning": "Percent move versus previous close (equities, ETFs, FX); crypto is versus the 24h open, see change_basis."},
+    {"field": "change_basis", "meaning": "previous_close for equities, ETFs and FX; 24h_open for crypto (Binance 24h change)."},
+    {"field": "prev_close", "meaning": "Previous close from the provider; null for crypto, whose 24h open is open_24h."},
+    {"field": "volume", "meaning": "Latest session or 24-hour volume from the quote provider; null for FX, which publishes no volume."},
+    {"field": "dollar_volume", "meaning": "Approximate traded notional: latest price multiplied by volume; null for FX."},
+    {"field": "quote_time", "meaning": "Provider quote timestamp (UTC) for the row's price, when the provider stamps one."},
+    {"field": "quote_state", "meaning": "live inside an open session; last_close when the session is closed (value is the last close); stale when an open-session quote is older than 20 minutes; reference for curated rows in non-live mode; unavailable when the provider did not answer in budget."},
 ]
 
 
@@ -2127,13 +2132,24 @@ def _most_active_crypto_row_from_ticker(item: dict[str, Any]) -> dict[str, Any] 
     if not math.isfinite(last) or last <= 0:
         return None
     name = _MOST_CRYPTO_BASE_NAMES.get(base, base)
+    # wb1-g17 / MOST#4: Binance ``openPrice`` is the 24h open, not the prior
+    # close. It is kept as open_24h and prev_close stays null; change_pct is
+    # Binance's own 24h change and change_basis says so.
+    close_ms = _finite_number(item.get("closeTime"))
+    quote_time = (
+        datetime.fromtimestamp(close_ms / 1000.0, timezone.utc).isoformat()
+        if close_ms
+        else None
+    )
     return {
         "symbol": symbol,
         "name": f"{name} / USDT",
         "asset_class": "crypto",
         "exchange": "BINANCE",
         "last": last,
-        "prev_close": prev_close,
+        "prev_close": None,
+        "open_24h": prev_close,
+        "change_basis": "24h_open",
         "change": last - prev_close,
         "volume": volume,
         "dollar_volume": quote_volume,
@@ -2141,6 +2157,7 @@ def _most_active_crypto_row_from_ticker(item: dict[str, Any]) -> dict[str, Any] 
         "high": high,
         "low": low,
         "range_pct": ((high - low) / last * 100.0) if last else None,
+        "quote_time": quote_time,
         "quote_state": "live",
         "source": "binance",
     }
@@ -2256,6 +2273,15 @@ def _merge_live_most_rows(
     return out
 
 
+def _below_mover_floor(row: dict[str, Any]) -> bool:
+    """True when a row's 24h notional is known and under the movers floor."""
+    # Spot FX publishes no traded volume, so the notional floor cannot apply.
+    if _normalize_most_asset_class(row.get("asset_class")) == "fx":
+        return False
+    dollar = row.get("dollar_volume")
+    return dollar is not None and float(dollar) < _MOST_MOVERS_MIN_DOLLAR_VOLUME
+
+
 def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for row in rows:
@@ -2264,6 +2290,12 @@ def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[di
         # quote_state="reference". setdefault never clobbers the "live" state
         # stamped by _merge_live_most_rows, so the shared live path is safe.
         merged.setdefault("quote_state", "reference")
+        merged.setdefault("change_basis", "previous_close")
+        if _normalize_most_asset_class(merged.get("asset_class")) == "fx":
+            # wb1-g17 / MOST#5: spot FX has no centralised volume; the provider's
+            # 0 means "not reported", so volume and dollar volume are null.
+            merged["volume"] = None
+            merged["dollar_volume"] = None
         if merged.get("dollar_volume") is None and merged.get("last") is not None and merged.get("volume") is not None:
             merged["dollar_volume"] = float(merged["last"]) * float(merged["volume"])
         merged["activity_score"] = (
@@ -2277,7 +2309,8 @@ def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[di
             return float(row.get("volume") or 0)
     elif sort_key in {"abs_change", "change", "mover"}:
         def key(row):
-            return abs(float(row.get("change_pct") or 0))
+            # wb1-g17 / MOST#4: liquid movers first; thin names sort after them.
+            return (not _below_mover_floor(row), abs(float(row.get("change_pct") or 0)))
     elif sort_key in {"activity", "score"}:
         def key(row):
             return float(row.get("activity_score") or 0)
@@ -2285,6 +2318,129 @@ def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[di
         def key(row):
             return float(row.get("dollar_volume") or 0)
     return sorted(enriched, key=key, reverse=True)
+
+
+# ── MOST — session / freshness labelling and movers floor (wb1-g17) ─────────
+_MOST_QUOTE_FRESH_WINDOW_S = 20 * 60
+_MOST_USABLE_QUOTE_STATES = frozenset({"live", "stale", "last_close"})
+# abs_change board: rows whose 24h notional is below this rank after liquid names.
+_MOST_MOVERS_MIN_DOLLAR_VOLUME = 10_000_000.0
+
+
+def _most_utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _most_market_open(asset_class: Any, now: datetime) -> bool:
+    """Whether the provider session for ``asset_class`` is trading at ``now``.
+
+    Crypto trades around the clock. Equities/ETFs follow the NYSE regular
+    session (Mon-Fri 09:30-16:00 America/New_York); exchange holidays are not
+    modelled, so a holiday with no provider quote time can still read open.
+    Spot FX trades Sunday 17:00 ET through Friday 17:00 ET.
+    """
+    from zoneinfo import ZoneInfo
+
+    cls = _normalize_most_asset_class(asset_class)
+    if cls == "crypto":
+        return True
+    local = now.astimezone(ZoneInfo("America/New_York"))
+    minutes = local.hour * 60 + local.minute
+    weekday = local.weekday()  # Monday=0 .. Sunday=6
+    if cls == "fx":
+        if weekday == 5:
+            return False
+        if weekday == 6:
+            return minutes >= 17 * 60
+        if weekday == 4:
+            return minutes < 17 * 60
+        return True
+    return weekday < 5 and 9 * 60 + 30 <= minutes < 16 * 60
+
+
+def _most_session_summary(now: datetime) -> dict[str, str]:
+    return {
+        "equity": "open" if _most_market_open("equity", now) else "closed",
+        "fx": "open" if _most_market_open("fx", now) else "closed",
+        "crypto": "open",
+    }
+
+
+def _most_snapshot_quote_time(snapshot: dict[str, Any] | None) -> str | None:
+    """ISO-8601 UTC provider quote time of a cached snapshot, when the provider gave one."""
+    if not snapshot:
+        return None
+    epoch = _finite_number((snapshot.get("raw") or {}).get("regular_market_time"))
+    if epoch is None or epoch <= 0:
+        return None
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+
+def _parse_most_quote_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _most_apply_quote_states(rows: list[dict[str, Any]], now: datetime) -> None:
+    """Relabel live-merged rows (in place) by market session and quote age.
+
+    A quote taken while the session is closed is the last close, never a live
+    print. An open-session quote whose provider time is older than the freshness
+    window is ``stale``. Rows without a provider quote time keep ``live`` only
+    while their session is open.
+    """
+    for row in rows:
+        if row.get("quote_state") != "live":
+            continue
+        if not _most_market_open(row.get("asset_class"), now):
+            row["quote_state"] = "last_close"
+            continue
+        quoted_at = _parse_most_quote_time(row.get("quote_time"))
+        if quoted_at is not None and (now - quoted_at).total_seconds() > _MOST_QUOTE_FRESH_WINDOW_S:
+            row["quote_state"] = "stale"
+
+
+def _most_as_of(rows: list[dict[str, Any]]) -> str | None:
+    """Newest provider quote time across rows; None when no provider stamped one."""
+    latest: datetime | None = None
+    for row in rows:
+        quoted_at = _parse_most_quote_time(row.get("quote_time"))
+        if quoted_at is not None and (latest is None or quoted_at > latest):
+            latest = quoted_at
+    return latest.isoformat() if latest is not None else None
+
+
+async def _most_screen_quote_rows(
+    provider: Any,
+    symbols: list[str],
+    *,
+    timeout: float,
+    screen_timeout: float,
+    concurrency: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """MOST quote fan-out that also keeps each provider quote time on its row."""
+    rows, warnings = await _screen_quote_rows(
+        provider,
+        symbols,
+        timeout=timeout,
+        screen_timeout=screen_timeout,
+        concurrency=concurrency,
+    )
+    if _screen_uses_live_quote_service(provider):
+        from showme.quotes import quote_cache_get
+
+        # The fan-out stores every snapshot it resolves in the quote cache, so
+        # the cached entry is the exact snapshot each row was built from.
+        for row in rows:
+            row["quote_time"] = _most_snapshot_quote_time(
+                quote_cache_get(str(row.get("symbol") or ""))
+            )
+    return rows, warnings
 
 
 def _most_active_payload(
@@ -2301,6 +2457,7 @@ def _most_active_payload(
     resolved: int | None = None,
     unavailable: int | None = None,
 ) -> dict[str, Any]:
+    now = _most_utc_now()
     payload: dict[str, Any] = {
         "status": status,
         "rows": rows,
@@ -2310,15 +2467,22 @@ def _most_active_payload(
         "asset_class_filter": asset_class,
         "sort": sort,
         "live": live,
-        "as_of": datetime.now(timezone.utc).isoformat(),
+        # as_of is the provider quote time; requested_at is when this was served.
+        "as_of": _most_as_of(rows),
+        "requested_at": now.isoformat(),
+        "market_session": _most_session_summary(now),
         "reason": reason,
         "methodology": (
             "Ranks a selected cross-asset universe by provider volume, absolute percent move, "
             "or approximate traded notional. Dollar volume is last price multiplied by session/24h volume. "
-            "Crypto ranks the Binance USDT spot board by 24h quote volume from one batched ticker call; "
-            "equities/ETFs scan a bounded liquid subset of the bundled security master and FX covers the "
-            "G10 + major EM pairs — every scanned symbol the provider does not answer inside the latency "
-            "budget is emitted as an explicit quote_state=unavailable row (null values, never dropped)."
+            "Crypto ranks the Binance USDT spot board by 24h quote volume from one batched ticker call and "
+            "its change is versus the 24h open (change_basis=24h_open). Equities/ETFs scan a bounded liquid "
+            "subset of the bundled security master; FX covers the G10 + major EM pairs and publishes no "
+            "volume, so its volume and dollar volume are null. quote_state is live inside an open session, "
+            "last_close when the session is closed, and stale when an open-session quote is older than 20 "
+            "minutes. Every scanned symbol the provider does not answer inside the latency budget is emitted "
+            "as an explicit quote_state=unavailable row (null values, never dropped). abs_change ranks movers "
+            "with at least $10M 24h notional ahead of thinner names."
         ),
         "field_dictionary": _MOST_FIELDS,
     }
