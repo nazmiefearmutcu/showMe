@@ -59,7 +59,7 @@ def hfs() -> FunctionManifest:
             InputSpec(
                 name="quarter",
                 label="Quarter",
-                control=ControlKind.SELECT,
+                control=ControlKind.TEXT,
                 required=False,
                 description="Quarter as YYYY-Q# (for example 2026-Q2) or a report date YYYY-MM-DD. Empty returns every ingested report date, labelled per row.",
             ),

@@ -158,10 +158,13 @@ class HFSFunction(BaseFunction):
             timeout_s = max(1.0, min(float(params.get("timeout", 8) or 8), 30.0))
         except (TypeError, ValueError):
             timeout_s = 8.0
+        # cusip takes precedence over the symbol (hfs_seed): a bound ticker must not
+        # also filter the CUSIP rows, because the store matches issuer names, not tickers.
+        query_issuer = None if cusip else issuer
         try:
             df = await asyncio.wait_for(
                 sec.query_holdings_by_security(
-                    cusip=cusip, issuer=issuer, quarter=report_date, top_n=top_n,
+                    cusip=cusip, issuer=query_issuer, quarter=report_date, top_n=top_n,
                 ),
                 timeout=timeout_s,
             )

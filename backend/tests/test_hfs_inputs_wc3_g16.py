@@ -19,6 +19,7 @@ import duckdb
 import pytest
 
 from showme.engine.core.base_function import FunctionDeps
+from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.data_sources.equity import sec_13f_adapter
 from showme.engine.functions.equity.hfs import HFSFunction
 
@@ -97,3 +98,17 @@ def test_top_n_limits_rows(holdings_db) -> None:
     res = _run(quarter="2026-Q2", top_n=1)
     assert len(res.data["rows"]) == 1
     assert res.data["rows"][0]["shares"] == 900
+
+
+def test_cusip_is_not_narrowed_by_the_bound_ticker(holdings_db) -> None:
+    # cusip takes precedence over the symbol (hfs_seed). The bound ticker must
+    # not also filter the CUSIP rows: "AAPL" does not occur in the issuer name.
+    deps = FunctionDeps()
+    deps.sec_13f = sec_13f_adapter.SEC13FAdapter()
+    res = asyncio.run(HFSFunction(deps).execute(
+        instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY),
+        cusip="037833100", quarter="2026-Q2",
+    ))
+    assert res.data["status"] == "ok", res.data
+    assert len(res.data["rows"]) == 2
+    assert _dates(res) == {"2026-06-30"}
