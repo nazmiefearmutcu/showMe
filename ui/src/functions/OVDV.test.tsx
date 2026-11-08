@@ -97,7 +97,7 @@ function okPayload() {
         warnings: [],
         methodology: "test",
       },
-      sources: ["yfinance", "model:fx_vol_smile"],
+      sources: ["yfinance"],
       elapsed_ms: 12,
     },
   };
@@ -362,17 +362,20 @@ describe("OVDV pane — responsive term sparkline (FIX R2-#2)", () => {
 });
 
 describe("OVDV pane — honesty notices + KPI budget", () => {
-  it("collapses the reference context and provider warnings into ONE notice", () => {
+  it("collapses the non-live vol context and provider warnings into ONE notice", () => {
+    // The backend emits vol_source "user_inputs" (desk-quoted, data_mode
+    // "modeled") for the non-realized path; "reference_fx_vol_model" is no
+    // longer emitted by any backend path.
     const payload = okPayload();
     const data = payload.data.data as Record<string, unknown>;
-    data.vol_source = "reference_fx_vol_model";
+    data.vol_source = "user_inputs";
     data.data_mode = "modeled";
     data.warnings = ["live spot unavailable; using labelled reference spot"];
     mockFn.data = payload.data;
     const { container } = render(<OVDVPane code="OVDV" />);
     const notice = screen.getByTestId("ovdv-notice");
     expect(notice).toBeInTheDocument();
-    expect(notice.textContent).toMatch(/Reference vol model/);
+    expect(notice.textContent).not.toMatch(/Realized vol, not implied/);
     expect(notice.textContent).toMatch(
       /live spot unavailable; using labelled reference spot/,
     );
