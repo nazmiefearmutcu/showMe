@@ -32,7 +32,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         logger.error(f"Config file not found: {path}")
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         config = yaml.safe_load(f) or {}
 
     errors = validate_config(config)

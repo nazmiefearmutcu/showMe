@@ -24,7 +24,7 @@ class FunctionFactory:
         self.config_path = Path(config_path)
         self.config: dict[str, Any] = {}
         if self.config_path.exists():
-            self.config = yaml.safe_load(self.config_path.read_text()) or {}
+            self.config = yaml.safe_load(self.config_path.read_text(encoding="utf-8-sig")) or {}
         self.deps = FunctionDeps()
         self._adapters: dict[str, BaseDataSource] = {}
         self._build()
