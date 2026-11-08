@@ -1,5 +1,6 @@
 /**
- * ESG — Equity / ETF vendor sustainability scoring.
+ * ESG — Equity / ETF sustainability scoring: a vendor score when one is
+ * returned, otherwise the SEC filing-text proxy, labelled as such.
  *
  * KPI ribbon of {Total / E / S / G}, dense pillar grid with the controversy
  * row, and Empty fallback that surfaces the backend `reason` +
@@ -123,11 +124,18 @@ export function ESGPane({ code, symbol }: FunctionPaneProps) {
     [],
   );
 
+  // ESG#6: the header names what the data is. A vendor score is only claimed
+  // when a score field is present; the SEC text proxy and an empty payload are
+  // labelled as such.
+  const hasVendorScore =
+    total != null || env != null || soc != null || gov != null;
   const subtitleMode = isProviderUnavailable
     ? "vendor unavailable"
     : isProxy
-      ? "SEC filing-mention proxy"
-      : "vendor scoring";
+      ? "SEC filing-mention proxy (no vendor score)"
+      : hasVendorScore
+        ? "vendor score"
+        : "no score returned";
 
   const body = !effectiveSymbol ? (
     <Empty title="Pick a symbol" body="ESG needs an equity or ETF ticker." icon="⌖" />
@@ -233,7 +241,7 @@ export function ESGPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title="ESG scores"
+          title="ESG"
           subtitle={
             effectiveSymbol
               ? `${effectiveSymbol} · ${subtitleMode}`
