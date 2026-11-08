@@ -115,15 +115,19 @@ def test_adapter_chart_quote_uses_upstream_market_time(monkeypatch):
     assert quote.timestamp_source == "upstream_market_time"
 
 
-def test_adapter_chart_quote_without_market_time_is_marked_fetch_time(monkeypatch):
+def test_adapter_chart_quote_without_market_time_is_refused(monkeypatch):
+    # Merged with ASOF-4: a price with no market time is not stamped with the
+    # fetch time (other consumers read Quote.timestamp as the quote's time).
+    from showme.engine.core.base_data_source import DataSourceError
+
     adapter = YFinanceAdapter()
 
     async def _client():
         return _FakeChart(_chart_payload({"regularMarketPrice": 1.1143}))
 
     monkeypatch.setattr(adapter, "_chart_client_", _client)
-    quote = _run(adapter._fetch_chart_quote("EURUSD=X"))
-    assert quote.timestamp_source == "fetch_time"
+    with pytest.raises(DataSourceError):
+        _run(adapter._fetch_chart_quote("EURUSD=X"))
 
 
 # ── FXFC: quote time, age and status ────────────────────────────────────
