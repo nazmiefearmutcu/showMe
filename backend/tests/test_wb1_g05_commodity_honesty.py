@@ -156,3 +156,78 @@ def test_wetr_reference_opt_in_still_serves_labelled_model_rows() -> None:
     assert result.data["rows"], "the explicit reference opt-in keeps its labelled rows"
     assert all(row["source_mode"] == "seasonal_model" for row in result.data["rows"])
     assert result.metadata.get("data_mode") == "modeled"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# WETR#2 — temp_c is the provider's daily mean, not the high/low midpoint
+# ─────────────────────────────────────────────────────────────────────────
+
+
+_OPEN_METEO_DAILY = {
+    "time": ["2026-11-08", "2026-11-09"],
+    "temperature_2m_mean": [16.5, 15.0],
+    "temperature_2m_max": [22.0, 21.0],
+    "temperature_2m_min": [14.0, 13.0],
+    "precipitation_sum": [0.0, 2.5],
+}
+
+
+def test_wetr2_adapter_uses_provider_daily_mean_not_midpoint() -> None:
+    from showme.engine.data_sources.alt.open_meteo_adapter import open_meteo_to_onecall
+
+    out = open_meteo_to_onecall({"daily": _OPEN_METEO_DAILY})
+    # midpoint of 22/14 would be 18.0; the provider mean is 16.5
+    assert out["daily"][0]["temp"]["day"] == 16.5
+    assert out["daily"][1]["temp"]["day"] == 15.0
+    assert out["daily"][0]["temp"]["max"] == 22.0
+    assert out["daily"][0]["temp"]["min"] == 14.0
+
+
+def test_wetr2_adapter_requests_the_daily_mean_variable() -> None:
+    from showme.engine.data_sources.alt.open_meteo_adapter import OpenMeteoAdapter
+
+    seen: dict[str, Any] = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"daily": _OPEN_METEO_DAILY}
+
+    class _Client:
+        async def get(self, url: str, params: dict[str, Any]) -> _Resp:
+            seen.update(params)
+            return _Resp()
+
+    adapter = OpenMeteoAdapter()
+
+    async def _client_() -> _Client:
+        return _Client()
+
+    adapter._client_ = _client_  # type: ignore[method-assign]
+    out = asyncio.run(adapter.onecall(40.7, -74.0, days=2))
+    assert "temperature_2m_mean" in seen["daily"].split(",")
+    assert out["daily"][0]["temp"]["day"] == 16.5
+
+
+def test_wetr2_payload_without_daily_mean_is_rejected_not_midpoint() -> None:
+    from showme.engine.core.base_data_source import DataSourceError
+    from showme.engine.data_sources.alt.open_meteo_adapter import open_meteo_to_onecall
+
+    no_mean = {k: v for k, v in _OPEN_METEO_DAILY.items() if k != "temperature_2m_mean"}
+    with pytest.raises(DataSourceError):
+        open_meteo_to_onecall({"daily": no_mean})
+
+
+def test_wetr2_live_rows_carry_the_provider_mean_as_temp_c() -> None:
+    from showme.engine.data_sources.alt.open_meteo_adapter import open_meteo_to_onecall
+    from showme.engine.functions.commodity._funcs import WETRFunction
+
+    class _Fake:
+        async def onecall(self, lat: float, lon: float, days: int = 10) -> dict[str, Any]:  # noqa: ARG002
+            return open_meteo_to_onecall({"daily": _OPEN_METEO_DAILY})
+
+    result = asyncio.run(WETRFunction(FunctionDeps(open_meteo=_Fake())).execute(days=2))
+    assert result.data["status"] == "ok"
+    assert [row["temp_c"] for row in result.data["rows"]] == [16.5, 15.0]

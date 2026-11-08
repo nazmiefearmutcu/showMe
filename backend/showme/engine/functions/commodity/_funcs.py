@@ -1690,7 +1690,10 @@ class WETRFunction(BaseFunction):
                     "weather chain and adds commodity impact flags."
                 ),
                 "field_dictionary": {
-                    "temp_c": "Daily average temperature in Celsius.",
+                    "temp_c": (
+                        "Daily mean temperature in Celsius (Open-Meteo temperature_2m_mean; "
+                        "OpenWeatherMap rows average its day/min/max values)."
+                    ),
                     "precip_mm": "Daily precipitation in millimeters.",
                     "hdd": "Heating degree days versus 18C.",
                     "cdd": "Cooling degree days versus 18C.",
@@ -1892,7 +1895,11 @@ def _normalise_weather_rows(
             continue
         temp_raw = item.get("temp")
         temp = None
-        if isinstance(temp_raw, dict):
+        if isinstance(temp_raw, dict) and source_mode == "live_open_meteo":
+            # WETR#2: Open-Meteo's ``day`` is the provider daily mean; it is
+            # never averaged with the high/low values.
+            temp = _finite(temp_raw.get("day"))
+        elif isinstance(temp_raw, dict):
             vals = [_finite(temp_raw.get(key)) for key in ("day", "min", "max")]
             vals = [v for v in vals if v is not None]
             temp = sum(vals) / len(vals) if vals else None

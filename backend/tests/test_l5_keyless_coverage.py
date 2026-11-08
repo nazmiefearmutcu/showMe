@@ -110,13 +110,15 @@ def test_open_meteo_to_onecall_translation() -> None:
     payload = {
         "daily": {
             "time": ["2026-09-11", "2026-09-12"],
+            "temperature_2m_mean": [16.5, 15.0],
             "temperature_2m_max": [22.0, 21.0],
             "temperature_2m_min": [14.0, 13.0],
             "precipitation_sum": [0.0, 2.5],
         }
     }
     out = open_meteo_to_onecall(payload)
-    assert out["daily"][0]["temp"]["day"] == 18.0
+    # WETR#2: day is the provider daily mean, not the 18.0 high/low midpoint.
+    assert out["daily"][0]["temp"]["day"] == 16.5
     assert out["daily"][1]["temp"]["min"] == 13.0
     assert out["daily"][1]["precipitation"] == 2.5
 
