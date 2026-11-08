@@ -28,3 +28,10 @@ def test_seed_window_matches_the_handler_window() -> None:
     assert esg_mod._PROXY_WINDOW_YEARS == 3
     assert "last 3 years" in esg_mod._PROXY_METHODOLOGY
     assert "last 3 years" in _seed_methodology()
+
+
+def test_module_docstring_states_the_same_window() -> None:
+    # ESG#5-RQ: the handler's own docs must not say "recent" for a bounded 3-year window.
+    doc = esg_mod.__doc__ or ""
+    assert "recent 10-K" not in doc
+    assert "last three years" in doc

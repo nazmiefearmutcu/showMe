@@ -5,7 +5,7 @@ risk scores) via the wired yfinance adapter / yfinance package. When Yahoo does
 not publish a sustainability frame for a ticker (common for smaller or non-US
 names), fall back to a SEC EDGAR full-text-mined E/S/G *proxy*: term-frequency
 counts of environmental / social / governance language across the company's
-recent 10-K filings, fetched keyless from the EDGAR full-text search index. The
+10-K filings from the last three years, fetched keyless from the EDGAR full-text search index. The
 proxy is clearly labelled as a derived signal, never presented as a vendor
 (Sustainalytics) score.
 """
