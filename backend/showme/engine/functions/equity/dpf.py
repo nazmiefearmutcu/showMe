@@ -78,6 +78,10 @@ def _unavailable_data(symbol: str, reason: str, status: str = "provider_unavaila
         "rows": [],
         "history": [],
         "raw_rows": 0,
+        "latest_dark_pool_pct": None,
+        "latest_ats_volume": None,
+        "data_mode": "provider_unavailable",
+        "as_of": None,
         "methodology": _METHODOLOGY,
         "field_dictionary": _field_dictionary(),
         "next_actions": list(_NEXT_ACTIONS),
@@ -201,6 +205,7 @@ class DPFFunction(BaseFunction):
             for row in weekly:
                 row["source_mode"] = "finra_ats_weekly_stale"
                 row["data_warning"] = stale_reason
+        latest = weekly[0] if status == "ok" and weekly else None
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -210,6 +215,12 @@ class DPFFunction(BaseFunction):
                 "rows": weekly,
                 "history": weekly,
                 "raw_rows": int(len(df)),
+                # Card slots (manifest card_schema) read these top-level keys; they
+                # are filled only from a live, non-stale latest week (DPF card fix).
+                "latest_dark_pool_pct": latest.get("dark_pool_pct") if latest else None,
+                "latest_ats_volume": latest.get("ats_share_volume") if latest else None,
+                "data_mode": "delayed_reference" if status == "ok" else "provider_unavailable",
+                "as_of": latest.get("weekStartDate") if latest else None,
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _field_dictionary(),
                 "next_actions": [] if status == "ok" else list(_NEXT_ACTIONS),

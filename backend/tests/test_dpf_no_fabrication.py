@@ -57,6 +57,7 @@ def test_dpf_empty_finra_returns_no_invented_rows() -> None:
     assert "AAPL" in result.data["reason"]
     _assert_no_fabricated_rows(result.data)
     assert result.data["next_actions"]
+    assert not [s for s in result.sources if s != "no_live_source"]  # no provider claimed
 
 
 def test_dpf_timeout_returns_no_invented_rows(monkeypatch) -> None:
