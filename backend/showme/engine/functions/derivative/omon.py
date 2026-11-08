@@ -22,6 +22,7 @@ from showme.engine.core.base_function import (
 )
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.derivative.ovme import _bs_price
+from showme.engine.services import greeks as greeks_svc
 
 # Default continuously-compounded risk-free rate for the greeks, used only when
 # the caller gives no ``risk_free``/``rate``. Same default as OVME and the OMON
@@ -30,7 +31,8 @@ _RISK_FREE_RATE = 0.045
 # Default dividend yield (0 = none supplied). Echoed as dividend_yield with
 # dividend_yield_source "default_0", so a missing q is never silent.
 _DIVIDEND_YIELD = 0.0
-_DAYS_PER_YEAR = 365.0
+# One year-length basis for the option path (XCON-10): the greeks service constant.
+_DAYS_PER_YEAR = greeks_svc.DAYS_PER_YEAR
 
 
 def _rate_param(

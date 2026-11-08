@@ -58,7 +58,7 @@ def _years_until(value: Any, today: date) -> float | None:
         when = date.fromisoformat(text[:10])
     except ValueError:
         return None
-    return (when - today).days / 365.25
+    return (when - today).days / greeks_svc.DAYS_PER_YEAR
 
 
 def _positive(value: Any) -> float | None:
@@ -90,7 +90,7 @@ def normalize_position(position: dict[str, Any], today: date | None = None) -> t
             out["T"] = _years_until(position["expiry"], today)
         elif position.get("expiry_days") not in (None, ""):
             days = _positive(position["expiry_days"])
-            out["T"] = days / 365.25 if days else None
+            out["T"] = days / greeks_svc.DAYS_PER_YEAR if days else None
     problems = []
     if out["kind"] not in {"call", "put"}:
         problems.append("type (call/put)")
