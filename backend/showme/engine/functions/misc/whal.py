@@ -891,7 +891,9 @@ def _methodology(market: str) -> str:
     if market == "CRYPTO":
         return (
             "WHAL uses Binance public aggregate trades and 1-minute klines for crypto symbols. "
-            "A row is a large exchange trade or the largest observed trade if the USD threshold was not crossed. "
+            "Binance returns the latest 1000 trades per venue, so the window covers only the span those trades "
+            "reach (window.covered_hours). With a USD threshold a row is a trade at or above it; with a threshold "
+            "of 0 the rows are the largest trades and none is tested. "
             "It is not a wallet-labelled Whale Alert transfer unless a native transfer feed is separately configured."
         )
     return (

@@ -81,7 +81,11 @@ def whal() -> FunctionManifest:
                 label="Lookback",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Window in hours.",
+                description=(
+                    "Window in hours. Equity/ETF/FX: Yahoo bars inside the window. Crypto: Binance "
+                    "returns only the latest 1000 aggregate trades per venue, so the window holds "
+                    "whatever those trades cover; the covered span is reported next to the lookback."
+                ),
                 options=["1", "6", "24", "72"],
             ),
         ],
@@ -92,7 +96,7 @@ def whal() -> FunctionManifest:
         },
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=["binance", "yfinance", "sec_edgar", "cached_snapshot"],
+            fallbacks=["binance_spot", "binance_usd_m_futures", "yahoo_chart", "sec_edgar"],
             acceptable_modes=[
                 DataMode.NOT_CONFIGURED,
                 DataMode.CACHED_SNAPSHOT,
@@ -134,22 +138,59 @@ def whal() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "WHAL is a public-data proxy for whale activity. The handler routes by market: "
-            "CRYPTO buckets call Binance aggTrades for the last lookback_hours and flag rows "
-            "where usd_value >= threshold_usd; EQUITY/ETF buckets call Yahoo chart for "
-            "volume-impulse rows and SEC EDGAR for 13F/8-K headline mentions. A true native "
-            "wallet-transfer feed (Etherscan, Whale Alert) is opt-in: when no key is configured "
-            "the `native_transfer_feed` card reads 'not_configured' and the proxy notice in the "
-            "pane spells out that these are market-flow proxies, not licensed tape prints. "
-            "Without any provider available, rows=[] with an explicit 'provider not configured' warning."
+            "WHAL is a public-data proxy for whale activity, routed by market. CRYPTO reads Binance "
+            "public aggTrades (spot first, then USD-M futures): the latest 1000 trades per venue, "
+            "kept when they fall inside lookback_hours. Those 1000 trades can cover only minutes, so "
+            "the covered span is reported and a warning names any shortfall. With a USD threshold, "
+            "rows are crypto_large_trade or are not listed; with a threshold of 0 they are crypto_trade "
+            "and nothing is tested. EQUITY/ETF/REIT/FUND read Yahoo chart bars: large_volume_proxy rows "
+            "carry a USD notional (volume x close) and are tested against threshold_usd; "
+            "liquidity_impulse_proxy and top_impulse_window rows have no USD value, so they are rated "
+            "from the move versus the recent median and are never tested against the threshold. "
+            "top_volume_window is the largest-notional bar when nothing else qualifies. US tickers also "
+            "list SEC EDGAR ownership filings (sec_ownership_filing) for Forms 3, 4, 5, 13D and 13G; "
+            "these have no USD value and are not threshold-tested. FX and INDEX use Yahoo "
+            "price-impulse proxies only. A true native wallet-transfer feed (Etherscan, Whale Alert) "
+            "is opt-in: without a key the `native_transfer_feed` card reads 'not_configured'. The proxy "
+            "notice in the pane spells out that these are market-flow proxies, not licensed tape prints. "
+            "If no public source returns rows, status is provider_unavailable with a warning per failed provider."
         ),
         field_dict={
             "rows[].timestamp": FieldDef(unit="iso8601", description="Event time.", source="provider"),
-            "rows[].alert_type": FieldDef(description="large_trade | large_volume | sec_filing | top_holder.", source="classifier"),
-            "rows[].usd_value": FieldDef(unit="USD", description="USD notional of the event.", source="computed"),
-            "rows[].threshold_crossed": FieldDef(description="True when usd_value >= threshold_usd.", source="computed"),
-            "rows[].severity": FieldDef(description="low | medium | high | critical.", source="heuristic"),
-            "rows[].source_mode": FieldDef(description="binance_agg | yahoo_chart | sec_edgar | etherscan.", source="provider"),
+            "rows[].alert_type": FieldDef(
+                description=(
+                    "crypto_large_trade | crypto_top_trade | crypto_trade | large_volume_proxy | "
+                    "liquidity_impulse_proxy | top_volume_window | top_impulse_window | sec_ownership_filing."
+                ),
+                source="classifier",
+            ),
+            "rows[].usd_value": FieldDef(
+                unit="USD",
+                description="USD notional where the source supports it; null for SEC filings and price-impulse rows.",
+                source="computed",
+            ),
+            "rows[].threshold_crossed": FieldDef(
+                description="True/False only when usd_value and a positive threshold both exist; null when nothing was tested.",
+                source="computed",
+            ),
+            "rows[].severity": FieldDef(
+                description=(
+                    "USD rows: low | medium | high | critical against the threshold, unrated at threshold 0. "
+                    "No-USD price-impulse rows: low | medium | high from the move versus the recent median, or unrated."
+                ),
+                source="heuristic",
+            ),
+            "rows[].source_mode": FieldDef(
+                description=(
+                    "binance_spot_aggtrades | binance_usd_m_futures_aggtrades | yahoo_volume_notional_proxy | "
+                    "yahoo_price_impulse_proxy | yahoo_chart_top_window | sec_edgar_submissions."
+                ),
+                source="provider",
+            ),
+            "window": FieldDef(
+                description="lookback_hours requested next to covered_hours, the span the returned data really covers.",
+                source="computed",
+            ),
             "native_transfer_feed": FieldDef(description="not_configured when no etherscan/whale-alert key.", source="envelope"),
         },
         provenance=ProvenanceSpec(
