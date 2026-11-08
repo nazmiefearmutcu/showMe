@@ -607,20 +607,33 @@ async def fetch_stooq_history(
         "i": stooq_interval,
         "apikey": api_key,
     }
-    async with httpx.AsyncClient(
-        timeout=15,
-        headers={
-            "User-Agent": "Mozilla/5.0 showMe-chart/1.0",
-            "Accept": "text/csv,text/plain,*/*",
-        },
-        follow_redirects=True,
-    ) as client:
-        response = await client.get(
-            "https://stooq.com/q/d/l/",
-            params=params,
-        )
-        response.raise_for_status()
-        text = response.text or ""
+    # The API key travels in the query string, and httpx embeds the full
+    # request URL in its exception text. Re-raise without the URL or the
+    # exception chain so the key never reaches provider_errors, sources
+    # considered or warnings (SEC-1).
+    try:
+        async with httpx.AsyncClient(
+            timeout=15,
+            headers={
+                "User-Agent": "Mozilla/5.0 showMe-chart/1.0",
+                "Accept": "text/csv,text/plain,*/*",
+            },
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(
+                "https://stooq.com/q/d/l/",
+                params=params,
+            )
+            response.raise_for_status()
+            text = response.text or ""
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"stooq HTTP {exc.response.status_code} for {provider_symbol}"
+        ) from None
+    except httpx.HTTPError as exc:
+        raise RuntimeError(
+            f"stooq request failed for {provider_symbol}: {type(exc).__name__}"
+        ) from None
     head = text.lower()[:200]
     if not text or "apikey" in head or "no data" in head or len(text) < 30:
         raise RuntimeError(f"stooq returned no data for {provider_symbol}")
