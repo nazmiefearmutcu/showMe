@@ -241,6 +241,9 @@ class DARKFunction(BaseFunction):
                 "status": status,
                 "reason": stale,
                 "symbol": sym,
+                # Observation date: the latest FINRA reporting week (published with
+                # FINRA's 2-4 week delay), never the fetch time.
+                "as_of": None if stale else latest_week,
                 "n_rows": int(len(df)),
                 # Only the weeks in the requested window, matching the KPI caption.
                 # A stale latest week ships no rows, so it ships no total either.

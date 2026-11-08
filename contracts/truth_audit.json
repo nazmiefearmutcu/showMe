@@ -6,7 +6,8 @@
     "weekly": 21,
     "monthly": 100,
     "quarterly": 200,
-    "annual": 800
+    "annual": 800,
+    "finra_ats_weekly": 42
   },
   "cadence_by_category": {
     "chart": "daily",
@@ -20,7 +21,9 @@
     "macro": "monthly"
   },
   "cadence_overrides": {
-    "VCAP": "annual"
+    "VCAP": "annual",
+    "DARK": "finra_ats_weekly",
+    "DPF": "finra_ats_weekly"
   },
   "calendar_codes": [
     "BTMM",
@@ -200,5 +203,8 @@
     "EMSX": "ticket preview echoes the supplied quantity/price",
     "FXGO": "ticket preview echoes the supplied quantity/price",
     "TSOX": "ticket preview echoes the supplied quantity/price"
+  },
+  "_notes": {
+    "finra_ats_weekly": "FINRA OTC Transparency publishes weekly ATS data with a 2-week (Tier 1 NMS) or 4-week (other) delay, so the newest week is up to ~5-6 weeks old by rule."
   }
 }
