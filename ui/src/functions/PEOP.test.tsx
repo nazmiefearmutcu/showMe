@@ -284,3 +284,40 @@ describe("PEOP pane — grid CSV export", () => {
     expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });
+
+describe("PEOP pane — company provenance (PEOP#7)", () => {
+  it("does not present a summary-derived company as an employer claim", () => {
+    const payload = wikiPayload();
+    payload.items[0].company_source = "summary_pattern";
+    setMockFn({ state: "ok", data: { data: payload } });
+    const { container } = render(<PEOPPane code="PEOP" />);
+    fireEvent.change(screen.getByLabelText(/People search query/i), {
+      target: { value: "jensen" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(container.textContent).toContain(
+      "mentioned in summary, not an employer claim",
+    );
+    fireEvent.click(screen.getByTitle("Download CSV"));
+    const [, csv] = (downloadGridCsv as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, string];
+    expect(csv).toContain(
+      "Nvidia (mentioned in summary, not an employer claim)",
+    );
+  });
+
+  it("keeps a Wikidata employer claim unlabelled", () => {
+    const payload = wikiPayload();
+    payload.items[0].company_source = "wikidata:P108";
+    setMockFn({ state: "ok", data: { data: payload } });
+    const { container } = render(<PEOPPane code="PEOP" />);
+    fireEvent.change(screen.getByLabelText(/People search query/i), {
+      target: { value: "jensen" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(container.textContent).not.toContain("not an employer claim");
+    expect(container.textContent).toContain("Nvidia");
+  });
+});
