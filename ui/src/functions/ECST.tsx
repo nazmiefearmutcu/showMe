@@ -264,7 +264,10 @@ export function ECSTPane({ code }: FunctionPaneProps) {
                 <span data-testid="ecst-compare-pill">
                   <Pill
                     tone={
-                      compareMode === "macro_series_baseline" ? "warn" : "muted"
+                      compareMode === "macro_series_baseline" ||
+                      compareMode === "provider_unavailable"
+                        ? "warn"
+                        : "muted"
                     }
                     variant="soft"
                     withDot={false}
@@ -272,7 +275,9 @@ export function ECSTPane({ code }: FunctionPaneProps) {
                     {`vs ${compareName ?? compareWith}${
                       compareMode === "macro_series_baseline"
                         ? " · baseline"
-                        : ""
+                        : compareMode === "provider_unavailable"
+                          ? " · unavailable"
+                          : ""
                     }`}
                   </Pill>
                 </span>
