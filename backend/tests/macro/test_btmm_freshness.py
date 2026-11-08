@@ -124,8 +124,14 @@ def test_btmm_summary_ignores_stale_2022_observation_in_range(monkeypatch) -> No
     assert summary["range_window_days"] == 183
 
 
-def test_btmm_summary_falls_back_to_full_set_when_all_stale(monkeypatch) -> None:
-    """Edge case: nothing passes the freshness gate → use full set."""
+def test_btmm_summary_has_no_range_when_all_stale(monkeypatch) -> None:
+    """BTMM#1: when nothing passes the freshness gate the range is honestly empty.
+
+    This test used to assert that the full stale set was substituted for the
+    range (min 1.0 / max 4.0 from 2020-2021 rows). Stale rates must not be
+    presented as the current range, so the range is None and the rows are
+    flagged stale.
+    """
     def fake_loader(_timeout: float, _force_refresh: bool = False):
         return [
             {"country_code": "X", "policy_rate": 1.0, "as_of": "2020-01-01"},
@@ -135,8 +141,10 @@ def test_btmm_summary_falls_back_to_full_set_when_all_stale(monkeypatch) -> None
     monkeypatch.setattr(btmm, "_load_bis_rows", fake_loader)
     result = asyncio.run(BTMMFunction().execute())
     summary = result.data["summary"]
-    assert summary["min_policy_rate"] == 1.0
-    assert summary["max_policy_rate"] == 4.0
+    assert summary["min_policy_rate"] is None
+    assert summary["max_policy_rate"] is None
+    assert summary["average_policy_rate"] is None
+    assert {row["freshness"] for row in result.data["rows"]} == {"stale"}
 
 
 def test_btmm_as_of_envelope_is_max_of_rows(monkeypatch) -> None:

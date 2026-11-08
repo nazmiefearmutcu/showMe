@@ -391,7 +391,16 @@ class BTMMFunction(BaseFunction):
 
         filtered = _filter_rows(rows, country=country, region=region)
         filtered = sorted(filtered, key=_sort_key)[:limit]
+        today = date.today()
+        for row in filtered:
+            row["freshness"] = _freshness(row.get("as_of"), today)
         summary = _summary(filtered, universe=rows)
+        if summary["stale_rows"]:
+            warnings.append(
+                f"stale_rows_excluded: {summary['stale_rows']} policy-rate row(s) dated "
+                f"before the {_RANGE_WINDOW_DAYS}-day window are left out of the average, "
+                "range and largest move; they are shown with freshness=stale"
+            )
 
         # Bug #24 fix: surface data staleness as a warning so the UI's
         # "live" pill can flip to "warn" when the BIS cache + freshest row
@@ -691,47 +700,59 @@ def _filter_rows(rows: list[dict[str, Any]], *, country: str, region: str) -> li
     return [dict(row) for row in filtered]
 
 
+_RANGE_WINDOW_DAYS = 183
+
+
+def _freshness(as_of: Any, today: date) -> str:
+    """Classify an observation date against the 183-day freshness window.
+
+    ``fresh``: dated inside the window, not in the future.
+    ``stale``: dated before the window (e.g. 1998 legacy euro-area series).
+    ``undated``: no usable date, so it cannot be shown as current.
+    """
+    text = str(as_of or "").strip()
+    if not text:
+        return "undated"
+    cutoff_iso = (today - timedelta(days=_RANGE_WINDOW_DAYS)).isoformat()
+    today_iso = today.isoformat()
+    if text > today_iso:
+        return "undated"
+    if text < cutoff_iso:
+        return "stale"
+    return "fresh"
+
+
 def _summary(rows: list[dict[str, Any]], *, universe: list[dict[str, Any]]) -> dict[str, Any]:
-    rates = [float(row["policy_rate"]) for row in rows if isinstance(row.get("policy_rate"), (int, float))]
+    # BTMM#1: the average, range and largest move all read the same fresh-only
+    # set. Stale or undated observations are counted and reported, never used
+    # as if they were current policy rates.
+    today = date.today()
+    freshness = [_freshness(row.get("as_of"), today) for row in rows]
+    fresh_rows = [row for row, state in zip(rows, freshness) if state == "fresh"]
+    rates = [
+        float(row["policy_rate"])
+        for row in fresh_rows
+        if isinstance(row.get("policy_rate"), (int, float))
+    ]
     move_counts = {
         "hikes": sum(1 for row in rows if row.get("last_move") == "hike"),
         "cuts": sum(1 for row in rows if row.get("last_move") == "cut"),
         "holds": sum(1 for row in rows if row.get("last_move") == "hold"),
     }
-    hottest = max(rows, key=lambda row: abs(float(row.get("change_bp") or 0)), default=None)
-
-    # Bug #24 fix: Range min/max ignores rows whose ``as_of`` is older than
-    # 6 months. Previously a stale 2022 Croatian 0.00% observation surfaced
-    # as the "Range min" even though every other CB had moved since. We
-    # keep the full ``rates`` list for the average (count is what matters
-    # there), but compute min/max from the fresh-only slice.
-    today_iso = date.today().isoformat()
-    cutoff_iso = (date.today() - timedelta(days=183)).isoformat()
-    fresh_rates: list[float] = []
-    for row in rows:
-        rate = row.get("policy_rate")
-        if not isinstance(rate, (int, float)):
-            continue
-        as_of = row.get("as_of")
-        if not as_of or str(as_of) < cutoff_iso:
-            continue
-        # Guard against future-dated rows polluting min/max.
-        if str(as_of) > today_iso:
-            continue
-        fresh_rates.append(float(rate))
-    if not fresh_rates and rates:
-        # Edge case: no row passes the freshness gate (e.g. an all-stale
-        # fallback table in unit tests). Falling back to the full set is
-        # still better than surfacing `None`.
-        fresh_rates = rates
+    movers = [row for row in fresh_rows if isinstance(row.get("change_bp"), (int, float))]
+    hottest = max(movers, key=lambda row: abs(float(row["change_bp"])), default=None)
 
     return {
         "rows": len(rows),
         "universe": len(universe),
         "average_policy_rate": round(sum(rates) / len(rates), 4) if rates else None,
-        "max_policy_rate": max(fresh_rates) if fresh_rates else None,
-        "min_policy_rate": min(fresh_rates) if fresh_rates else None,
-        "range_window_days": 183,
+        "average_basis": f"fresh_{_RANGE_WINDOW_DAYS}d",
+        "max_policy_rate": max(rates) if rates else None,
+        "min_policy_rate": min(rates) if rates else None,
+        "range_window_days": _RANGE_WINDOW_DAYS,
+        "fresh_rows": len(fresh_rows),
+        "stale_rows": freshness.count("stale"),
+        "undated_rows": freshness.count("undated"),
         **move_counts,
         "largest_last_move": hottest,
     }
