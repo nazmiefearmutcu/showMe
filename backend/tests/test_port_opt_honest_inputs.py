@@ -200,25 +200,61 @@ def test_methodology_does_not_give_min_volatility_a_return_multiplier() -> None:
     assert "Min-volatility uses projected gradient descent" in entry.methodology, entry.methodology
 
 
-# --- PORT_OPT#7 follow-up: the agent path must not inject defaults either ------
+# --- PORT_OPT#7 follow-up: a single candidate is not a portfolio ---------------
 
-def test_agent_path_does_not_inject_agent_defaults_into_port_opt(monkeypatch) -> None:
+def test_agent_path_never_runs_port_opt_for_a_single_candidate(monkeypatch) -> None:
+    """PORT_OPT optimises a universe. Run per candidate it can only return
+    template or peer data attributed to that candidate, so the agent must not
+    execute it at all and must mark the row not_applicable with no score."""
     import showme.server_routes._agent_runtime as runtime
 
-    captured: list[dict] = []
+    captured: list[str] = []
 
     async def _fake_execute(code, params):  # noqa: ANN001 - patched sidecar call
-        captured.append({"code": code, "params": dict(params)})
+        captured.append(code.upper())
         return {"code": code, "data": {}}
 
     monkeypatch.setattr(runtime, "_execute_showme_function", _fake_execute)
-    asyncio.run(runtime._run_best_symbol_agent({
+    out = asyncio.run(runtime._run_best_symbol_agent({
         "candidates": ["SPY"],
         "function_codes": ["PORT_OPT"],
         "execute_functions": True,
+        "include_functions": True,
     }))
-    port_opt_calls = [c for c in captured if c["code"].upper() == "PORT_OPT"]
-    assert port_opt_calls, "PORT_OPT was not executed by the agent"
-    for call in port_opt_calls:
-        for key in ("days", "range", "live", "symbols", "query", "limit"):
-            assert key not in call["params"], (key, call["params"].get(key))
+    assert "PORT_OPT" not in captured, captured
+    row = out["ranked"][0]["functions"][0]
+    assert row["code"] == "PORT_OPT"
+    assert row["status"] == "not_applicable", row["status"]
+    assert row["signal_count"] == 0 and row["score"] == 0, row
+    assert out["ranked"][0]["score"] == 0
+
+
+def test_agent_probe_port_opt_carries_no_synthetic_optimum() -> None:
+    from showme.server_routes import _agent_runtime as runtime
+    from showme.server_routes._models import FunctionIndexEntry
+
+    entry = FunctionIndexEntry(code="PORT_OPT", name="PORT_OPT", category="portfolio")
+    candidate = {"symbol": "AAPL", "asset_class": "EQUITY"}
+    payload = runtime._agent_probe_payload(entry, candidate, dict(candidate), True)
+    flat = repr(payload)
+    for key in ("max_sharpe", "min_volatility", "risk_parity", "expected_return", "volatility_pct", "upside_score"):
+        assert key not in flat, key
+    assert payload["data"].get("status") == "not_applicable", payload["data"]
+    assert runtime._agent_payload_score("PORT_OPT", payload)["signal_count"] == 0
+
+
+def test_port_opt_does_not_move_candidate_ranking(monkeypatch) -> None:
+    from showme import server
+    from showme.server_routes import _agent_runtime as runtime
+    from showme.server_routes._models import FunctionIndexEntry
+
+    entry = FunctionIndexEntry(code="PORT_OPT", name="PORT_OPT", category="portfolio")
+    monkeypatch.setattr(server, "_load_function_index", lambda: [entry])
+    out = asyncio.run(runtime._run_best_symbol_agent({
+        "candidates": ["AAPL", "EURUSD"],
+        "max_candidates": 2,
+        "execute_functions": False,
+    }))
+    assert out["best"] is not None
+    assert all(row["signal_functions"] == 0 for row in out["ranked"])
+    assert all(row["score"] == 0 for row in out["ranked"])

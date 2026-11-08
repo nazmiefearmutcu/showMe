@@ -151,9 +151,14 @@ AGENT_LOCAL_SIGNAL_CODES = {
     "MOSS",
     "NALRT",
     "NI",
-    "PORT_OPT",
     "PVAR",
 }
+# PORT_OPT optimises a portfolio universe. A single agent candidate is not one,
+# so the agent never executes it and never derives optimum-like numbers for it.
+AGENT_PORT_OPT_NOT_APPLICABLE_REASON = (
+    "PORT_OPT optimises the weights of a portfolio universe, so it has no result for one "
+    "candidate symbol. It is not run per candidate and adds no signal to the ranking."
+)
 # These need measured return history. A local probe cannot supply it, so they
 # get the explicit missing-data state instead of profile-derived numbers.
 AGENT_UNMEASURED_PROBE_CODES = frozenset({"MLSIG", "RPAR"})
@@ -968,15 +973,6 @@ def _agent_probe_data_for_code(
             "max_drawdown_pct": drawdown_pct,
             "signal": "positive_tuning" if sharpe > 0.25 else "neutral_tuning",
         }
-    if code == "PORT_OPT":
-        return {
-            **common,
-            "max_sharpe": sharpe + 0.12,
-            "expected_return": expected_return,
-            "volatility_pct": volatility_pct,
-            "upside_score": momentum_score,
-            "signal": "positive_optimizer_candidate" if sharpe > 0.2 else "neutral_optimizer_candidate",
-        }
     if code == "PVAR":
         return {
             **common,
@@ -1032,12 +1028,40 @@ def _agent_payload_score(code: str, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _port_opt_agent_payload(entry: FunctionIndexEntry, candidate: dict[str, str]) -> dict[str, Any]:
+    """Explicit not-applicable state for PORT_OPT on a single agent candidate."""
+    return {
+        "code": entry.code.upper(),
+        "instrument": {
+            "symbol": candidate["symbol"].upper(),
+            "asset_class": candidate["asset_class"].upper(),
+        },
+        "data": {
+            "status": "not_applicable",
+            "reason": AGENT_PORT_OPT_NOT_APPLICABLE_REASON,
+            "next_actions": ["Run PORT_OPT directly with symbols for a universe of at least two assets."],
+        },
+        "metadata": {
+            "fallback": True,
+            "degraded": True,
+            "agent_probe": True,
+            "not_applicable": True,
+        },
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "sources": [],
+        "warnings": [],
+        "elapsed_ms": None,
+    }
+
+
 def _agent_probe_payload(
     entry: FunctionIndexEntry,
     candidate: dict[str, str],
     params: dict[str, Any],
     native_asset_match: bool,
 ) -> dict[str, Any]:
+    if entry.code.upper() == "PORT_OPT":
+        return _port_opt_agent_payload(entry, candidate)
     if entry.code.upper() not in AGENT_LOCAL_SIGNAL_CODES or not native_asset_match:
         reason = (
             AGENT_UNMEASURED_PROBE_REASON
@@ -1186,19 +1210,18 @@ async def _run_best_symbol_agent(request: dict[str, Any]) -> dict[str, Any]:
         fail_count = 0
         fallback_count = 0
         for entry in entries:
-            if entry.code.upper() == "PORT_OPT":
-                # PORT_OPT applies its own handler defaults (3-year lookback,
-                # ETF universe, live off). The agent peer profile (days 120,
-                # peer symbols, live=True, news query) must not reach it.
-                params = {"symbol": candidate["symbol"], "asset_class": candidate["asset_class"]}
-            else:
-                params = _agent_function_params(entry, candidate)
+            params = _agent_function_params(entry, candidate)
             start = time.perf_counter()
             status = "pass"
             reason = ""
             payload: dict[str, Any]
             native_asset_match = _function_code_supports_asset(entry.code, candidate["asset_class"])
-            if execute_functions:
+            if entry.code.upper() == "PORT_OPT":
+                # Not applicable to one candidate: never executed, no score.
+                status = "not_applicable"
+                reason = AGENT_PORT_OPT_NOT_APPLICABLE_REASON
+                payload = _port_opt_agent_payload(entry, candidate)
+            elif execute_functions:
                 try:
                     result = await asyncio.wait_for(
                         _execute_showme_function(entry.code, params),
@@ -1234,7 +1257,7 @@ async def _run_best_symbol_agent(request: dict[str, Any]) -> dict[str, Any]:
                 fallback_count += 1
             if status == "pass":
                 pass_count += 1
-            else:
+            elif status == "fail":
                 fail_count += 1
             if score["signal_count"] > 0:
                 weight = 0.2 + min(int(score["signal_count"]), 8) * 0.1
