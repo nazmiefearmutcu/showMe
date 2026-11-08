@@ -28,6 +28,8 @@ from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRe
 def _cache_path():
     return runtime_path("damodaran_erp.json")
 _CACHE_TTL = 30 * 24 * 3600  # 30 gün
+# Provenance label for the hard-coded table below (wc1-g34 WACC#3).
+SNAPSHOT_SOURCE = "damodaran_snapshot_2025_01"
 # A failed scrape serves the fallback from MEMORY only, for this long —
 # a transient network error (or a missing openpyxl) must not stamp the
 # January snapshot with ts=now and lock out the real scrape for 30 days.
@@ -126,12 +128,18 @@ class DamodaranAdapter(BaseDataSource):
             out[country] = erp
         return out
 
-    async def country_erp(self) -> dict[str, float]:
+    async def _erp_table(self) -> tuple[dict[str, float], str]:
+        """The ERP table and where it came from (wc1-g34 WACC#3).
+
+        Sources: ``damodaran_cache`` (a stored scrape under its TTL),
+        ``damodaran_live`` (a scrape made now) or ``damodaran_snapshot_2025_01``
+        (the hard-coded January 2025 table, used when the scrape fails).
+        """
         cached = self._cache_load()
         if cached is not None:
-            return cached
+            return cached, "damodaran_cache"
         if time.time() < self._fallback_until:
-            return dict(_ERP_FALLBACK)
+            return dict(_ERP_FALLBACK), SNAPSHOT_SOURCE
         # Best-effort scrape — Damodaran's table layout varies by year.
         # We grab the 'ctryprem.xls' binary if reachable; otherwise fallback.
         try:
@@ -145,18 +153,34 @@ class DamodaranAdapter(BaseDataSource):
                 out = await asyncio.to_thread(self._parse_workbook, r.content)
                 if out is not None:
                     self._cache_save(out)
-                    return out
+                    return out, "damodaran_live"
         except Exception:
             pass
         # Fallback stays in memory with a short TTL so the real scrape is
         # retried after an hour instead of being locked out for 30 days.
         self._fallback_until = time.time() + _FALLBACK_RETRY_SECONDS
-        return dict(_ERP_FALLBACK)
+        return dict(_ERP_FALLBACK), SNAPSHOT_SOURCE
+
+    async def country_erp(self) -> dict[str, float]:
+        table, _source = await self._erp_table()
+        return table
 
     async def fetch(self, request: DataRequest) -> Any:
         return await self.country_erp()
 
+    async def get_erp_with_source(self, country: str = "US") -> tuple[float, str]:
+        """ERP as a decimal plus its source label.
+
+        A country missing from the table gets the mature-market (_global)
+        value; that case is labelled ``..._country_unmatched`` rather than
+        passed off as the country's own premium.
+        """
+        table, source = await self._erp_table()
+        key = (country or "US").upper()
+        if key in table:
+            return float(table[key]) / 100.0, source
+        return float(table.get("_global", 4.60)) / 100.0, f"{source}_country_unmatched"
+
     async def get_erp(self, country: str = "US") -> float:
-        table = await self.country_erp()
-        country = (country or "US").upper()
-        return float(table.get(country, table.get("_global", 4.60))) / 100.0
+        erp, _source = await self.get_erp_with_source(country)
+        return erp

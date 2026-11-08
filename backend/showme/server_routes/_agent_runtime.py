@@ -440,7 +440,9 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
         # DDM value at a silent rate and skip the WACC model (WACC policy, T10).
         params.update({"growth_rate": 0.03})
     elif code == "WACC":
-        params.update({"erp": 0.05, "beta_timeout": 2})
+        # wc1-g34 WACC#3: no erp here. A router-injected 0.05 bypassed the
+        # Damodaran lookup and reached the output with no source label.
+        params.update({"beta_timeout": 2})
     elif code == "REBA":
         params["targets"] = profile["targets"]
     elif code == "SECF":

@@ -33,6 +33,15 @@ def _is_bank_or_insurer(industry: str) -> bool:
     return not ("insurance" in industry and any(t in industry for t in _NOT_AN_INSURER_TOKENS))
 
 
+def _first_set(params: dict[str, Any], *names: str) -> Any:
+    """First caller value that is actually set (None and "" count as unset)."""
+    for name in names:
+        value = params.get(name)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 @FunctionRegistry.register
 class WACCFunction(BaseFunction):
     code = "WACC"
@@ -43,11 +52,19 @@ class WACCFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("WACC requires instrument")
-        erp = params.get("erp")
         warnings: list[str] = []
         sources: list[str] = []
-        # Damodaran-backed country ERP if no override
-        if erp is None:
+        # wc1-g34 WACC#3: the ERP comes from the caller (``market_premium`` is
+        # the manifest name, ``erp`` the historical one), else from Damodaran.
+        # Its source is always reported; a constant is labelled, never silent.
+        erp_user = _first_set(params, "market_premium", "erp")
+        erp: float | None = None
+        erp_source: str
+        if erp_user is not None:
+            erp = float(erp_user)
+            erp_source = "user_input"
+            sources.append("user_input")
+        else:
             damo = getattr(self.deps, "damodaran", None)
             if damo:
                 country = "US"
@@ -64,16 +81,37 @@ class WACCFunction(BaseFunction):
                 except Exception:
                     pass
                 try:
-                    erp = await asyncio.wait_for(
-                        damo.get_erp(country),
-                        timeout=float(params.get("damodaran_timeout", 8)),
-                    )
+                    if hasattr(damo, "get_erp_with_source"):
+                        erp, erp_source = await asyncio.wait_for(
+                            damo.get_erp_with_source(country),
+                            timeout=float(params.get("damodaran_timeout", 8)),
+                        )
+                    else:
+                        erp = await asyncio.wait_for(
+                            damo.get_erp(country),
+                            timeout=float(params.get("damodaran_timeout", 8)),
+                        )
+                        erp_source = "damodaran"
                     sources.append("damodaran")
+                    if erp_source.startswith("damodaran_snapshot"):
+                        warnings.append(
+                            "Damodaran ERP table unavailable; the January 2025 snapshot is used "
+                            f"for {country} (erp_source {erp_source})"
+                        )
+                    elif erp_source.endswith("_country_unmatched"):
+                        warnings.append(
+                            f"Damodaran has no ERP for country {country}; the mature-market ERP is used"
+                        )
                 except Exception as e:
                     warnings.append(f"damodaran: {e}")
-                    erp = 0.05
-            else:
+                    erp = None
+            if erp is None:
                 erp = 0.05
+                erp_source = "assumption_default_5pct"
+                warnings.append(
+                    "ERP unavailable from Damodaran; WACC uses the 5.0% assumption "
+                    "(erp_source assumption_default_5pct). Pass market_premium to set it."
+                )
         erp = float(erp)
         # Risk-free
         # HNT-07 fix: a user-supplied ``rf`` must win unconditionally, the
@@ -367,6 +405,7 @@ class WACCFunction(BaseFunction):
                 "rf": float(rf) if rf is not None else None,
                 "beta": float(beta) if beta is not None else None,
                 "erp": erp,
+                "erp_source": erp_source,
                 "rd": float(rd) if rd is not None else None,
                 "tax_rate": float(tax),
                 "equity_weight": ev_ratio, "debt_weight": dv_ratio,
@@ -377,7 +416,8 @@ class WACCFunction(BaseFunction):
                     "wacc": "Weighted average cost of capital as a decimal.",
                     "re_capm": "Cost of equity from CAPM.",
                     "rf": "Risk-free rate.",
-                    "erp": "Equity risk premium.",
+                    "erp": "Equity risk premium as a decimal.",
+                    "erp_source": "Where the ERP came from: user_input, damodaran_cache, damodaran_live, damodaran_snapshot_2025_01 (stale, January 2025 table) or assumption_default_5pct (a 5.0% constant).",
                     "rd": "Pre-tax cost of debt proxy.",
                     "equity_weight": "Equity share of capital structure.",
                     "debt_weight": "Debt share of capital structure.",
