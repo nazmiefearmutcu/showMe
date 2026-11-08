@@ -52,14 +52,15 @@ def test_icx_returns_real_constituents():
         assert isinstance(r["symbol"], str) and r["symbol"]
         assert isinstance(r["company"], str) and r["company"]
         # Real GICS sub-industry classification, not a placeholder.
-        assert r["sub_industry"]
+        # None when the name is outside the curated table (master-only, ICX#2).
+        assert r["sub_industry"] is None or r["sub_industry"]
         assert r["sector"] == "Information Technology"
 
     # No Wikipedia provenance / old garbage artefacts.
     assert "wikipedia" not in [s.lower() for s in result.sources]
     assert "Wikipedia" not in data["methodology"]
     assert data["methodology"]
-    assert "showme_gics_reference" in result.sources
+    assert "showme_security_master" in result.sources  # sector membership source (ICX#2)
 
     summary = data["summary"]
     assert summary["sector"] == "Information Technology"
@@ -125,7 +126,8 @@ def test_icx_quotes_attached_or_gracefully_null():
         assert all(r["symbol"] for r in data["rows"])
         assert any("unavailable" in w.lower() for w in result.warnings)
     # Constituents are real regardless of quote availability.
-    assert all(r["company"] and r["sub_industry"] for r in data["rows"])
+    # sub_industry comes from the curated table only; master-only names carry None.
+    assert all(r["company"] and "sub_industry" in r for r in data["rows"])
 
 
 def test_icx_quotes_disabled_leaves_prices_null():

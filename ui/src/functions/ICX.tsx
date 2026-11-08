@@ -57,6 +57,9 @@ interface ICXData {
   available_indexes?: string[];
   next_actions?: string[];
   summary?: { index?: string; constituent_count?: number; source?: string };
+  // ICX#1: a curated subset table is status "partial" with its coverage.
+  coverage?: { listed?: number; official?: number | null; complete?: boolean };
+  reason?: string;
 }
 
 // The eight curated index codes supported by the backend
@@ -128,6 +131,7 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
 
   const payload = data?.data;
   const status = payload?.status ?? "—";
+  const partial = status === "partial" && payload?.coverage != null;
 
   const rows = useMemo(() => {
     const base = [...(payload?.rows ?? [])];
@@ -268,6 +272,11 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
       />
     ) : (
       <div className="u-grid-gap-14">
+        {partial && payload?.reason ? (
+          <p style={noteStyle} role="status" aria-label="Partial coverage note">
+            Partial index: {payload.reason}
+          </p>
+        ) : null}
         <DataGrid
           columns={COLS}
           rows={rows}
@@ -295,7 +304,11 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Index Constituents"
-          subtitle={`${payload?.constituents ?? 0} constituents · ${payload?.index ?? effectiveIndex}`}
+          subtitle={
+            partial && payload?.coverage
+              ? `${payload.coverage.listed ?? rows.length} of ${payload.coverage.official ?? "?"} constituents · ${payload?.index ?? effectiveIndex} · partial`
+              : `${payload?.constituents ?? 0} constituents · ${payload?.index ?? effectiveIndex}`
+          }
           trailing={
             <FunctionControlGroup>
               <SegmentedControl
