@@ -41,7 +41,8 @@ def _ratio_columns():
 def test_rv_ratio_unit_column_is_the_emitted_dividend_field() -> None:
     # Red before the fix: the only ratio column was keyed "dividend_yield", which RV never emits.
     keys = [c.key for c in _ratio_columns()]
-    assert keys == ["div_yield"]
+    # fcf_yield is also emitted as a decimal fraction, so it carries the ratio unit too.
+    assert keys == ["div_yield", "fcf_yield"]
 
 
 def test_rv_declared_ratio_column_receives_a_value() -> None:
@@ -53,6 +54,6 @@ def test_rv_declared_ratio_column_receives_a_value() -> None:
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
     res = asyncio.run(fn.execute(instrument=inst, peers=["MSFT"]))
     row = next(r for r in res.data["rows"] if r["symbol"] == "AAPL")
-    (column,) = _ratio_columns()
+    column = next(c for c in _ratio_columns() if c.key == "div_yield")
     assert column.key in row
     assert row[column.key] == pytest.approx(0.0032)
