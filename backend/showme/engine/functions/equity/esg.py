@@ -40,10 +40,10 @@ _PROXY_METHODOLOGY = (
 
 _FIELD_DICTIONARY = {
     "pillar": "ESG component (total / environment / social / governance / controversy).",
-    "score": "Vendor ESG pillar score (lower may indicate lower unmanaged risk).",
+    "score": "Row score: vendor ESG risk score (yfinance path, lower = lower unmanaged risk) or a 10-K filing count (SEC proxy path, not a risk score).",
     "scale": "Scale / unit semantics for the displayed score.",
     "source_mode": "Provider state for the displayed row.",
-    "totalEsg": "Composite ESG risk score.",
+    "totalEsg": "Vendor composite ESG risk score (yfinance path). On the SEC proxy path it is the count of unique 10-K filings in the window matching any E/S/G term, not a risk score.",
     "environmentScore": "E pillar score.",
     "socialScore": "S pillar score.",
     "governanceScore": "G pillar score.",
@@ -137,7 +137,10 @@ async def _efts_total(client: Any, query: str, symbol: str, window: dict[str, st
     hits = payload.get("hits", {}) if isinstance(payload, dict) else {}
     total = hits.get("total", {}) if isinstance(hits, dict) else {}
     value = total.get("value") if isinstance(total, dict) else None
-    return int(value) if isinstance(value, (int, float)) else 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        # No count in the payload is not a zero count: surface it as a provider error.
+        raise ValueError("EFTS response has no hits.total.value")
+    return int(value)
 
 
 async def _fetch_proxy_counts(symbol: str) -> dict[str, int]:
