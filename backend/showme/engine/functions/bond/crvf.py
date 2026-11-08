@@ -164,24 +164,82 @@ def _curve_payload(
     }
 
 
-async def _observation_dates(fred: Any, client: Any) -> dict[str, str]:
-    """Latest FRED observation date per tenor, for the keyless CSV path.
+_LIVE_UNAVAILABLE_REASON = (
+    "FRED live US curve unavailable ({detail}). The static computed model is not "
+    "served in place of a live request; the API caller can set live_curve=false to view it, labelled as a model."
+)
+_LIVE_UNAVAILABLE_NEXT = [
+    "Retry later: FRED did not return the DGS* Treasury yields.",
+    "Set live_curve=false to view the labelled computed_model curve (not live).",
+    "Use Yield & Spread Analytics (YAS) to price a specific bond.",
+]
 
-    The keyed adapter only returns values, so no date is claimed for it.
-    The keyless fetches were just cached by ``yield_curve``, so this does
-    not add network calls on the default path.
+
+def _no_match_warnings(tenor_filter: list[str] | None, curve: dict[str, float]) -> list[str]:
+    if tenor_filter and not curve:
+        return [f"no curve point matches tenors={','.join(tenor_filter)}"]
+    return []
+
+
+async def _keyless_curve_with_dates(client: Any) -> tuple[dict[str, float], dict[str, str]]:
+    """Latest value and FRED observation date per series, one fetch per series.
+
+    Value and date come from the same frame. A failed fetch is not cached,
+    so a second pass over the series would refetch it.
     """
-    if not isinstance(fred, _KeylessFredCSV):
-        return {}
+    curve: dict[str, float] = {}
     dates: dict[str, str] = {}
     for series_id in _KeylessFredCSV._CURVE_IDS:
         try:
             frame = await fetch_fred_csv_series(series_id, client=client)
-        except Exception:  # noqa: BLE001 - a missing date is reported as null
+        except Exception:  # noqa: BLE001 - a missing series is reported by absence
             frame = None
-        if frame is not None and not frame.empty:
-            dates[_SERIES_TO_TENOR.get(series_id, series_id)] = frame.index[-1].date().isoformat()
-    return dates
+        if frame is None or frame.empty:
+            continue
+        value = float(frame["value"].iloc[-1])
+        if value != value:
+            continue
+        tenor = _SERIES_TO_TENOR.get(series_id, series_id)
+        curve[tenor] = value
+        dates[tenor] = frame.index[-1].date().isoformat()
+    return curve, dates
+
+
+async def _keyed_curve_with_dates(fred: Any) -> tuple[dict[str, float], dict[str, str]]:
+    """Keyed FRED: value and observation date from one adapter call.
+
+    An adapter that reports only values (no ``yield_curve_observations``)
+    yields no dates, so as_of stays null rather than a fetch date.
+    """
+    observe = getattr(fred, "yield_curve_observations", None)
+    if observe is not None:
+        observations = await observe()
+    else:
+        observations = {sid: (value, None) for sid, value in (await fred.yield_curve()).items()}
+    curve: dict[str, float] = {}
+    dates: dict[str, str] = {}
+    for sid, (value, when) in observations.items():
+        if value is None or value != value:
+            continue
+        tenor = _SERIES_TO_TENOR.get(sid, sid)
+        curve[tenor] = float(value)
+        if when is not None:
+            dates[tenor] = when.date().isoformat()
+    return curve, dates
+
+
+async def _fetch_live_curve(fred: Any, client: Any) -> tuple[dict[str, float], dict[str, str], str]:
+    """Return (curve, as_of_by_tenor, failure_detail); detail is empty on success."""
+    if isinstance(fred, _KeylessFredCSV):
+        curve, dates = await _keyless_curve_with_dates(client)
+        return curve, dates, "" if curve else "fredgraph.csv returned no usable DGS* yields"
+    try:
+        curve, dates = await _keyed_curve_with_dates(fred)
+    except Exception as e:  # noqa: BLE001 - the reason is reported, never hidden
+        reason = str(e) or e.__class__.__name__
+        LOG.warning("CRVF live curve fetch failed: %s", reason)
+        return {}, {}, reason
+    return curve, dates, "" if curve else "FRED returned no usable DGS* yields"
 
 
 @FunctionRegistry.register
@@ -190,11 +248,17 @@ class CRVFFunction(BaseFunction):
     name = "Yield Curve"
     category = "bond"
 
-    def _unavailable(self, country: str, tenor_filter: list[str] | None, reason: str) -> FunctionResult:
+    def _unavailable(
+        self,
+        country: str,
+        tenor_filter: list[str] | None,
+        reason: str,
+        next_actions: list[str] | None = None,
+    ) -> FunctionResult:
         data: dict[str, Any] = {
             "status": "provider_unavailable",
             "reason": reason,
-            "next_actions": list(_NON_US_NEXT_ACTIONS),
+            "next_actions": list(next_actions or _NON_US_NEXT_ACTIONS),
         }
         data.update(_curve_payload(country, {}, "provider_unavailable", tenor_filter=tenor_filter))
         return FunctionResult(
@@ -215,61 +279,42 @@ class CRVFFunction(BaseFunction):
         if country != "US":
             return self._unavailable(country, tenor_filter, _NON_US_REASON.format(country=country))
 
-        warnings: list[str] = []
         if not _live_requested(params):
+            # Explicit opt-out (live_curve=false or reference=true): the
+            # static model, labelled computed_model and never called live.
             curve = _filter_curve(_curve_model(), tenor_filter)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data=_curve_payload(country, curve, "computed_model", tenor_filter=tenor_filter),
                 sources=["curve_model"],
-                warnings=[],
+                warnings=_no_match_warnings(tenor_filter, curve),
                 metadata={"country": country, "mode": "computed_model",
                           "live": False, "data_mode": "modeled"},
             )
         # Live branch: the keyed FRED adapter when keyed, else the keyless
-        # fredgraph.csv endpoint. A failed fetch is labelled, not hidden.
+        # fredgraph.csv endpoint. A failed or empty fetch is an honest
+        # provider_unavailable state; the model is never substituted.
         client = getattr(self, "_http_client", None)
         fred = fred_with_keyless_fallback(self.deps.fred, client=client)
-        curve: dict[str, float] = {}
-        as_of_by_tenor: dict[str, str] = {}
-        try:
-            curve = await fred.yield_curve()
-            curve = {
-                _SERIES_TO_TENOR.get(k, k): v
-                for k, v in curve.items()
-                if v is not None and v == v
-            }
-        except Exception as e:
-            # QA-fix: log + propagate reason so the warning is never an
-            # empty "fred: " label.
-            reason = str(e) or e.__class__.__name__
-            LOG.warning("CRVF live curve fetch failed: %s", reason)
-            warnings.append(f"fred: {reason}")
-        if curve and not warnings:
-            as_of_by_tenor = await _observation_dates(fred, client)
-        if not curve and not warnings:
-            warnings.append("fred curve came back empty; using computed_model fallback")
-            LOG.warning("CRVF: live FRED curve returned no usable tenors")
-        source_mode = "fred" if curve and not warnings else "computed_model"
+        curve, as_of_by_tenor, detail = await _fetch_live_curve(fred, client)
         if not curve:
-            curve = _curve_model()
+            reason = _LIVE_UNAVAILABLE_REASON.format(detail=detail or "no usable yields")
+            return self._unavailable(country, tenor_filter, reason, next_actions=_LIVE_UNAVAILABLE_NEXT)
         curve = _filter_curve(curve, tenor_filter)
-        if tenor_filter and not curve:
-            warnings.append(f"no curve point matches tenors={','.join(tenor_filter)}")
+        warnings = _no_match_warnings(tenor_filter, curve)
         return FunctionResult(
             code=self.code,
             instrument=None,
             data=_curve_payload(
                 country,
                 curve,
-                source_mode,
-                as_of_by_tenor=as_of_by_tenor if source_mode == "fred" else None,
+                "fred",
+                as_of_by_tenor=as_of_by_tenor,
                 tenor_filter=tenor_filter,
             ),
-            sources=[source_mode],
+            sources=["fred"],
             warnings=warnings,
-            metadata={"country": country, "mode": source_mode,
-                      "live": bool(curve) and not warnings,
-                      "data_mode": "live_official" if source_mode == "fred" else "modeled"},
+            metadata={"country": country, "mode": "fred",
+                      "live": not warnings, "data_mode": "live_official"},
         )

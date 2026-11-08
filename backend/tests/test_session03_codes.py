@@ -154,11 +154,12 @@ def test_crvf_non_us_live_is_unavailable_not_us_fixture(deps):
     assert any("DE" in w for w in res.warnings)
 
 
-def test_crvf_us_live_without_fred_admits_fallback(deps):
-    """Keyless-CSV era: without a keyed adapter CRVF still ATTEMPTS live via
-    fredgraph.csv; when that fetch fails the failure is admitted with a
-    warning and the computed_model fallback (offline-deterministic via the
-    ``_http_client`` injection seam)."""
+def test_crvf_us_live_failure_is_honest_unavailable_not_fixture(deps):
+    """p2a-g04 policy: without a keyed adapter CRVF still ATTEMPTS live via
+    fredgraph.csv; when that fetch fails the request is reported as
+    provider_unavailable with the FRED reason. The static computed_model
+    curve is served only on an explicit live_curve=false / reference=true
+    opt-out (offline via the ``_http_client`` injection seam)."""
     fn = CRVFFunction(deps)
 
     class _BoomClient:
@@ -167,7 +168,9 @@ def test_crvf_us_live_without_fred_admits_fallback(deps):
 
     fn._http_client = _BoomClient()
     res = _run(fn.execute(country="US", live=True))
-    assert res.sources == ["computed_model"]
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["rows"] == []
+    assert res.sources == []
     assert any("fred" in w.lower() for w in res.warnings)
 
 
