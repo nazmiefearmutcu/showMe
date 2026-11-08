@@ -70,6 +70,48 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
 }
 
 
+# Asset class -> rule a position of that class is margined under. A position uses
+# its own class rule whenever the account's rule does not cover that class, so one
+# account can hold spot crypto and equities without either being priced at the
+# other's rate (MGN#2), and a reg_t account's BTC is not margined at 50% (MGN#3).
+_CLASS_RULE: dict[str, str] = {
+    "CRYPTO": "crypto_spot",
+    "EQUITY": "reg_t",
+    "ETF": "reg_t",
+    "FX": "fx",
+    "BOND": "bond",
+}
+
+
+def infer_margin_type(positions: list[dict[str, Any]]) -> str:
+    """Account-level margin type implied by the products an account holds.
+
+    Only an account made purely of spot crypto is crypto_spot; a crypto account
+    that also holds derivatives keeps the crypto_futures rule. A mixed account is
+    reg_t, and each position is still priced under its own class rule.
+    """
+    classes = {str(p.get("asset_class") or "").upper() for p in positions}
+    if classes and classes <= {"CRYPTO"}:
+        return "crypto_spot"
+    if classes and classes <= {"CRYPTO", "DERIVATIVE"} and "DERIVATIVE" in classes:
+        return "crypto_futures"
+    if classes & {"FX"}:
+        return "fx"
+    if classes & {"COMMODITY", "DERIVATIVE"}:
+        return "futures"
+    return "reg_t"
+
+
+def _position_rule(asset_class: str, margin_type: str, account_rule: dict[str, Any]) -> dict[str, Any]:
+    """Rule for one position: the account rule, unless its class has its own rule."""
+    cls = str(asset_class or "").upper()
+    mapped = _CLASS_RULE.get(cls)
+    # An account the user set to crypto_futures keeps its crypto rule (explicit choice).
+    if mapped is None or mapped == margin_type or (cls == "CRYPTO" and margin_type == "crypto_futures"):
+        return account_rule
+    return dict(DEFAULT_RULES[mapped])
+
+
 def _load_config() -> dict[str, Any]:
     if not _config_path().exists():
         return {}
@@ -175,24 +217,32 @@ def calc_account(
     info = (cfg.get("accounts") or {}).get(account_name) or {}
     margin_type = info.get("margin_type", "reg_t")
     rule = {**_rule_for(margin_type), **(info.get("overrides") or {})}
+    # Rule that sets buying power: the rule of the largest position by notional.
+    bp_rule = rule
     if margin_type == "portfolio":
         ip, mp = _portfolio_margin(positions, rule)
         per_pos = []
     else:
         ip = mp = 0.0
         per_pos = []
+        biggest = -1.0
         for p in positions:
-            i, m = _position_margin(p, rule)
+            p_rule = _position_rule(p.get("asset_class", ""), margin_type, rule)
+            i, m = _position_margin(p, p_rule)
             ip += i
             mp += m
             per_pos.append({**p, "initial_margin": i, "maintenance_margin": m})
+            notional = abs(float(p.get("quantity", 0) or 0)
+                           * float(p.get("last", p.get("avg_cost", 0)) or 0))
+            if notional > biggest:
+                biggest, bp_rule = notional, p_rule
     cash = float(info.get("cash", 0) or 0)
     mv = sum(float(p.get("quantity", 0) or 0) * float(p.get("last", p.get("avg_cost", 0)) or 0)
              for p in positions)
     equity = cash + mv
     excess = equity - ip
     cushion = (equity - mp) / equity if equity else 0.0
-    buying_power = max(equity - ip, 0) / max(rule.get("initial_long_pct", 0.5), 0.05) \
+    buying_power = max(equity - ip, 0) / max(bp_rule.get("initial_long_pct", 0.5), 0.05) \
         if margin_type != "portfolio" else max(equity - ip, 0) * 4
     return {
         "account": account_name,
@@ -231,10 +281,10 @@ def calc_all_accounts(
         })
     # Auto-create accounts if missing.
     cfg_accts = cfg.setdefault("accounts", {})
-    for name in accts:
+    for name, positions in accts.items():
         cfg_accts.setdefault(name, {
-            "margin_type": "reg_t", "cash": 0.0, "currency": "USD",
-            "overrides": {},
+            "margin_type": infer_margin_type(positions), "cash": 0.0,
+            "currency": "USD", "overrides": {},
         })
     _save_config(cfg)
     out = []
