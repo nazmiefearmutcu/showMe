@@ -31,6 +31,7 @@ import {
   SegmentedControl,
 } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { StrsPriceBasis } from "./strs-basis";
 
 type Row = Record<string, unknown>;
 
@@ -786,6 +787,8 @@ function PortfolioAnalyticsView({
           ))}
         </div>
       ) : null}
+
+      {code === "STRS" ? <StrsPriceBasis payload={payload} /> : null}
 
       <div className="portfolio-analytics-grid">
         <section className="portfolio-table-panel">

@@ -576,3 +576,68 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
     expect(mockArgs.current?.symbol).toBe("AAPL");
   });
 });
+
+describe("PORTX STRS valuation basis is visible (STRS#6)", () => {
+  // The backend states the basis (price_source) but the pane never read it, so a
+  // cost-valued stress run looked identical to a live one. The basis must be on screen.
+  it("states average cost for a default compare run (summary.price_source)", () => {
+    mockOk({
+      status: "ok",
+      comparisons: [{ key: "GFC_2008", scenario: "GFC_2008", total_pnl: -1200 }],
+      summary: { scenarios: 1, positions: 1, price_source: "portfolio_state_cost", worst_total_pnl: -1200 },
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    const basis = screen.getByTestId("strs-price-basis");
+    expect(basis.textContent).toContain("average cost");
+    expect(basis.textContent).not.toContain("live quotes");
+  });
+
+  it("names live quotes when every position was quoted", () => {
+    mockOk({
+      status: "ok",
+      comparisons: [{ key: "GFC_2008", scenario: "GFC_2008", total_pnl: -900 }],
+      summary: { scenarios: 1, positions: 2, price_source: "live_quote", worst_total_pnl: -900 },
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    expect(screen.getByTestId("strs-price-basis").textContent).toContain("live quotes");
+  });
+
+  it("flags a mixed basis when some positions fell back to average cost", () => {
+    mockOk({
+      status: "ok",
+      comparisons: [{ key: "GFC_2008", scenario: "GFC_2008", total_pnl: -900 }],
+      summary: { scenarios: 1, positions: 2, price_source: "mixed", worst_total_pnl: -900 },
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    const basis = screen.getByTestId("strs-price-basis");
+    expect(basis.textContent).toContain("Mixed");
+    expect(basis.textContent).toContain("some positions at average cost");
+  });
+
+  it("reads the top-level price_source of a single-scenario or custom run", () => {
+    mockOk({
+      status: "ok",
+      scenario: "GFC 2008",
+      price_source: "portfolio_state_cost",
+      positions: [{ symbol: "AAPL", shock: -0.4, market_value_post: 600, pnl: -400 }],
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    expect(screen.getByTestId("strs-price-basis").textContent).toContain("average cost");
+  });
+
+  it("shows no valuation strip when the payload carries no price_source", () => {
+    mockOk({ status: "ok", comparisons: [{ key: "GFC_2008", scenario: "GFC_2008", total_pnl: -1 }] });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    expect(screen.queryByTestId("strs-price-basis")).toBeNull();
+  });
+
+  it("does not show the STRS basis strip on other panes", () => {
+    mockOk({
+      status: "ok",
+      price_source: "portfolio_state_cost",
+      rows: LIVE_ROWS,
+    });
+    render(<PortfolioAnalyticsPane code="PORT" symbol="" />);
+    expect(screen.queryByTestId("strs-price-basis")).toBeNull();
+  });
+});
