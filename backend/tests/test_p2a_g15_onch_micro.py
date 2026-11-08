@@ -231,3 +231,29 @@ def test_onch_mempool_backlog_is_the_mempool_count_not_the_projected_sum(monkeyp
     assert "projected" in projected["context"].lower()
     assert data["cards"][1]["value"] == f"{_ONCH_MEMPOOL_COUNT:,} tx"
     assert f"{_ONCH_MEMPOOL_COUNT:,} txs in the mempool" in data["summary"]
+
+
+def test_onch_unsupported_chain_is_explicit_input_error(monkeypatch: Any) -> None:
+    # The pane's chain control offers BTC/ETH. Only Bitcoin is served by the
+    # keyless vitals, so ETH must be an explicit input error, never a silently
+    # Bitcoin payload returned under an Ethereum request.
+    from showme.engine.functions.misc.onch import ONCHFunction
+
+    client = _OnchClient()
+    _patch_onch_client(monkeypatch, client)
+    result = asyncio.run(ONCHFunction().execute(chain="ETH"))
+    data = result.data
+    assert data["status"] == "input_error"
+    assert data["rows"] == []
+    assert data.get("next_actions")
+    assert client.urls == [], "no upstream call for an unsupported chain"
+
+
+def test_onch_payload_carries_as_of_request_time(monkeypatch: Any) -> None:
+    before = datetime.now(timezone.utc)
+    result = _run_onch(monkeypatch, _OnchClient())
+    after = datetime.now(timezone.utc)
+    as_of = datetime.fromisoformat(result.data["as_of"])
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=timezone.utc)
+    assert before <= as_of <= after

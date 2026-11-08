@@ -11,6 +11,7 @@ returns real, live metrics with no key required.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -24,6 +25,9 @@ _COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 _DEFILLAMA_CHAINS = "https://api.llama.fi/v2/chains"
 _BLOCKSCOUT_ETH_STATS = "https://eth.blockscout.com/api/v2/stats"
 _UA = {"User-Agent": "showMe research contact@example.com"}
+# Only Bitcoin is served by the keyless vitals; the pane's chain control also
+# offers ETH, which must be an explicit input error rather than a BTC payload.
+_SUPPORTED_CHAINS = frozenset({"BTC", "BITCOIN"})
 
 # Hardcoded values the legacy stub leaned on / the kind of canned numbers a
 # fake implementation would echo. Kept ONLY so tests can assert we never
@@ -87,11 +91,16 @@ class ONCHFunction(BaseFunction):
         self, instrument: Instrument | None = None, **params: Any
     ) -> FunctionResult:
         """Return live keyless Bitcoin on-chain network vitals (default path)."""
+        chain = str(params.get("chain") or "BTC").strip().upper()
+        if chain not in _SUPPORTED_CHAINS:
+            return self._input_error(instrument, chain)
         timeout = float(params.get("timeout", 12))
+        as_of = datetime.now(timezone.utc).isoformat()
         try:
             payload = await self._fetch_live(timeout)
         except Exception as exc:  # noqa: BLE001 - network/parse failures handled below
-            return self._unavailable(instrument, exc)
+            return self._unavailable(instrument, exc, as_of)
+        payload["as_of"] = as_of
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -311,7 +320,9 @@ class ONCHFunction(BaseFunction):
 
     # --------------------------------------------------------------- failure
 
-    def _unavailable(self, instrument: Instrument | None, exc: Exception) -> FunctionResult:
+    def _unavailable(
+        self, instrument: Instrument | None, exc: Exception, as_of: str
+    ) -> FunctionResult:
         """Honest, clearly-labeled fallback on a genuine network/parse failure."""
         return FunctionResult(
             code=self.code,
@@ -319,6 +330,7 @@ class ONCHFunction(BaseFunction):
             data={
                 "status": "provider_unavailable",
                 "data_mode": "provider_unavailable",
+                "as_of": as_of,
                 "chain": "BTC",
                 "rows": [],
                 "series": [],
@@ -334,6 +346,31 @@ class ONCHFunction(BaseFunction):
             },
             sources=["mempool", "coingecko"],
             metadata={"keyless": True, "error": type(exc).__name__},
+        )
+
+    def _input_error(self, instrument: Instrument | None, chain: str) -> FunctionResult:
+        """Explicit input error for a chain the keyless vitals do not serve."""
+        reason = f"ONCH vitals are Bitcoin-only on the keyless path; chain '{chain}' is not served."
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data={
+                "status": "input_error",
+                "data_mode": "explicit_unavailable",
+                "chain": chain,
+                "rows": [],
+                "series": [],
+                "cards": [],
+                "summary": reason,
+                "methodology": _METHODOLOGY,
+                "field_dictionary": _FIELD_DICTIONARY,
+                "warnings": [reason],
+                "next_actions": [
+                    "Select BTC for the Bitcoin network vitals.",
+                ],
+            },
+            sources=[],
+            metadata={"keyless": True, "error": "unsupported_chain"},
         )
 
 
