@@ -68,7 +68,9 @@ def gp() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Lookback window.",
-                options=["1D", "5D", "1M", "3M", "6M", "YTD", "1Y", "5Y", "MAX"],
+                # Mirrors the pane's RANGES (ui/src/functions/GP.tsx); the
+                # manifest is the contract, so no option the pane cannot send.
+                options=["1M", "3M", "6M", "1Y", "5Y", "MAX"],
             ),
             InputSpec(
                 name="interval",
@@ -201,7 +203,8 @@ def gp() -> FunctionManifest:
             "as `indicators` (SMA 20/50, EMA 20, Bollinger 20±2 are O(n) deterministic); the pane draws "
             "them and lists them in the INDICATORS legend. Sub-pane studies share the same series (RSI uses "
             "Wilder's smoothing; "
-            "MACD uses 12/26/9 EMA; ATR uses Wilder; STOCH uses %K=14 %D=3 SMA; ADX uses 14-period DMI; "
+            "MACD uses 12/26/9 EMA seeded on the first bar (pandas ewm adjust=False, the same convention as "
+            "TECH); ATR uses Wilder; STOCH uses %K=14 %D=3 SMA; ADX uses 14-period DMI; "
             "OBV uses signed-volume cumsum). Compare mode normalizes both series to 100 at the first "
             "visible candle. The pane respects user pan/zoom across data refresh (first-seed-focus pattern). "
             "Live mode listens on the provider's WS stream and patches the last candle on tick."
