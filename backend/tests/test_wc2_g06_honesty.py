@@ -153,3 +153,18 @@ def test_btune_results_carry_the_card_slot_fields() -> None:
             assert slot in res.data, (label, slot)
     assert ok.data["data_mode"] == "live_yfinance"
     assert off.data["data_mode"] == "unavailable"
+
+
+def test_ovme_heston_non_numeric_parameter_is_an_input_error_not_a_crash() -> None:
+    res = _run_ovme(spot=100, strike=100, years_to_expiry=0.5, vol=0.25,
+                    model="heston", kappa="fast", paths=2000, steps=20)
+    assert res.data["status"] == "input_error"
+    assert "price" not in res.data
+    assert any("kappa" in w for w in res.warnings)
+
+
+def test_ovme_heston_non_finite_parameter_is_an_input_error() -> None:
+    res = _run_ovme(spot=100, strike=100, years_to_expiry=0.5, vol=0.25,
+                    model="heston", rho="nan", paths=2000, steps=20)
+    assert res.data["status"] == "input_error"
+    assert any("rho" in w for w in res.warnings)

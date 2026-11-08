@@ -302,6 +302,13 @@ class OVMEFunction(BaseFunction):
             }
             heston_values: dict[str, float] = {}
             parameter_sources: dict[str, str] = {}
+            heston_bad: list[str] = []
+            for name, (key, _fallback, _default_source) in heston_inputs.items():
+                if params.get(key) not in (None, "") and _finite(params.get(key)) is None:
+                    heston_bad.append(f"{key} is not a number ({params.get(key)!r})")
+            if heston_bad:
+                return _input_result(instrument, status="input_error", reason=heston_bad,
+                                     missing=[], warnings=heston_bad)
             for name, (key, fallback, default_source) in heston_inputs.items():
                 if params.get(key) not in (None, ""):
                     heston_values[name] = float(params[key])
