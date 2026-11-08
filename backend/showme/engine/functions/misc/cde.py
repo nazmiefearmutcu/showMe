@@ -108,8 +108,7 @@ class CDEFunction(BaseFunction):
             _save(store)
         elif action == "evaluate":
             name = str(params.get("name") or "").strip()
-            row = _row_param(params.get("row") or params.get("row_json") or {})
-            from showme.engine.functions.equity.eqs import parse_dsl, _eval
+            from showme.engine.functions.equity.eqs import And, Cond, Or, _eval, _is_missing, parse_dsl
             if name not in store:
                 return FunctionResult(
                     code=self.code,
@@ -117,26 +116,48 @@ class CDEFunction(BaseFunction):
                     data=_payload(store, status="input_error", reason=f"unknown field {name}"),
                 )
             try:
+                row = _row_param(params.get("row") or params.get("row_json") or {})
+            except ValueError as e:
+                # CDE#3: unparseable row JSON used to become {} and evaluate to
+                # a normal FALSE. The caller must hear that the input was bad.
+                return FunctionResult(
+                    code=self.code,
+                    instrument=None,
+                    data=_payload(store, status="input_error", reason=f"row must be a JSON object: {e}"),
+                )
+            try:
                 ast = parse_dsl(store[name])
-                result = _eval(ast, row)
+                # CDE#3: a referenced field the row lacks makes the result
+                # unknown, not FALSE ("pe != 20" on a row without pe is not a
+                # proven mismatch).
+                needed = sorted(_referenced_fields(ast, Cond, And, Or))
+                missing = [f for f in needed if _is_missing(row.get(f))]
+                result = None if missing else bool(_eval(ast, row))
                 # F6 fix: the evaluate branch used to repurpose `count` to 1
                 # and replace `rows` with only the evaluation row — the
                 # "Stored fields" KPI lied and the grid hid every stored
                 # field. Keep the store truth (count + stored/example rows)
                 # and expose the evaluation separately.
                 payload = _payload(store, status="ready")
-                return FunctionResult(code=self.code, instrument=None,
+                warnings = []
+                if missing:
+                    warnings.append(
+                        f"Row is missing {', '.join(missing)}; the result is unknown (null), not FALSE."
+                    )
+                return FunctionResult(code=self.code, instrument=None, warnings=warnings,
                                       data={
                                           **payload,
                                           "evaluation": {
                                               "name": name,
-                                              "value": bool(result),
+                                              "value": result,
+                                              "missing_fields": missing,
                                               "row": row,
                                               "formula": store[name],
                                           },
                                           "cards": [
                                               {"label": "Field", "value": name},
-                                              {"label": "Result", "value": bool(result)},
+                                              {"label": "Result",
+                                               "value": "UNKNOWN" if result is None else result},
                                           ],
                                       })
             except Exception as e:
@@ -183,12 +204,28 @@ def _payload(store: dict[str, str], *, status: str, reason: str | None = None) -
 
 
 def _row_param(value: Any) -> dict[str, Any]:
+    """Row as a dict. Blank means an empty row; anything not an object raises."""
     if isinstance(value, dict):
         return value
     if isinstance(value, str) and value.strip():
         try:
             parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
-    return {}
+        except Exception as exc:
+            raise ValueError(f"not valid JSON ({type(exc).__name__})") from exc
+        if isinstance(parsed, dict):
+            return parsed
+        raise ValueError(f"got {type(parsed).__name__}")
+    if value in (None, "", {}):
+        return {}
+    raise ValueError(f"got {type(value).__name__}")
+
+
+def _referenced_fields(node: Any, cond_cls: type, and_cls: type, or_cls: type) -> set[str]:
+    if isinstance(node, cond_cls):
+        return {node.field}
+    if isinstance(node, (and_cls, or_cls)):
+        out: set[str] = set()
+        for part in node.parts:
+            out |= _referenced_fields(part, cond_cls, and_cls, or_cls)
+        return out
+    return set()

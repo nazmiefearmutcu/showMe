@@ -68,3 +68,37 @@ def test_nan_row_value_is_missing_not_unequal() -> None:
     ast = parse_dsl("pe != 20")
     assert _eval(ast, {"pe": float("nan")}) is False
     assert _eval(parse_dsl("pe < 25"), {"pe": float("nan")}) is False
+
+
+# ── CDE#3: missing fields are unknown; bad row JSON is an input error ───────
+
+
+def test_cde_evaluate_missing_field_is_unknown_not_false(tmp_path, monkeypatch) -> None:
+    _store_at(tmp_path, monkeypatch, '{"cheap": "pe != 20"}')
+    result = _run(cde_mod.CDEFunction(), action="evaluate", name="cheap", row={})
+    assert result.data["status"] == "ready"
+    evaluation = result.data["evaluation"]
+    assert evaluation["value"] is None
+    assert evaluation["missing_fields"] == ["pe"]
+    assert any("pe" in w for w in result.warnings)
+
+
+def test_cde_evaluate_complete_row_still_returns_boolean(tmp_path, monkeypatch) -> None:
+    _store_at(tmp_path, monkeypatch, '{"cheap": "pe < 25"}')
+    result = _run(cde_mod.CDEFunction(), action="evaluate", name="cheap", row={"pe": 20})
+    assert result.data["evaluation"]["value"] is True
+    assert result.data["evaluation"]["missing_fields"] == []
+
+
+def test_cde_evaluate_unparseable_row_json_is_input_error(tmp_path, monkeypatch) -> None:
+    _store_at(tmp_path, monkeypatch, '{"cheap": "pe < 25"}')
+    result = _run(cde_mod.CDEFunction(), action="evaluate", name="cheap", row_json="{not json")
+    assert result.data["status"] == "input_error"
+    assert "row" in result.data["reason"].lower()
+    assert "evaluation" not in result.data
+
+
+def test_cde_evaluate_non_object_row_json_is_input_error(tmp_path, monkeypatch) -> None:
+    _store_at(tmp_path, monkeypatch, '{"cheap": "pe < 25"}')
+    result = _run(cde_mod.CDEFunction(), action="evaluate", name="cheap", row_json="[1, 2]")
+    assert result.data["status"] == "input_error"

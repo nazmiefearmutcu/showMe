@@ -41,8 +41,10 @@ interface CDERow {
 
 interface CDEEvaluation {
   name?: string;
-  value?: boolean;
+  /** true / false, or null when a referenced field is missing from the row. */
+  value?: boolean | null;
   formula?: string;
+  missing_fields?: string[];
 }
 
 interface CDEData {
@@ -304,13 +306,18 @@ export function CDEPane({ code }: FunctionPaneProps) {
             <span style={monoPrimaryStyle}>{evaluation.name ?? "—"}</span>
             <span style={monoMutedStyle}>{evaluation.formula ?? "—"}</span>
             <Pill
-              tone={evaluation.value ? "positive" : "negative"}
+              tone={evaluation.value === null ? "warn" : evaluation.value ? "positive" : "negative"}
               variant="soft"
               withDot={false}
             >
-              {evaluation.value ? "TRUE" : "FALSE"}
+              {evaluation.value === null ? "UNKNOWN" : evaluation.value ? "TRUE" : "FALSE"}
             </Pill>
           </div>
+          {evaluation.value === null && evaluation.missing_fields?.length ? (
+            <span style={monoMutedStyle}>
+              Row is missing: {evaluation.missing_fields.join(", ")}
+            </span>
+          ) : null}
         </section>
       ) : null}
       <section style={kpiGridStyle} aria-label="CDE store summary">
