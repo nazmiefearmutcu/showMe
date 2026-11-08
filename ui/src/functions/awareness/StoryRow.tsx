@@ -10,6 +10,8 @@ import { TierBadge } from "./TierBadge";
 import { hhmmUtc } from "./format";
 import type { NewsPayload, NewsRow, StoryItem } from "./news-types";
 
+const ASSET_OR_PLACE = new Set(["equity", "crypto", "fx", "commodity", "index", "country"]);
+
 const CONTENT_BADGES = new Set([
   "analysis",
   "opinion",
@@ -69,6 +71,19 @@ export function StoryRow({
   const detailItems: StoryItem[] = story.data?.data?.story?.items ?? [];
 
   const label = `${row.publisher}, ${rel} ago: ${row.title}`;
+
+  // One chip per entity: tickers/assets and countries come from the salient `symbols` /
+  // `countries` lists; `entities` only adds what those cannot show (central banks, people).
+  const chipSymbols = Array.from(new Set(row.symbols));
+  const chipCountries = Array.from(new Set(row.countries));
+  const covered = new Set<string>([...chipSymbols, ...chipCountries]);
+  const seenEntity = new Set<string>();
+  const chipEntities = row.entities.filter((e) => {
+    if (!e.id || covered.has(e.id) || ASSET_OR_PLACE.has(e.type ?? "")) return false;
+    if (seenEntity.has(e.id)) return false;
+    seenEntity.add(e.id);
+    return true;
+  });
 
   return (
     <article
@@ -134,7 +149,7 @@ export function StoryRow({
       </button>
       {body ? <p className="aw-row__summary">{body}</p> : null}
       <div className="aw-row__chips">
-        {row.symbols.map((s) => (
+        {chipSymbols.map((s) => (
           <EntityChip
             key={`sym-${s}`}
             kind="symbol"
@@ -142,7 +157,7 @@ export function StoryRow({
             onClick={() => setFocusedTarget("DES", s)}
           />
         ))}
-        {row.entities.map((e) => (
+        {chipEntities.map((e) => (
           <EntityChip
             key={`ent-${e.type}-${e.id}`}
             kind="entity"
@@ -153,7 +168,7 @@ export function StoryRow({
             }
           />
         ))}
-        {row.countries.map((c) => (
+        {chipCountries.map((c) => (
           <EntityChip
             key={`cty-${c}`}
             kind="country"
