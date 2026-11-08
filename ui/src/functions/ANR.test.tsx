@@ -289,3 +289,51 @@ describe("ANR pane — D3 formatted consensus date", () => {
     expect(meta.textContent ?? "").toContain("—");
   });
 });
+
+describe("ANR pane — ANR#1 no fabricated as-of date for undated consensus", () => {
+  it("shows the newest dated broker action instead of an AS OF pill when the consensus is undated", () => {
+    setMockFn({
+      state: "ok",
+      ...okPayload({
+        summary: {
+          label: "Buy",
+          consensus_score: 3.8,
+          analyst_count: 31,
+          positive_pct: 58.1,
+          neutral_pct: 25.8,
+          negative_pct: 16.1,
+          included_count: 31,
+          excluded_stale_count: 0,
+          last_updated: null,
+          consensus_period: "0m",
+          latest_rating_action_date: "2026-11-04",
+          target_price_source: "Live analyst targets",
+          consensus_source: "yfinance_recommendations",
+        },
+      }),
+    });
+    render(<ANRPane code="ANR" symbol="AMZN" />);
+    expect(screen.getByText("LAST BROKER ACTION 2026-11-04")).toBeInTheDocument();
+    expect(screen.queryByText(/^AS OF/)).toBeNull();
+  });
+
+  it("shows no as-of pill at all when neither a consensus date nor a broker action date exists", () => {
+    setMockFn({
+      state: "ok",
+      ...okPayload({
+        summary: {
+          label: "Buy",
+          consensus_score: 3.8,
+          analyst_count: 31,
+          last_updated: null,
+          consensus_period: "0m",
+          latest_rating_action_date: null,
+          consensus_source: "yfinance_recommendations",
+        },
+      }),
+    });
+    render(<ANRPane code="ANR" symbol="AMZN" />);
+    expect(screen.queryByText(/^AS OF/)).toBeNull();
+    expect(screen.queryByText(/^LAST BROKER ACTION/)).toBeNull();
+  });
+});
