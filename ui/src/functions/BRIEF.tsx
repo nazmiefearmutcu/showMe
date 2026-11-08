@@ -94,13 +94,17 @@ const WARM_RETRY_MS = 2500;
 const MAX_WARM_RETRIES = 6;
 
 /**
- * BRIEF#4: a cold call answers provider_unavailable with a reason saying the
- * brief is still composing ("warming in background") or that the call timed
- * out while it keeps running and is cached for the next call. Neither is an
- * outage, so it is shown as warming rather than as an empty briefing.
+ * The route's own cold-call timeout reason, exactly as the sidecar writes it
+ * (function_index.py: "function timed out after <N>s"). The function keeps
+ * running in the background and is cached for the next call, so it is shown as
+ * warming. Matched as a whole string: a provider error that merely contains the
+ * words "timed out" (e.g. an httpx ReadTimeout) is a real failure, not warming
+ * (BRIEF#4 follow-up).
  */
+const ROUTE_TIMEOUT_REASON = /^function timed out after \d+(\.\d+)?s$/;
+
 function isWarmingPayload(status: string | undefined, reason: string | undefined): boolean {
-  return status === "provider_unavailable" && /warming|timed out/i.test(reason ?? "");
+  return status === "provider_unavailable" && ROUTE_TIMEOUT_REASON.test((reason ?? "").trim());
 }
 
 export function BRIEFPane({ code }: FunctionPaneProps) {
