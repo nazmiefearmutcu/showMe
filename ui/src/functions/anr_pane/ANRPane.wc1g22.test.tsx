@@ -18,7 +18,7 @@ interface MockFnState {
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
 const refetch = vi.fn();
-const requested: Array<{ code?: string; symbol?: string }> = [];
+const requested: Array<{ code?: string; symbol?: string; enabled?: boolean }> = [];
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -27,7 +27,7 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: (args: { code?: string; symbol?: string }) => {
+  useFunction: (args: { code?: string; symbol?: string; enabled?: boolean }) => {
     requested.push(args);
     return {
       state: mockFn.state,
@@ -113,6 +113,8 @@ describe("ANR pane - ANR#6 no silent AMZN default", () => {
     render(<ANRPane code="ANR" />);
     expect(screen.getByText("No symbol selected")).toBeInTheDocument();
     expect(requested.every((args) => args.symbol === "" || args.symbol === undefined)).toBe(true);
+    // Disabled hook means useFunction issues no request at all.
+    expect(requested.every((args) => args.enabled === false)).toBe(true);
     expect(requested.some((args) => args.symbol === "AMZN")).toBe(false);
   });
 });
