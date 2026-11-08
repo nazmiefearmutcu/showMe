@@ -65,3 +65,68 @@ def test_fxgo_explicit_pairs_list_is_honoured(monkeypatch):
     res = _run(_mk_fxgo().execute(pairs="EURUSD,AUDUSD"))
     assert [r["pair"] for r in res.data["rows"]] == ["EURUSD", "AUDUSD"]
     assert res.data["board_source"] == "explicit_pairs"
+
+
+# --------------------------------------------------------------------------- #
+# FXGO#2 — previous close is the prior daily session, not the 5-day range start
+# --------------------------------------------------------------------------- #
+class _Resp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _epoch(day: int, hour: int = 0, minute: int = 0) -> int:
+    return int(datetime(2026, 11, day, hour, minute, tzinfo=timezone.utc).timestamp())
+
+
+def _chart_payload(day_closes, *, regular_price, regular_time, chart_prev):
+    """Shape of a Yahoo v8 chart response for range=5d, interval=1d."""
+    return {
+        "chart": {
+            "result": [{
+                "meta": {
+                    "regularMarketPrice": regular_price,
+                    "regularMarketTime": regular_time,
+                    "chartPreviousClose": chart_prev,
+                    "previousClose": None,
+                },
+                "timestamp": [_epoch(d) for d, _ in day_closes],
+                "indicators": {"quote": [{"close": [c for _, c in day_closes]}]},
+            }],
+            "error": None,
+        }
+    }
+
+
+# Daily closes 2026-11-02 .. 2026-11-06 (Friday); quote stamped Friday 22:29 UTC.
+_FIVE_DAY_CLOSES = [
+    (2, 1.11569), (3, 1.11900), (4, 1.12100), (5, 1.12349), (6, 1.12283),
+]
+
+
+def test_fxgo_previous_close_is_prior_session_not_five_sessions_back(monkeypatch):
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    payload = _chart_payload(
+        _FIVE_DAY_CLOSES,
+        regular_price=1.1230,
+        regular_time=_epoch(6, 22, 29),
+        chart_prev=1.11569,  # Yahoo: close BEFORE the 5-day window
+    )
+    monkeypatch.setattr(requests, "get", lambda url, **kw: _Resp(payload))
+
+    res = _run(_mk_fxgo().execute(pairs="EURUSD"))
+    row = res.data["rows"][0]
+    # Prior session is 2026-11-05 (1.12349), not the 1.11569 window start.
+    assert row["previous_close"] == pytest.approx(1.12349, abs=1e-6)
+    assert row["previous_close_date"] == "2026-11-05"
+    assert row["change"] == pytest.approx(1.1230 - 1.12349, abs=1e-6)
+    assert row["change_pct"] == pytest.approx((1.1230 - 1.12349) / 1.12349 * 100, abs=1e-3)
+    assert "Prior session close" in res.data["field_dictionary"]["previous_close"] or \
+        "prior" in res.data["field_dictionary"]["previous_close"].lower()

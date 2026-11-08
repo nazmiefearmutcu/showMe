@@ -549,9 +549,10 @@ class FXGOFunction(EMSXFunction):
         "mid": "Mid price (last traded spot).",
         "spread": "Ask minus bid, in quote units.",
         "spread_pips": "Spread expressed in pips.",
-        "change": "Absolute change vs previous close.",
-        "change_pct": "Percent change vs previous close.",
-        "previous_close": "Prior session close.",
+        "change": "Absolute change vs the prior daily session close (one-day bar).",
+        "change_pct": "Percent change vs the prior daily session close (one-day bar).",
+        "previous_close": "Prior daily session close (the bar before the latest one), not the start of the 5-day window.",
+        "previous_close_date": "UTC date of the prior daily session bar that previous_close comes from.",
     }
 
     _BOARD_METHODOLOGY = (
@@ -611,21 +612,36 @@ class FXGOFunction(EMSXFunction):
         result = (((payload.get("chart") or {}).get("result") or [None])[0]) or {}
         meta = result.get("meta") or {}
         quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
-        closes = [c for c in (quote.get("close") or []) if c is not None]
+        # Pair each daily bar's close with its timestamp; bars without a close
+        # (e.g. an unfinished bar) are skipped.
+        raw_closes = list(quote.get("close") or [])
+        raw_ts = list(result.get("timestamp") or [])
+        bars = [
+            (raw_ts[i] if i < len(raw_ts) else None, c)
+            for i, c in enumerate(raw_closes)
+            if c is not None
+        ]
+        closes = [c for _, c in bars]
         last_close = closes[-1] if closes else None
         mid = meta.get("regularMarketPrice") or last_close
-        prev = (
-            meta.get("previousClose")
-            or meta.get("chartPreviousClose")
-            or (closes[-2] if len(closes) >= 2 else None)
-        )
+        # Prior session = the daily bar before the latest one. Yahoo's
+        # chartPreviousClose / previousClose for range=5d is the close BEFORE
+        # the whole 5-session window, so it must never stand in for the
+        # one-day previous close.
+        prev = closes[-2] if len(closes) >= 2 else None
+        prev_date = None
+        if len(bars) >= 2 and bars[-2][0] is not None:
+            prev_date = datetime.fromtimestamp(int(bars[-2][0]), tz=timezone.utc).date().isoformat()
         return (
             float(mid) if mid is not None else None,
             float(prev) if prev is not None else None,
+            {"previous_close_date": prev_date},
         )
 
     def _board_row(self, pair: str) -> dict[str, Any] | None:
-        mid, prev = self._fetch_fx_spot(pair)
+        spot = self._fetch_fx_spot(pair)
+        mid, prev = spot[0], spot[1]
+        spot_meta = spot[2] if len(spot) > 2 and isinstance(spot[2], dict) else {}
         if mid is None or mid <= 0:
             return None
         pip = self._pip_size(pair)
@@ -654,6 +670,7 @@ class FXGOFunction(EMSXFunction):
             "change": change,
             "change_pct": change_pct,
             "previous_close": (round(float(prev), 6) if prev is not None else None),
+            "previous_close_date": spot_meta.get("previous_close_date"),
         }
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
