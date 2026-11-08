@@ -63,11 +63,19 @@ class PortOptFunction(BaseFunction):
             rets = align_return_series(results, policy="pairwise")
         else:
             rets = pd.DataFrame()
+        warnings: list[str] = []
         if rets.empty or len(rets.columns) < 2:
             from showme.engine.functions.portfolio.rpar import _template_returns
             rets = _template_returns(symbols, days)
             sources = ["computed_return_model"]
             fallback = True
+            if live:
+                # Live returns were requested but unavailable: say so loudly so
+                # the optimizer weights are never read as market-data results.
+                warnings.append(
+                    "Live yfinance returns unavailable; weights come from labelled "
+                    "model returns (computed_return_model), not market data."
+                )
         else:
             sources = ["yfinance"]
             fallback = False
@@ -84,7 +92,6 @@ class PortOptFunction(BaseFunction):
                 "weights": ms.weights, "return": ms.expected_return,
                 "vol": ms.volatility, "sharpe": ms.sharpe,
             }
-        warnings: list[str] = []
         if mode in ("min_vol", "all"):
             mv = min_volatility(rets, allow_short=allow_short, risk_free=rf)
             out["min_volatility"] = {

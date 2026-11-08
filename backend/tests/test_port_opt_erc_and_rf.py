@@ -136,3 +136,35 @@ def test_all_modes_sharpe_share_one_risk_free_definition() -> None:
         block = data[key]
         expected = (float(block["return"]) - rf) / float(block["vol"])
         assert abs(float(block["sharpe"]) - expected) < 1e-9, key
+
+
+class _RaisingYFinance:
+    """Offline stand-in for an unavailable yfinance adapter (every fetch fails)."""
+
+    async def fetch(self, request):  # noqa: ANN001 - adapter protocol
+        raise RuntimeError("yfinance offline (test)")
+
+
+def test_live_request_that_falls_back_to_model_returns_says_so() -> None:
+    """When live returns are requested but unavailable, the result must say the
+    weights come from labelled model returns, not market data."""
+    fn = PortOptFunction(deps=FunctionDeps(yfinance=_RaisingYFinance()))
+    result = asyncio.run(
+        fn.execute(symbols=SYMBOLS, mode="risk_parity", live=True, days=756, risk_free=0.04)
+    )
+    assert result.metadata["fallback"] is True
+    assert result.sources == ["computed_return_model"]
+    assert any("not market data" in w for w in result.warnings), result.warnings
+
+
+def test_zero_variance_asset_reports_warning_and_no_risk_parity_weights() -> None:
+    """A flat price series has no defined risk contribution: no equal-risk weights
+    may be invented; the result must carry a warning instead."""
+    fake = _FakeYFinance(_VOLS)
+    fake._closes["TLT"] = pd.Series(100.0, index=fake._closes["TLT"].index)
+    fn = PortOptFunction(deps=FunctionDeps(yfinance=fake))
+    result = asyncio.run(
+        fn.execute(symbols=SYMBOLS, mode="risk_parity", live=True, days=756, risk_free=0.04)
+    )
+    assert "risk_parity" not in result.data
+    assert any(w.startswith("risk_parity unavailable") for w in result.warnings), result.warnings
