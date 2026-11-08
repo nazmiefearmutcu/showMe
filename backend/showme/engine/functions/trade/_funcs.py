@@ -646,6 +646,17 @@ class AIMFunction(BaseFunction):
         )
 
 
+# TSOX#2: US Treasury yield quotes (mirrors server.BOND_SYMBOLS). These are yields,
+# not prices, so a price-unit limit cannot be checked against them.
+_YIELD_QUOTED_SYMBOLS = frozenset({
+    "US1M", "US3M", "US6M", "US1Y", "US2Y", "US3Y", "US5Y", "US7Y", "US10Y", "US20Y", "US30Y",
+})
+
+
+def _is_yield_quoted(symbol: str) -> bool:
+    return str(symbol or "").upper().replace("-", "") in _YIELD_QUOTED_SYMBOLS
+
+
 @FunctionRegistry.register
 class TSOXFunction(EMSXFunction):
     """TSOX — Treasury / Bond order ticket."""
@@ -655,11 +666,36 @@ class TSOXFunction(EMSXFunction):
     asset_classes = (AssetClass.BOND, AssetClass.DERIVATIVE)
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        yield_quoted = instrument is not None and _is_yield_quoted(instrument.symbol)
+        if yield_quoted and str(params.get("type", params.get("order_type", "MARKET"))).upper() == "LIMIT":
+            # TSOX#2: a yield quote cannot take a price-unit limit. There is no
+            # yield-to-price conversion here (it needs the bond's terms), so the
+            # ticket says so instead of previewing the price as valid.
+            return _ticket_input_error_result(
+                self.code, instrument,
+                {
+                    "field": "price",
+                    "reason": (
+                        f"{instrument.symbol} is quoted as a yield, not a price. A limit price in price "
+                        "units cannot be checked against it and no yield-to-price conversion is "
+                        "performed. Trade a price-quoted instrument (for example ZN=F) or source the bond's terms."
+                    ),
+                },
+                side=str(params.get("side", "BUY")).upper(),
+                quantity=_float_param(params.get("quantity")),
+                order_type="LIMIT",
+                tif=str(params.get("tif", params.get("time_in_force", "GTC"))).upper(),
+            )
         result = await super().execute(instrument=instrument, **params)
         if isinstance(result.data, dict):
             # WB1-G16 TSOX#3: bond-ticket analytics are not in the ticket inputs,
             # so say so explicitly instead of leaving them silently absent.
             result.data["analytics"] = _tsox_analytics_not_computed()
+        if yield_quoted:
+            result.warnings.append(
+                f"{instrument.symbol} is quoted as a yield; a MARKET ticket has no price and no "
+                "yield-to-price conversion is performed."
+            )
         return result
 
 
