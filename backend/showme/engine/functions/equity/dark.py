@@ -64,7 +64,7 @@ class DARKFunction(BaseFunction):
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data=_unavailable(sym, reason, [reason]),
-                sources=["finra"],
+                sources=[],
                 warnings=[reason],
                 metadata={"provider_errors": [reason]},
             )
@@ -111,7 +111,7 @@ class DARKFunction(BaseFunction):
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data=_unavailable(sym, reason, provider_errors),
-                sources=["finra"],
+                sources=[],
                 warnings=[reason],
                 metadata={"provider_errors": provider_errors},
             )
@@ -241,7 +241,8 @@ class DARKFunction(BaseFunction):
                     **_FIELD_DICTIONARY,
                 },
             },
-            sources=["finra", "yfinance"],
+            # yfinance is listed only when its weekly volume fed dark_pool_pct.
+            sources=["finra", *(["yfinance"] if week_total_volume else [])],
             warnings=warnings,
             metadata={"provider_errors": provider_errors} if provider_errors else {},
         )

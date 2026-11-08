@@ -245,3 +245,78 @@ def test_dpf_timeout_lists_no_provider(monkeypatch) -> None:
 
     assert result.data["status"] == "provider_unavailable"
     assert result.sources == [], result.sources
+
+
+def _weekly_volume_for_latest(value: float) -> Any:
+    async def _vol(self, sym):  # noqa: ANN001
+        return {_latest_monday().isoformat(): value}
+
+    return _vol
+
+
+def test_dark_sources_omit_yfinance_when_it_supplied_no_volume(monkeypatch) -> None:
+    """DARK#1: yfinance returned {} (no total volume), so it must not be listed."""
+    fake = FakeFinra(_dataset())
+    _patch_direct_finra(monkeypatch, fake)
+    monkeypatch.setattr(DARKFunction, "_weekly_total_volume", lambda self, sym: _no_yfinance())
+
+    result = _run(DARKFunction(deps=FunctionDeps()).execute(symbol="AAPL", weeks=8))
+
+    assert result.data["status"] == "ok", result.data.get("reason")
+    assert result.data["by_week"][0]["dark_pool_pct"] is None
+    assert result.sources == ["finra"], result.sources
+
+
+def test_dark_sources_list_yfinance_when_it_supplied_volume(monkeypatch) -> None:
+    """DARK#1: yfinance volume is what produced dark_pool_pct, so it is listed."""
+    fake = FakeFinra(_dataset())
+    _patch_direct_finra(monkeypatch, fake)
+    monkeypatch.setattr(DARKFunction, "_weekly_total_volume", _weekly_volume_for_latest(5e9))
+
+    result = _run(DARKFunction(deps=FunctionDeps()).execute(symbol="AAPL", weeks=8))
+
+    assert result.data["by_week"][0]["dark_pool_pct"] is not None
+    assert result.sources == ["finra", "yfinance"], result.sources
+
+
+def test_dark_empty_finra_lists_no_provider(monkeypatch) -> None:
+    """DARK#1: FINRA returned zero rows, so FINRA supplied no data to list."""
+    _patch_direct_finra(monkeypatch, FakeFinra([]))
+    monkeypatch.setattr(DARKFunction, "_weekly_total_volume", _weekly_volume_for_latest(5e9))
+
+    result = _run(DARKFunction(deps=FunctionDeps()).execute(symbol="ZZZZ", weeks=8))
+
+    assert result.data["status"] == "provider_unavailable"
+    assert result.sources == [], result.sources
+
+
+def test_dark_finra_outage_lists_no_provider(monkeypatch) -> None:
+    """DARK#1: a FINRA exception supplied no data, so sources stays empty."""
+
+    async def _boom(self, symbol, weeks=26):  # noqa: ANN001
+        raise RuntimeError("finra down")
+
+    monkeypatch.setattr(DARKFunction, "_fetch_finra_ats", _boom)
+    monkeypatch.setattr(DARKFunction, "_weekly_total_volume", _no_yfinance_method)
+
+    result = _run(DARKFunction(deps=FunctionDeps()).execute(symbol="AAPL", weeks=8))
+
+    assert result.data["status"] == "provider_unavailable"
+    assert result.sources == [], result.sources
+
+
+def test_dark_timeout_lists_no_provider(monkeypatch) -> None:
+    """DARK#1: the timeout path never received FINRA rows, so sources is empty."""
+
+    async def _slow(self, instrument, **params):  # noqa: ANN001
+        raise asyncio.TimeoutError("dark slow")
+
+    monkeypatch.setattr(DARKFunction, "_execute_inner", _slow)
+    result = _run(DARKFunction(deps=FunctionDeps()).execute(symbol="AAPL"))
+
+    assert result.data["status"] == "provider_unavailable"
+    assert result.sources == [], result.sources
+
+
+async def _no_yfinance_method(self, sym):  # noqa: ANN001
+    return {}
