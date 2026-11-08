@@ -479,9 +479,11 @@ function deriveStats(rows: HFSRow[]): HFSStats {
 }
 
 /**
- * HFS#3: `pct_outstanding` is a FRACTION of shares outstanding (0.087 = 8.7%).
- * The holder rows and the backend field dictionary both state that unit, so
- * the value is never guessed to be in percent units (the old magnitude check
+ * HFS#3: `pct_outstanding` is read as a FRACTION of shares outstanding (0.087 =
+ * 8.7%); the backend emits fractions in the observed holder rows. The backend
+ * field dictionary (equity/_common.py) does not yet state a unit, so this
+ * fraction contract is the pane's assumption, not a documented backend promise.
+ * The value is never guessed to be in percent units (the old magnitude check
  * rescaled any |v| <= 1.5). A value outside [0, 1] cannot be a share of the
  * outstanding shares, so it renders as missing rather than as a guessed %.
  */
