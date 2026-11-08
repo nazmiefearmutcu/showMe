@@ -396,7 +396,10 @@ describe("OMON pane — visibility poll + spot flash (live adoption)", () => {
 describe("OMON pane — freshness label", () => {
   it("shows a stale chain under its real mode, never as live_yfinance", () => {
     const payload = okPayload();
-    payload.data.metadata = { data_mode: "last_trade_yfinance", live: false };
+    (payload.data as { metadata?: Record<string, unknown> }).metadata = {
+      data_mode: "last_trade_yfinance",
+      live: false,
+    };
     payload.data.warnings = [
       "Not live: newest option trade is 2026-11-06T21:15:00+00:00 UTC (last session or delayed feed).",
     ];

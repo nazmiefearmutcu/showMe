@@ -304,7 +304,7 @@ describe("TRAN pane — speaker filter", () => {
 describe("TRAN pane — document type labelling", () => {
   it("labels the SEC 8-K default path as an earnings release, not a call transcript", () => {
     const payload = okPayload();
-    payload.data.document_type = "earnings_press_release";
+    (payload.data as { document_type?: string }).document_type = "earnings_press_release";
     payload.data.utterances = [
       {
         section: "document",
