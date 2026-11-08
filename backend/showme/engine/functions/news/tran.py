@@ -543,18 +543,20 @@ def _parse_transcript_text(
 
 
 def _looks_like_name(head: str) -> bool:
-    """A speaker header is a person's name: 2+ capitalised tokens, no statement words."""
+    """A speaker header is a person's name: capitalised tokens, no statement words.
+
+    One-token names ("Tim -- CEO") are valid headers; the statement-word
+    denylist still rejects one-token table labels ("Revenue: 1,000").
+    """
     parts = head.split()
     if not 1 <= len(parts) <= 6:
         return False
     if head.lower() in _ROLE_HINTS:
         return True
-    if len(parts) < 2:
-        return False
     if any(p.lower().strip(".,:;") in _NON_NAME_TOKENS for p in parts):
         return False
     capish = sum(1 for p in parts if p[:1].isupper())
-    return capish >= 2 and capish >= len(parts) - 1
+    return capish >= max(1, len(parts) - 1)
 
 
 def _role_for(text: str) -> str:

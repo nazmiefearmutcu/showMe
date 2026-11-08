@@ -87,7 +87,10 @@ def test_tran1_sec_default_path_is_labelled_as_press_release(monkeypatch) -> Non
     assert "sec_edgar" in result.sources
     # The document type must say this is the release, not a call transcript.
     assert data["document_type"] == "earnings_press_release"
-    assert "transcript" not in str(data["event"].get("title", "")).lower()
+    # The event title is passed through from the 8-K metadata unchanged; it must
+    # not be replaced by a transcript title.
+    assert data["event"]["title"] == "AAPL 8-K earnings press release"
+    assert data["data_mode"] == "live_official"
     assert any("not an earnings call transcript" in w for w in result.warnings)
 
 
@@ -178,3 +181,23 @@ def test_tran2_role_keyword_in_unheaded_text_is_not_attributed() -> None:
     assert len(rows) == 1
     assert rows[0]["speaker"] in (None, "")
     assert rows[0]["role"] == ""
+
+
+def test_tran2_single_name_speaker_header_is_still_attributed() -> None:
+    """Regression: a one-token speaker header ("Tim -- CEO") must keep its speaker.
+
+    The release-path fix (no header parsing for press releases) must not
+    stop transcript headers with a single name from attributing remarks.
+    """
+    rows = _parse_transcript_text("Tim -- CEO\n\nRevenue was a record.\n")
+    body = [r for r in rows if r["utterance"] == "Revenue was a record."]
+    assert body, "body paragraph must be kept"
+    assert body[0]["speaker"] == "Tim"
+    assert body[0]["role"] == "CEO"
+
+
+def test_tran2_single_table_label_header_still_mints_no_speaker() -> None:
+    """A one-token statement word ("Revenue: 1,000") is still not a speaker."""
+    rows = _parse_transcript_text("Revenue: 1,000\n\nOperating expenses: 15,000\n")
+    assert rows
+    assert all(r["speaker"] is None for r in rows)
