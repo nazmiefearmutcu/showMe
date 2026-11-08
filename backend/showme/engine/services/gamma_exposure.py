@@ -18,11 +18,32 @@ where d1 = [ln(S/K) + (r + σ²/2) T] / (σ √T)
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 def _norm_pdf(x: float) -> float:
     return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
+
+_EXPIRY_TZ = ZoneInfo("America/New_York")
+
+
+def time_to_expiry_years(expiry: Any, now: datetime) -> float | None:
+    """Years from ``now`` to the listed close of an expiry date.
+
+    Every expiry (today or later) runs to the 16:00 America/New_York equity
+    option close, so T is consistent across expiries and the same-day branch
+    is not a special case. Returns None when ``expiry`` is not a date.
+    """
+    try:
+        day = datetime.fromisoformat(str(expiry)[:10]).date()
+    except (TypeError, ValueError):
+        return None
+    close_local = datetime(day.year, day.month, day.day, 16, 0, tzinfo=_EXPIRY_TZ)
+    seconds = (close_local.astimezone(timezone.utc) - now).total_seconds()
+    return max(seconds / (365 * 86400), 1e-9)
 
 
 def bs_gamma(spot: float, strike: float, vol: float, T: float, r: float = 0.04,
@@ -104,9 +125,7 @@ def chain_gex(
     fractional days via UTC current time, so 0DTE option gamma is finite
     and not 0 once the calendar rolls.
     """
-    from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
-    today = now.date()
 
     def _T(opt: dict[str, Any]) -> float:
         T = opt.get("T")
@@ -114,20 +133,10 @@ def chain_gex(
             return max(float(T), 1e-9)
         exp = opt.get("expiry") or opt.get("expiration") or opt.get("expiration_date")
         if exp:
-            try:
-                d = datetime.fromisoformat(str(exp)[:10]).date()
-                if d <= today:
-                    # 0DTE / late-day: fractional intraday time-to-expiry.
-                    # Assume listed equity-option expiry is 16:00 UTC-5
-                    # (US close ≈ 21:00 UTC). For non-US instruments the
-                    # caller should pass an explicit ``T``.
-                    expiry_dt = datetime(d.year, d.month, d.day, 21, 0,
-                                         tzinfo=timezone.utc)
-                    seconds = (expiry_dt - now).total_seconds()
-                    return max(seconds / (365 * 86400), 1e-9)
-                return (d - today).days / 365.0
-            except Exception:
-                pass
+            # Same 16:00 ET close for today and future expiries (GEX#4).
+            T_exp = time_to_expiry_years(exp, now)
+            if T_exp is not None:
+                return T_exp
         return 30 / 365.0
 
     def _vol(opt: dict[str, Any]) -> float:
