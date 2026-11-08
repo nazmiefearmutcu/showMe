@@ -1019,6 +1019,64 @@ class BGASFunction(BaseFunction):
         return FunctionResult(code=self.code, instrument=None, data={}, sources=[])
 
 
+# NGAS#2: relative tolerance between the quote's previousClose and the prior
+# daily bar close before the quote value is treated as disagreeing.
+_NGAS_PREV_TOLERANCE = 0.005
+
+
+def _ngas_verify_previous_close(result: FunctionResult) -> FunctionResult:
+    """Check the quote's previous close against the served daily bars.
+
+    The shared quote path takes ``previousClose`` as-is, and that value can be
+    stale (BGAS#1: 3.533 against a prior close of 3.00, change -15.14%). The
+    prior session's close is the last daily bar dated before the quote's market
+    day. A disagreeing previous close is replaced by that bar and labelled; one
+    that cannot be checked is labelled unverified. Nothing is invented: with no
+    previous close and no bars, change stays null.
+    """
+    data = result.data
+    if not isinstance(data, dict) or data.get("status") != "ok" or data.get("source_mode") != "live_yfinance":
+        return result
+    rows = data.get("rows") or []
+    if len(rows) != 1:
+        return result
+    row = dict(rows[0])
+    as_of_day = str(row.get("as_of") or "")[:10]
+    prior_bars = [
+        bar for bar in (data.get("history") or [])
+        if as_of_day and str(bar.get("date") or "") < as_of_day and _finite(bar.get("close")) is not None
+    ]
+    bar_prev = _finite(prior_bars[-1].get("close")) if prior_bars else None
+    quote_prev = _finite(row.get("prev"))
+    warnings = list(result.warnings or [])
+    if bar_prev is None:
+        if quote_prev is None:
+            prev, source, check = None, None, "no_previous_close"
+        else:
+            prev, source, check = quote_prev, "quote_previous_close", "unverified_no_daily_bar"
+    elif quote_prev is None:
+        prev, source, check = bar_prev, "daily_bar_prior_close", "quote_previous_close_missing"
+    elif abs(quote_prev / bar_prev - 1) <= _NGAS_PREV_TOLERANCE:
+        prev, source, check = quote_prev, "quote_previous_close", "matches_daily_bar"
+    else:
+        prev, source, check = bar_prev, "daily_bar_prior_close", "quote_previous_close_disagrees"
+        warnings.append(
+            f"NGAS previousClose {quote_prev} disagrees with the daily bar close {bar_prev} "
+            f"for {prior_bars[-1].get('date')}; change uses the daily bar."
+        )
+    last = _finite(row.get("last"))
+    row["prev"] = prev
+    row["prev_source"] = source
+    row["prev_check"] = check
+    row["change"] = last - prev if last is not None and prev not in (None, 0) else None
+    row["change_pct"] = (last / prev - 1) * 100 if last is not None and prev not in (None, 0) else None
+    data = dict(data)
+    data["rows"] = [row]
+    result.data = data
+    result.warnings = warnings
+    return result
+
+
 @FunctionRegistry.register
 class NGASFunction(BGASFunction):
     """NGAS — Natural gas (alias).
@@ -1068,7 +1126,8 @@ class NGASFunction(BGASFunction):
                 warnings=[f"contract={contract!r} unsupported by NGAS"],
                 metadata={"provider_errors": [f"contract={contract!r} unsupported by NGAS"]},
             )
-        return await super().execute(instrument, **params)
+        result = await super().execute(instrument, **params)
+        return _ngas_verify_previous_close(result)
 
 
 # CPF maps each selectable FRED-style series_id to the keyless Yahoo
