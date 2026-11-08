@@ -66,8 +66,8 @@ def brief() -> FunctionManifest:
                 label="Sections",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="Which sections to render in the brief.",
-                options=["top_stories", "positions", "watchlist", "calendar", "next_actions"],
+                description="Which article sections to render: top_stories (cross-asset headlines) and watchlist (per-symbol headlines). Other values are reported in warnings and skipped.",
+                options=["top_stories", "watchlist"],
             ),
             InputSpec(
                 name="limit",
@@ -100,7 +100,7 @@ def brief() -> FunctionManifest:
         ],
         defaults={
             "watchlist": [],
-            "sections": ["top_stories", "positions", "watchlist", "calendar", "next_actions"],
+            "sections": ["top_stories", "watchlist"],
             "limit": 25,
             "live": True,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
@@ -162,7 +162,7 @@ def brief() -> FunctionManifest:
             "article_count": FieldDef(unit="count", description="Number of cited articles.", source="derived"),
             "articles[].url": FieldDef(unit="url", description="Direct HTTPS link to the source article — the evidence cite (same value as articles[].link).", source="read"),
             "articles[].title": FieldDef(description="Headline text quoted from the source.", source="read"),
-            "articles[].source": FieldDef(description="Publisher name.", source="read"),
+            "articles[].source": FieldDef(description="Publisher name (for RSS items, the feed title).", source="read"),
             "articles[].matched_symbol": FieldDef(description="Symbol this article was tagged to.", source="read"),
             "next_actions": FieldDef(description="Suggested follow-up actions (e.g. 'no live headlines — broaden watchlist').", source="derived"),
         },

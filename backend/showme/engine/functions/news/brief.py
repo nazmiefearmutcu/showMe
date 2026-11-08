@@ -74,6 +74,17 @@ class BRIEFFunction(BaseFunction):
             s for s in _ARTICLE_SECTIONS
             if requested_sections is None or s in requested_sections
         ]
+        # BRIEF#3: a requested section BRIEF does not compose is reported, never
+        # silently dropped.
+        unsupported_sections = [
+            s for s in (requested_sections or []) if s not in _ARTICLE_SECTIONS
+        ]
+        if unsupported_sections:
+            base_warnings.append(
+                "Sections not implemented by BRIEF and skipped: "
+                + ", ".join(unsupported_sections)
+                + "."
+            )
 
         if not live:
             markdown = _no_compose_markdown(watchlist)
@@ -140,6 +151,7 @@ class BRIEFFunction(BaseFunction):
                     "symbols_searched": [],
                     "article_count": 0,
                     "sections": [],
+                    "unsupported_sections": unsupported_sections,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards(watchlist, 0, "input_error", positions_covered),
@@ -264,6 +276,7 @@ class BRIEFFunction(BaseFunction):
                 "watchlist_source": watchlist_source,
                 "symbols_searched": wl_symbols,
                 "sections": chosen_sections,
+                "unsupported_sections": unsupported_sections,
                 "article_count": len(articles),
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
@@ -451,6 +464,11 @@ def _clean_article(article: dict[str, Any]) -> dict[str, Any]:
     link = str(cleaned.get("link") or "").strip()
     if not cleaned.get("url") and link.lower().startswith(("http://", "https://")):
         cleaned["url"] = link
+    # BRIEF#5: RSS items carry the adapter tag ("rss") in ``source`` and the
+    # publisher in ``publisher``. The documented ``source`` is the publisher.
+    publisher = str(cleaned.get("publisher") or "").strip()
+    if publisher and str(cleaned.get("source") or "").strip().lower() in ("", "rss"):
+        cleaned["source"] = publisher
     for key in ("summary", "description", "snippet"):
         if isinstance(cleaned.get(key), str):
             cleaned[key] = _strip_html(cleaned[key])

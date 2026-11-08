@@ -166,3 +166,57 @@ def test_empty_brief_markdown_renders_only_the_requested_section(stub, monkeypat
     md = res.data["markdown"]
     assert "## Top Stories" in md
     assert "## Watchlist" not in md
+
+
+# ---- BRIEF#3 (review follow-up): declared sections must match what is composed --
+
+
+def test_manifest_declares_only_the_sections_the_handler_composes():
+    """The seed must not advertise sections that BRIEF silently skips."""
+    from showme.manifest.seeds.brief_seed import brief
+
+    manifest = brief
+    spec = next(i for i in manifest.inputs if i.name == "sections")
+    assert list(spec.options) == ["top_stories", "watchlist"]
+    assert list(manifest.defaults["sections"]) == ["top_stories", "watchlist"]
+
+
+def test_unimplemented_sections_are_reported_not_silently_dropped(stub):
+    res = _run(
+        brief_mod.BRIEFFunction(None).execute(
+            watchlist=["AAPL"],
+            sections=["top_stories", "positions", "calendar"],
+        )
+    )
+    assert res.data["sections"] == ["top_stories"]
+    assert res.data["unsupported_sections"] == ["positions", "calendar"]
+    assert any("positions" in w and "calendar" in w for w in res.warnings), res.warnings
+
+
+def test_default_sections_raise_no_unsupported_warning(stub):
+    res = _run(brief_mod.BRIEFFunction(None).execute(watchlist=["AAPL"]))
+    assert res.data["unsupported_sections"] == []
+    assert not any("not implemented" in w for w in res.warnings), res.warnings
+
+
+# ---- BRIEF#5 (review follow-up): RSS publisher, not the adapter tag, is the source label --
+
+
+def test_rss_items_are_labelled_with_their_publisher_not_the_adapter_tag(stub, monkeypatch):
+    async def _rss_top(self, **kwargs):
+        item = {
+            "title": "Reuters macro headline",
+            "link": "https://news.example.com/reuters/1",
+            "source": "rss",
+            "publisher": "Reuters",
+            "feed": "Reuters",
+            "published_at": "2026-11-08T09:00:00+00:00",
+        }
+        return SimpleNamespace(data={"items": [item]}, sources=["rss"], metadata={})
+
+    monkeypatch.setattr(top_mod.TOPFunction, "execute", _rss_top)
+    res = _run(brief_mod.BRIEFFunction(None).execute(watchlist=["AAPL"], sections=["top_stories"]))
+    art = res.data["articles"][0]
+    assert art["source"] == "Reuters"
+    assert "— Reuters" in res.data["markdown"]
+    assert "— rss" not in res.data["markdown"]
