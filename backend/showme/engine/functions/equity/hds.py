@@ -53,6 +53,38 @@ class HDSFunction(BaseFunction):
                 sources=[],
                 metadata={"live": False},
             )
+        holder_type = str(params.get("holder_type") or "all").strip().lower()
+        if holder_type not in HOLDER_TYPE_FILTERS:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "rows": [],
+                    "reason": f"Unknown holder_type {holder_type!r}.",
+                    "next_actions": [f"Use one of: {', '.join(HOLDER_TYPE_FILTERS)}."],
+                    "field_dictionary": FIELD_DICTIONARIES["holders"],
+                },
+                sources=[],
+                metadata={"live": False},
+            )
+        if holder_type == "insider":
+            # No provider wired into HDS returns insider holder rows, so the
+            # filter is reported as unavailable instead of falling back to all rows.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "rows": [],
+                    "holder_type_filter": holder_type,
+                    "reason": "No HDS provider supplies insider holder rows. Yahoo institutional and mutual-fund tables and local SEC 13F data are the holder sources.",
+                    "next_actions": ["Choose holder_type all, institutional or mutual_fund."],
+                    "field_dictionary": FIELD_DICTIONARIES["holders"],
+                },
+                sources=[],
+                metadata={"live": False},
+            )
         warnings: list[str] = []
         sources: list[str] = []
         yahoo: dict[str, Any] = {}
@@ -93,10 +125,14 @@ class HDSFunction(BaseFunction):
                     sources.append("sec_13f")
             except Exception as e:
                 warnings.append(f"sec_13f: {e}")
-        rows = _holder_rows(instrument.symbol, sec_top, yahoo)
+        all_rows = _holder_rows(instrument.symbol, sec_top, yahoo)
+        rows = _filter_holder_type(all_rows, holder_type)
         summary = _major_summary(yahoo.get("major"))
         if rows:
             status, reason = "ok", None
+        elif all_rows:
+            status = "empty"
+            reason = f"Holder rows exist for {instrument.symbol} but none match holder_type={holder_type}."
         elif sources:
             status = "empty"
             reason = f"Holder providers answered for {instrument.symbol} but returned no holder rows."
@@ -108,7 +144,8 @@ class HDSFunction(BaseFunction):
         payload: dict[str, Any] = {
             "status": status,
             "rows": rows,
-            "methodology": "HDS shows holder rows from Yahoo institutional / mutual-fund holder tables and local SEC 13F data. Yahoo major-holder percentages are a summary block, not holder rows.",
+            "holder_type_filter": holder_type,
+            "methodology": "HDS shows holder rows from Yahoo institutional / mutual-fund holder tables and local SEC 13F data, restricted to holder_type. Yahoo major-holder percentages are a summary block, not holder rows.",
             "field_dictionary": FIELD_DICTIONARIES["holders"],
         }
         if reason:
@@ -127,6 +164,23 @@ class HDSFunction(BaseFunction):
                 "live": True,
             },
         )
+
+
+HOLDER_TYPE_FILTERS: tuple[str, ...] = ("all", "institutional", "insider", "mutual_fund")
+
+# Row holder_type values that each holder_type filter selects. 13F rows are
+# typed institutional_13f and count as institutional.
+_HOLDER_TYPE_MATCH: dict[str, frozenset[str]] = {
+    "institutional": frozenset({"institutional", "institutional_13f"}),
+    "mutual_fund": frozenset({"mutual_fund"}),
+}
+
+
+def _filter_holder_type(rows: list[dict[str, Any]], holder_type: str) -> list[dict[str, Any]]:
+    if holder_type == "all":
+        return rows
+    wanted = _HOLDER_TYPE_MATCH.get(holder_type, frozenset())
+    return [row for row in rows if row.get("holder_type") in wanted]
 
 
 def _truthy(value: Any) -> bool:

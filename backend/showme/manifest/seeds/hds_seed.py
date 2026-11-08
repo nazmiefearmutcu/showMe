@@ -54,7 +54,7 @@ def hds() -> FunctionManifest:
                 label="Holder type",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Restrict the ranked table to a holder subset.",
+                description="Restrict the ranked table to a holder subset. insider reports unavailable: no HDS provider supplies insider holder rows.",
                 options=["all", "institutional", "insider", "mutual_fund"],
             ),
             InputSpec(

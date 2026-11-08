@@ -75,3 +75,35 @@ def test_yfinance_pctheld_maps_to_pct_outstanding_fraction():
     assert rows[0]["pct_outstanding"] == 0.08, rows[0]
     assert rows[1]["pct_outstanding"] == 0.066, rows[1]
     assert all(0 <= r["pct_outstanding"] <= 1 for r in rows)
+
+
+# HDS#6 ---------------------------------------------------------------------
+
+def test_holder_type_mutual_fund_restricts_rows():
+    fn = _fn(yfinance=_Yahoo(_institutional_frame(), _mutualfund_frame()), sec_13f=_Sec13F(), sec_edgar=None)
+    res = _run(fn, holder_type="mutual_fund")
+    types = {r["holder_type"] for r in res.data["rows"]}
+    # RED before fix: holder_type was declared in the manifest but never applied.
+    assert types == {"mutual_fund"}, res.data["rows"]
+    assert res.data["holder_type_filter"] == "mutual_fund"
+
+
+def test_holder_type_institutional_excludes_mutual_fund_rows():
+    fn = _fn(yfinance=_Yahoo(_institutional_frame(), _mutualfund_frame()), sec_13f=_Sec13F(), sec_edgar=None)
+    res = _run(fn, holder_type="institutional")
+    assert res.data["rows"] and all(r["holder_type"] == "institutional" for r in res.data["rows"])
+
+
+def test_holder_type_insider_is_explicitly_unavailable_not_all_rows():
+    fn = _fn(yfinance=_Yahoo(_institutional_frame(), _mutualfund_frame()), sec_13f=_Sec13F(), sec_edgar=None)
+    res = _run(fn, holder_type="insider")
+    assert res.data["rows"] == []
+    assert res.data["status"] == "provider_unavailable"
+    assert "insider" in res.data["reason"].lower()
+
+
+def test_unknown_holder_type_is_input_error():
+    fn = _fn(yfinance=_Yahoo(_institutional_frame()), sec_13f=_Sec13F(), sec_edgar=None)
+    res = _run(fn, holder_type="whales")
+    assert res.data["status"] == "input_error"
+    assert res.data["rows"] == []
