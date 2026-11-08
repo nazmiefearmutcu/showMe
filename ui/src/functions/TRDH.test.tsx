@@ -1,35 +1,18 @@
 /**
- * TRDH pane — render-contract + defect-workaround tests.
+ * TRDH pane — awareness contract tests.
  *
- * Backend defect: the DEFAULT TRDH board (no `exchanges` param) returns only
- * BINANCE, so the pane always sends an explicit exchange list via a
- * multi-select chip row persisted under `showme.trdh.exchanges`. These
- * tests pin:
- *
- *  - the load states (loading / error / empty / ok);
- *  - an OK payload renders the per-exchange session table with open/closed
- *    tone and the correct countdown leg (closes-in for open venues,
- *    opens-in for closed ones, "continuous" for 24h venues);
- *  - rows sort open-first;
- *  - the chip interaction toggles selection, updates aria-pressed, and
- *    persists the selection.
- *
- * `useFunction` is mocked via a mutable shared state so each test drives
- * the pane into a specific branch without the real sidecar transport.
+ * Pins: the board sends an explicit MIC list (XNYS, XLON, ...); open venues sort
+ * first; countdowns come from next_open_utc / next_close_utc ("continuous" for
+ * an open venue with no next close); the chip row toggles and persists MIC
+ * codes; provider_unavailable renders AwarenessUnavailable with the reason.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { TRDHPane } from "./TRDH";
 
-/* ── useFunction mock ──────────────────────────────────────────────── */
-
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
-  data?: {
-    data?: unknown;
-    metadata?: Record<string, unknown>;
-    sources?: string[];
-  };
+  data?: { data?: unknown; metadata?: Record<string, unknown>; sources?: string[] };
   error?: Error | null;
 }
 
@@ -54,197 +37,137 @@ vi.mock("@/lib/useFunction", () => ({
   },
 }));
 
-/* ── fixtures ──────────────────────────────────────────────────────── */
+const MIN = 60_000;
+const at = (ms: number) => new Date(Date.now() + ms).toISOString();
 
-function boardPayload() {
+function venue(overrides: Record<string, unknown>) {
   return {
-    state: "ok" as const,
-    data: {
-      data: {
-        rows: [
-          {
-            exchange: "NYSE",
-            name: "New York Stock Exchange",
-            country: "US",
-            open_local: "09:30",
-            close_local: "16:00",
-            timezone: "America/New_York",
-            is_open_now: true,
-            next_open_utc: "2026-09-08T13:30:00+00:00",
-            next_close_utc: "2026-09-07T20:00:00+00:00",
-            seconds_until_open: 69743,
-            seconds_until_close: 6743,
-            hours_until_open: 19.373,
-            hours_until_close: 1.873,
-            value: 1.873,
-          },
-          {
-            exchange: "BINANCE",
-            name: "Binance",
-            country: "GLOBAL",
-            open_local: "00:00",
-            close_local: "23:59",
-            timezone: "UTC",
-            is_open_now: true,
-            next_open_utc: null,
-            next_close_utc: null,
-            seconds_until_open: 0,
-            seconds_until_close: null,
-            hours_until_open: 0.0,
-            hours_until_close: null,
-            value: 0.0,
-          },
-          {
-            exchange: "LSE",
-            name: "London Stock Exchange",
-            country: "GB",
-            open_local: "08:00",
-            close_local: "16:30",
-            timezone: "Europe/London",
-            is_open_now: false,
-            next_open_utc: "2026-09-08T07:00:00+00:00",
-            next_close_utc: "2026-09-08T15:30:00+00:00",
-            seconds_until_open: 46343,
-            seconds_until_close: 76943,
-            hours_until_open: 12.873,
-            hours_until_close: 21.373,
-            value: 12.873,
-          },
-        ],
-        surface: [],
-        cards: [
-          { label: "Open now", value: 2 },
-          { label: "Exchanges", value: 3 },
-        ],
-        source_mode: "exchange_calendar_registry",
-      },
-      metadata: { now_utc: "2026-09-07T18:07:36.090584+00:00" },
-      sources: ["exchange_calendars"],
-    },
+    mic: "XNYS",
+    name: "New York Stock Exchange",
+    timezone: "America/New_York",
+    today: { open_local: "09:30", close_local: "16:00", early_close: false },
+    is_open_now: false,
+    next_open_utc: at(12 * 60 * MIN),
+    next_close_utc: null,
+    sessions: [],
+    closures: [],
+    ...overrides,
   };
 }
 
-/* ── tests ─────────────────────────────────────────────────────────── */
+const OPEN_VENUE = venue({
+  mic: "XNYS",
+  is_open_now: true,
+  next_close_utc: at(112 * MIN),
+  next_open_utc: null,
+});
+const CLOSED_VENUE = venue({
+  mic: "XLON",
+  name: "London Stock Exchange",
+  timezone: "Europe/London",
+  is_open_now: false,
+  next_open_utc: at(12 * 60 * MIN + 52 * MIN),
+});
+const CONTINUOUS_VENUE = venue({
+  mic: "XHKG",
+  name: "HKEX",
+  is_open_now: true,
+  next_close_utc: null,
+  next_open_utc: null,
+});
 
 beforeEach(() => {
-  localStorage.removeItem("showme.trdh.exchanges");
   recordedCalls.length = 0;
-  setMockFn({ state: "idle", data: undefined });
+  setMockFn({ state: "idle" });
+  window.localStorage.clear();
 });
-afterEach(() => {
-  cleanup();
-});
+afterEach(() => cleanup());
 
-describe("TRDH pane — poll pattern (countdown refresh)", () => {
-  it("polls via visibility tick without putting tick into the fetch params", () => {
-    setMockFn(boardPayload());
+describe("TRDH load states", () => {
+  it("sends the default MIC list as the exchanges parameter", () => {
+    setMockFn({ state: "loading" });
     render(<TRDHPane code="TRDH" />);
-    expect(recordedCalls.length).toBeGreaterThan(0);
-    for (const call of recordedCalls) {
-      // The tick is the refetch trigger, never a param — a tick-keyed fetch
-      // would wipe to the skeleton every poll.
-      expect(call.params ?? {}).not.toHaveProperty("tick");
-      expect(call.params).toEqual({ exchanges: expect.any(String) });
-    }
-  });
-});
-
-describe("TRDH pane — load states", () => {
-  it("renders a skeleton while loading", () => {
-    setMockFn({ state: "loading", data: undefined });
-    const { container } = render(<TRDHPane code="TRDH" />);
-    expect(container.querySelector("[aria-busy='true']")).not.toBeNull();
+    const last = recordedCalls[recordedCalls.length - 1];
+    expect(String(last.params?.exchanges)).toBe(
+      "XNYS,XNAS,XLON,XETR,XPAR,XTKS,XHKG,XASX,XIST,XSHG",
+    );
   });
 
-  it("renders the error state when the fetch errors", () => {
-    setMockFn({ state: "error", data: undefined, error: new Error("sidecar exploded") });
+  it("renders AwarenessUnavailable with the reason and no board", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: { status: "provider_unavailable", reason: "calendar down", exchanges: [] },
+      },
+    });
     render(<TRDHPane code="TRDH" />);
-    expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
+    expect(screen.getByRole("alert").textContent).toContain("calendar down");
+    expect(screen.queryByRole("button", { name: /open|closed/i })).toBeNull();
   });
 
-  it("renders an empty prompt when the payload has no rows", () => {
-    setMockFn({ state: "ok", data: { data: { rows: [] } } });
+  it("says no sessions were returned for an empty ok payload", () => {
+    setMockFn({ state: "ok", data: { data: { status: "empty", exchanges: [] } } });
     render(<TRDHPane code="TRDH" />);
-    expect(screen.getByText(/No sessions returned/i)).toBeInTheDocument();
-  });
-
-  it("renders the board summary + session rows when ok", () => {
-    setMockFn(boardPayload());
-    const { container } = render(<TRDHPane code="TRDH" />);
-    expect(screen.getByText(/Open now/i)).toBeInTheDocument();
-    expect(screen.getByText("New York Stock Exchange · US")).toBeInTheDocument();
-    expect(screen.getByText("London Stock Exchange · GB")).toBeInTheDocument();
-    expect(container.querySelectorAll("table tbody tr").length).toBe(3);
+    expect(screen.getByText("No sessions returned")).toBeTruthy();
   });
 });
 
-describe("TRDH pane — countdown honesty", () => {
-  it("renders closes-in for open venues with a next close", () => {
-    setMockFn(boardPayload());
+describe("TRDH countdowns and ordering", () => {
+  it("shows closes-in for an open venue and opens-in for a closed one", () => {
+    setMockFn({
+      state: "ok",
+      data: { data: { status: "ok", exchanges: [CLOSED_VENUE, OPEN_VENUE] } },
+    });
     render(<TRDHPane code="TRDH" />);
-    expect(screen.getByText(/closes in 1h 52m/i)).toBeInTheDocument();
+    expect(screen.getByText(/closes in 1h 52m/)).toBeTruthy();
+    expect(screen.getByText(/opens in 12h 52m/)).toBeTruthy();
   });
 
-  it("renders opens-in for closed venues", () => {
-    setMockFn(boardPayload());
+  it("marks an open venue with no next close as continuous", () => {
+    setMockFn({
+      state: "ok",
+      data: { data: { status: "ok", exchanges: [CONTINUOUS_VENUE] } },
+    });
     render(<TRDHPane code="TRDH" />);
-    expect(screen.getByText(/opens in 12h 52m/i)).toBeInTheDocument();
-  });
-
-  it("renders continuous for a 24h venue with no next close", () => {
-    setMockFn(boardPayload());
-    render(<TRDHPane code="TRDH" />);
-    expect(screen.getByText(/continuous \(24h\)/i)).toBeInTheDocument();
+    expect(screen.getByText("continuous (24h)")).toBeTruthy();
   });
 
   it("sorts open venues before closed ones", () => {
-    setMockFn(boardPayload());
-    const { container } = render(<TRDHPane code="TRDH" />);
-    const firstRow = container.querySelector("table tbody tr");
-    expect(firstRow?.textContent).toContain("BINANCE");
-    const lastRow = Array.from(container.querySelectorAll("table tbody tr")).at(-1);
-    expect(lastRow?.textContent).toContain("LSE");
-  });
-});
-
-describe("TRDH pane — exchange chip interaction", () => {
-  it("toggles a venue chip, updates aria-pressed, and persists the selection", () => {
-    setMockFn(boardPayload());
+    setMockFn({
+      state: "ok",
+      data: { data: { status: "ok", exchanges: [CLOSED_VENUE, OPEN_VENUE] } },
+    });
     render(<TRDHPane code="TRDH" />);
-    const tyoChip = screen.getByRole("button", { name: "TYO" });
-    expect(tyoChip.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(tyoChip);
-    expect(tyoChip.getAttribute("aria-pressed")).toBe("false");
-    expect(localStorage.getItem("showme.trdh.exchanges")).not.toContain("TYO");
-    // Re-adding restores the full default board.
-    fireEvent.click(tyoChip);
-    expect(tyoChip.getAttribute("aria-pressed")).toBe("true");
-    expect(localStorage.getItem("showme.trdh.exchanges")).toContain("TYO");
+    const text = document.body.textContent ?? "";
+    expect(text.indexOf("XNYS")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("XNYS")).toBeLessThan(text.indexOf("XLON"));
+  });
+
+  it("shows the local session and an early-close flag from today", () => {
+    const early = venue({
+      mic: "XNAS",
+      is_open_now: true,
+      next_close_utc: at(60 * MIN),
+      today: { open_local: "09:30", close_local: "13:00", early_close: true },
+    });
+    setMockFn({ state: "ok", data: { data: { status: "ok", exchanges: [early] } } });
+    render(<TRDHPane code="TRDH" />);
+    expect(screen.getByText(/09:30–13:00 · early close/)).toBeTruthy();
   });
 });
 
-describe("TRDH pane — board grid sort + keyboard (lane B4)", () => {
-  it("pins open-first with keyboard navigation and cycles to descending", () => {
-    setMockFn(boardPayload());
-    const { container } = render(<TRDHPane code="TRDH" />);
-
-    const grid = screen.getByRole("grid", { name: "Trading hours board" });
-    expect(grid).toBeInTheDocument();
-    // Roving keyboard cell: the first cell owns the tab stop.
-    expect(
-      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
-    ).toBe("0");
-
-    // state ascending (open=0) keeps BINANCE first, closed LSE last.
-    const header = container.querySelector('th[aria-sort="ascending"]');
-    expect(header).not.toBeNull();
-    const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
-    expect(rowsBefore[0]?.textContent).toContain("BINANCE");
-    expect(rowsBefore.at(-1)?.textContent).toContain("LSE");
-
-    // Activating the sort cycles asc -> desc: closed LSE leads.
-    fireEvent.click(header!);
-    const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
-    expect(rowsAfter[0]?.textContent).toContain("LSE");
+describe("TRDH exchange chips", () => {
+  it("toggles a MIC chip off, updates the parameter and persists the selection", () => {
+    setMockFn({ state: "ok", data: { data: { status: "ok", exchanges: [OPEN_VENUE] } } });
+    render(<TRDHPane code="TRDH" />);
+    const tse = screen.getByRole("button", { name: "TSE" });
+    expect(tse.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(tse);
+    expect(screen.getByRole("button", { name: "TSE" }).getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    const last = recordedCalls[recordedCalls.length - 1];
+    expect(String(last.params?.exchanges)).not.toContain("XTKS");
+    expect(window.localStorage.getItem("showme.trdh.exchanges")).not.toContain("XTKS");
   });
 });

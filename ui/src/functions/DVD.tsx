@@ -1,10 +1,12 @@
 /**
- * DVD — Dividends & Splits.
+ * DVD — dividends (Awareness-backed).
  *
- * Surfaces yfinance corporate-action events. Live toggle drives the backend
- * `live_dividends` flag. Header: live toggle + status pill + refresh.
- * Body: KPI ribbon (last dividend, latest yield-proxy, # dividends, # splits)
- * + action grid with source_mode pill.
+ * Data: `upcoming` declared dividends from awareness `/calendar/corporate`
+ * (type dividend) and `history` from yfinance live history, plus a `summary`
+ * block (annualised amount, last amount and ex-date, frequency guess).
+ *
+ * Honesty: the fabricated template default is gone. An empty payload renders
+ * "No dividends" and never a made-up schedule. Unknown values show "—".
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -24,96 +26,92 @@ import {
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
 import { defaultSymbolForFunction } from "@/lib/symbols";
-import {
-  FunctionControlGroup,
-  LoadStatePill,
-  RefreshButton,
-  SegmentedControl,
-} from "./function-controls";
-import { usePersistentOption } from "./function-control-state";
+import { formatMissing } from "@/lib/format";
+import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { AwarenessUnavailable } from "./awareness/AwarenessUnavailable";
+import { ProviderHealthStrip } from "./awareness/ProviderHealthStrip";
+import type { AwarenessMeta } from "./awareness/types";
+import type { ProvenanceSource } from "./awareness/ProvenanceButton";
+import { ProvenanceButton } from "./awareness/ProvenanceButton";
 
-interface DVDRow {
-  symbol?: string;
-  action_type?: string;
+export interface DivRow {
+  ex_date?: string | null;
   date?: string | null;
+  record_date?: string | null;
+  pay_date?: string | null;
   amount?: number | null;
-  source_mode?: string;
-  reason?: string;
+  currency?: string | null;
+  source?: string | null;
+  sources?: ProvenanceSource[] | null;
+  fields?: Record<string, unknown> | null;
 }
 
-interface DVDData {
+interface DvdSummary {
+  annual_amount?: number | null;
+  last_amount?: number | null;
+  last_ex_date?: string | null;
+  frequency_guess?: string | null;
+}
+
+interface DvdPayload {
   status?: string;
-  rows?: DVDRow[];
-  history?: DVDRow[];
-  dividends?: unknown;
-  splits?: unknown;
-  actions?: unknown;
-  methodology?: string;
-  field_dictionary?: Record<string, unknown>;
+  reason?: string | null;
+  upcoming?: DivRow[];
+  history?: DivRow[];
+  summary?: DvdSummary;
+  meta?: AwarenessMeta;
+  next_actions?: string[];
 }
-
-const LIVE_OPTIONS = [
-  { value: "live", label: "Live" },
-  { value: "model", label: "Model" },
-] as const;
-const LIVE_IDS = LIVE_OPTIONS.map((o) => o.value);
-type LiveMode = (typeof LIVE_OPTIONS)[number]["value"];
 
 export function DVDPane({ code, symbol }: FunctionPaneProps) {
-  const [mode, setMode] = usePersistentOption<LiveMode>(
-    "showme.dvd.mode",
-    LIVE_IDS,
-    "live",
-  );
   const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
-  const { state, data, error, refetch } = useFunction<DVDData>({
+  const { state, data, error, refetch } = useFunction<DvdPayload>({
     code,
     symbol: effectiveSymbol,
-    params: { live_dividends: mode === "live", live: mode === "live" },
+    params: { history: true },
     enabled: !!effectiveSymbol,
   });
 
-  const payload = data?.data;
-  const rows: DVDRow[] = useMemo(
-    () => (payload?.rows ?? []) as DVDRow[],
-    [payload?.rows],
+  const payload: DvdPayload = data?.data ?? {};
+  const status = payload.status ?? "—";
+  const unavailable = status === "provider_unavailable";
+  const meta: AwarenessMeta = payload.meta ?? {};
+  const upcoming = useMemo(
+    () => sortRows(payload.upcoming ?? [], "asc"),
+    [payload.upcoming],
   );
-  const dividendRows = useMemo(
-    () => rows.filter((r) => r.action_type === "dividend"),
-    [rows],
-  );
-  const splitRows = useMemo(
-    () => rows.filter((r) => r.action_type === "split"),
-    [rows],
-  );
+  const history = useMemo(() => sortRows(payload.history ?? [], "desc"), [payload.history]);
+  const summary: DvdSummary = payload.summary ?? {};
+  const currency = history[0]?.currency ?? upcoming[0]?.currency ?? null;
+  const lastAmount = summary.last_amount ?? divAmount(history[0]);
+  const empty = upcoming.length === 0 && history.length === 0;
 
-  const stats = useMemo(() => deriveStats(dividendRows, splitRows), [
-    dividendRows,
-    splitRows,
-  ]);
-  const status = payload?.status ?? "—";
-  const isLive = state === "ok" && status === "ok";
-  const isProviderEmpty =
-    rows.length > 0 && rows[0]?.action_type === "provider_unavailable";
-
-  const COLS: DataGridColumn<DVDRow>[] = useMemo(
+  const COLS: DataGridColumn<DivRow>[] = useMemo(
     () => [
       {
-        key: "date",
-        header: "Date",
-        width: 122,
+        key: "ex",
+        header: "Ex-date",
+        width: 116,
+        render: (r) => <span style={monoPrimaryStyle}>{fmtDay(divDate(r))}</span>,
+      },
+      {
+        key: "record",
+        header: "Record",
+        width: 116,
         render: (r) => (
-          <span style={monoPrimaryStyle}>
-            {String(r.date ?? "—").slice(0, 10)}
+          <span style={monoMutedStyle}>
+            {fmtDay(r.record_date ?? r.fields?.record_date)}
           </span>
         ),
       },
       {
-        key: "action_type",
-        header: "Type",
-        width: 96,
-        render: (r) => actionPill(r.action_type),
+        key: "pay",
+        header: "Pay",
+        width: 116,
+        render: (r) => (
+          <span style={monoMutedStyle}>{fmtDay(r.pay_date ?? r.fields?.pay_date)}</span>
+        ),
       },
       {
         key: "amount",
@@ -121,151 +119,117 @@ export function DVDPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         width: 112,
         render: (r) => (
-          <span style={monoStrongStyle}>{fmtAmount(r.amount, r.action_type)}</span>
+          <span style={monoStrongStyle}>{fmtAmount(divAmount(r), r.currency)}</span>
         ),
       },
       {
-        key: "delta",
-        header: "Δ vs prev",
-        numeric: true,
-        width: 108,
-        render: (r, i) => {
-          if (r.action_type !== "dividend") return <span className="u-text-mute">—</span>;
-          const list = dividendRows;
-          const idx = list.findIndex((x) => x === r);
-          if (idx < 0) return <span className="u-text-mute">—</span>;
-          const next = list[idx + 1];
-          const cur = typeof r.amount === "number" ? r.amount : null;
-          const prev = typeof next?.amount === "number" ? next.amount : null;
-          if (cur == null || prev == null || prev === 0) {
-            return <span className="u-text-mute">—</span>;
-          }
-          const pct = ((cur - prev) / Math.abs(prev)) * 100;
-          return <DeltaChip key={i} value={pct} format="percent" fractionDigits={2} />;
-        },
-      },
-      {
-        key: "source_mode",
+        key: "source",
         header: "Source",
-        width: 220,
-        render: (r) =>
-          r.source_mode ? (
-            <Pill
-              tone={
-                r.action_type === "provider_unavailable"
-                  ? "warn"
-                  : r.source_mode.includes("live")
-                    ? "accent"
-                    : "muted"
-              }
-              variant="soft"
-              withDot={false}
-            >
-              {r.source_mode}
-            </Pill>
-          ) : (
-            <span className="u-text-mute">—</span>
-          ),
+        render: (r) => (
+          <span className="aw-cal__meta">
+            <span style={monoMutedStyle}>
+              {r.source ??
+                ((r.sources ?? []).map((s) => s.provider).join(", ") || formatMissing)}
+            </span>
+            <ProvenanceButton
+              sources={r.sources}
+              subject={`dividend ${fmtDay(divDate(r))}`}
+            />
+          </span>
+        ),
       },
     ],
-    [dividendRows],
+    [],
   );
 
   const body = !effectiveSymbol ? (
-    <Empty title="Pick a symbol" body="DVD needs an equity / ETF ticker." icon="⌖" />
+    <Empty title="Pick a symbol" body="DVD needs an equity or ETF ticker." icon="⌖" />
   ) : state === "loading" || state === "idle" ? (
     <div className="u-grid-gap-8">
       <Skeleton height={56} />
-      <Skeleton height={20} />
       <Skeleton height={20} />
       <Skeleton height={20} width="80%" />
     </div>
   ) : state === "error" ? (
     <Empty
       title="Function error"
-      body={error?.message ?? "—"}
+      body={error?.message ?? formatMissing}
       icon="!"
       action={
-        <button onClick={refetch} className="btn">
+        <button type="button" onClick={refetch} className="btn">
           Retry
         </button>
       }
     />
-  ) : rows.length === 0 || isProviderEmpty ? (
+  ) : unavailable ? (
+    <AwarenessUnavailable
+      reason={payload.reason ?? null}
+      onRetry={refetch}
+      subject="dividend data"
+    />
+  ) : empty ? (
     <Empty
-      title={isProviderEmpty ? "Provider unavailable" : "No corporate actions"}
-      body={
-        isProviderEmpty
-          ? rows[0]?.reason ?? "yfinance returned no dividend/split rows."
-          : "No dividend or split events for this symbol."
-      }
+      title="No dividends returned"
+      body={`No declared or historical dividends for ${effectiveSymbol}. Nothing is estimated.`}
       action={
-        <button onClick={refetch} className="btn">
+        <button type="button" onClick={refetch} className="btn">
           Retry
         </button>
       }
     />
   ) : (
     <div className="u-grid-gap-14">
-      <section style={kpiGridStyle} aria-label="DVD KPI ribbon">
+      <section style={kpiGridStyle} aria-label="DVD summary">
         <StatCard
           label="Last dividend"
-          value={fmtAmount(stats.lastDividend, "dividend")}
-          caption={
-            stats.lastDividendDate
-              ? String(stats.lastDividendDate).slice(0, 10)
-              : "—"
-          }
-          tone="neutral"
-          trend={stats.dividendTrend}
-        />
-        <StatCard
-          label="Dividends"
-          value={String(dividendRows.length)}
-          caption="HISTORICAL ROWS"
+          value={fmtAmount(lastAmount, currency)}
+          caption={summary.last_ex_date ? `EX ${fmtDay(summary.last_ex_date)}` : "—"}
           tone="neutral"
         />
         <StatCard
-          label="Splits"
-          value={String(splitRows.length)}
-          caption={
-            stats.lastSplit
-              ? `LAST ${stats.lastSplit} @ ${stats.lastSplitDate ? String(stats.lastSplitDate).slice(0, 10) : "—"}`
-              : "NO SPLITS"
-          }
+          label="Annualised"
+          value={fmtAmount(summary.annual_amount ?? null, currency)}
+          caption="FROM DECLARED RATE"
           tone="neutral"
         />
         <StatCard
-          label="YoY Δ"
-          value={
-            stats.yoyDelta != null
-              ? `${stats.yoyDelta >= 0 ? "+" : ""}${stats.yoyDelta.toFixed(2)}%`
-              : "—"
-          }
-          caption="LATEST VS 1Y PRIOR"
-          tone={
-            stats.yoyDelta == null
-              ? "neutral"
-              : stats.yoyDelta >= 0
-                ? "positive"
-                : "negative"
-          }
-          trend={stats.dividendTrend}
+          label="Frequency"
+          value={summary.frequency_guess ?? formatMissing}
+          caption="ESTIMATED FROM HISTORY"
+          tone="neutral"
+        />
+        <StatCard
+          label="Upcoming"
+          value={String(upcoming.length)}
+          caption="DECLARED"
+          tone="neutral"
         />
       </section>
-      <DataGrid
-        columns={COLS}
-        rows={rows}
-        rowKey={(r, i) => `${r.date ?? ""}-${r.action_type ?? ""}-${i}`}
-        density="compact"
-        ariaLabel="DVD corporate actions"
-      />
-      {status === "modeled" && (
-        <p style={modelNoteStyle} data-testid="dvd-model-notice" role="note">
-          Model mode: rows are reference-shaped model events, not reported
-          corporate actions.
-        </p>
-      )}
+      {upcoming.length > 0 ? (
+        <section aria-label="Upcoming dividends" className="u-grid-gap-8">
+          <h3 style={sectionTitleStyle}>Upcoming</h3>
+          <DataGrid
+            columns={COLS}
+            rows={upcoming}
+            rowKey={(r, i) => `u-${divDate(r) ?? ""}-${i}`}
+            density="compact"
+            ariaLabel="Upcoming dividend rows"
+          />
+        </section>
+      ) : null}
+      {history.length > 0 ? (
+        <section aria-label="Dividend history" className="u-grid-gap-8">
+          <h3 style={sectionTitleStyle}>History</h3>
+          <DataGrid
+            columns={COLS}
+            rows={history}
+            rowKey={(r, i) => `h-${divDate(r) ?? ""}-${i}`}
+            density="compact"
+            ariaLabel="Dividend history rows"
+          />
+        </section>
+      ) : null}
+      {history.length >= 2 ? <ChangeNote history={history} /> : null}
     </div>
   );
 
@@ -274,148 +238,103 @@ export function DVDPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`Dividends & Splits — ${effectiveSymbol || ""}`}
-          subtitle={`${effectiveSymbol || "—"} · ${dividendRows.length} div · ${splitRows.length} split`}
+          title={`Dividends — ${effectiveSymbol || ""}`}
+          subtitle={`${effectiveSymbol || "—"} · ${upcoming.length} upcoming · ${history.length} history`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
-                {dividendRows.length} div
+                {history.length} history
               </Pill>
-              <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live" : status}
-              </Pill>
-              <SegmentedControl
-                label="MODE"
-                value={mode}
-                options={LIVE_OPTIONS}
-                onChange={setMode}
-              />
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
                 onClick={refetch}
                 disabled={!effectiveSymbol}
-                title="Refresh corporate actions"
+                title="Refresh dividends"
               />
             </FunctionControlGroup>
           }
         />
+        <ProviderHealthStrip
+          providers={meta.providers}
+          feedHealth={meta.feed_health}
+          generatedAt={meta.generated_at}
+        />
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
-          <StatusSection
-            label="sources"
-            value={data?.sources?.join(", ") || "—"}
-          />
+          <StatusSection label="sources" value={data?.sources?.join(", ") || "awareness"} />
           <StatusDivider />
           <StatusSection label="status" value={status} />
           <StatusDivider />
-          <StatusSection label="rows" value={rows.length} />
+          <StatusSection label="rows" value={upcoming.length + history.length} />
           <StatusDivider />
           <StatusSection
             label="elapsed"
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
-          <StatusDivider />
-          <StatusSection label="mode" value={mode} tone="accent" />
         </PaneFooter>
       </Pane>
     </div>
   );
 }
 
-interface DVDStats {
-  lastDividend: number | null;
-  lastDividendDate: string | null;
-  lastSplit: number | null;
-  lastSplitDate: string | null;
-  yoyDelta: number | null;
-  dividendTrend: number[];
-}
-
-function deriveStats(dividendRows: DVDRow[], splitRows: DVDRow[]): DVDStats {
-  const divVals = dividendRows
-    .map((r) => (typeof r.amount === "number" ? r.amount : null))
-    .filter((v): v is number => v != null && Number.isFinite(v));
-  const lastDividend = divVals[0] ?? null;
-  return {
-    lastDividend,
-    lastDividendDate: dividendRows[0]?.date ?? null,
-    lastSplit:
-      typeof splitRows[0]?.amount === "number" ? splitRows[0].amount : null,
-    lastSplitDate: splitRows[0]?.date ?? null,
-    yoyDelta: yoyDelta(dividendRows),
-    dividendTrend: divVals.slice(0, 22).reverse(),
-  };
-}
-
-/**
- * Year-over-year % change vs the dividend closest to exactly one year before
- * the latest dated row. The old implementation compared `divVals[4]` (the 5th
- * row) under a "4 prior" label — only valid when every row is one quarter.
- * Not a genuine ~1-year comparison -> `—` (never a mislabeled number).
- */
-function yoyDelta(dividendRows: DVDRow[]): number | null {
-  const dated = dividendRows
-    .map((r) => ({
-      date: parseDay(r.date),
-      amount: typeof r.amount === "number" ? r.amount : null,
-    }))
-    .filter(
-      (r): r is { date: number; amount: number } =>
-        r.date != null && r.amount != null && Number.isFinite(r.amount),
-    );
-  if (dated.length < 2) return null;
-  const sorted = [...dated].sort((a, b) => b.date - a.date);
-  const latest = sorted[0];
-  const target = latest.date - 365.25 * 86_400_000;
-  let best: { date: number; amount: number } | null = null;
-  let bestDist = Infinity;
-  for (const row of sorted.slice(1)) {
-    const dist = Math.abs(row.date - target);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = row;
-    }
-  }
-  if (!best || best.amount === 0 || bestDist > 62 * 86_400_000) return null;
-  return ((latest.amount - best.amount) / Math.abs(best.amount)) * 100;
-}
-
-function parseDay(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const t = Date.parse(String(value).slice(0, 10));
-  return Number.isFinite(t) ? t : null;
-}
-
-function fmtAmount(v: unknown, kind?: string): string {
-  if (v == null) return "—";
-  const n = typeof v === "number" ? v : Number(v);
-  if (!Number.isFinite(n)) return "—";
-  if (kind === "split") return `${n.toFixed(2)}:1`;
-  return `$${n.toLocaleString("en-US", { maximumFractionDigits: 4 })}`;
-}
-
-function actionPill(action: string | undefined) {
-  if (!action) return <span className="u-text-mute">—</span>;
-  const tone: "positive" | "accent" | "warn" | "muted" =
-    action === "dividend"
-      ? "positive"
-      : action === "split"
-        ? "accent"
-        : action === "provider_unavailable"
-          ? "warn"
-          : "muted";
+/** Year-over-year change of the latest dividend vs the one about a year earlier. */
+function ChangeNote({ history }: { history: DivRow[] }) {
+  const latest = divAmount(history[0]);
+  const prev = divAmount(history[1]);
+  if (latest == null || prev == null || prev === 0) return null;
+  const pct = ((latest - prev) / Math.abs(prev)) * 100;
   return (
-    <Pill tone={tone} variant="soft" withDot={false}>
-      {action}
-    </Pill>
+    <p style={noteStyle} aria-label="Change versus the previous dividend">
+      Latest vs previous: <DeltaChip value={pct} format="percent" fractionDigits={2} />
+    </p>
   );
+}
+
+function divDate(r: DivRow): string | null {
+  return r.ex_date ?? r.date ?? (r.fields?.ex_date as string | undefined) ?? null;
+}
+
+function divAmount(r: DivRow | undefined): number | null {
+  if (!r) return null;
+  const raw = r.amount ?? (r.fields?.amount as number | undefined) ?? null;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+
+function sortRows(rows: DivRow[], dir: "asc" | "desc"): DivRow[] {
+  const copy = [...rows];
+  copy.sort((a, b) => {
+    const da = divDate(a) ?? "";
+    const db = divDate(b) ?? "";
+    return dir === "asc" ? da.localeCompare(db) : db.localeCompare(da);
+  });
+  return copy;
+}
+
+function fmtDay(v: unknown): string {
+  if (v == null) return formatMissing;
+  const s = String(v).trim();
+  return s ? s.slice(0, 10) : formatMissing;
+}
+
+function fmtAmount(v: number | null | undefined, currency?: string | null): string {
+  if (v == null || !Number.isFinite(v)) return formatMissing;
+  const prefix = currency && currency !== "USD" ? `${currency} ` : "$";
+  return `${prefix}${v.toLocaleString("en-US", { maximumFractionDigits: 4 })}`;
 }
 
 const kpiGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 10,
+};
+
+const sectionTitleStyle: CSSProperties = {
+  margin: 0,
+  fontFamily: "var(--font-display)",
+  fontSize: "var(--font-size-md)",
+  fontWeight: 600,
+  color: "var(--text-display)",
 };
 
 const monoStrongStyle: CSSProperties = {
@@ -431,9 +350,14 @@ const monoPrimaryStyle: CSSProperties = {
   color: "var(--text-primary)",
 };
 
-const modelNoteStyle: CSSProperties = {
+const monoMutedStyle: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontVariantNumeric: "tabular-nums",
+  color: "var(--text-mute)",
+};
+
+const noteStyle: CSSProperties = {
   margin: 0,
   fontSize: "var(--font-size-sm)",
-  lineHeight: 1.5,
   color: "var(--text-mute)",
 };

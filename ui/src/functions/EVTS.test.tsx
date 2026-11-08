@@ -1,34 +1,21 @@
 /**
- * EVTS pane — load-state + honesty tests (GEX mock pattern).
+ * EVTS pane — awareness contract tests.
  *
- * `useFunction` is mocked via a mutable shared object. Pins:
- *  - loading skeleton and error branches render;
- *  - an ok payload renders the events table with type chips (earnings /
- *    dividend / calendar) and summary cards;
- *  - the `provider_unavailable` payload renders the backend's honest reason
- *    instead of invented events;
- *  - the provider control persists under `showme.evts.provider` and
- *    activates on click.
+ * Pins: provider_unavailable shows AwarenessUnavailable with the backend reason
+ * and no rows; empty windows say so; upcoming events precede recent events;
+ * the type filter narrows rows; no provider/reference toggle is rendered.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { EVTSPane } from "./EVTS";
 
-/* ── useFunction mock ──────────────────────────────────────────────── */
-
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
-  data?: { data?: unknown } | undefined;
+  data?: Record<string, unknown> | undefined;
   error?: Error | null;
 }
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
-
-function setMockFn(next: Partial<MockFnState>) {
-  mockFn.state = next.state ?? "idle";
-  mockFn.data = next.data;
-  mockFn.error = next.error ?? null;
-}
 
 vi.mock("@/lib/useFunction", () => ({
   useFunction: () => ({
@@ -39,145 +26,114 @@ vi.mock("@/lib/useFunction", () => ({
   }),
 }));
 
-/* ── fixtures (shape mirrors a live /api/fn/EVTS probe) ────────────── */
-
-function okPayload() {
-  return {
-    status: "ok",
-    symbol: "AAPL",
-    event_count: 3,
-    rows: [
-      {
-        symbol: "AAPL",
-        event: "earnings",
-        date: "2026-07-30T00:00:00",
-        value: 1.2,
-        source_section: "earnings",
-        "Earnings Date": "2026-07-30",
-      },
-      {
-        symbol: "AAPL",
-        event: "dividend",
-        date: "2026-05-12",
-        value: 0.26,
-        source_section: "dividends",
-      },
-      {
-        symbol: "AAPL",
-        event: "earnings date",
-        date: "2026-04-29",
-        value: "2026-04-29",
-        source_section: "calendar",
-      },
-    ],
-  };
+function setMockFn(next: MockFnState) {
+  mockFn.state = next.state;
+  mockFn.data = next.data;
+  mockFn.error = next.error ?? null;
 }
 
-beforeEach(() => {
-  localStorage.clear();
-  setMockFn({ state: "idle", data: undefined });
-});
-afterEach(() => {
-  cleanup();
-});
+const future = (days: number) =>
+  new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+const past = (days: number) =>
+  new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 
-describe("EVTS pane — load states", () => {
-  it("renders a skeleton while loading", () => {
-    setMockFn({ state: "loading" });
-    const { container } = render(<EVTSPane code="EVTS" symbol="AAPL" />);
-    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+beforeEach(() => setMockFn({ state: "idle" }));
+afterEach(() => cleanup());
+
+describe("EVTSPane", () => {
+  it("renders AwarenessUnavailable with the reason and no event rows", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: { status: "provider_unavailable", reason: "awareness timeout", rows: [] },
+        sources: ["no_live_source"],
+      },
+    });
+    render(<EVTSPane code="EVTS" symbol="NVDA" />);
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("awareness timeout");
+    expect(screen.queryByRole("table")).toBeNull();
   });
 
-  it("renders the error state when the fetch errors", () => {
-    setMockFn({ state: "error", error: new Error("sidecar exploded") });
-    render(<EVTSPane code="EVTS" symbol="AAPL" />);
-    expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
-  });
-});
-
-describe("EVTS pane — events table", () => {
-  it("renders dated rows with type chips and summary cards when ok", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    const { container } = render(<EVTSPane code="EVTS" symbol="AAPL" />);
-    // Dates render ISO-truncated.
-    expect(container.textContent).toContain("2026-07-30");
-    expect(container.textContent).toContain("2026-05-12");
-    // Type chips per source section ("earnings" appears as chip + event text).
-    expect(screen.getAllByText("earnings").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("dividends").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("calendar").length).toBeGreaterThanOrEqual(1);
-    // Summary cards.
-    expect(container.textContent).toContain("YFINANCE");
+  it("says so when the window holds no events and invents none", () => {
+    setMockFn({ state: "ok", data: { data: { status: "empty", rows: [] } } });
+    render(<EVTSPane code="EVTS" symbol="NVDA" />);
+    expect(screen.getByText("No corporate events in this window")).toBeTruthy();
   });
 
-  it("renders the honest provider_unavailable state with the backend reason", () => {
+  it("lists upcoming events before recent events, each sorted", () => {
     setMockFn({
       state: "ok",
       data: {
         data: {
-          status: "provider_unavailable",
-          rows: [],
-          symbol: "AAPL",
-          reason: "No dated corporate events were returned for this symbol.",
-          next_actions: ["Retry with another equity symbol or a longer provider timeout."],
+          status: "ok",
+          rows: [
+            {
+              date: past(40),
+              type: "earnings",
+              event: "Q2 earnings",
+              status: "reported",
+              sources: [{ provider: "awareness" }],
+            },
+            {
+              date: future(60),
+              type: "dividend",
+              event: "Ex-dividend",
+              status: "scheduled",
+              sources: [],
+            },
+            {
+              date: future(10),
+              type: "earnings",
+              event: "Q3 earnings",
+              status: "scheduled",
+              sources: [],
+            },
+          ],
         },
       },
     });
-    render(<EVTSPane code="EVTS" symbol="AAPL" />);
-    expect(screen.getByText(/Events provider unavailable/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/No dated corporate events were returned for this symbol./i),
-    ).toBeInTheDocument();
-    // No fabricated event rows.
-    expect(screen.queryByText(/2026-07-30/)).toBeNull();
-  });
-});
-
-describe("EVTS pane — controls", () => {
-  it("persists and activates the provider control", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    render(<EVTSPane code="EVTS" symbol="AAPL" />);
-    const off = screen.getByRole("button", { name: "off" });
-    expect(off).not.toBeDisabled();
-    fireEvent.click(off);
-    expect(off).toBeDisabled();
-    expect(off.className).toContain("fn-segmented__opt--active");
-    expect(localStorage.getItem("showme.evts.provider")).toBe("off");
-  });
-});
-
-describe("EVTS pane — grid upgrade (L7)", () => {
-  it("sorts the grid by date from the header", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    const { container } = render(<EVTSPane code="EVTS" symbol="AAPL" />);
-    // Default sort is newest-first.
-    expect(container.querySelector("tbody tr")?.textContent).toContain("2026-07-30");
-    fireEvent.click(screen.getByRole("columnheader", { name: /Date/i }));
-    // First click flips the default (descending → none), second lands ascending.
-    fireEvent.click(screen.getByRole("columnheader", { name: /Date/i }));
-    expect(container.querySelector("tbody tr")?.textContent).toContain("2026-04-29");
+    render(<EVTSPane code="EVTS" symbol="NVDA" />);
+    const text = document.body.textContent ?? "";
+    expect(text.indexOf("Q3 earnings")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Q3 earnings")).toBeLessThan(text.indexOf("Ex-dividend"));
+    expect(text.indexOf("Ex-dividend")).toBeLessThan(text.indexOf("Q2 earnings"));
   });
 
-  it("filters events by source-section chip", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    const { container } = render(<EVTSPane code="EVTS" symbol="AAPL" />);
-    expect(container.querySelectorAll("tbody tr").length).toBe(3);
-    fireEvent.click(screen.getByTitle("Filter event type dividends"));
-    expect(container.querySelectorAll("tbody tr").length).toBe(1);
-    expect(container.textContent).toContain("2026-05-12");
-    expect(container.textContent).not.toContain("2026-07-30");
-    fireEvent.click(screen.getByTitle("Filter event type ALL"));
-    expect(container.querySelectorAll("tbody tr").length).toBe(3);
+  it("narrows rows with the type filter", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          rows: [
+            {
+              date: future(5),
+              type: "earnings",
+              event: "Q3 earnings",
+              status: "scheduled",
+            },
+            {
+              date: future(9),
+              type: "split",
+              event: "10-for-1 split",
+              status: "scheduled",
+            },
+          ],
+        },
+      },
+    });
+    render(<EVTSPane code="EVTS" symbol="NVDA" />);
+    expect(screen.getByText("10-for-1 split")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "earnings" }));
+    expect(screen.queryByText("10-for-1 split")).toBeNull();
+    expect(screen.getByText("Q3 earnings")).toBeTruthy();
   });
 
-  it("offers a CSV export button that honors the current filter", () => {
-    setMockFn({ state: "ok", data: { data: okPayload() } });
-    render(<EVTSPane code="EVTS" symbol="AAPL" />);
-    const csv = screen.getByTitle("Download CSV");
-    expect(csv).not.toBeDisabled();
-    // jsdom has no Blob download path — the helper must degrade silently.
-    fireEvent.click(csv);
-    fireEvent.click(screen.getByTitle("Filter event type dividends"));
-    expect(screen.getByLabelText(/Download 1 events as CSV/i)).not.toBeDisabled();
+  it("does not render a provider or reference toggle", () => {
+    setMockFn({ state: "ok", data: { data: { status: "ok", rows: [] } } });
+    render(<EVTSPane code="EVTS" symbol="NVDA" />);
+    expect(screen.queryByText("yfinance")).toBeNull();
+    expect(screen.queryByText(/reference/i)).toBeNull();
   });
 });
