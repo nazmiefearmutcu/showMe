@@ -86,20 +86,21 @@ def test_ecst_compare_success_labels_both_series(monkeypatch):
     assert all(isinstance(row["compare_value"], float) for row in rows)
 
 
-def test_ecst_compare_failure_uses_labelled_baseline(monkeypatch):
+def test_ecst_compare_failure_omits_overlay_without_baseline(monkeypatch):
+    """G5 ECST#1: a failed compare leg is omitted, never filled with a constructed curve."""
     fred = _Fred(fail_ids={"DGS2"})
     result = _execute_with_fred(
         monkeypatch, fred, series_id="DGS10", compare_with="DGS2"
     )
     data = result.data
 
-    # Main series stayed live; only the compare leg fell back.
+    # Main series stayed live; only the compare leg is unavailable.
     assert data["source_mode"] == "fred"
-    assert data["compare_source_mode"] == "macro_series_baseline"
+    assert data["compare_source_mode"] == "provider_unavailable"
     assert any(
         "DGS2 compare series was unavailable" in warning
         for warning in result.warnings
-    ), "the compare fallback must be disclosed in warnings"
-    assert "macro_series_baseline" in result.sources
-    # The overlay still has a comparable value on every merged row.
-    assert any("compare_value" in row for row in data["rows"])
+    ), "the compare outage must be disclosed in warnings"
+    assert "macro_series_baseline" not in result.sources
+    # No overlay value is invented for any row.
+    assert not any("compare_value" in row for row in data["rows"])
