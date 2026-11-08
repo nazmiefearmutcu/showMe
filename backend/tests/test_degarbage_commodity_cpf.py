@@ -48,11 +48,14 @@ _OK_STATUSES = {"ok", "empty"}
 def test_cpf_series_map_covers_manifest_options():
     # The manifest seed offers these series_id options; the map must route
     # each to a real keyless Yahoo futures proxy (no canned constants).
-    for sid in ("WTISPLC", "DCOILWTICO", "DHHNGSP", "PCOPPUSDM", "PGOLD", "PNGASEUUSDM"):
+    for sid in ("WTISPLC", "DCOILWTICO", "DHHNGSP", "PCOPPUSDM", "PGOLD"):
         assert sid in CPF_SERIES_MAP, f"{sid} missing from CPF_SERIES_MAP"
         entry = CPF_SERIES_MAP[sid]
         assert entry["futures"].endswith("=F")
         assert entry["unit"]
+    # CPF#1: European gas was mapped to the Henry Hub contract (NG=F); it must
+    # not be routed at all now.
+    assert "PNGASEUUSDM" not in CPF_SERIES_MAP
 
 
 def test_cpf_returns_live_or_graceful_unavailable():
