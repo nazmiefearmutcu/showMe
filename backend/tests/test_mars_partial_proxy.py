@@ -102,10 +102,13 @@ def test_mars_full_proxy_coverage_stays_live():
     loaded = metadata.get("factor_proxies_loaded")
     assert isinstance(loaded, list) and sorted(loaded) == sorted(_ALL_FACTORS)
     # This fixture serves the same series for every symbol, so the proxies are
-    # perfectly collinear and MARS#2 correctly warns about that. The claim under
-    # test is narrower: full coverage must not carry COVERAGE (unavailable) warnings.
-    coverage = [w for w in result.warnings if "unavailable" in w.lower()]
-    assert not coverage, f"full live coverage must not carry proxy-coverage warnings: {coverage}"
+    # perfectly collinear and MARS#2 correctly warns about that. Full coverage
+    # must carry the collinearity warning and the equal-weight disclosure (no
+    # weights are passed) and nothing else: no coverage shortfall, no other warning.
+    assert any("collinear" in w.lower() for w in result.warnings), result.warnings
+    expected = ("collinear", "equal-weight basket")
+    unexpected = [w for w in result.warnings if not any(k in w.lower() for k in expected)]
+    assert not unexpected, f"full live coverage must carry only the expected disclosures: {unexpected}"
 
 
 def test_mars_sanitizer_never_grants_live_on_shortfall():
