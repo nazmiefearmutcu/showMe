@@ -56,3 +56,16 @@ def test_live_payload_does_not_stamp_request_time_as_as_of() -> None:
     assert out.data.get("quote_time") is None
     assert out.data.get("fetched_at"), "retrieval time must be labelled fetched_at"
     assert out.data.get("source_mode") == "yfinance_live"
+
+
+def test_reference_template_envelope_is_not_status_ok() -> None:
+    """WEI#3: a model/reference template must not present as an ok snapshot."""
+    out = asyncio.run(WEIFunction().execute(reference=True))
+    assert out.data["source_mode"] == "world_index_template"
+    assert out.data["status"] == "model", out.data["status"]
+    assert out.data["status"] != "ok"
+    assert out.metadata.get("live") is False
+    assert all(row["market_state"] == "model" for row in out.data["rows"])
+    # The request clock is not a data freshness stamp for a deterministic model.
+    assert "as_of" not in out.data
+    assert out.data.get("generated_at")

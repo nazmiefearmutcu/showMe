@@ -620,7 +620,7 @@ class WEIFunction(BaseFunction):
                     "reason": "World index quote provider returned no usable live rows.",
                     "rows": fallback_rows,
                     "source_mode": "world_index_template",
-                    "as_of": _utc_now_iso(),
+                    "generated_at": _utc_now_iso(),
                     "next_actions": [
                         "Retry WEI after the public quote provider recovers.",
                         "Rows shown are a deterministic world-index model, not live quotes.",
@@ -644,11 +644,15 @@ class WEIFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
-                "status": "ok" if not live else "provider_unavailable",
+                # A deterministic model is never an "ok" snapshot: status "model"
+                # on the explicit reference path, provider_unavailable when live was
+                # requested but no provider is wired.
+                "status": "model" if not live else "provider_unavailable",
                 "rows": _world_index_template(),
                 "universe_size": len(indices),
                 "source_mode": "world_index_template",
-                "as_of": _utc_now_iso(),
+                # Model generation time, not a market or quote time.
+                "generated_at": _utc_now_iso(),
             },
             metadata={"live": False, "fallback": True, "degraded": degraded, "universe_size": len(indices)},
             sources=["showme_local_baseline"],

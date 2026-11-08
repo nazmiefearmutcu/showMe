@@ -317,7 +317,7 @@ export function WEIPane({ code }: FunctionPaneProps) {
                 {rows.length} idx
               </Pill>
               <Pill tone="accent" variant="soft" withDot={false}>
-                {asOf ? "" : "fetched "}
+                {asOf ? "" : isModel ? "model " : "fetched "}
                 {utcStamp} UTC
               </Pill>
               <Pill
@@ -654,6 +654,9 @@ function statusNotice(
   if (!payload || typeof payload !== "object") return null;
   const o = payload as Record<string, unknown>;
   const status = String(o.status ?? "").toLowerCase();
+  // A deterministic model envelope is labelled by ModelDataBadge + the model
+  // pill; it is not a degraded provider outage, so no outage banner.
+  if (status === "model") return null;
   const degraded = Boolean(metadata?.fallback || metadata?.degraded);
   // Honesty fix: a healthy live snapshot (status "ok"/"" and not degraded)
   // must NOT raise a "Degraded WEI snapshot" notice. Only surface the

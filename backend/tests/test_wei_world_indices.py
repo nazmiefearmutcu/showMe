@@ -157,9 +157,10 @@ def test_non_live_payload_is_model_with_as_of() -> None:
     rows = out.data["rows"]
     assert rows, "non-live WEI returned no rows"
     assert all(r.get("market_state") == "model" for r in rows)
-    # Honesty: a real data freshness stamp must be present.
-    assert out.data.get("as_of"), "non-live WEI payload missing as_of timestamp"
+    # Honesty: the model carries its generation time, never a fake market as_of.
+    assert out.data.get("generated_at"), "non-live WEI payload missing generated_at"
+    assert "as_of" not in out.data
     assert out.data.get("source_mode") == "world_index_template"
-    assert out.data.get("status") == "ok"
+    assert out.data.get("status") == "model"
     assert out.metadata.get("live") is False
     assert out.metadata.get("fallback") is True

@@ -363,7 +363,8 @@ def test_wei_reference_true_skips_provider_and_never_claims_live() -> None:
     provider = _FakeQuoteProvider()
     result = _run(WEIFunction(deps=FunctionDeps(yfinance=provider)).execute(reference=True))
     assert provider.calls == 0
-    assert result.data["status"] == "ok"
+    # WEI#3: a deterministic reference template is status "model", never "ok".
+    assert result.data["status"] == "model"
     assert result.data["source_mode"] == "world_index_template"
     assert result.metadata.get("live") is False
     assert _body(result)["data_state"] != "live"

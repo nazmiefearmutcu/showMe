@@ -196,6 +196,18 @@ describe("WEI terminal-grade", () => {
     expect(screen.getAllByText(/10:11 UTC/).length).toBeGreaterThan(0);
   });
 
+  it("a model envelope shows the model badge, not a degraded-outage banner (WEI#3)", () => {
+    mockOk(
+      [makeRow({ market_state: "model" })],
+      { status: "model", source_mode: "world_index_template", as_of: undefined },
+      { live: false, fallback: true, degraded: true },
+    );
+    render(<WEIPane code="WEI" />);
+    expect(screen.getByRole("status", { name: /model data/i })).toBeTruthy();
+    expect(screen.queryByText(/Degraded WEI snapshot/)).toBeNull();
+    expect(screen.queryByText(/Provider unavailable/)).toBeNull();
+  });
+
   it("never calls a snapshot live when the provider reports no session state (WEI#1)", () => {
     // No as_of and rows with market_state "unknown": the header must read
     // "snapshot" and label the clock as fetch time, not a live quote time.
