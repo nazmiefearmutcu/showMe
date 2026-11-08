@@ -102,10 +102,13 @@ class TLDRFunction(BaseFunction):
         except Exception:
             quotes = [{"symbol": s} for s in symbols]
             warnings.append("quotes: provider timeout")
-        sources.append("yfinance")
+        # Provenance: cite the quote sources that actually answered, not a fixed name.
+        sources += sorted({str(q["quote_source"]) for q in quotes if q.get("quote_source")})
 
-        # Top news
+        # Top news. TOP answers with a dict envelope {items, alerts, status}.
         news_summary: list[str] = []
+        news_status = "unavailable"
+        news_reason = "no response"
         try:
             news_timeout = _remaining(float(params.get("news_timeout", 3)), floor=0.75)
             if news_timeout <= 0:
@@ -115,13 +118,22 @@ class TLDRFunction(BaseFunction):
                 TOPFunction(self.deps).execute(limit=12),
                 timeout=news_timeout,
             )
-            news_summary = [str(a.get("title", "")) for a in (top.data or [])[:8]]
+            items, news_reason = _payload_rows(top, "items")
+            news_summary = [str(a.get("title", "")) for a in items[:8]]
+            if news_reason:
+                news_status = "unavailable"
+            else:
+                news_status = "ok" if news_summary else "empty"
             sources += list(top.sources or [])
         except Exception as e:
+            news_reason = str(e) or type(e).__name__
             warnings.append(f"top: {e}")
 
-        # Today's economic events
+        # Today's economic events. ECO answers with a dict envelope whose rows
+        # live under "events". A failed call is "unavailable", never a zero count.
         events: list[dict[str, Any]] = []
+        calendar_status = "unavailable"
+        calendar_reason = "no response"
         try:
             eco_timeout = _remaining(float(params.get("eco_timeout", 2)), floor=0.75)
             if eco_timeout <= 0:
@@ -131,9 +143,15 @@ class TLDRFunction(BaseFunction):
                 ECOFunction(self.deps).execute(),
                 timeout=eco_timeout,
             )
-            events = ((eco.data or [])[:10])
+            rows, calendar_reason = _payload_rows(eco, "events")
+            events = rows[:10]
+            if calendar_reason:
+                calendar_status = "unavailable"
+            else:
+                calendar_status = "ok"
             sources += list(eco.sources or [])
         except Exception as e:
+            calendar_reason = str(e) or type(e).__name__
             warnings.append(f"eco: {e}")
 
         # LLM summary if available
@@ -152,7 +170,7 @@ class TLDRFunction(BaseFunction):
                 ) +
                 "\nNews:\n" + "\n".join(f"  - {h}" for h in news_summary[:6]) +
                 "\nUpcoming events:\n" + "\n".join(
-                    f"  - {e.get('Country','')} {e.get('Event','')}" for e in events[:6]
+                    f"  - {e.get('country') or ''} {e.get('event') or ''}" for e in events[:6]
                 )
             )
             req = LLMRequest(
@@ -189,6 +207,8 @@ class TLDRFunction(BaseFunction):
                     "quotes": quotes,
                     "news": news_summary,
                     "events": events,
+                    "news_status": news_status,
+                    "calendar_status": calendar_status,
                     "watchlist": symbols,
                     "watchlist_source": watchlist_source,
                     "next_actions": [
@@ -208,12 +228,22 @@ class TLDRFunction(BaseFunction):
             downs_line = _format_movers(movers, positive=False)
             if not symbols:
                 ups_line = downs_line = "no holdings or symbols to rank (pass a symbol list)."
+            if news_summary:
+                news_line = "; ".join(news_summary[:3])
+            elif news_status == "empty":
+                news_line = "no headlines returned."
+            else:
+                news_line = f"unavailable ({news_reason})."
+            if calendar_status == "ok":
+                calendar_line = f"{len(events)} scheduled."
+            else:
+                calendar_line = f"unavailable ({calendar_reason}); not a zero count."
             prose = (
                 f"# ShowMe TL;DR — {datetime.now(timezone.utc):%Y-%m-%d}\n\n"
                 f"- **Top movers up:** {ups_line}"
                 f"\n- **Top movers down:** {downs_line}"
-                + "\n- **News themes:** " + "; ".join(news_summary[:3])
-                + f"\n- **Calendar items:** {len(events)} scheduled."
+                + "\n- **News themes:** " + news_line
+                + f"\n- **Calendar items:** {calendar_line}"
                 + "\n- **Summary engine:** local deterministic template; no LLM response was available in the latency budget."
                 + "\n- **Action items:** review portfolio positions, scan ALRT log."
             )
@@ -222,6 +252,8 @@ class TLDRFunction(BaseFunction):
             code=self.code, instrument=None,
             data={"markdown": prose, "quotes": quotes,
                    "news": news_summary, "events": events,
+                   "news_status": news_status, "news_reason": news_reason,
+                   "calendar_status": calendar_status, "calendar_reason": calendar_reason,
                    "watchlist": symbols, "watchlist_source": watchlist_source,
                    "summary_model": summary_model,
                    "quote_count": len([q for q in quotes if q.get("last") is not None]),
@@ -229,6 +261,26 @@ class TLDRFunction(BaseFunction):
             sources=list(set(sources)) or ["local_briefing_model"],
             metadata={"format": "markdown", "provider_errors": warnings, "summary_model": summary_model},
         )
+
+
+def _payload_rows(result: Any, key: str) -> tuple[list[dict[str, Any]], str]:
+    """Rows from a sibling function result, plus an unavailable reason ("" when usable).
+
+    TOP and ECO return dict envelopes ({items|events, status, ...}); a list
+    payload is accepted as-is. A non-ok status is reported, never read as zero rows.
+    """
+    data = getattr(result, "data", None)
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)], ""
+    if not isinstance(data, dict):
+        return [], "unexpected payload"
+    status = str(data.get("status") or "ok")
+    if status not in {"ok", "empty"}:
+        return [], str(data.get("reason") or status)
+    rows = data.get(key)
+    if not isinstance(rows, list):
+        return [], f"missing '{key}' rows"
+    return [row for row in rows if isinstance(row, dict)], ""
 
 
 def _parse_symbols(value: Any) -> list[str]:

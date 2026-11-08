@@ -104,3 +104,81 @@ def test_tldr_empty_portfolio_has_no_invented_watchlist(monkeypatch) -> None:
     result = asyncio.run(TLDRFunction(deps=FunctionDeps()).execute())
     assert result.data["watchlist"] == []
     assert result.data["status"] == "provider_unavailable"
+
+
+def _patch_news_calendar(monkeypatch, top, eco) -> None:
+    """Replace TOP and ECO with canned results (or exceptions)."""
+    import showme.engine.functions.macro.eco as eco_mod
+    import showme.engine.functions.news.top as top_mod
+
+    def _make(value):
+        async def _execute(self, *args, **kwargs):
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        return _execute
+
+    monkeypatch.setattr(top_mod.TOPFunction, "execute", _make(top))
+    monkeypatch.setattr(eco_mod.ECOFunction, "execute", _make(eco))
+
+
+def _top_ok():
+    from showme.engine.core.base_function import FunctionResult
+
+    return FunctionResult(
+        code="TOP", instrument=None,
+        data={"items": [{"title": "Fed holds rates"}, {"title": "Chip rally"}], "alerts": [], "status": "ok"},
+        sources=["rss"],
+    )
+
+
+def _eco_ok():
+    from showme.engine.core.base_function import FunctionResult
+
+    events = [{"event": "CPI", "country": "US"}, {"event": "Payrolls", "country": "US"}]
+    return FunctionResult(
+        code="ECO", instrument=None,
+        data={"status": "ok", "events": events, "rows": events, "surface": [], "cards": []},
+        sources=["forex_factory"],
+    )
+
+
+def test_tldr_dict_payloads_are_read_not_sliced(monkeypatch) -> None:
+    """TLDR#3: TOP and ECO return dict envelopes; TLDR must read their rows
+    instead of slicing the dict (which raised KeyError and emptied both lists)."""
+    _patch_offline(monkeypatch)
+    _patch_news_calendar(monkeypatch, _top_ok(), _eco_ok())
+    result = asyncio.run(TLDRFunction(deps=FunctionDeps()).execute(symbols=["MSFT"]))
+    assert not [w for w in result.warnings if "slice" in w], result.warnings
+    assert result.data["news"] == ["Fed holds rates", "Chip rally"]
+    assert len(result.data["events"]) == 2
+    markdown = result.data["markdown"]
+    assert "Calendar items:** 2 scheduled" in markdown
+    assert "Fed holds rates" in markdown
+
+
+def test_tldr_failed_calendar_is_unavailable_not_zero(monkeypatch) -> None:
+    """TLDR#3: a failed calendar call must not be reported as '0 scheduled'."""
+    _patch_offline(monkeypatch)
+    _patch_news_calendar(monkeypatch, _top_ok(), RuntimeError("eco timeout"))
+    result = asyncio.run(TLDRFunction(deps=FunctionDeps()).execute(symbols=["MSFT"]))
+    markdown = result.data["markdown"]
+    assert "0 scheduled" not in markdown
+    assert "Calendar items:** unavailable" in markdown
+    assert result.data["calendar_status"] == "unavailable"
+
+
+def test_tldr_unavailable_news_is_labelled_not_blank(monkeypatch) -> None:
+    from showme.engine.core.base_function import FunctionResult
+
+    _patch_offline(monkeypatch)
+    top_down = FunctionResult(
+        code="TOP", instrument=None,
+        data={"items": [], "alerts": [], "status": "provider_unavailable", "reason": "rss down"},
+        sources=[],
+    )
+    _patch_news_calendar(monkeypatch, top_down, _eco_ok())
+    result = asyncio.run(TLDRFunction(deps=FunctionDeps()).execute(symbols=["MSFT"]))
+    assert result.data["news_status"] == "unavailable"
+    assert "**News themes:** unavailable" in result.data["markdown"]
