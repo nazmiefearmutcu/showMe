@@ -450,6 +450,9 @@ class OVDVFunction(BaseFunction):
         atm_curve, vol_source, data_mode, rv_source, rv_warning = await _atm_term_structure(
             self, pair, tenors, params
         )
+        if atm_curve is None:
+            # No usable history and no user ATM: say so explicitly, emit no vols.
+            return _vol_unavailable(self, instrument, pair, tenors, rv_warning or "no vol source")
 
         # Smile: there is no keyless market option-quote source, so the 25d
         # risk reversal / butterfly are shown ONLY when the caller supplies
@@ -543,8 +546,8 @@ class OVDVFunction(BaseFunction):
                 "in which case the wings are built from those user quotes (25P = BF - RR/2, "
                 "25C = BF + RR/2, 10P/10C add wing curvature) and smile_source is user_quotes. "
                 "An explicit atm_vol input gives a flat user-quoted ATM curve. If yfinance history "
-                "is unavailable the surface falls back to a labelled reference vol and "
-                "vol_source/data_mode say so."
+                "is unavailable no surface is produced: status is provider_unavailable with a "
+                "reason, and no reference or constant vol is substituted."
             ),
             "field_dictionary": {
                 "tenor": "Option expiry bucket.",
@@ -555,8 +558,8 @@ class OVDVFunction(BaseFunction):
                 "risk_reversal_25d_pct": "25D call vol minus 25D put vol, in percent; null unless user-quoted.",
                 "butterfly_25d_pct": "25D butterfly, in percent; null unless user-quoted.",
                 "smile_source": "user_quotes when both 25d quotes were supplied, otherwise not_quoted.",
-                "vol_source": "live_realized_vol (yfinance realized vol), user_inputs, or reference_fx_vol_model.",
-                "data_mode": "delayed_reference when anchored to yfinance realized vol; modeled on fallback.",
+                "vol_source": "live_realized_vol (yfinance realized vol) or user_inputs. With neither, status is provider_unavailable and no vols are emitted.",
+                "data_mode": "delayed_reference when anchored to yfinance realized vol; modeled for a user-quoted ATM.",
             },
             "next_actions": [
                 "Supply atm_vol together with risk_reversal_25d and butterfly_25d to overlay a desk-quoted smile.",
@@ -568,8 +571,6 @@ class OVDVFunction(BaseFunction):
             sources.append(rv_source)
         elif vol_source == "user_inputs":
             sources.append("user_inputs")
-        else:
-            sources.append("reference_fx_vol_model")
         if smile_quoted:
             sources.append("user_inputs_fx_smile")
         return FunctionResult(
@@ -667,16 +668,17 @@ async def _atm_term_structure(
     pair: str,
     tenors: list[dict[str, Any]],
     params: dict[str, Any],
-) -> tuple[list[float], str, str, str | None, str | None]:
+) -> tuple[list[float] | None, str, str, str | None, str | None]:
     """Build a per-tenor ATM-vol curve anchored to live FX realized vol.
 
     Returns ``(atm_curve, vol_source, data_mode, rv_source, warning)`` where
-    ``atm_curve`` is one annualized-vol decimal per requested tenor.
+    ``atm_curve`` is one annualized-vol decimal per requested tenor, or ``None``
+    when no vol can be sourced honestly (the caller reports provider_unavailable).
 
     Order of precedence:
       1. explicit ``atm_vol`` input (flat curve, user-quoted) — labelled input.
       2. live realized vol from yfinance daily history (the real anchor).
-      3. labelled reference vol fallback on any network/data failure.
+      3. none: no reference or constant vol is ever substituted.
     """
     explicit_atm = params.get("atm_vol", params.get("vol"))
     if explicit_atm not in (None, ""):
@@ -696,18 +698,75 @@ async def _atm_term_structure(
                 window = max(5, min(252, int(round(tenor["years"] * 252))))
             win = returns[-window:] if len(returns) >= window else returns
             atm = _annualized_vol(win)
-            curve.append(atm if atm and atm > 0 else _reference_atm_vol(pair))
+            if atm is None or atm <= 0:
+                # Never swap a single tenor for a constant: the whole curve is unavailable.
+                return (
+                    None,
+                    "none",
+                    "provider_unavailable",
+                    None,
+                    f"realized vol could not be computed for tenor {tenor['label']} from yfinance history; "
+                    "no reference vol is substituted",
+                )
+            curve.append(atm)
         return curve, "live_realized_vol", "delayed_reference", "yfinance", None
 
-    # Fallback: no usable history — labelled reference vol with a term slope.
-    ref = _reference_atm_vol(pair)
-    curve = [max(0.0001, ref + i * 0.0015) for i in range(len(tenors))]
     return (
-        curve,
-        "reference_fx_vol_model",
-        "modeled",
         None,
-        f"live realized-vol history unavailable; using labelled reference FX vol (vintage {_REFERENCE_AS_OF})",
+        "none",
+        "provider_unavailable",
+        None,
+        "live realized-vol history unavailable (yfinance returned no usable daily closes); "
+        "no reference vol is substituted",
+    )
+
+
+def _vol_unavailable(
+    fn: BaseFunction,
+    instrument: Instrument | None,
+    pair: str,
+    tenors: list[dict[str, Any]],
+    reason: str,
+) -> FunctionResult:
+    """Explicit honest state: no surface, no vols, the reason and next steps."""
+    as_of = datetime.now(timezone.utc).isoformat()
+    data = {
+        "status": "provider_unavailable",
+        "reason": reason,
+        "next_actions": [
+            "Retry when yfinance FX daily history is reachable.",
+            "Supply atm_vol (decimal, e.g. 0.085) to view a user-quoted flat ATM curve.",
+        ],
+        "pair": pair,
+        "as_of": as_of,
+        "data_mode": "provider_unavailable",
+        "vol_source": "none",
+        "surface": [],
+        "rows": [],
+        "series": [],
+        "tenors": [t["label"] for t in tenors],
+        "deltas": [],
+        "atm_vol_pct": None,
+        "atm_1m_vol_pct": None,
+        "smile_source": "not_quoted",
+        "risk_reversal_25d_pct": None,
+        "butterfly_25d_pct": None,
+        "cards": {
+            "pair": pair,
+            "atm_vol_pct": None,
+            "risk_reversal_25d_pct": None,
+            "butterfly_25d_pct": None,
+            "vol_source": "none",
+            "data_mode": "provider_unavailable",
+            "as_of": as_of,
+        },
+    }
+    return FunctionResult(
+        code=fn.code,
+        instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
+        data=data,
+        sources=[],
+        warnings=[reason],
     )
 
 
@@ -769,17 +828,6 @@ def _annualized_vol(returns: list[float]) -> float | None:
     mean = sum(returns) / n
     var = sum((r - mean) ** 2 for r in returns) / n  # population stdev
     return math.sqrt(var) * _FX_ANNUALIZATION
-
-
-def _reference_atm_vol(pair: str) -> float:
-    """Labelled fallback ATM vol (decimal) when no live history is available."""
-    base = pair[:3].upper()
-    quote = pair[3:6].upper()
-    if "TRY" in (base, quote):
-        return 0.22
-    if "JPY" in (base, quote):
-        return 0.095
-    return 0.085
 
 
 async def _history_rows(fn: BaseFunction, pair: str, params: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:

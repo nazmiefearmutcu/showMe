@@ -113,9 +113,19 @@ def test_wcrs_spread_pips_uses_jpy_aware_pip_factor() -> None:
 # ── OVDV: series[].atm_vol_pct contract ────────────────────────────────
 
 
-def test_ovdv_series_ships_atm_vol_pct_matching_the_surface() -> None:
+def test_ovdv_series_ships_atm_vol_pct_matching_the_surface(monkeypatch) -> None:
     """The pane's ATM term structure reads series[].atm_vol_pct; the field
     must exist and equal the ATM cell of the same tenor."""
+    from showme.engine.functions.fx import _funcs as fx
+
+    async def _fake_close_series(fn, pair, params):  # noqa: ARG001
+        # Deterministic, network-free realized-vol history (no provider call).
+        out = [1.10]
+        for i in range(1, 400):
+            out.append(out[-1] * (1.0 + 0.004 * ((i % 7) - 3) / 3.0))
+        return out
+
+    monkeypatch.setattr(fx, "_close_series", _fake_close_series)
     result = _run(OVDVFunction(deps=FunctionDeps()).execute(pair="EURUSD"))
     data = result.data
 
