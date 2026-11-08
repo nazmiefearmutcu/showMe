@@ -556,6 +556,24 @@ def _provider_unavailable_payload(reason: str, next_actions: list[str]) -> dict[
     }
 
 
+def _withhold_repeated_volume(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """BOIL#6: null the volume of a bar that repeats the previous session's.
+
+    Upstream daily bars sometimes copy the previous session's volume while the
+    prices differ, so an equal volume on consecutive bars is a copy, not a
+    print. The bar keeps its prices and is flagged; the volume is withheld.
+    """
+    out: list[dict[str, Any]] = []
+    previous: float | None = None
+    for point in points:
+        volume = point.get("volume")
+        if volume is not None and volume > 0 and volume == previous:
+            point = {**point, "volume": None, "volume_flag": "repeats_previous_session"}
+        out.append(point)
+        previous = volume
+    return out
+
+
 @FunctionRegistry.register
 class BOILFunction(BaseFunction):
     """BOIL — WTI / Brent / Dubai oil spot + spread."""
@@ -611,7 +629,11 @@ class BOILFunction(BaseFunction):
             results = await asyncio.gather(*tasks)
             for sym, (row, history, errors) in zip(symbols, results):
                 provider_errors.extend(errors)
+                history = _withhold_repeated_volume(history)
                 if row:
+                    if row.get("source") == "yfinance_chart" and history:
+                        # Row built from the last history bar: same withholding.
+                        row["volume"] = history[-1].get("volume")
                     rows.append(row)
                 history_by_symbol[sym] = history
                 if not chart_history and history:
