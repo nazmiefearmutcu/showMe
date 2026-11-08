@@ -77,10 +77,55 @@ const INTERVALS = [
 type IntervalId = (typeof INTERVALS)[number]["id"];
 const INTERVAL_IDS = INTERVALS.map((i) => i.id);
 
-// GP's historical default fetch depth for the rail payload. The BARS chips
-// are gone (the engine fetches its own bars), so the payload pins the pane's
-// previous default instead of a persisted preference.
+// Floor for the bars requested from the engine. The engine caps history at
+// 20k bars; `barsForWindow` raises the request so a window is not cut short.
 const DEFAULT_BARS = 1000;
+const MAX_REQUEST_BARS = 20_000;
+// Below this share of the requested window the subtitle states the real span.
+const SPAN_TOLERANCE = 0.9;
+
+const INTERVAL_SECONDS: Record<IntervalId, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+  "4h": 14_400,
+  "1d": 86_400,
+  "1w": 604_800,
+};
+
+/**
+ * Bars to request for a window: the window's span at the interval, five
+ * trading days in seven, with DEFAULT_BARS as the floor. Provider limits
+ * (e.g. Yahoo's 7-day 1m history) are still reported by the engine.
+ */
+export function barsForWindow(days: number, interval: IntervalId): number {
+  const seconds = INTERVAL_SECONDS[interval] ?? 86_400;
+  const needed = Math.ceil(((days * 86_400) / seconds) * (5 / 7)) + 10;
+  return Math.min(MAX_REQUEST_BARS, Math.max(DEFAULT_BARS, needed));
+}
+
+/** Epoch seconds of a candle, or null when its time is unknown. */
+function candleSeconds(row: OHLCRow): number | null {
+  const raw = row.time ?? row.date ?? row.ts;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return raw >= 10_000_000_000 ? raw / 1000 : raw;
+  }
+  if (typeof raw === "string" && raw.length) {
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed / 1000 : null;
+  }
+  return null;
+}
+
+/** Calendar days between the first and last candle, or null when unknown. */
+function spanDaysOf(rows: OHLCRow[]): number | null {
+  if (rows.length < 2) return null;
+  const first = candleSeconds(rows[0]);
+  const last = candleSeconds(rows[rows.length - 1]);
+  if (first == null || last == null) return null;
+  return (last - first) / 86_400;
+}
 
 type ChartStyle = "candle" | "line" | "area";
 
@@ -126,10 +171,23 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
     code,
     symbol: effectiveSymbol,
     enabled: !!effectiveSymbol,
-    params: { days, range, interval, bars: DEFAULT_BARS },
+    params: { days, range, interval, bars: barsForWindow(days, interval) },
   });
 
   const ohlc = useMemo(() => normalizeOHLC(data?.data?.ohlcv), [data]);
+  // Full series incl. the indicator warm-up before the window; the rail's
+  // RSI/MACD/ATR read it so they are not computed from the window's first bar.
+  const warmupOhlc = useMemo(
+    () =>
+      normalizeOHLC(
+        (data?.data as { indicator_ohlcv?: GPData["ohlcv"] } | undefined)
+          ?.indicator_ohlcv,
+      ),
+    [data],
+  );
+  const spanDays = useMemo(() => spanDaysOf(ohlc), [ohlc]);
+  const spanShort =
+    spanDays != null && spanDays < days * SPAN_TOLERANCE;
 
   const last = ohlc[ohlc.length - 1];
   const prev = ohlc[ohlc.length - 2];
@@ -147,7 +205,10 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
       .filter((v) => Number.isFinite(v));
   }, [ohlc]);
 
-  const computed = useMemo(() => computeIndicators(ohlc), [ohlc]);
+  const computed = useMemo(
+    () => computeIndicators(warmupOhlc.length ? warmupOhlc : ohlc),
+    [warmupOhlc, ohlc],
+  );
   const stats = useMemo(() => {
     if (!ohlc.length) return null;
     const highs = ohlc.map((c) => Number(c.high));
@@ -217,7 +278,11 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Price${effectiveSymbol ? ` — ${effectiveSymbol}` : ""}`}
-          subtitle={`${range} · ${interval} · ${ohlc.length} candles`}
+          subtitle={`${range} · ${interval} · ${ohlc.length} candles${
+            spanShort && spanDays != null
+              ? ` · shows ${spanDays.toFixed(1)} days of ${range}`
+              : ""
+          }`}
           trailing={
             <FunctionControlGroup>
               <LoadStatePill state={state} />
@@ -529,8 +594,18 @@ function RightRail({
   return (
     <aside style={rightRailStyle}>
       <RailSection title="Key levels">
-        <RailKv label="Support" value={fmtNum(support)} tone="positive" />
-        <RailKv label="Resistance" value={fmtNum(resist)} tone="negative" />
+        <RailKv
+          label="Fib 23.6%"
+          title="Fibonacci 23.6% retracement of the selected window's low-high range. A ratio, not a pivot or swing level."
+          value={fmtNum(support)}
+          tone="positive"
+        />
+        <RailKv
+          label="Fib 78.6%"
+          title="Fibonacci 78.6% retracement of the selected window's low-high range. A ratio, not a pivot or swing level."
+          value={fmtNum(resist)}
+          tone="negative"
+        />
         <RailKv
           label={highLabel}
           value={fmtNum(week52?.high ?? stats?.high)}
@@ -630,10 +705,12 @@ function RailKv({
   label,
   value,
   tone = "neutral",
+  title,
 }: {
   label: string;
   value: string;
   tone?: "positive" | "negative" | "neutral" | "accent";
+  title?: string;
 }) {
   const color =
     tone === "positive"
@@ -644,7 +721,7 @@ function RailKv({
           ? "var(--accent)"
           : "var(--text-primary)";
   return (
-    <div style={railKvRowStyle}>
+    <div style={railKvRowStyle} title={title}>
       <span style={railKvLabelStyle}>{label}</span>
       <span style={{ ...railKvValueStyle, color }}>{value}</span>
     </div>
@@ -718,24 +795,19 @@ function fmtVolume(v: number | undefined | null): string {
   return v.toFixed(0);
 }
 
-function ema(values: number[], period: number): (number | null)[] {
+/**
+ * EMA with alpha = 2/(period+1), seeded on the first observation (pandas
+ * ewm(span, adjust=False)). This is the convention of the backend TECH
+ * function, so the same window gives the same MACD in both places.
+ */
+export function ema(values: number[], period: number): (number | null)[] {
   const out: (number | null)[] = [];
+  if (period <= 0) return values.map(() => null);
   const k = 2 / (period + 1);
   let prev: number | null = null;
-  for (let i = 0; i < values.length; i++) {
-    if (prev == null) {
-      if (i >= period - 1) {
-        let s = 0;
-        for (let j = i - period + 1; j <= i; j++) s += values[j];
-        prev = s / period;
-        out.push(prev);
-      } else {
-        out.push(null);
-      }
-    } else {
-      prev = values[i] * k + prev * (1 - k);
-      out.push(prev);
-    }
+  for (const value of values) {
+    prev = prev == null ? value : value * k + prev * (1 - k);
+    out.push(prev);
   }
   return out;
 }
