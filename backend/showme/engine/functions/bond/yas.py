@@ -247,7 +247,8 @@ class YASFunction(BaseFunction):
             sources.append("fred")
             metadata.update({"cmt_series": series_id, "cmt_date": cmt_date,
                              "construction": "par bond at the constant-maturity yield"})
-            price = face if price is None else price
+            # Quotes are per 100 of face: a par bond is priced at 100, whatever face is.
+            price = 100.0 if price is None else price
             coupon_raw = par_yield if coupon_raw is None else coupon_raw
             maturity = tenor_years if maturity is None else maturity
             if coupon_raw == par_yield:
@@ -263,18 +264,21 @@ class YASFunction(BaseFunction):
                                        "or pick a generic tenor such as US2Y or US10Y."],
                       "rows": []},
             )
-        price = float(price)
+        price = float(price)  # quoted per 100 of face (seed: "Quoted clean price (per 100 face)")
+        # YAS#1: cashflows are face-scaled, so the solver must compare them with the
+        # price in currency units (price per 100 x face / 100), not with the per-100 quote.
+        price_amount = price * face / 100.0
         coupon = _rate_decimal(coupon_raw, 0.0, assume_decimal=assume_dec)
         maturity_years = float(maturity)
         if maturity_years * freq < 1 and "n_periods" not in params:
             # Shorter than one coupon period (US1M/US3M bills): a single cash
             # flow at maturity. Rounding to one full period used to put it 6
             # months out (1M bill modified duration 0.49y instead of ~0.083y).
-            metrics = _single_cashflow_metrics(face, price, coupon, maturity_years)
+            metrics = _single_cashflow_metrics(face, price_amount, coupon, maturity_years)
             metadata["cashflow_model"] = "single payment at maturity (simple interest)"
         else:
             n_periods = int(params.get("n_periods", max(1, round(maturity_years * freq))))
-            metrics = _ytm_macaulay_modified_duration(face, price, coupon, n_periods, freq)
+            metrics = _ytm_macaulay_modified_duration(face, price_amount, coupon, n_periods, freq)
         if not sources:
             sources.append("yield_spread_model")
 
@@ -318,6 +322,7 @@ class YASFunction(BaseFunction):
                 "summary": {
                     "bond": symbol,
                     "price": price,
+                    "price_amount": price_amount,
                     "face": face,
                     "coupon_rate": coupon,
                     "coupon_pct": coupon * 100,
