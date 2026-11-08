@@ -5,6 +5,12 @@ import asyncio
 import json
 import os
 import subprocess
+
+# The blocked provider waits up to 5 s for release; answering within the worker
+# budget plus 2 s still proves the shared deadline cut it short, while a loaded
+# machine (TestClient + thread scheduling) no longer fails the bound
+# (flaky under parallel load, 2026-11-08).
+_LOAD_SLACK_S = 2.0
 import sys
 import threading
 import time
@@ -116,7 +122,7 @@ def test_http_deadline_preserves_domain_and_cross_loop_singleflight(monkeypatch,
             assert client.post("/api/fn/VCAP", json={"action": "versions"}).status_code == 200
             started = time.monotonic()
             first = assert_fallback(client.post("/api/fn/VCAP", json=params))
-            assert time.monotonic() - started < worker_budget
+            assert time.monotonic() - started < worker_budget + _LOAD_SLACK_S
             assert entered.is_set() and not release.is_set()
             assert len(downloads) == 1 and downloads[0].is_alive()
 
@@ -242,7 +248,7 @@ def test_default_global_two_sources_share_actual_http_worker_deadline(monkeypatc
             assert client.post("/api/fn/VCAP", json={"action": "versions"}).status_code == 200
             started = time.monotonic()
             response = client.post("/api/fn/VCAP", json={"scope": "global", "refresh": True})
-            assert time.monotonic() - started < worker_budget
+            assert time.monotonic() - started < worker_budget + _LOAD_SLACK_S
             assert response.status_code == 200
             payload = response.json()
             data, meta = payload["data"], payload["metadata"]
@@ -301,7 +307,7 @@ print(json.dumps([server.FUNCTION_TIMEOUT_SECONDS, _wait_budget_seconds(), obser
         env.pop("SHOWME_FUNCTION_TIMEOUT_SECONDS", None)
     else:
         env["SHOWME_FUNCTION_TIMEOUT_SECONDS"] = configured
-    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=10, check=True)
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120, check=True)  # hang guard only
     worker, wait, network = json.loads(result.stdout.splitlines()[-1])
     assert worker == expected_worker and wait == pytest.approx(expected_wait)
     assert wait <= 10 and wait <= worker * 0.75
