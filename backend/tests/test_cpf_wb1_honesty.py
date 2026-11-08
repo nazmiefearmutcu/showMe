@@ -143,3 +143,51 @@ def test_gold_series_id_is_labelled_as_a_proxy_not_a_fred_series(monkeypatch) ->
     assert data["fred_series_fetched"] is False
     assert "PGOLD is served from" in data["series_note"]
     assert "not from FRED" in data["series_note"]
+
+
+# CPF#3 / CPF#7 — the manifest must describe what the handler really does: a Yahoo
+# futures proxy plus a trend extrapolation, with no FRED/EIA/World Bank forecast
+# claims, and it must not offer a provider_mode input nothing reads.
+def _cpf_entry():
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds(module_names=["cpf_seed"])
+    return REGISTRY.get("CPF")
+
+
+def _manifest_prose(entry) -> str:
+    parts = [entry.intent, entry.methodology]
+    parts += [i.description or "" for i in entry.inputs]
+    parts += list((entry.field_dict or {}).values())
+    parts = [p if isinstance(p, str) else (p.description or "") for p in parts]
+    return " ".join(parts)
+
+
+def test_manifest_provider_chain_is_the_yahoo_futures_source() -> None:
+    entry = _cpf_entry()
+    assert entry.provider_chain.primary == "yfinance"
+    assert entry.provider_chain.fallbacks == []
+
+
+def test_manifest_prose_does_not_claim_eia_world_bank_or_fred_forecasts() -> None:
+    import re
+
+    text = _manifest_prose(_cpf_entry())
+    # Affirmative claims only: the prose may say "not a published EIA forecast".
+    for claim in (
+        r"EIA forecasts",
+        r"World Bank commodity",
+        r"FRED commodity series",
+        r"companion forecast",
+        r"fetches the chosen FRED",
+        r"from FRED \(",
+    ):
+        assert re.search(claim, text) is None, f"manifest still claims {claim!r}"
+    assert "yahoo" in text.lower()
+    assert "trend" in text.lower()
+
+
+def test_manifest_does_not_offer_a_provider_mode_the_handler_never_reads() -> None:
+    entry = _cpf_entry()
+    assert "provider_mode" not in [i.name for i in entry.inputs]
+    assert "provider_mode" not in (entry.defaults or {})
