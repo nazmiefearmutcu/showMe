@@ -423,3 +423,27 @@ def test_allq3_curve_fetch_failure_is_named_in_the_warning() -> None:
     assert res.data["status"] == "provider_unavailable"
     assert res.data["rows"] == []
     assert any("treasury csv down" in w for w in res.warnings)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ALLQ#7 (provenance) — an unavailable ladder never claims the Treasury source
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_allq7_unavailable_summary_does_not_claim_a_source_mode() -> None:
+    """Non-Treasury and failed-curve unavailable states report source_mode=unavailable.
+
+    Red on the old code: the summary echoed source='ustreasury' even when no
+    Treasury observation existed and nothing was anchored.
+    """
+    tlt = asyncio.run(_allq(FunctionDeps(yfinance=_FakeYF(81.92))).execute(instrument=_bond("TLT")))
+    assert tlt.data["status"] == "provider_unavailable"
+    assert tlt.data["summary"]["source_mode"] == "unavailable"
+    assert tlt.sources == []
+
+    failed = asyncio.run(
+        _allq(FunctionDeps(ustreasury=_FakeCurve(boom=True))).execute(instrument=_bond("US10Y"))
+    )
+    assert failed.data["status"] == "provider_unavailable"
+    assert failed.data["summary"]["source_mode"] == "unavailable"
+    assert failed.data["rows"] == []

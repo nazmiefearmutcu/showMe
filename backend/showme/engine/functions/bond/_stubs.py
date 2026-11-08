@@ -941,7 +941,7 @@ class ALLQFunction(BaseFunction):
                     "status": "provider_unavailable",
                     "rows": [],
                     "spread_curve": [],
-                    "summary": {"bond": symbol, "source_mode": source},
+                    "summary": {"bond": symbol, "source_mode": "unavailable"},
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
                     "next_actions": ["Retry when the Treasury curve is reachable, or pass an explicit ``mid``."],
