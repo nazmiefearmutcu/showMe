@@ -196,6 +196,23 @@ class BLAKFunction(BaseFunction):
             sources = ["synthetic_fallback"]
         else:
             sources = ["yfinance"] if live else ["computed_return_model"]
+        # BLAK#3 follow-up: the 10-row guard above counts pairwise rows, but the
+        # prior needs complete common history. Fewer than 10 overlapping days
+        # gave a NaN covariance (SVD failure) or a T=1 Ledoit-Wolf division by
+        # zero, so refuse it explicitly.
+        overlap_days = int(df.dropna().shape[0])
+        if overlap_days < 10:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (f"only {overlap_days} common return days across the requested symbols; "
+                               "the prior covariance needs at least 10 overlapping days"),
+                    "next_actions": ["Drop the symbol with the short history or use a longer common window."],
+                    "overlap_days": overlap_days,
+                },
+                warnings=[f"insufficient overlap: {overlap_days} common return days (need 10)"],
+            )
         cov_daily, shrinkage_delta = _prior_covariance(df, estimator)
         cov = cov_daily * 252
         cols = list(df.columns)
