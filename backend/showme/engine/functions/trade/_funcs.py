@@ -657,6 +657,19 @@ def _is_yield_quoted(symbol: str) -> bool:
     return str(symbol or "").upper().replace("-", "") in _YIELD_QUOTED_SYMBOLS
 
 
+def _tsox_ticket_type(params: dict[str, Any]) -> str:
+    """The order type the TSOX ticket uses: type, then order_type, then MARKET.
+
+    A blank value counts as absent here (TSOX#2), so a blank "type" cannot hide
+    an order_type=LIMIT from the yield guard.
+    """
+    for key in ("type", "order_type"):
+        value = params.get(key)
+        if value not in (None, ""):
+            return str(value).strip().upper()
+    return "MARKET"
+
+
 @FunctionRegistry.register
 class TSOXFunction(EMSXFunction):
     """TSOX — Treasury / Bond order ticket."""
@@ -667,7 +680,8 @@ class TSOXFunction(EMSXFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         yield_quoted = instrument is not None and _is_yield_quoted(instrument.symbol)
-        if yield_quoted and str(params.get("type", params.get("order_type", "MARKET"))).upper() == "LIMIT":
+        ticket_type = _tsox_ticket_type(params)
+        if yield_quoted and ticket_type == "LIMIT":
             # TSOX#2: a yield quote cannot take a price-unit limit. There is no
             # yield-to-price conversion here (it needs the bond's terms), so the
             # ticket says so instead of previewing the price as valid.
@@ -691,7 +705,9 @@ class TSOXFunction(EMSXFunction):
             # WB1-G16 TSOX#3: bond-ticket analytics are not in the ticket inputs,
             # so say so explicitly instead of leaving them silently absent.
             result.data["analytics"] = _tsox_analytics_not_computed()
-        if yield_quoted:
+        # The MARKET note belongs to a previewed MARKET ticket only, not to an input_error.
+        errored = isinstance(result.data, dict) and result.data.get("status") == "input_error"
+        if yield_quoted and ticket_type == "MARKET" and not errored:
             result.warnings.append(
                 f"{instrument.symbol} is quoted as a yield; a MARKET ticket has no price and no "
                 "yield-to-price conversion is performed."

@@ -86,3 +86,33 @@ def test_every_yield_symbol_is_treated_as_yield_quoted(symbol: str) -> None:
     ))
     assert res.data["status"] == "input_error"
     assert res.data["field"] == "price"
+
+
+def test_blank_type_with_limit_order_type_is_still_rejected() -> None:
+    # A blank "type" must not hide an order_type=LIMIT: the yield guard reads the
+    # same order type the ticket will use, so the price is rejected, not previewed.
+    fn, broker = _tsox()
+    res = _run(fn.execute(instrument=US10Y, side="BUY", quantity=1, type="", order_type="LIMIT", price=110.015625))
+    assert res.data["status"] == "input_error"
+    assert res.data["field"] == "price"
+    assert res.data["price"] is None
+    assert broker.placed == []
+
+
+def test_blank_order_type_error_does_not_claim_a_market_ticket() -> None:
+    # The order type is invalid, so the ticket is an input_error. It must not
+    # carry the MARKET quote-convention warning on an error result.
+    fn, broker = _tsox()
+    res = _run(fn.execute(instrument=US10Y, side="BUY", quantity=1, type=""))
+    assert res.data["status"] == "input_error"
+    assert not any("MARKET ticket" in w for w in res.warnings), res.warnings
+    assert broker.placed == []
+
+
+def test_default_market_preview_on_a_yield_symbol_keeps_the_warning() -> None:
+    # No type or order_type at all: the ticket is MARKET, so the yield warning stays.
+    fn, broker = _tsox()
+    res = _run(fn.execute(instrument=US10Y, side="BUY", quantity=1))
+    assert res.data["status"] == "preview"
+    assert any("yield" in w.lower() for w in res.warnings), res.warnings
+    assert broker.placed == []
