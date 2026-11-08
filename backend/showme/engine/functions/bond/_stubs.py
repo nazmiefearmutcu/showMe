@@ -9,8 +9,8 @@ They now fetch REAL keyless public data:
   concepts (corporates) / labelled illustrative fallback otherwise.
 * DEBT  — sovereign debt-to-GDP from the World Bank indicator API
   (GC.DOD.TOTL.GD.ZS), keyless.
-* ALLQ  — indicative dealer ladder anchored to a REAL reference price
-  (US Treasury FiscalData yield -> clean price, or yfinance for a symbol).
+* ALLQ  — indicative dealer ladder anchored to a REAL Treasury par yield
+  (keyless US Treasury curve -> modeled clean price; no other anchor).
 
 Every handler wraps the network in try/except and, on a genuine outage,
 returns ``status="provider_unavailable"`` with an honest warning +
@@ -752,8 +752,36 @@ class DEBTFunction(BaseFunction):
 
 
 # ---------------------------------------------------------------------------
-# ALLQ — indicative dealer ladder anchored to a REAL reference price
+# ALLQ — indicative dealer ladder anchored to a REAL reference yield
 # ---------------------------------------------------------------------------
+
+# Labelled modelling assumption: the coupon of the reference bond whose clean
+# price is derived from the tenor's par yield. It is disclosed in the summary.
+_ALLQ_REF_COUPON_PCT = 4.0
+# Source marker for the modelled ladder; "_model" classifies rows as model.
+_ALLQ_MODEL_SOURCE = "allq_ladder_model"
+
+
+def _allq_reference_price(yield_pct: float, years: float, coupon_pct: float = _ALLQ_REF_COUPON_PCT) -> float:
+    """Clean price of a reference bond with ``coupon_pct`` discounted at ``yield_pct``.
+
+    Notes/bonds (> 1Y): exact semi-annual cash flows. Bills (<= 1Y): zero-coupon
+    simple discounting. Both use the tenor's own years, so tenors price apart.
+    """
+    if years <= 1.0:
+        return 100.0 / (1.0 + yield_pct / 100.0 * years)
+    freq = 2
+    n = max(1, round(years * freq))
+    r = yield_pct / 100.0 / freq
+    c = coupon_pct / freq
+    if r == 0:
+        return c * n + 100.0
+    return c * (1.0 - (1.0 + r) ** -n) / r + 100.0 * (1.0 + r) ** -n
+
+
+def _allq_observation_date(value: Any) -> str:
+    day = value.date() if hasattr(value, "date") else value
+    return day.isoformat() if hasattr(day, "isoformat") else str(day)
 
 
 @FunctionRegistry.register
@@ -764,82 +792,39 @@ class ALLQFunction(BaseFunction):
     category = "bond"
 
     _METHODOLOGY = (
-        "ALLQ builds an INDICATIVE dealer-quote ladder anchored to a REAL reference price. "
-        "For US Treasury aliases the anchor is derived from the US Treasury FiscalData average "
-        "interest rate (yield -> approximate clean price via 1/(1+y) discounting on a par bond). "
-        "For tickerable instruments the anchor is the latest yfinance price. The ladder spreads a "
-        "realistic bid/ask (composite A: spread/2; composite B: asymmetric ~0.7/0.8; composite C: "
-        "full spread) around that anchor. mid, spread_points and spread_bps_of_price are computed "
-        "as (bid+ask)/2, ask-bid and (spread/mid)*10000. Rows are INDICATIVE, not executable "
-        "dealer prices."
+        "ALLQ builds an INDICATIVE dealer-quote ladder anchored to a REAL reference yield. "
+        "Only US Treasury tenors on the keyless US Treasury daily par-yield curve (US1M to US30Y) "
+        "are anchored: the tenor's latest par yield is discounted to a clean price of a reference "
+        "bond with a labelled 4% coupon (exact semi-annual cash flows; bills up to 1Y use simple "
+        "discounting). Other symbols, including share prices, get no anchor and return "
+        "provider_unavailable. The ladder spreads a bid/ask around that mid: composite A spread/2; "
+        "composite B -0.7/+0.8 spread; composite C full spread. Rows are MODELED from one anchor and "
+        "one spread input, not observed dealer or TRACE quotes, so they are INDICATIVE and not "
+        "executable. mid, spread_points and spread_bps_of_price are (bid+ask)/2, ask-bid and "
+        "(spread/mid)*10000. quote_time is the Treasury observation date (end-of-day curve, no time "
+        "published). An explicit mid input overrides the reference and is labelled user_input."
     )
     _FIELD_DICT = {
         "dealer": "Composite/indicative quote source label.",
-        "bid": "Indicative bid price.",
-        "ask": "Indicative ask price.",
+        "bid": "Indicative bid price (modeled from the reference anchor).",
+        "ask": "Indicative ask price (modeled from the reference anchor).",
         "mid": "Average of bid and ask.",
         "size": "Indicative notional size.",
         "spread_points": "Bid/ask spread in price points.",
         "spread_bps_of_price": "Bid/ask spread in basis points of mid.",
-        "quote_time": "Timestamp the indicative ladder was built.",
+        "quote_time": "Observation date of the reference yield (end-of-day curve), or the request time for an operator-supplied mid.",
     }
 
-    async def _treasury_anchor(self, symbol: str) -> tuple[float, str, str] | None:
-        """Return (clean_price, source, ref_note) anchored to a real Treasury yield.
+    async def _ustreasury_curve_anchor(self, symbol: str) -> tuple[float, str, str, str] | None:
+        """Per-tenor anchor from the keyless US Treasury par-yield curve.
 
-        H-8 fix (2026-09-08): tenor-aware security selection. FiscalData
-        publishes the AVERAGE interest rate per security TYPE (notes vs
-        bonds), not per tenor, so the anchor now selects the type matching
-        the requested tenor (<=10Y notes, >10Y bonds) and the ref_note
-        explicitly flags that it is a type-average, never a per-tenor
-        yield.
+        Returns ``(clean_price, source, ref_note, as_of_date)``: the tenor's
+        latest observed par yield discounted to a reference-bond clean price.
+        Returns ``None`` when the adapter is absent, the symbol is not a US
+        curve tenor, the tenor has no observation, or the fetch fails.
         """
-        client = await get_client()
-        r = await client.get(
-            _FISCALDATA_AVG_RATES,
-            params={
-                "fields": "record_date,security_desc,avg_interest_rate_amt",
-                "filter": "security_desc:in:(Treasury Notes,Treasury Bonds)",
-                "sort": "-record_date",
-                "page[size]": "20",
-            },
-        )
-        r.raise_for_status()
-        payload = r.json()
-        data_rows = payload.get("data", []) if isinstance(payload, dict) else []
-        wanted_type = _treasury_security_type(symbol)
-        if wanted_type:
-            typed = [rec for rec in data_rows if str(rec.get("security_desc") or "") == wanted_type]
-            if typed:
-                data_rows = typed
-        if not data_rows:
-            return None
-        rec = data_rows[0]
-        yld = float(rec.get("avg_interest_rate_amt"))  # percent
-        # Approximate clean price of a par-issued bond at current avg coupon vs a
-        # 10Y discount: price ~ 100 * (coupon/y discounted). Use a simple proxy:
-        # a small premium/discount around par scaled by the yield level.
-        # Par bond at its own coupon prices ~100; deviate by yield delta to 4%.
-        ref_yield = 4.0
-        years = 10.0
-        price = 100.0 * (1.0 + (ref_yield - yld) / 100.0 * years / (1.0 + ref_yield / 100.0))
-        price = round(max(50.0, min(150.0, price)), 4)
-        note = (
-            f"avg {rec.get('security_desc')} coupon {yld:.3f}% on {rec.get('record_date')}"
-            + (" (type-average anchor, not a per-tenor yield)" if wanted_type else "")
-        )
-        return (price, "treasury_fiscaldata", note)
+        import math
 
-    async def _ustreasury_curve_anchor(self, symbol: str) -> tuple[float, str, str] | None:
-        """Per-tenor anchor from the keyless US Treasury par-yield curve CSV.
-
-        Preferred over the FiscalData security-TYPE average whenever the
-        ``ustreasury`` adapter is wired: the CSV carries the actual per-tenor
-        par yield, discounted to a clean-price proxy with the same formula
-        used by ``_treasury_anchor``. Returns ``None`` when the adapter is
-        absent, the tenor is not on the curve, or the fetch fails — callers
-        keep the existing FiscalData / yfinance anchor chain.
-        """
         provider = getattr(self.deps, "ustreasury", None)
         upper = str(symbol).upper()
         column = _US_TREASURY_TENOR_COLUMNS.get(upper)
@@ -847,69 +832,35 @@ class ALLQFunction(BaseFunction):
             return None
         try:
             curve = await provider.yield_curve()
-        except Exception:  # noqa: BLE001 — fallback chain below stays honest
+        except Exception:  # noqa: BLE001 — the ALLQ caller reports provider_unavailable
             return None
-        if hasattr(curve, "empty") and curve.empty:
+        if not hasattr(curve, "columns") or column not in curve.columns:
             return None
-        latest = (
-            curve.dropna(how="all").iloc[-1]
-            if hasattr(curve, "dropna")
-            else curve.iloc[-1]
-        )
-        value = latest.get(column) if hasattr(latest, "get") else None
+        series = curve[column].dropna()
+        if series.empty:
+            return None
         try:
-            yld = float(value)
+            yld = float(series.iloc[-1])
         except (TypeError, ValueError):
             return None
+        if not math.isfinite(yld):
+            return None
+        as_of = _allq_observation_date(series.index[-1])
         years = float(_US_TREASURY_TENOR_YEARS.get(upper, 10.0))
-        ref_yield = 4.0
-        price = 100.0 * (1.0 + (ref_yield - yld) / 100.0 * years / (1.0 + ref_yield / 100.0))
-        price = round(max(50.0, min(150.0, price)), 4)
-        return (
-            price,
-            "ustreasury",
-            f"Treasury {column} par yield {yld:.3f}% (per-tenor, keyless curve)",
+        price = round(_allq_reference_price(yld, years), 4)
+        note = (
+            f"Treasury {column} par yield {yld:.3f}% on {as_of} "
+            f"(per-tenor, keyless curve; reference bond {_ALLQ_REF_COUPON_PCT:.0f}% coupon)"
         )
+        return (price, "ustreasury", note, as_of)
 
-    async def _treasury_anchor_for(self, symbol: str) -> tuple[float, str, str] | None:
-        """Prefer the per-tenor curve anchor; fall back to the FiscalData type average."""
-        try:
-            got = await self._ustreasury_curve_anchor(symbol)
-        except Exception:  # noqa: BLE001 — anchor fallback chain below stays honest
-            got = None
-        if got is not None:
-            return got
-        return await self._treasury_anchor(symbol)
-
-    async def _yfinance_anchor(self, symbol: str) -> tuple[float, str, str] | None:
-        adapter = getattr(self.deps, "yfinance", None) or getattr(self.deps, "quotes", None)
-        if adapter is not None and hasattr(adapter, "fetch_quote"):
-            quote = await adapter.fetch_quote(symbol)
-            price = quote.get("last_price") or quote.get("previous_close")
-            if price:
-                return (round(float(price), 4), "yfinance", f"yfinance last for {symbol}")
-        # direct fallback
-        def _sync() -> float | None:
-            import yfinance as yf
-
-            t = yf.Ticker(symbol)
-            fast = getattr(t, "fast_info", {}) or {}
-            val = fast.get("last_price") or fast.get("lastPrice") or fast.get("previous_close") or fast.get("previousClose")
-            return float(val) if val is not None else None
-
-        import asyncio
-
-        price = await asyncio.to_thread(_sync)
-        if price:
-            return (round(float(price), 4), "yfinance", f"yfinance last for {symbol}")
-        return None
-
-    def _build_ladder(self, symbol: str, anchor: float, spread: float, size: float, ref_note: str) -> list[dict[str, Any]]:
-        ts = _now_iso()
+    def _build_ladder(
+        self, symbol: str, anchor: float, spread: float, size: float, ref_note: str, quote_time: str
+    ) -> list[dict[str, Any]]:
         quotes = [
-            {"bond": symbol, "dealer": "Composite A", "bid": anchor - spread / 2, "ask": anchor + spread / 2, "size": size, "quote_time": ts},
-            {"bond": symbol, "dealer": "Composite B", "bid": anchor - spread * 0.7, "ask": anchor + spread * 0.8, "size": size * 0.75, "quote_time": ts},
-            {"bond": symbol, "dealer": "Composite C", "bid": anchor - spread, "ask": anchor + spread, "size": size * 0.5, "quote_time": ts},
+            {"bond": symbol, "dealer": "Composite A", "bid": anchor - spread / 2, "ask": anchor + spread / 2, "size": size, "quote_time": quote_time},
+            {"bond": symbol, "dealer": "Composite B", "bid": anchor - spread * 0.7, "ask": anchor + spread * 0.8, "size": size * 0.75, "quote_time": quote_time},
+            {"bond": symbol, "dealer": "Composite C", "bid": anchor - spread, "ask": anchor + spread, "size": size * 0.5, "quote_time": quote_time},
         ]
         for q in quotes:
             q["bid"] = round(float(q["bid"]), 6)
@@ -925,59 +876,83 @@ class ALLQFunction(BaseFunction):
         spread = float(params.get("spread", params.get("spread_points", 0.18)))
         size = float(params.get("size", 1_000_000))
         user_mid = params.get("mid")
+        us_tenor = symbol in _US_TREASURY_TENOR_COLUMNS
 
         started = time.monotonic()
         anchor: float | None = None
-        source = "treasury_fiscaldata"
+        source = "ustreasury"
         ref_note = ""
+        as_of = _as_of()
+        quote_time = _now_iso()
         fetch_error: Exception | None = None
         try:
-            if _is_sovereign(symbol):
-                got = await self._treasury_anchor_for(symbol)
-            else:
-                got = await self._yfinance_anchor(symbol)
-                source = "yfinance"
+            got = await self._ustreasury_curve_anchor(symbol) if us_tenor else None
             if got is not None:
-                anchor, source, ref_note = got
+                anchor, source, ref_note, as_of = got
+                quote_time = f"{as_of}T00:00:00+00:00"
         except Exception as exc:  # noqa: BLE001
             fetch_error = exc
 
         latency_ms = int((time.monotonic() - started) * 1000)
 
-        # If we couldn't get a real anchor: honour an explicit user mid, else
-        # report provider_unavailable (do NOT silently fabricate a price).
-        if anchor is None:
-            if user_mid is not None:
+        # An explicit operator mid overrides the reference and is labelled as such.
+        if user_mid not in (None, ""):
+            try:
                 anchor = float(user_mid)
-                source = "user_input"
-                ref_note = "operator-supplied mid (no live reference reachable)"
-            else:
+            except (TypeError, ValueError):
                 return FunctionResult(
                     code=self.code,
                     instrument=instrument,
                     data={
-                        "status": "provider_unavailable",
+                        "status": "input_error",
                         "rows": [],
                         "spread_curve": [],
-                        "summary": {"bond": symbol, "source_mode": source},
+                        "summary": {"bond": symbol, "source_mode": "user_input"},
                         "methodology": self._METHODOLOGY,
                         "field_dictionary": self._FIELD_DICT,
-                        "next_actions": ["Retry when the reference price source is reachable, or pass an explicit ``mid``."],
+                        "next_actions": ["Pass ``mid`` as a number, or omit it to use the live reference."],
                     },
-                    sources=[source],
-                    warnings=[f"No live reference price for {symbol!r}{f': {fetch_error}' if fetch_error else ''}."],
-                    metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
+                    sources=[],
+                    warnings=[f"Operator mid {user_mid!r} is not a number."],
+                    metadata={"latency_ms": latency_ms, "data_mode": "input_error", "as_of": _as_of()},
                 )
+            reference = f"; overrides {ref_note}" if ref_note else ""
+            source = "user_input"
+            ref_note = f"operator-supplied mid {anchor}{reference}"
+            as_of = _as_of()
+            quote_time = _now_iso()
 
-        quotes = self._build_ladder(symbol, anchor, spread, size, ref_note)
-        warnings = [
-            "ALLQ rows are INDICATIVE composite quotes anchored to a real reference price, not executable dealer prices."
-        ]
-        if "not a per-tenor yield" in ref_note:
-            warnings.append(
-                f"Treasury anchor for {symbol} is the FiscalData security-type average "
-                "(no per-tenor yield in that dataset); it is not a live quote for this specific tenor."
+        # Without a live Treasury observation or an explicit mid: honest unavailable state.
+        if anchor is None:
+            reason = (
+                f"No Treasury curve observation for {symbol!r}"
+                if us_tenor
+                else f"{symbol!r} is not a US Treasury tenor on the keyless curve; no reference yield is anchored"
             )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "rows": [],
+                    "spread_curve": [],
+                    "summary": {"bond": symbol, "source_mode": source},
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Retry when the Treasury curve is reachable, or pass an explicit ``mid``."],
+                },
+                sources=[source] if us_tenor else [],
+                warnings=[f"{reason}{f': {fetch_error}' if fetch_error else ''}."],
+                metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
+            )
+
+        quotes = self._build_ladder(symbol, anchor, spread, size, ref_note, quote_time)
+        warnings = [
+            "ALLQ rows are INDICATIVE composite quotes modeled from one reference anchor and one spread input, not executable dealer prices.",
+            f"The {spread:g}-point spread is an input assumption applied to every tenor, not a measured dealer or TRACE spread.",
+        ]
+        if source == "user_input":
+            warnings.append("The mid is the operator-supplied value; it overrides the Treasury reference and is not a market observation.")
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -991,14 +966,21 @@ class ALLQFunction(BaseFunction):
                     "best_bid": max(q["bid"] for q in quotes),
                     "best_ask": min(q["ask"] for q in quotes),
                     "reference": ref_note,
-                    "source_mode": "indicative_anchored_to_real_reference",
+                    "reference_coupon_pct": _ALLQ_REF_COUPON_PCT if source != "user_input" else None,
+                    "spread_points_input": spread,
+                    "as_of": as_of,
+                    "source_mode": "indicative_anchored_to_real_reference" if source != "user_input" else "indicative_user_mid",
                 },
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             },
-            sources=[source],
+            sources=[source, _ALLQ_MODEL_SOURCE],
             warnings=warnings,
-            metadata={"latency_ms": latency_ms, "data_mode": "live_official" if source != "user_input" else "user_input", "as_of": _as_of()},
+            metadata={
+                "latency_ms": latency_ms,
+                "data_mode": "user_input" if source == "user_input" else "modeled",
+                "as_of": as_of,
+            },
         )
 
 
