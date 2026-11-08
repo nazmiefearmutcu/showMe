@@ -66,7 +66,9 @@ class EEFunction(BaseFunction):
         # provider row exists. Provider errors are never cleared, and a
         # provider is listed in ``sources`` only once it has returned rows.
         placeholder = all(r.get("source_mode") == _UNAVAILABLE_MODE for r in candidate_rows)
-        if finnhub_data:
+        # A provider is listed only when it contributed rows. A Finnhub payload
+        # that is not a row list (e.g. a bare object) contributes none.
+        if any(r.get("source_mode") == "finnhub_earnings" for r in candidate_rows):
             sources.append("finnhub")
         if _yf_has_data(yf_data):
             sources.append("yfinance")
@@ -76,7 +78,8 @@ class EEFunction(BaseFunction):
             instrument.symbol, table_next, yf_data, date.today(), warnings
         )
         if placeholder:
-            sources.append("earnings_calendar_model")
+            # The placeholder row carries no figures, so no model is named as
+            # a source (provenance: nothing modelled is served as data).
             # Honesty (2026-09-08): never wipe provider errors on the
             # fallback — the placeholder row must be visibly labelled, not
             # passed off as reported figures.
@@ -85,7 +88,7 @@ class EEFunction(BaseFunction):
                 "unavailable rather than reported figures."
             )
         metadata = (
-            {"live": False, "fallback": True, "data_mode": "modeled"}
+            {"live": False, "fallback": True, "data_mode": "provider_unavailable"}
             if placeholder
             else {
                 "live": True,
