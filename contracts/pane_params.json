@@ -608,8 +608,8 @@
     },
     "GEX": {
       "keys": [
-        "live_options",
-        "max_expiries"
+        "expiry_filter",
+        "live_options"
       ],
       "conditional": [],
       "dynamic": false,
