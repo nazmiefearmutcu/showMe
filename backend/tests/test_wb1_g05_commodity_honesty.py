@@ -49,3 +49,55 @@ def test_asof7_today_spend_excludes_yesterday_local(tmp_path: Path) -> None:
         input_tokens=0, output_tokens=0, usd=0.5,
     ))
     assert led.today_spend() == pytest.approx(0.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# NGAS#1 — a contract NGAS cannot serve is an explicit state, not Henry Hub
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _patch_snapshot(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
+    from showme.engine.functions.commodity import _funcs
+
+    async def _fake_snapshot(_yf: Any, symbol: str, **_kw: Any) -> tuple[Any, list[Any], list[str]]:
+        calls.append(symbol)
+        row = {
+            "symbol": symbol, "name": "Henry Hub Natural Gas", "unit": "USD/MMBtu",
+            "last": 2.975, "change_pct": 1.2, "as_of": "2026-09-07T22:15:56+00:00",
+        }
+        return row, [{"date": "2026-09-05", "close": 2.975}], []
+
+    monkeypatch.setattr(_funcs, "_contract_snapshot", _fake_snapshot)
+
+
+def test_ngas1_ttf_request_is_unsupported_not_served_as_henry_hub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from showme.engine.functions.commodity._funcs import NGASFunction
+
+    snapshot_calls: list[str] = []
+    _patch_snapshot(monkeypatch, snapshot_calls)
+    result = asyncio.run(
+        NGASFunction(FunctionDeps(yfinance=object())).execute(contract="TTF=F")
+    )
+    assert result.data["status"] == "unsupported_contract"
+    assert result.data["rows"] == []
+    assert result.data["history"] == []
+    assert result.data["reason"]
+    assert snapshot_calls == [], "no quote may be fetched for an unsupported contract"
+    assert "2.975" not in str(result.data), "no Henry Hub quote may leak into the response"
+    assert result.data.get("source_mode") is None, "no live source may be claimed"
+
+
+def test_ngas1_ng_f_still_serves_the_live_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    from showme.engine.functions.commodity._funcs import NGASFunction
+
+    snapshot_calls: list[str] = []
+    _patch_snapshot(monkeypatch, snapshot_calls)
+    result = asyncio.run(
+        NGASFunction(FunctionDeps(yfinance=object())).execute(contract="NG=F")
+    )
+    assert result.data["status"] == "ok"
+    assert result.data["source_mode"] == "live_yfinance"
+    assert result.data["rows"][0]["symbol"] == "NG=F"
+    assert snapshot_calls == ["NG=F"]

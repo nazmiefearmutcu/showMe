@@ -1020,9 +1020,51 @@ class BGASFunction(BaseFunction):
 
 @FunctionRegistry.register
 class NGASFunction(BGASFunction):
-    """NGAS — Natural gas (alias)."""
+    """NGAS — Natural gas (alias).
+
+    NGAS serves only the Henry Hub contract (NG=F). The shared BGAS body
+    substitutes NG=F for unknown contracts and its EIA tier returns Henry Hub
+    rows for any symbol, so NGAS rejects every other contract up front
+    (NGAS#1) instead of serving Henry Hub data under another label.
+    """
     code = "NGAS"
     name = "Natural Gas"
+    supported_contracts = ("NG=F",)
+
+    async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        contract = str(
+            params.get("contract") or (instrument.symbol if instrument else "") or "NG=F"
+        ).strip().upper()
+        if contract not in self.supported_contracts:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "unsupported_contract",
+                    "reason": (
+                        f"{contract} is not served by NGAS. NGAS only serves the "
+                        "Henry Hub contract (NG=F, USD/MMBtu); no other contract's "
+                        "rows are substituted."
+                    ),
+                    "contract": contract,
+                    "supported_contracts": list(self.supported_contracts),
+                    "rows": [],
+                    "history": [],
+                    "next_actions": [
+                        "Select NG=F (Henry Hub) as the NGAS contract.",
+                    ],
+                    "methodology": (
+                        "NGAS reports only the Henry Hub front-month future (NG=F). "
+                        "Other contracts are reported as unsupported rather than "
+                        "substituted."
+                    ),
+                    "field_dictionary": _commodity_field_dictionary(),
+                },
+                sources=[],
+                warnings=[f"contract={contract!r} unsupported by NGAS"],
+                metadata={"provider_errors": [f"contract={contract!r} unsupported by NGAS"]},
+            )
+        return await super().execute(instrument, **params)
 
 
 # CPF maps each selectable FRED-style series_id to the keyless Yahoo
