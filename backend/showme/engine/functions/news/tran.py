@@ -615,8 +615,13 @@ def _parse_transcript_text(
             section = "qa"
             continue
         m = _SPEAKER_RE.match(block) if allow_speaker_headers else None
-        if m and _FIGURE_TEXT_RE.match(m.group(2).strip()):
+        # A colon line is ambiguous (it may be a table label); an explicit "--" or dash
+        # line is the transcript's own header syntax and is trusted as written.
+        colon_line = bool(m) and block[m.end(1):].lstrip().startswith(":")
+        if m and colon_line and _FIGURE_TEXT_RE.match(m.group(2).strip()):
             m = None  # a data label such as "Diluted EPS: 1.23", never a header
+        if m and colon_line and not _colon_label_is_person(m.group(1).strip()):
+            m = None  # a one-word label such as "Guidance: strong demand...", not a person
         if m and _looks_like_name(m.group(1).strip()):
             head = m.group(1).strip()
             rest = m.group(2).strip()
@@ -663,10 +668,21 @@ def _looks_like_name(head: str) -> bool:
     if any(p.lower().strip(".,:;") in _NON_NAME_TOKENS for p in parts):
         return False
     # Financial acronyms (EPS, EBITDA, GAAP, FCF) are metrics, not name tokens.
-    if any(len(p) >= 2 and p.isalpha() and p.isupper() for p in parts):
+    # Two-letter all-caps tokens are kept: they are ordinary initials ("AJ Brown").
+    if any(len(p) >= 3 and p.isalpha() and p.isupper() for p in parts):
         return False
     capish = sum(1 for p in parts if p[:1].isupper())
     return capish >= max(1, len(parts) - 1)
+
+
+def _colon_label_is_person(head: str) -> bool:
+    """A "Name:" line counts as a speaker only when the head is a person-shaped name.
+
+    One capitalised word followed by a colon is a table or outline label far more
+    often than a speaker ("Guidance: ...", "Outlook: ..."), so it needs two or more
+    tokens or a role word ("Operator:"). Explicit "--" headers are not checked here.
+    """
+    return len(head.split()) >= 2 or head.lower() in _ROLE_HINTS
 
 
 def _role_for(text: str) -> str:

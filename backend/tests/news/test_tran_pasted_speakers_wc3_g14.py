@@ -64,3 +64,33 @@ def test_pasted_quarter_is_labelled_as_user_stated_not_verified() -> None:
     assert event["quarter"] == "Q3 FY26", event
     basis = str(event.get("quarter_basis") or "").lower()
     assert "user" in basis and "not verified" in basis, event
+
+
+# --------------------------------------------------------------------------- #
+# TRAN#2-RQ: the label rule must not drop real explicit headers, and a one-word
+# label followed by prose must not be minted as a speaker.
+# --------------------------------------------------------------------------- #
+def test_all_caps_initials_still_name_an_explicit_speaker() -> None:
+    rows = _parse_transcript_text("AJ Brown -- Chief Executive Officer\n\nThank you all.\n")
+    speakers = {r["speaker"] for r in rows if r["speaker"]}
+    assert speakers == {"AJ Brown"}, rows
+    assert {r["role"] for r in rows if r["speaker"] == "AJ Brown"} == {"CEO"}, rows
+
+
+def test_explicit_dash_header_whose_body_opens_with_a_figure_still_names_speaker() -> None:
+    rows = _parse_transcript_text("Tim Cook -- 3 points to cover today.\n")
+    assert rows and rows[0]["speaker"] == "Tim Cook", rows
+    assert rows[0]["utterance"] == "3 points to cover today.", rows
+
+
+def test_single_word_label_followed_by_prose_is_not_a_speaker() -> None:
+    rows = _parse_transcript_text("Guidance: strong demand continues into next year.\n")
+    assert len(rows) == 1, rows
+    assert rows[0]["speaker"] is None and rows[0]["role"] == "", rows
+
+
+def test_single_word_colon_header_is_not_a_speaker_but_role_word_is() -> None:
+    rows = _parse_transcript_text("Outlook: Strong demand continues.\n\nOperator: Please go ahead.\n")
+    speakers = [r["speaker"] for r in rows]
+    assert "Outlook" not in speakers, rows
+    assert "Operator" in speakers, rows
