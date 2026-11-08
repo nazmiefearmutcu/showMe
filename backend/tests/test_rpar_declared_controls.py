@@ -52,7 +52,7 @@ def test_risk_target_is_honoured_for_erc() -> None:
 
 
 def test_risk_target_is_honoured_for_inverse_vol() -> None:
-    out = _run(risk_target=0.07)
+    out = _run(method="inverse_vol", risk_target=0.07)
     assert out.data["portfolio_vol"] == pytest.approx(0.07, abs=1e-6)
 
 

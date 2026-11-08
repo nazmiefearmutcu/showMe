@@ -261,6 +261,12 @@ describe("PORTX generic renderer shape fixes (F3)", () => {
     expect(hero?.textContent).toBe("12.30%");
   });
 
+  it("defaults RPAR to the equal-risk-contribution method, matching the Risk Parity title", () => {
+    mockOk({ status: "ok", rows: [] });
+    render(<PortfolioAnalyticsPane code="RPAR" symbol="" />);
+    expect(mockArgs.current?.params?.method).toBe("erc");
+  });
+
   // HNT-04: return-family fields are FRACTIONS by backend contract
   // (total_return = final equity / initial − 1). A multi-year return > 2
   // (e.g. 3.5 = +350%) must not fall through a magnitude heuristic and

@@ -83,8 +83,14 @@ def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
 _COVARIANCE_MODELS = ("sample_cov", "ledoit_wolf", "exp_cov", "oracle_approximating")
 _DEFAULT_COVARIANCE_MODEL = "ledoit_wolf"  # manifest default
 _DEFAULT_RISK_TARGET = 0.10  # manifest default, annualized decimal
+_DEFAULT_METHOD = "erc"  # equal-risk-contribution parity, the function's name and manifest intent
 _EXP_COV_HALFLIFE_DAYS = 63  # about one quarter of trading days
 _MIN_COMPLETE_ROWS = 10
+# Per-symbol history timeout, and one overall budget for the whole live fetch.
+# The budget stays under the 14 s route timeout so an honest provider_unavailable
+# state is returned instead of the route's generic timeout envelope.
+_SYMBOL_TIMEOUT_SECONDS = 8.0
+_FETCH_BUDGET_SECONDS = 12.0
 
 
 def _shrink_to_identity(sample: np.ndarray, alpha: float) -> np.ndarray:
@@ -170,15 +176,19 @@ class RPARFunction(BaseFunction):
     description = "Compute equal-risk-contribution weights for given universe."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        symbols = params.get("symbols") or []
+        # The manifest names the universe input ``universe``; the pane sends
+        # ``symbols``. Both are accepted (``symbols`` wins). Without a universe the
+        # call is an explicit needs_input state, never a hard-coded basket.
+        symbols = params.get("symbols") or params.get("universe") or []
         if isinstance(symbols, str):
             symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+        symbols = [str(s).strip() for s in symbols if str(s).strip()]
         if not symbols:
             symbol = params.get("symbol") or (instrument.symbol if instrument else None)
-            symbols = [symbol] if symbol else ["AAPL", "MSFT", "BTCUSDT", "EURUSD", "GC=F"]
+            symbols = [str(symbol).strip()] if symbol else []
         days = int(params.get("days", 504))
         target = params.get("target")  # optional list of weights
-        method = (params.get("method") or "inverse_vol").lower()
+        method = (params.get("method") or _DEFAULT_METHOD).lower()
         covariance_model = str(params.get("covariance_model") or _DEFAULT_COVARIANCE_MODEL).lower()
         raw_risk_target = params.get("risk_target")
         try:
@@ -196,6 +206,16 @@ class RPARFunction(BaseFunction):
                 },
                 sources=[],
                 warnings=["RPAR was not computed: invalid risk_target."],
+            )
+        if not symbols:
+            return _unavailable_allocation(
+                [],
+                risk_target,
+                covariance_model,
+                status="needs_input",
+                reason="No universe was supplied, so there is nothing to allocate across.",
+                next_actions=["Pass symbols (or universe) as a comma-separated list of tickers, e.g. AAPL,MSFT,GLD."],
+                fallback_reason="universe_missing",
             )
         # S12 BugHunt: default flipped to LIVE when yfinance is available.
         # Previous behavior silently returned a deterministic template (with
@@ -258,7 +278,7 @@ class RPARFunction(BaseFunction):
                         start=datetime.now(timezone.utc) - timedelta(days=days),
                         interval="1d",
                     )),
-                    timeout=8,
+                    timeout=_SYMBOL_TIMEOUT_SECONDS,
                 )
                 series = close_to_daily_returns(df)
                 if series.dropna().shape[0] < 10:
@@ -274,7 +294,26 @@ class RPARFunction(BaseFunction):
                     return sym, await _yahoo_daily_returns(sym, days)
                 except Exception:  # noqa: BLE001
                     return sym, pd.Series(dtype=float)
-        rs = await asyncio.gather(*(_ret(s) for s in symbols))
+        try:
+            rs = await asyncio.wait_for(
+                asyncio.gather(*(_ret(s) for s in symbols)),
+                timeout=_FETCH_BUDGET_SECONDS,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            # Per-symbol timeouts stack with the Yahoo fallback; one overall budget
+            # keeps the call bounded and reports the state explicitly.
+            return _unavailable_allocation(
+                symbols,
+                risk_target,
+                covariance_model,
+                status="provider_unavailable",
+                reason=(
+                    f"Return history for {len(symbols)} symbol(s) did not arrive within the "
+                    f"{_FETCH_BUDGET_SECONDS:.0f}s fetch budget; no weights were built."
+                ),
+                next_actions=["Retry the call, or use fewer symbols; the history providers were slow."],
+                fallback_reason="fetch_budget_exceeded",
+            )
         # Audit Q3 #7: pairwise policy keeps crypto+equity covariance
         # honest. Legacy intersection-only dropna threw away 70%+ of
         # rows for mixed universes and tilted weights to crypto.

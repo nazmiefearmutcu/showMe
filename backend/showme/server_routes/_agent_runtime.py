@@ -833,6 +833,21 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # nobody asked for — worst case ~32 s serial against the 14 s
         # function timeout. Drop it when the caller sent none.
         defaults.pop("symbols", None)
+    if code.upper() == "RPAR":
+        # RPAR reads its own lookback (``days``, default 504), its universe
+        # (``symbols`` or the manifest name ``universe``) and method/risk/live
+        # controls. The generic route injects a 120-day window, the agent peer
+        # group and news-style fields into every call; caller values win, but
+        # injected values must not replace RPAR's own defaults or the universe.
+        for key in ("query", "topic", "limit", "range", "interval"):
+            if key not in merged:
+                defaults.pop(key, None)
+        if "days" not in merged:
+            defaults.pop("days", None)
+        if not merged.get("symbols"):
+            defaults.pop("symbols", None)
+            if not merged.get("universe") and "symbol" not in merged:
+                defaults.pop("symbol", None)
     if code.upper() == "TLDR" and not merged.get("symbols"):
         # TLDR's ``symbols`` is the caller's watchlist. The generic agent peer
         # group (BTC/ETH/SOL for crypto routes) must not stand in for the

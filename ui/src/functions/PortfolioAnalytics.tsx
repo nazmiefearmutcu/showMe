@@ -201,11 +201,13 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   },
   RPAR: {
     title: "Risk Parity",
-    subtitle: "Inverse-vol and equal-risk-contribution allocation",
+    subtitle: "Equal-risk-contribution (default) and inverse-vol allocation",
     defaultSymbols: "AAPL,MSFT,BTCUSDT,EURUSD,GC=F",
     usesUniverse: true,
     supportsLive: true,
-    modes: ["inverse_vol", "erc"],
+    // ERC is the first (default) mode: inverse-vol is only an approximation,
+    // and the default view must match the Risk Parity title.
+    modes: ["erc", "inverse_vol"],
   },
   STRS: {
     title: "Stress Test",
