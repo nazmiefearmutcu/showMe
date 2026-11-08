@@ -144,7 +144,9 @@ class LANGFunction(BaseFunction):
                     "requires_reload": "Whether the selected preference needs a pane reload to become visible.",
                 },
             },
-            sources=["local_locale_catalog"],
+            # LANG#2: the labels come from the static _language_label table and
+            # the UI catalogs are not read here, so no source is cited.
+            sources=[],
         )
 
 

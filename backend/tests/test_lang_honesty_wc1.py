@@ -72,7 +72,17 @@ def test_lang_rows_do_not_claim_hardcoded_core_labels_coverage(lang_file) -> Non
 def test_lang_does_not_cite_registry_it_never_reads(lang_file) -> None:
     res = _run(LANGFunction(deps=FunctionDeps()).execute(lang="en"))
     assert "showme_i18n_registry" not in res.sources
-    assert res.sources == ["local_locale_catalog"]
+    # The handler never reads the UI catalogs; labels come from a static table
+    # and the methodology says so, so no source may be cited.
+    assert res.sources == []
+
+
+def test_lang_ready_envelope_cites_no_unread_source(lang_file) -> None:
+    res = _run(LANGFunction(deps=FunctionDeps()).execute(lang="en"))
+    env = normalize_function_contract("LANG", {"lang": "en"}, {
+        "data": res.data, "sources": res.sources, "metadata": {}, "warnings": res.warnings,
+    })
+    assert "local_locale_catalog" not in [s.get("name") for s in env.get("sourceDetails", [])]
 
 
 def test_lang_local_catalog_source_is_classified_as_reference() -> None:
