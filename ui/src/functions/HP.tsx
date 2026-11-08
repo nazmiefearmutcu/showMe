@@ -859,7 +859,7 @@ function lastDefined(values: (number | null)[]): number | null {
 }
 
 /** Wilder RSI, aligned to the close series (null before the first value). */
-function rsiSeries(closes: number[], period = 14): (number | null)[] {
+export function rsiSeries(closes: number[], period = 14): (number | null)[] {
   const out: (number | null)[] = new Array(closes.length).fill(null);
   if (closes.length <= period) return out;
   let gains = 0;
@@ -872,6 +872,10 @@ function rsiSeries(closes: number[], period = 14): (number | null)[] {
       if (i === period) {
         const rs = losses === 0 ? 100 : gains / losses;
         out[i] = 100 - 100 / (1 + rs);
+        // Wilder seed is the simple AVERAGE of the first `period` gains and
+        // losses. Carrying the sum made the recurrence 14x too large.
+        gains /= period;
+        losses /= period;
       }
     } else {
       const gain = diff >= 0 ? diff : 0;
@@ -955,9 +959,17 @@ function trueAtrSeries(
   return out;
 }
 
-function computeIndicators(
-  rows: Array<HPRow & { _change?: number; _changePct?: number }>,
+export function computeIndicators(
+  input: Array<HPRow & { _change?: number; _changePct?: number }>,
 ) {
+  // The indicator recursions (EMA, Wilder RSI, true range) must run oldest ->
+  // newest. decorate() hands rows over newest-first for display, so order the
+  // series here rather than trusting the caller's order.
+  const rows = [...input].sort(
+    (a, b) =>
+      new Date(a.date ?? a.ts ?? "").getTime() -
+      new Date(b.date ?? b.ts ?? "").getTime(),
+  );
   const closes = rows
     .map((r) => r.close ?? r.adj_close ?? r.adjClose)
     .filter((v): v is number => v != null && Number.isFinite(v));
