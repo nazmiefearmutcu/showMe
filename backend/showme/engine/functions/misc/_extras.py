@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -135,15 +136,38 @@ class BIOFunction(BaseFunction):
     category = "misc"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        # BIO-1: the LocalAuthentication bridge exists only on macOS. This
+        # sidecar cannot probe the Tauri shell, so the rows describe what the
+        # host platform allows rather than claiming an available bridge.
+        host = sys.platform
+        is_macos = host == "darwin"
+        if is_macos:
+            capability_status = "native_bridge_expected"
+            verify_status = "user_initiated"
+            prompt_value = "native"
+            reason = None
+            next_actions: list[str] = []
+            warnings: list[str] = []
+        else:
+            capability_status = "unavailable_non_macos"
+            verify_status = "denied_non_macos"
+            prompt_value = "unavailable"
+            reason = (
+                f"BIO needs the macOS LocalAuthentication bridge; this host is {host}, "
+                "so every verify is denied."
+            )
+            next_actions = ["Run ShowMe on macOS to use Touch ID or device-passcode gating."]
+            warnings = [reason]
         rows = [
             {
                 "action": "capabilities",
-                "status": "native_bridge_available",
-                "mechanism": "macOS LocalAuthentication via Tauri command biometric_capabilities",
+                "status": capability_status,
+                "mechanism": "macOS LocalAuthentication via Tauri command biometric_capabilities "
+                             "(the Tauri shell reports the runtime result)",
             },
             {
                 "action": "verify",
-                "status": "user_initiated",
+                "status": verify_status,
                 "mechanism": "request_biometric opens the OS biometric/passcode prompt from the native pane",
             },
             {
@@ -156,12 +180,15 @@ class BIOFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
-                "status": "ready",
+                "status": "ready" if is_macos else "unavailable",
+                "reason": reason,
+                "host_platform": host,
                 "rows": rows,
                 "cards": [
-                    {"label": "Prompt", "value": "native"},
+                    {"label": "Prompt", "value": prompt_value},
                     {"label": "Secrets", "value": "not exported"},
                 ],
+                "next_actions": next_actions,
                 "methodology": (
                     "BIO uses the native macOS LocalAuthentication bridge exposed by the Tauri shell. "
                     "The backend only documents the auth flow; the actual biometric prompt is initiated "
@@ -173,7 +200,10 @@ class BIOFunction(BaseFunction):
                     "mechanism": "Local system API used for the step.",
                 },
             },
-            sources=["macos_local_auth_bridge"],
+            # Static documentation, not a live probe: labeled as reference.
+            sources=["static_reference_documentation"],
+            warnings=warnings,
+            metadata={"live": False, "mode": "reference", "host_platform": host},
         )
 
 
