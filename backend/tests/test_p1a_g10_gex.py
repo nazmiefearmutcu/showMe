@@ -110,3 +110,26 @@ def test_gex_function_payload_reports_flip_method_and_per_side_walls() -> None:
     assert summary["put_wall"] == 105.0
     assert summary["gamma_flip_method"] == "spot_grid_zero_crossing"
     assert summary["gamma_flip"] is not None and summary["gamma_flip"] != 115.0
+
+
+# --------------------------------------------------------------------------- #
+# GEX#2 — the manifest documents the method the handler actually runs
+# --------------------------------------------------------------------------- #
+def test_gex_manifest_documents_spot_grid_gamma_flip_not_cumulative() -> None:
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    entry = REGISTRY.get("GEX")
+    flip_formula = entry.formula_dict["gamma_flip"]
+    flip_text = " ".join([
+        flip_formula.expression,
+        *flip_formula.variables.values(),
+        entry.field_dict["gamma_flip"].description,
+    ]).lower()
+
+    assert "cumulative" not in flip_text
+    assert "spot" in flip_text
+    assert "cumulative signed" not in entry.methodology.lower()
+    assert "spot" in entry.methodology.lower()
+    for test in entry.semantic_tests:
+        assert "cumulative_zero_cross" not in " ".join(test.assertions)
