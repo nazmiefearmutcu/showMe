@@ -793,38 +793,20 @@ def _segment(text: str) -> list[dict[str, Any]]:
     ]
 
 
-# TSAR#1 follow-up: a bare two-to-four word name ("Tim Cook: Thanks everyone.")
-# is a speaker when the turn starts with a word, not a figure, and no word of
-# the label is a common metric or section head. Single-word prose labels
-# ("Guidance:", "Note:") are still not speakers.
-_NAME_WORD = re.compile(r"^[A-Z][A-Za-z'.-]*$")
-_TURN_START = re.compile(r"""^["'(“]?[A-Z]""")
-_PROSE_HEAD_WORDS = frozenset({
-    "adjusted", "backlog", "bookings", "buyback", "capex", "cash", "costs",
-    "dividend", "earnings", "eps", "expenses", "flow", "forward", "free", "growth",
-    "guidance", "gross", "harbor", "highlights", "income", "key", "looking", "margin",
-    "margins", "metrics", "net", "note", "notes", "operating", "orders", "outlook",
-    "pricing", "quarter", "results", "revenue", "safe", "sales", "segment", "statement",
-    "statements", "summary", "takeaways", "total", "disclaimer", "question", "answer",
-    "demand", "fiscal",
-})
-
-
-def _is_speaker_label(label: str, known_speakers: set[str], turn_text: str = "") -> bool:
+# TSAR#1 (wc3-g15 follow-up): an inline label is a speaker only when it is a
+# speaker already seen opening a line in this transcript, or a "Name, Role"
+# label (a name of at least two words before the comma). A bare two-to-four word
+# Title Case run has no structural signature that separates a speaker from a
+# product or section head ("Apple Watch: Sales rose ..."), so with no line-start
+# precedent it stays in the sentence it sits in.
+def _is_speaker_label(label: str, known_speakers: set[str]) -> bool:
     """True when an inline candidate label is a real speaker, not prose."""
     if label in known_speakers:
         return True
     if "," in label:
         name = label.split(",", 1)[0].strip()
         return len(name.split()) >= 2
-    words = label.split()
-    if not 2 <= len(words) <= 4:
-        return False
-    if not all(_NAME_WORD.match(w) for w in words):
-        return False
-    if any(w.lower() in _PROSE_HEAD_WORDS for w in words):
-        return False
-    return bool(_TURN_START.match(turn_text))
+    return False
 
 
 def _split_inline_speakers(line: str, known_speakers: set[str]) -> list[str]:
@@ -832,7 +814,7 @@ def _split_inline_speakers(line: str, known_speakers: set[str]) -> list[str]:
     cuts = [
         m.start()
         for m in _INLINE_LABEL.finditer(line)
-        if _is_speaker_label(m.group("label"), known_speakers, line[m.end():])
+        if _is_speaker_label(m.group("label"), known_speakers)
     ]
     if not cuts:
         stripped = line.strip()
