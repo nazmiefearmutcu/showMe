@@ -194,8 +194,11 @@ def test_poly_stubbed_provider_keeps_rows_when_caller_passes_no_query():
 def test_poly_empty_topic_filter_reports_reason(monkeypatch):
     import showme.engine.functions.misc.poly as poly_mod
 
+    # Topic relevance is Polymarket's search: when it finds nothing, POLY reports
+    # the topic as the reason. (The old client-side all-words filter dropped
+    # relevant markets such as a "Bitcoin ..." market for "bitcoin cryptocurrency".)
     async def _fake_fetch(*_args, **_kwargs):
-        return _gamma_fixture()
+        return []
 
     monkeypatch.setattr(poly_mod, "_fetch_gamma_markets", _fake_fetch)
 
