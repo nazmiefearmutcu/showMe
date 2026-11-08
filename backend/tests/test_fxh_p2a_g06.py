@@ -209,3 +209,74 @@ def test_fxh1_unknown_side_is_an_explicit_input_error() -> None:
     assert result.data["status"] == "input_error"
     assert "exposure_side" in result.data["reason"]
     assert result.data["rows"] == []
+
+
+# ── FXH#2: manifest output contract (hedge_cost and named fields) ───────
+
+
+_MUST_HAVE = (
+    "pair", "spot", "exposure_notional", "hedge_notional", "residual_notional",
+    "pnl_unhedged", "pnl_hedged", "hedge_cost", "as_of", "data_mode",
+)
+
+
+def test_fxh2_calc_returns_every_manifest_must_have_key() -> None:
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03, hedge_ratio=0.5, spot_shock_pct=5.0,
+        bid_ask_pips=2.0,
+    ))
+    for key in _MUST_HAVE:
+        assert key in result.data, f"manifest must_have missing: {key}"
+
+
+def test_fxh2_hedge_cost_is_hedge_notional_times_pips() -> None:
+    """Manifest: hedge_cost = hedge_notional * bid_ask_pips / 10^4 (home ccy).
+    500,000 hedged * 2 pips * 0.0001 = 100 USD."""
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03, hedge_ratio=0.5, spot_shock_pct=5.0,
+        bid_ask_pips=2.0,
+    ))
+    assert result.data["hedge_cost"] == pytest.approx(100.0)
+    assert result.data["hedge_notional"] == pytest.approx(500_000.0)
+    assert result.data["residual_notional"] == pytest.approx(500_000.0)
+    assert result.data["pnl_unhedged"] == pytest.approx(1_000_000 * 1.08 * 0.05)
+    assert result.data["pnl_hedged"] == pytest.approx(500_000 * 1.08 * 0.05 - 100.0)
+
+
+def test_fxh2_jpy_home_uses_yen_pip_size() -> None:
+    result = _run(_fn().execute(
+        action="calc", pair="USDJPY", spot_rate=150.0, notional=1_000_000,
+        base_rate=0.01, home_rate=0.02, hedge_ratio=0.5, spot_shock_pct=5.0,
+        bid_ask_pips=2.0,
+    ))
+    # JPY quote pip = 0.01 -> 500,000 * 2 * 0.01 = 10,000 JPY
+    assert result.data["hedge_cost"] == pytest.approx(10_000.0)
+
+
+def test_fxh2_missing_bid_ask_is_flagged_not_silent() -> None:
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", spot_rate=1.08, notional=1_000_000,
+        base_rate=0.02, home_rate=0.03, hedge_ratio=0.5,
+    ))
+    assert "bid_ask_pips" in result.data["assumed_defaults"]
+    assert result.data["assumed_values"]["bid_ask_pips"] == pytest.approx(2.0)
+    assert result.data["hedge_cost"] == pytest.approx(100.0)
+
+
+def test_fxh2_multi_currency_book_top_level_notionals_are_none_not_summed() -> None:
+    """Foreign units of different currencies must never be summed."""
+    result = _run(_fn().execute(
+        action="calc", pair="EURUSD", hedge_ratio=0.5, spot_shock_pct=5.0,
+        base_rate=0.02, home_rate=0.03, bid_ask_pips=2.0,
+        exposures=[
+            {"currency": "EUR", "notional": 100_000, "spot_rate": 1.08},
+            {"currency": "GBP", "notional": 50_000, "spot_rate": 1.27},
+        ],
+    ))
+    assert result.data["exposure_notional"] is None
+    assert result.data["hedge_notional"] is None
+    assert len(result.data["rows"]) == 2
+    total_cost = sum(r["hedge_cost"] for r in result.data["rows"])
+    assert result.data["hedge_cost"] == pytest.approx(total_cost)

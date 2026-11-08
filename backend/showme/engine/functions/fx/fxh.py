@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -16,6 +17,8 @@ from showme.engine.services.fx_hedge import SIDE_SIGN, FXExposure, forward_rate,
 DEFAULT_NOTIONAL = 1_000_000.0
 DEFAULT_BASE_RATE = 0.035
 DEFAULT_HOME_RATE = 0.045
+# Manifest default for the hedge bid-ask (pips), used for hedge_cost.
+DEFAULT_BID_ASK_PIPS = 2.0
 # Manifest tenor options (see fxh_seed.py) mapped to calendar days.
 TENOR_DAYS: dict[str, int] = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
 
@@ -216,8 +219,38 @@ class FXHFunction(BaseFunction):
                 sources=sources_used,
                 warnings=warnings,
             )
+        # Hedge bid-ask in pips drives hedge_cost. Missing -> manifest default,
+        # flagged in assumed_defaults so it is never a silent literal.
+        if _missing(params.get("bid_ask_pips")):
+            if "bid_ask_pips" not in assumed_defaults:
+                assumed_defaults.append("bid_ask_pips")
+            bid_ask_pips = DEFAULT_BID_ASK_PIPS
+        else:
+            bid_ask_pips = float(params["bid_ask_pips"])
         out = hedge_book(objs, hedge_ratio=ratio, days=days, usd_shock_pct=shock)
         out["rows"] = list(out.get("exposures") or [])
+        # Manifest contract fields (additive): per-row spot / notionals / cost
+        # plus the single-scenario P&L from the manifest formulas.
+        scenario_totals = _manifest_scenario(objs, out["rows"], ratio, shock, bid_ask_pips)
+        out["pair"] = pair
+        out["as_of"] = datetime.now(timezone.utc).isoformat()
+        out["data_mode"] = effective_source
+        out["bid_ask_pips"] = bid_ask_pips
+        out["spot_shock_pct"] = shock * 100
+        out["exposure_side"] = exposure_side if len(objs) == 1 else None
+        single = out["rows"][0] if len(out["rows"]) == 1 else None
+        out["spot"] = single["spot_rate"] if single else None
+        out["exposure_notional"] = single["notional_foreign"] if single else None
+        out["hedge_notional"] = single["hedge_notional"] if single else None
+        out["residual_notional"] = single["residual_notional"] if single else None
+        out["pnl_unhedged"] = scenario_totals["pnl_unhedged"]
+        out["pnl_hedged"] = scenario_totals["pnl_hedged"]
+        out["hedge_cost"] = scenario_totals["hedge_cost"]
+        if not single:
+            warnings.append(
+                "Multi-currency book: spot, exposure and hedge notionals are per currency "
+                "in rows[] (foreign units are not summed); P&L and cost totals are in home currency."
+            )
         out["curve"] = _scenario_curve(objs, ratio, days)
         out["source_mode"] = effective_source
         out["assumed_defaults"] = assumed_defaults
@@ -228,6 +261,9 @@ class FXHFunction(BaseFunction):
             "Hedged notional = exposure * hedge_ratio. Scenario P&L applies shocks to the unhedged residual plus locked-in carry."
         )
         out["field_dictionary"] = {
+            "hedge_cost": "Hedge transaction cost in home currency: hedge_notional * bid_ask_pips * pip_size (pip 0.0001, JPY quote 0.01).",
+            "pnl_unhedged": "Manifest scenario: sign(side) * exposure * spot * spot_shock; home currency.",
+            "pnl_hedged": "Manifest scenario: sign(side) * residual * spot * spot_shock - hedge_cost; home currency.",
             "notional_foreign": "Exposure amount in the foreign/base currency.",
             "spot_rate": "Home currency units per one foreign/base currency.",
             "forward_rate": "Covered-interest-parity forward rate for the selected maturity.",
@@ -318,6 +354,8 @@ def _attach_assumed_values(
         values["base_rate"] = DEFAULT_BASE_RATE
     if "home_rate" in assumed_defaults:
         values["home_rate"] = DEFAULT_HOME_RATE
+    if "bid_ask_pips" in assumed_defaults:
+        values["bid_ask_pips"] = DEFAULT_BID_ASK_PIPS
     data["assumed_values"] = values
 
 
@@ -325,6 +363,42 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _manifest_scenario(
+    objs: list[FXExposure], rows: list[dict[str, Any]],
+    hedge_ratio: float, shock: float, bid_ask_pips: float,
+) -> dict[str, float]:
+    """Manifest formulas per exposure, written onto each row and summed.
+
+    shock is a decimal spot move (positive = base appreciates vs quote), so
+    the move is spot * shock. Hedge cost is hedge_notional * pips * pip_size
+    in home currency (pip 0.0001; 0.01 when the home/quote currency is JPY).
+    """
+    totals = {"pnl_unhedged": 0.0, "pnl_hedged": 0.0, "hedge_cost": 0.0}
+    for exp, row in zip(objs, rows):
+        sign = SIDE_SIGN[exp.side]
+        pip_size = 0.01 if exp.home_currency == "JPY" else 0.0001
+        hedge_n = exp.notional * hedge_ratio
+        residual = exp.notional - hedge_n
+        move = exp.spot_rate * shock
+        cost = hedge_n * bid_ask_pips * pip_size
+        pnl_unhedged = sign * exp.notional * move
+        pnl_hedged = sign * residual * move - cost
+        row.update({
+            "spot": exp.spot_rate,
+            "exposure_notional": exp.notional,
+            "hedge_notional": hedge_n,
+            "residual_notional": residual,
+            "pnl_unhedged": pnl_unhedged,
+            "pnl_hedged": pnl_hedged,
+            "hedge_cost": cost,
+            "bid_ask_pips": bid_ask_pips,
+        })
+        totals["pnl_unhedged"] += pnl_unhedged
+        totals["pnl_hedged"] += pnl_hedged
+        totals["hedge_cost"] += cost
+    return totals
 
 
 def _input_error(code: str, reason: str) -> FunctionResult:

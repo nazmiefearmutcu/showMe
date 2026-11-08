@@ -38,11 +38,13 @@ def test_fxh_default_book_echoes_assumed_defaults() -> None:
     result = _run(fn.execute(action="calc", pair="EURUSD", spot_rate=1.08))
 
     data = result.data
-    assert data["assumed_defaults"] == ["notional", "base_rate", "home_rate"]
+    # bid_ask_pips is a hedge-cost assumption (P2A-G06 FXH#2): it is flagged too.
+    assert data["assumed_defaults"] == ["notional", "base_rate", "home_rate", "bid_ask_pips"]
     assert data["assumed_values"] == {
         "notional": 1_000_000.0,
         "base_rate": 0.035,
         "home_rate": 0.045,
+        "bid_ask_pips": 2.0,
     }
     row = data["rows"][0]
     assert row["notional_foreign"] == pytest.approx(1_000_000.0)
@@ -60,6 +62,7 @@ def test_fxh_explicit_inputs_clear_assumed_defaults() -> None:
             notional=250_000,
             base_rate=0.02,
             home_rate=0.03,
+            bid_ask_pips=2.0,
         )
     )
     data = result.data
