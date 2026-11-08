@@ -10,6 +10,7 @@ nothing.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import pandas as pd
@@ -74,16 +75,16 @@ class SPLCFunction(BaseFunction):
                                             TENK_CUSTOMER_PATTERNS,
                                             TENK_DEBT_MATURITY_PATTERNS,
                                             TENK_SUPPLIER_PATTERNS,
-                                            extract_customer_concentration,
                                             find_section_window,
                                         )
-                                        cust_section = find_section_window(text, TENK_CUSTOMER_PATTERNS)
-                                        sup_section = find_section_window(text, TENK_SUPPLIER_PATTERNS)
                                         debt_section = find_section_window(text, TENK_DEBT_MATURITY_PATTERNS, window=2000)
-                                        if cust_section:
-                                            customers = extract_customer_concentration(cust_section)
-                                        if sup_section:
-                                            suppliers = extract_customer_concentration(sup_section)
+                                        # SPLC#1: scan every concentration match, not only the first window.
+                                        headings = _concentration_headings(
+                                            text, TENK_CUSTOMER_PATTERNS, TENK_SUPPLIER_PATTERNS)
+                                        customers = _extract_concentration(
+                                            text, TENK_CUSTOMER_PATTERNS, headings)
+                                        suppliers = _extract_concentration(
+                                            text, TENK_SUPPLIER_PATTERNS, headings)
                             except Exception as e:
                                 warnings.append(f"10-K fetch: {e}")
         except Exception as e:
@@ -144,8 +145,12 @@ class SPLCFunction(BaseFunction):
             if pct_warning:
                 warnings.append(pct_warning)
             data["rows"] = _apply_filters(data.get("rows") or [], relationship, min_pct)
-            data["customers"] = _apply_filters(data.get("customers") or [], "customer", min_pct)
-            data["suppliers"] = _apply_filters(data.get("suppliers") or [], "supplier", min_pct)
+            # SPLC#3: the raw customers/suppliers dicts carry no relationship key,
+            # so tag them first; otherwise the relationship filter drops every row.
+            data["customers"] = _apply_filters(
+                _as_relationship_rows(data.get("customers") or [], "customer"), relationship, min_pct)
+            data["suppliers"] = _apply_filters(
+                _as_relationship_rows(data.get("suppliers") or [], "supplier"), relationship, min_pct)
             if relationship != "both" or min_pct > 0:
                 data["filters_applied"] = {"relationship": relationship, "min_pct": min_pct}
         data["methodology"] = "SPLC approximates supply-chain relationships by scanning recent 10-K sections for customer/supplier concentration language. Reference rows are labelled when extraction finds no explicit counterparty rows. Rows with a disclosed share below min_pct, or without one when min_pct is set, are dropped."
@@ -188,6 +193,89 @@ def _min_pct_param(value: Any) -> tuple[float, str | None]:
     if threshold != threshold or threshold < 0:
         return 0.0, f"min_pct {value!r} is out of range; no share threshold applied."
     return threshold, None
+
+
+# A comma splits only before a lowercase word and a period only before a capital,
+# so "Foo, Inc. represented" keeps its full name.
+_CLAUSE_SPLIT = re.compile(r"[;:]\s+|,\s+(?=[a-z])|\.\s+(?=[A-Z])")
+_DIRECT_CUSTOMER = re.compile(r"((?:one|another)\s+direct\s+customer)\s*$", re.IGNORECASE)
+
+
+def _clean_counterparty(raw: Any) -> str | None:
+    """Reduce a regex-captured name to a counterparty label, or None when it is a fragment.
+
+    The concentration regex captures up to 40 characters before "represented",
+    so a capture can start mid-clause ("l year 2026, sales to one direct
+    customer") or span a sentence ("of net sales. Gamma Ltd"). Only the last
+    clause is kept; "one/another direct customer" becomes the explicit label;
+    anything not starting with a capital letter is dropped rather than guessed.
+    """
+    segment = _CLAUSE_SPLIT.split(str(raw or "").strip())[-1].strip()
+    if not segment:
+        return None
+    m = _DIRECT_CUSTOMER.search(segment)
+    if m:
+        label = m.group(1)
+        return label[0].upper() + label[1:].lower()
+    if not segment[0].isupper():
+        return None
+    return segment
+
+
+def _concentration_headings(text: str, *pattern_groups: list[re.Pattern]) -> list[int]:
+    """Sorted start offsets of every customer or supplier heading in the document."""
+    return sorted({
+        m.start()
+        for patterns in pattern_groups
+        for pattern in patterns
+        for m in pattern.finditer(text)
+    })
+
+
+def _extract_concentration(
+    text: str, patterns: list[re.Pattern], headings: list[int]
+) -> list[dict[str, Any]]:
+    """Run concentration extraction over every match of every pattern (SPLC#1).
+
+    Each heading match gets its own window running from the heading to the next
+    customer/supplier heading (capped at 3000 characters), so a percentage
+    sentence outside the first hit's window is still scanned, and a customer
+    window never reads into the supplier section. Identical (name, pct) pairs
+    are kept once.
+    """
+    from showme.engine.core.sec_taxonomy import extract_customer_concentration
+
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, float]] = set()
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            end = min(len(text), match.end() + 3000)
+            following = [h for h in headings if h > match.start()]
+            if following:
+                end = min(end, following[0])
+            window = text[match.start():end]
+            for item in extract_customer_concentration(window):
+                name = _clean_counterparty(item.get("name"))
+                if name is None:
+                    continue
+                key = (name.lower(), float(item["pct"]))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"name": name, "pct": float(item["pct"])})
+    return out
+
+
+def _as_relationship_rows(items: list[dict[str, Any]], relationship: str) -> list[dict[str, Any]]:
+    """Give customers/suppliers items the row keys the filters read."""
+    return [
+        {
+            **item,
+            "relationship": relationship,
+            "disclosed_pct": item.get("disclosed_pct", item.get("pct")),
+        }
+        for item in items
+    ]
 
 
 def _classify(relationship: Any) -> str:

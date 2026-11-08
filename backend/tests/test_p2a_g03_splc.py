@@ -116,3 +116,92 @@ def test_splc_extracted_rows_carry_source_url(splc_filing) -> None:
     assert extracted
     assert all(r["source_url"] == _FILING_URL for r in extracted)
     assert "source_url" in result.data["field_dictionary"]
+
+
+# ---------------------------------------------------------------------------
+# SPLC#3 regression — the customers / suppliers arrays follow the same filters
+# ---------------------------------------------------------------------------
+
+
+def test_splc_customers_and_suppliers_arrays_are_not_emptied(splc_filing) -> None:
+    both = _splc()
+
+    assert [r["name"] for r in both.data["customers"]] == ["Beta Corp", "Gamma Ltd"]
+    assert [r["name"] for r in both.data["suppliers"]] == ["Foundry Inc"]
+
+
+def test_splc_customers_and_suppliers_arrays_follow_relationship(splc_filing) -> None:
+    customers_only = _splc(relationship="customer")
+    suppliers_only = _splc(relationship="supplier")
+
+    assert customers_only.data["customers"]
+    assert customers_only.data["suppliers"] == []
+    assert suppliers_only.data["suppliers"]
+    assert suppliers_only.data["customers"] == []
+
+
+def test_splc_customers_and_suppliers_arrays_follow_min_pct(splc_filing) -> None:
+    result = _splc(min_pct=10)
+
+    assert [r["name"] for r in result.data["customers"]] == ["Beta Corp"]
+    assert all(r["disclosed_pct"] >= 10 for r in result.data["customers"])
+    assert [r["name"] for r in result.data["suppliers"]] == ["Foundry Inc"]
+
+
+# ---------------------------------------------------------------------------
+# SPLC#1 — every concentration match is scanned, and names are clean labels
+# ---------------------------------------------------------------------------
+
+
+def _patch_filing_html(monkeypatch: pytest.MonkeyPatch, html: str) -> None:
+    import httpx
+
+    class _Resp:
+        status_code = 200
+        text = html
+
+    class _Client(_FakeClient):
+        async def get(self, url: str) -> _Resp:  # type: ignore[override]
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+
+def test_splc_scans_later_concentration_match_outside_first_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The first "major customers" hit is far from the percentage sentence, so a
+    # single first-hit window misses it. The later match must still be scanned.
+    html = (
+        "<p>Major customers are described in Item 1.</p><p>"
+        + ("Filler text. " * 400)
+        + "</p><p>Major customers: Beta Corp represented 22% of net sales.</p>"
+    )
+    _patch_filing_html(monkeypatch, html)
+
+    result = _splc(relationship="customer")
+
+    names = [r["counterparty"] for r in result.data["rows"]]
+    assert "Beta Corp" in names
+    assert [r["name"] for r in result.data["customers"]] == ["Beta Corp"]
+
+
+def test_splc_one_direct_customer_is_labelled_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    html = (
+        "<p>Major customers: Sales to one direct customer represented 22% of net sales.</p>"
+    )
+    _patch_filing_html(monkeypatch, html)
+
+    result = _splc(relationship="customer")
+
+    assert [r["counterparty"] for r in result.data["rows"]] == ["One direct customer"]
+    assert result.data["rows"][0]["disclosed_pct"] == 22.0
+
+
+def test_splc_clean_counterparty_drops_clause_fragments() -> None:
+    clean = splc_mod._clean_counterparty
+    assert clean("l year 2026, sales to one direct customer") == "One direct customer"
+    assert clean("Beta Corp") == "Beta Corp"
+    assert clean("enue and sales to Beta Corp") is None
