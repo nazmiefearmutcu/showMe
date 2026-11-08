@@ -968,7 +968,10 @@ class CPFFunction(BaseFunction):
                 "vintage": forecast_vintage,
             })
 
-        data_mode = "live_official" if (actual_series and forecast_series) else "delayed_reference"
+        # CPF#2: the actual leg is a Yahoo futures proxy and the forecast is a
+        # trend extrapolation, so neither is an official series. live_official
+        # is reserved for official sources.
+        data_mode = "futures_proxy_trend" if (actual_series and forecast_series) else "delayed_reference"
         status = "ok" if rows else "empty"
 
         return FunctionResult(
@@ -1005,7 +1008,7 @@ class CPFFunction(BaseFunction):
             },
             sources=["yfinance"],
             warnings=provider_errors,
-            metadata={"degraded": data_mode != "live_official"} if data_mode != "live_official" else {},
+            metadata={"degraded": data_mode != "futures_proxy_trend"} if data_mode != "futures_proxy_trend" else {},
         )
 
     async def _yahoo_history(self, symbol: str, timeout: float) -> list[dict[str, Any]]:
@@ -1098,7 +1101,7 @@ def _cpf_field_dictionary() -> dict[str, str]:
         "forecast_horizon": "User-selected forward window (6M/1Y/2Y/5Y).",
         "latest_actual": "Most recent realized futures value.",
         "forecast_1y": "Forecast value at the ~12-month horizon.",
-        "data_mode": "live_official when both legs are live; delayed_reference when one leg is delayed.",
+        "data_mode": "futures_proxy_trend when the actual futures proxy and the trend forecast are both present; delayed_reference when one leg is missing. live_official is reserved for official sources.",
     }
 
 

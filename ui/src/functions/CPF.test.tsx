@@ -8,7 +8,8 @@
  *  - the ok payload renders cards, actual+forecast curve and the forecast
  *    table with Δ-vs-actual deltas;
  *  - the trend-model honesty notice + pill always render for ok payloads;
- *  - data_mode is surfaced verbatim (live_official → positive pill);
+ *  - data_mode futures_proxy_trend is shown as a futures-proxy pill, never as
+ *    a live/official pill;
  *  - the horizon segmented control interaction.
  *
  * `useFunction` is mocked via a mutable shared state.
@@ -65,7 +66,7 @@ function livePayload() {
         forecast,
         forecast_vintage: "2026-09-06",
         as_of: "2026-09-06",
-        data_mode: "live_official",
+        data_mode: "futures_proxy_trend",
       },
       sources: ["yfinance"],
       elapsed_ms: 40,
@@ -159,8 +160,9 @@ describe("CPF pane — model honesty", () => {
     render(<CPFPane code="CPF" symbol="CL=F" />);
     expect(screen.getByText(/NOT analyst consensus/i)).toBeInTheDocument();
     expect(screen.getByText("trend model")).toBeInTheDocument();
-    // data_mode surfaced verbatim via the positive live pill.
-    expect(screen.getAllByText(/live actual/i).length).toBeGreaterThanOrEqual(1);
+    // CPF#2: the futures proxy is labelled as a proxy, never as "live actual".
+    expect(screen.getAllByText(/futures proxy/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("live actual")).toBeNull();
   });
 });
 

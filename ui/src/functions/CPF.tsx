@@ -107,7 +107,9 @@ export function CPFPane({ code, symbol }: FunctionPaneProps) {
 
   const status = payload?.status ?? "—";
   const dataMode = payload?.data_mode ?? "—";
-  const isLive = dataMode === "live_official";
+  // CPF#2: the actual leg is a futures proxy and the forecast is a trend, so
+  // the pane never shows a "live actual" / official pill for this data.
+  const isProxy = dataMode === "futures_proxy_trend";
   const latestActual = actual.length ? (actual[actual.length - 1].value as number) : null;
   const endpointForecast = forecast.length
     ? (forecast[forecast.length - 1].value as number)
@@ -268,12 +270,8 @@ export function CPFPane({ code, symbol }: FunctionPaneProps) {
           subtitle={`${seriesId} · ${actual.length}+${forecast.length} pts`}
           trailing={
             <FunctionControlGroup>
-              <Pill
-                tone={isLive ? "positive" : "warn"}
-                variant="soft"
-                withDot={isLive}
-              >
-                {isLive ? "live actual" : dataMode}
+              <Pill tone="warn" variant="soft" withDot={false}>
+                {isProxy ? "futures proxy" : dataMode}
               </Pill>
               <Pill tone="muted" variant="soft" withDot={false}>
                 trend model
