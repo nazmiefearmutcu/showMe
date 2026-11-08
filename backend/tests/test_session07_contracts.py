@@ -146,7 +146,11 @@ def test_fxgo_no_symbol_returns_live_board_not_opaque_error():
     assert data.get("methodology")
     if data["status"] == "ok":
         assert data["rows"], "live board must carry rows"
-        assert data["data_mode"] == "live_yfinance_quote"  # Yahoo spot board, not a venue (FXGO#3 review)
+        # FXGO never claims live_exchange; a stale quote is delayed_reference.
+        if data["cards"]["status"] == "stale":
+            assert data["data_mode"] == "delayed_reference"
+        else:
+            assert data["data_mode"] == "live_yfinance_quote"
     else:
         assert data["data_mode"] == "provider_unavailable"
         assert result.warnings or data.get("warning")
