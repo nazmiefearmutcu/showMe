@@ -297,6 +297,25 @@ def test_dvd_unavailable_is_honest():
     assert result.data["status"] == "provider_unavailable"
 
 
+def test_dvd_silent_empty_history_is_reported_not_called_no_dividend():
+    class EmptyYahoo:
+        async def fetch(self, _request):
+            return {}  # a cold Yahoo session answers with nothing, no exception
+
+    class SlowYahoo:
+        async def fetch(self, _request):
+            raise TimeoutError()
+
+    for yahoo, expected in ((EmptyYahoo(), "returned no dividend history"), (SlowYahoo(), "TimeoutError")):
+        fn = DVDFunction(FunctionDeps(yfinance=yahoo))
+        fn._awareness = Routes({"/calendar/corporate": []})
+        result = _run(fn.execute(symbol="KO"))
+        assert result.data["status"] == "empty"
+        assert "Awareness calendar" in result.data["reason"]
+        assert "no dividend history from Yahoo" in result.data["reason"]
+        assert any(expected in w for w in result.warnings), result.warnings
+
+
 # ── CACT ────────────────────────────────────────────────────────────────
 
 def test_cact_dedupes_and_labels_sources_and_uses_split_ratio():

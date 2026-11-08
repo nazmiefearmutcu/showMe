@@ -131,8 +131,11 @@ class DVDFunction(BaseFunction):
                     timeout=float(params.get("timeout", 10)),
                 )
             except Exception as exc:  # noqa: BLE001 - history is a supplement; error is surfaced
-                warnings.append(f"yfinance: {exc}")
+                warnings.append(f"yfinance: {type(exc).__name__}: {exc}".rstrip(": "))
         history = _history_rows(history_events, symbol) if want_history else []
+        if want_history and self.deps.yfinance and not history and not warnings:
+            # A silent empty answer (cold Yahoo session) is not "this stock pays no dividend".
+            warnings.append("yfinance: the Yahoo event series returned no dividend history.")
 
         if corporate is None:
             return unavailable_result(
@@ -156,7 +159,11 @@ class DVDFunction(BaseFunction):
                 "meta": data_meta([corporate]),
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
-                "reason": None if has_rows else f"No dividend events found for {symbol}.",
+                "reason": None if has_rows else (
+                    f"No upcoming dividend for {symbol} in the Awareness calendar (next "
+                    f"{_UPCOMING_DAYS} days)"
+                    + (" and no dividend history from Yahoo." if want_history else ".")
+                ),
             },
             sources=["awareness:corporate"] + (["yfinance"] if history else []),
             warnings=warnings,
