@@ -59,10 +59,12 @@ def _sector_template(period: str = "1D") -> list[dict[str, Any]]:
         "Real Estate": -0.18,
         "Communication Services": 0.24,
     }
-    factor = _PERIOD_FACTORS.get(period, 1.0)
+    # The model has only a 1D series. MTD/QTD/YTD are not modelled, so those
+    # rows carry no change value rather than a 1D number scaled by a constant.
+    has_period_value = period == "1D"
     rows = [
         {"sector": name, "etf": etf, "last": 100 + i,
-         "change_pct": round(changes.get(name, 0.0) * factor, 3),
+         "change_pct": round(changes.get(name, 0.0), 3) if has_period_value else None,
          "period": period,
          "quote_type": "model",
          "high_24h": 101 + i, "low_24h": 99 + i}
@@ -123,13 +125,16 @@ class SECTFunction(BaseFunction):
                     timeout=float(params.get("quote_timeout", 1.25)) + 0.25,
                 )
                 last = q.last; prev = q.close_prev
-                chg_pct = ((last or 0) / (prev or 1) - 1) * 100 if prev else None
+                # A missing last price is not a 0 price: no last means no
+                # change and the row is not labelled live.
+                has_last = last is not None
+                chg_pct = (last / prev - 1) * 100 if has_last and prev else None
                 return {
                     "sector": name, "etf": etf, "last": last,
                     "change_pct": chg_pct,
-                    "change_pct_period": live_period,
+                    "change_pct_period": live_period if chg_pct is not None else None,
                     "period": period,
-                    "quote_type": "live",
+                    "quote_type": "live" if has_last else "unavailable",
                     "high_24h": q.high_24h, "low_24h": q.low_24h,
                 }
             except Exception:
