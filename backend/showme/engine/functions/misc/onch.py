@@ -47,7 +47,7 @@ _METHODOLOGY = (
     "when they respond — each row carries its own source and a missing tier "
     "adds nothing (never a fabricated metric). "
     "On a genuine upstream outage the handler returns "
-    "data_mode='not_configured' style status='provider_unavailable' with an "
+    "status='provider_unavailable' and data_mode='provider_unavailable' with an "
     "honest warning and next_actions — it never fabricates address counts, "
     "fee curves, or a synthetic gas trend."
 )
@@ -285,7 +285,10 @@ class ONCHFunction(BaseFunction):
 
         return {
             "status": "ok",
-            "data_mode": "delayed_reference",
+            # Every row above was fetched live in this call (mempool.space,
+            # CoinGecko, and any optional keyless tier that answered), so the
+            # mode is "live", not a delayed reference.
+            "data_mode": "live",
             "chain": "BTC",
             "rows": rows,
             "series": series,
@@ -304,7 +307,7 @@ class ONCHFunction(BaseFunction):
             instrument=instrument,
             data={
                 "status": "provider_unavailable",
-                "data_mode": "not_configured",
+                "data_mode": "provider_unavailable",
                 "chain": "BTC",
                 "rows": [],
                 "series": [],

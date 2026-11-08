@@ -131,3 +131,84 @@ def test_micro_as_of_is_request_time_not_response_time(monkeypatch: Any) -> None
         f"not response parse time"
     )
     assert "request" in data["field_dictionary"]["as_of"].lower()
+
+
+# --------------------------------------------------------------------------
+# ONCH — fake keyless provider client (mempool.space / CoinGecko / DefiLlama / Blockscout)
+# --------------------------------------------------------------------------
+
+_ONCH_MEMPOOL_COUNT = 59_204  # what /api/mempool reports (the true backlog)
+_ONCH_BLOCK_TXS = [994, 1961, 1500, 1200, 900, 800, 700, 600]  # projected window sum = 8655
+
+
+class _OnchClient:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.urls: list[str] = []
+
+    async def get(self, url: str, headers: Any = None, timeout: Any = None, **_: Any) -> _Resp:
+        self.urls.append(url)
+        if self.fail:
+            raise ConnectionError("simulated outage")
+        if url.endswith("/v1/fees/recommended"):
+            return _Resp({"fastestFee": 3, "halfHourFee": 2, "hourFee": 2,
+                          "economyFee": 1, "minimumFee": 1})
+        if url.endswith("/v1/fees/mempool-blocks"):
+            return _Resp([{"nTx": n, "blockVSize": 990000.0} for n in _ONCH_BLOCK_TXS])
+        if url.endswith("/v1/difficulty-adjustment"):
+            return _Resp({"difficultyChange": 1.5, "progressPercent": 40.0, "remainingBlocks": 1200})
+        if url.endswith("/v1/mining/hashrate/3d"):
+            return _Resp({"currentHashrate": 9.5e20, "currentDifficulty": 1.2e14})
+        if url.endswith("/blocks/tip/height"):
+            return _Resp(900_000)
+        if url.endswith("/api/mempool"):
+            return _Resp({"count": _ONCH_MEMPOOL_COUNT, "vsize": 1, "total_fee": 1, "fee_histogram": []})
+        if "coingecko" in url:
+            return _Resp({"data": {"market_cap_percentage": {"btc": 55.0},
+                                   "total_market_cap": {"usd": 2.5e12},
+                                   "total_volume": {"usd": 9.0e10}}})
+        if "defillama" in url:
+            return _Resp([{"name": "Ethereum", "tvl": 6.0e10}])
+        if "blockscout" in url:
+            return _Resp({"gas_prices": {"average": 3.2}, "coin_price": "3000.5"})
+        return _Resp({}, status_code=404)
+
+
+def _patch_onch_client(monkeypatch: Any, client: _OnchClient) -> None:
+    import showme.providers._http as http_mod
+
+    async def _get_client() -> _OnchClient:
+        return client
+
+    monkeypatch.setattr(http_mod, "get_client", _get_client)
+
+
+def _run_onch(monkeypatch: Any, client: _OnchClient) -> Any:
+    from showme.engine.functions.misc.onch import ONCHFunction
+
+    _patch_onch_client(monkeypatch, client)
+    return asyncio.run(ONCHFunction().execute())
+
+
+# --------------------------------------------------------------------------
+# ONCH#2 — data_mode must not claim "delayed" for rows that are live
+# --------------------------------------------------------------------------
+
+
+def test_onch_live_payload_data_mode_matches_live_rows(monkeypatch: Any) -> None:
+    result = _run_onch(monkeypatch, _OnchClient())
+    data = result.data
+    assert data["status"] == "ok"
+    assert all(r["source"] in {"mempool", "coingecko", "defillama", "blockscout"} for r in data["rows"])
+    # Every row was fetched live in this call, so the mode must say live.
+    assert data["data_mode"] == "live", data["data_mode"]
+
+
+def test_onch_outage_data_mode_is_provider_unavailable_not_not_configured(monkeypatch: Any) -> None:
+    # The key is configured (keyless API); the upstream is down. The mode must
+    # say so instead of claiming the provider is not configured.
+    result = _run_onch(monkeypatch, _OnchClient(fail=True))
+    data = result.data
+    assert data["status"] == "provider_unavailable"
+    assert data["data_mode"] == "provider_unavailable"
+    assert data["rows"] == []
