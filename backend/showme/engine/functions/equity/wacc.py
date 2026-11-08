@@ -78,11 +78,11 @@ class WACCFunction(BaseFunction):
         # Risk-free
         # HNT-07 fix: a user-supplied ``rf`` must win unconditionally, the
         # same way the beta/rd overrides already do. FRED is only consulted
-        # when the caller did not pin a scenario rate; previously a healthy
-        # FRED fetch silently overwrote the user's rf (and a dead one
-        # replaced it with the 0.04 constant).
+        # when the caller did not pin a scenario rate.
+        # wc1-g34 T10: a failed FRED lookup leaves rf unknown (None). It is
+        # never replaced by a 4% constant; WACC then reports provider_unavailable.
         rf_user = params.get("rf") not in (None, "")
-        rf = float(params.get("rf")) if rf_user else float("nan")
+        rf: float | None = float(params.get("rf")) if rf_user else None
         if rf_user:
             sources.append("user_input")
         else:
@@ -96,31 +96,28 @@ class WACCFunction(BaseFunction):
                     fred.series("DGS10", frequency="d"),
                     timeout=float(params.get("fred_timeout", 8)),
                 )
-                rf = float(df["value"].iloc[-1]) / 100.0 if not df.empty else 0.04
-                sources.append("fred")
+                if df.empty:
+                    warnings.append("fred DGS10: no observations; risk-free rate unavailable")
+                else:
+                    rf = float(df["value"].iloc[-1]) / 100.0
+                    sources.append("fred")
             except Exception as e:
                 warnings.append(f"fred: {e}")
-                rf = 0.04
         # Beta — Bug #17: never silently fall back to 1.0 without labelling.
         #
-        # The WACC pane reported β=1.0 for AAPL while the dedicated BETA
-        # pane reported β=1.20 (5Y window). Two adapters, two truths in one
-        # cockpit. Fix: always share the BetaFunction adapter, prefer the
-        # longest window the user asked for (defaults to 5Y, then 2Y, then
-        # 1Y) and, if we *do* fall through to 1.0, mark the response with
-        # ``data_state: "synthetic_beta"`` so the UI can pill it.
-        beta_source: str = "user_input"
+        # wc1-g34 T10: a beta that cannot be resolved is None, not 1.0. A
+        # synthetic β=1.0 under an ok status presented a made-up input as
+        # provider data. The state is reported as provider_unavailable (or
+        # empty when no window has enough history) and WACC is not computed.
         beta_window_used: str | None = None
+        beta: float | None = None
+        beta_source: str = "user_input"
         beta_data_state: str = "live"
         if params.get("beta") not in (None, ""):
             beta = float(params.get("beta"))
             sources.append("user_input")
         else:
-            # Anything other than a successful BetaFunction window lands us
-            # in synthetic territory — flip the source label up front so the
-            # exception/empty branches don't need to remember to.
-            beta_source = "synthetic_beta"
-            beta = 1.0
+            beta_source = "unavailable"
             try:
                 beta_fn = BetaFunction(self.deps)
                 # Request 5Y/2Y/1Y so the BetaFunction returns whichever
@@ -158,37 +155,31 @@ class WACCFunction(BaseFunction):
                     beta = resolved
                     beta_source = f"beta_{beta_window_used.lower()}" if beta_window_used else "beta"
                     sources.append("beta")
+                elif beta_provider_failed:
+                    beta_data_state = "provider_unavailable"
+                    warnings.append(
+                        "beta unavailable: BetaFunction provider failed "
+                        f"({beta_status or 'provider error'}); WACC cannot be computed without a live beta"
+                    )
                 else:
-                    # BetaFunction returned but had no usable window — either
-                    # the provider hard-failed (HNT-01) or no window had
-                    # enough history. Surface that honestly; WACC keeps
-                    # computing with a synthetic β=1.0 but never labels it
-                    # "live".
-                    if beta_provider_failed:
-                        beta_data_state = "provider_unavailable"
-                        warnings.append(
-                            "beta unavailable: BetaFunction provider failed "
-                            f"({beta_status or 'provider error'}); WACC is using a synthetic β=1.0"
-                        )
-                    else:
-                        beta_data_state = "synthetic_beta"
-                        warnings.append(
-                            "beta unavailable: BetaFunction returned no live window; "
-                            "WACC is using a synthetic β=1.0"
-                        )
-                    sources.append("synthetic_beta")
+                    beta_data_state = "empty"
+                    warnings.append(
+                        "beta unavailable: BetaFunction returned no live window "
+                        "(not enough price history); WACC cannot be computed without a beta"
+                    )
             except Exception as e:
-                beta_data_state = "synthetic_beta"
-                warnings.append(f"beta: {e}; WACC is using a synthetic β=1.0")
-                sources.append("synthetic_beta")
+                beta_data_state = "provider_unavailable"
+                warnings.append(f"beta: {e}; WACC cannot be computed without a live beta")
         # Cost of debt — audit Q3 #17:
         # 1) Prefer issuer-specific implied rate: interest_expense / total_debt
         #    when both come from yfinance fundamentals.
-        # 2) Fall back to FRED BBB (BAMLC0A4CBBB) — closer to typical corp
-        #    issuer than AAA, which understates by 100–300 bp.
-        # 3) Last-resort fixed 0.055 (5.5%).
-        rd = float(params.get("rd")) if params.get("rd") not in (None, "") else None
-        rd_source = "user_input" if rd is not None else None
+        # 2) Fall back to FRED BBB yield (BAMLC0A4CBBBEY) — closer to typical
+        #    corp issuer than AAA, which understates by 100–300 bp.
+        # 3) FRED AAA yield.
+        # wc1-g34 T10: when every source fails rd is None; the former 5.5%
+        # constant is not substituted.
+        rd: float | None = float(params.get("rd")) if params.get("rd") not in (None, "") else None
+        rd_source: str | None = "user_input" if rd is not None else None
         if rd is None and self.deps.yfinance:
             try:
                 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -239,21 +230,20 @@ class WACCFunction(BaseFunction):
                     rd_source = "fred_aaa"
             except Exception as e:
                 warnings.append(f"fred AAA: {e}")
-        if rd is None:
-            rd = 0.055
-            rd_source = "default"
         # Tax rate / E/V/D ratios — best-effort from yfinance
         tax = float(params.get("tax_rate")) if params.get("tax_rate") not in (None, "") else 0.21
         # Audit Q3 #16: capital-structure provenance. ``debt_value_source``
         # is "book" when sourced from totalDebt (yfinance balance sheet),
         # "market" when from a bond-price feed (not yet wired), or
         # "sector_default" / "default" when we fall back.
-        debt_value_source = "default"
-        capital_data_state = "default"
+        # wc1-g34 T10: when no market-value or sector basis exists the weights
+        # stay None (unknown) instead of a 70/30 constant.
+        debt_value_source = "unavailable"
+        capital_data_state = "unavailable"
         sector_used: str | None = None
         financial_issuer = False
-        ev_ratio = 0.7
-        dv_ratio = 0.3
+        ev_ratio: float | None = None
+        dv_ratio: float | None = None
         try:
             if self.deps.yfinance:
                 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -303,9 +293,18 @@ class WACCFunction(BaseFunction):
                 sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance ratios: {e}")
-        if rf != rf:
-            rf = 0.04
-        re_capm = rf + beta * erp
+        re_capm: float | None = (
+            rf + beta * erp if rf is not None and beta is not None else None
+        )
+        missing: list[str] = []
+        if rf is None:
+            missing.append("risk-free rate (FRED DGS10)")
+        if beta is None:
+            missing.append("beta")
+        if rd is None:
+            missing.append("cost of debt (FRED BBB/AAA yield or issuer interest)")
+        if ev_ratio is None and not financial_issuer:
+            missing.append("capital structure (market cap and total debt)")
         wacc: float | None = None
         if financial_issuer:
             warnings.append(
@@ -313,11 +312,11 @@ class WACCFunction(BaseFunction):
                 "funding (deposits, reserves), not capital-structure debt; cost of equity "
                 "(re_capm) is still reported"
             )
-        else:
+        elif not missing:
             wacc = ev_ratio * re_capm + dv_ratio * rd * (1 - tax)
         rows = [
             {"component": "Cost of equity", "value": re_capm, "formula": "Re = rf + beta * ERP"},
-            {"component": "After-tax cost of debt", "value": rd * (1 - tax), "formula": "Rd * (1 - tax_rate)"},
+            {"component": "After-tax cost of debt", "value": None if rd is None else rd * (1 - tax), "formula": "Rd * (1 - tax_rate)"},
             {"component": "Equity weight", "value": ev_ratio, "formula": "E / (E + D)"},
             {"component": "Debt weight", "value": dv_ratio, "formula": "D / (E + D)"},
             {"component": "WACC", "value": wacc, "formula": "(E/V * Re) + (D/V * Rd * (1 - tax))"},
@@ -331,6 +330,7 @@ class WACCFunction(BaseFunction):
                 surface.append({"bucket": f"beta {b:.2f} / Rd {rd_case:.1%}", "beta": b, "rd": rd_case, "wacc": w_case})
         extra_state: dict[str, Any] = {}
         if financial_issuer:
+            status = "not_applicable"
             extra_state = {
                 "reason": (
                     "WACC is not applicable to a bank or insurer: deposits and policy reserves "
@@ -342,15 +342,33 @@ class WACCFunction(BaseFunction):
                     "Use a financials-specific model (e.g. excess-return or dividend-discount) instead of WACC.",
                 ],
             }
+        elif wacc is None:
+            status = "provider_unavailable"
+            extra_state = {
+                "reason": (
+                    "WACC is not available: no live value for " + ", ".join(missing)
+                    + ". No substitute is used, so no discount rate is reported."
+                ),
+                "next_actions": [
+                    "Retry once the FRED and yfinance providers are reachable.",
+                    "Pass beta, rf and rd explicitly to compute WACC from your own inputs.",
+                ],
+            }
+        else:
+            status = "ok"
+        data_state = "provider_unavailable" if status == "provider_unavailable" else beta_data_state
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "not_applicable" if financial_issuer else "ok",
+                "status": status,
                 **extra_state,
                 "wacc": float(wacc) if wacc is not None else None,
-                "re_capm": float(re_capm),
-                "rf": float(rf), "beta": float(beta), "erp": erp,
-                "rd": float(rd), "tax_rate": float(tax),
+                "re_capm": float(re_capm) if re_capm is not None else None,
+                "rf": float(rf) if rf is not None else None,
+                "beta": float(beta) if beta is not None else None,
+                "erp": erp,
+                "rd": float(rd) if rd is not None else None,
+                "tax_rate": float(tax),
                 "equity_weight": ev_ratio, "debt_weight": dv_ratio,
                 "rows": rows,
                 "surface": surface,
@@ -363,13 +381,13 @@ class WACCFunction(BaseFunction):
                     "rd": "Pre-tax cost of debt proxy.",
                     "equity_weight": "Equity share of capital structure.",
                     "debt_weight": "Debt share of capital structure.",
-                    "beta_source": "Source of β used in CAPM (user_input, beta_5y, beta_2y, beta_1y, or synthetic_beta).",
+                    "beta_source": "Source of β used in CAPM (user_input, beta_5y, beta_2y or beta_1y); unavailable when no live β exists.",
                     "beta_window": "Trailing window used by BetaFunction when β was sourced from it.",
-                    "data_state": "live when β was sourced from a real BetaFunction window; provider_unavailable when the beta provider failed; synthetic_beta when WACC fell back to β=1.0 with no live window.",
+                    "data_state": "live when every input is provider data; partial when a labelled default stands in for an input; provider_unavailable when a required input is missing.",
                 },
                 "beta_source": beta_source,
                 "beta_window": beta_window_used,
-                "data_state": beta_data_state,
+                "data_state": data_state,
                 # Audit Q3 #16-18 — provenance fields for the UI.
                 "rd_source": rd_source,
                 "debt_value_source": debt_value_source,
