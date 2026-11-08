@@ -248,7 +248,8 @@ export function PcaStressPane({ code }: FunctionPaneProps) {
                   key: "shock",
                   label: "Factor Shock",
                   value: fmtNum(payload?.factor_shock_magnitude, 4),
-                  title: "Magnitude of the applied principal-component shock",
+                  title:
+                    "Magnitude of the applied principal-component shock. +k moves each asset along the component's net-positive loading (sign fixed by convention, not by the SVD); the opposite move is not shown.",
                 },
                 {
                   key: "notional",

@@ -23,6 +23,16 @@ def pca_decompose(rets: np.ndarray) -> dict:
     R = rets - rets.mean(axis=0)
     # Singular value decomposition
     U, S, Vt = np.linalg.svd(R, full_matrices=False)
+    # The SVD sign of each singular vector is arbitrary. Normalise it so each
+    # component has a non-negative net loading (for PC1: "all assets move
+    # together"); when the net loading is ~0, use the largest-|loading| asset.
+    # U columns are flipped with Vt rows so factor scores stay consistent.
+    net = Vt.sum(axis=1)
+    pivot = Vt[np.arange(Vt.shape[0]), np.abs(Vt).argmax(axis=1)]
+    signs = np.where(np.abs(net) > 1e-9, np.sign(net), np.sign(pivot))
+    signs = np.where(signs == 0, 1.0, signs)
+    Vt = Vt * signs[:, None]
+    U = U * signs[None, :]
     # Eigenvalues = S² / (T−1)
     n_obs = R.shape[0]
     var = (S ** 2) / max(n_obs - 1, 1)
@@ -40,7 +50,12 @@ def factor_shock(
     rets: np.ndarray, *,
     pc_index: int = 0, k_sigma: float = 3.0,
 ) -> dict:
-    """Apply a +k_sigma shock along PC[pc_index]. Returns per-asset return."""
+    """Apply a +k_sigma shock along PC[pc_index]. Returns per-asset return.
+
+    Sign convention: +k moves every asset along the component's net-positive
+    loading direction (see pca_decompose). For PC1 that is "all assets up
+    together"; -k is the opposite move and is not reported here.
+    """
     pca = pca_decompose(rets)
     loadings = pca["loadings"]
     if pc_index >= loadings.shape[0]:

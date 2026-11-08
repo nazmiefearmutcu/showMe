@@ -200,3 +200,52 @@ def test_ddm_manifest_inputs_are_the_ones_the_handler_reads() -> None:
     assert "required_return" in input_names
     assert "growth_rate" in input_names
     assert "discount_rate" not in input_names, "discount_rate is silently ignored by the handler"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PCAS#2 — the +k sigma shock direction must not depend on the SVD sign
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _factor_panel(sign: float, seed: int = 7) -> "np.ndarray":
+    rng = np.random.default_rng(seed)
+    common = rng.normal(size=(160, 1))
+    betas = np.array([[1.0, 0.8, 0.6, 0.4, 0.2]])
+    return sign * (common @ betas + 0.15 * rng.normal(size=(160, 5)))
+
+
+def test_pca_component_sign_is_normalised() -> None:
+    from showme.engine.services import pca_stress
+
+    for sign in (1.0, -1.0):
+        dec = pca_stress.pca_decompose(_factor_panel(sign))
+        for row in dec["loadings"]:
+            assert row.sum() >= 0, "each component must have a non-negative net loading"
+
+
+def test_pca_shock_direction_is_invariant_to_svd_sign(monkeypatch) -> None:
+    from showme.engine.services import pca_stress
+
+    rets = _factor_panel(-1.0)
+    ref = pca_stress.factor_shock(rets, pc_index=0, k_sigma=3.0)["asset_returns"]
+
+    orig_svd = np.linalg.svd
+
+    def _flipped(a, full_matrices=True, **kw):
+        u, s, vt = orig_svd(a, full_matrices=full_matrices, **kw)
+        return -u, s, -vt
+
+    monkeypatch.setattr(np.linalg, "svd", _flipped)
+    flipped = pca_stress.factor_shock(rets, pc_index=0, k_sigma=3.0)["asset_returns"]
+    assert np.allclose(ref, flipped), "same book and window must give the same +k P&L"
+
+
+def test_pca_plus_k_is_a_gain_for_a_long_book_in_both_regimes() -> None:
+    from showme.engine.services import pca_stress
+
+    weights = np.full(5, 0.2)
+    for sign in (1.0, -1.0):
+        out = pca_stress.apply_to_portfolio(weights, _factor_panel(sign), pc_index=0, k_sigma=3.0)
+        assert out["portfolio_return"] > 0, (
+            f"+3 sigma on PC1 must not flip sign with the data sign (sign={sign})"
+        )
