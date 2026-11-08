@@ -285,4 +285,5 @@ def test_history_honours_metrics_input(monkeypatch):
     filtered = _run(
         COUNFunction(FunctionDeps()).execute(country="US", live=True, metrics=["unemployment"])
     )
-    assert filtered.data["history"] == []
+    keys = {point["key"] for point in filtered.data["history"]}
+    assert keys == {"unemployment"}, f"only the requested metric may appear in history: {keys}"
