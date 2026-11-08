@@ -119,3 +119,65 @@ def test_live_quotes_report_live_price_state(tmp_path: Path) -> None:
     assert result.metadata["price_state"] == "live"
     assert result.metadata["price_sources"] == {"yfinance": 1, "legacy_snapshot": 0, "missing": 0}
     assert result.sources == ["portfolio_state", "yfinance"]
+
+
+# --- PORT#2 -----------------------------------------------------------------
+
+def test_totals_expose_total_equity_and_day_pnl(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 2, 100.0), cash={"USD": 1000.0})
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+
+    result = _run(fn, _portfolio_override=book)
+    totals = result.data["totals"]
+
+    assert totals["market_value"] == 220.0
+    assert totals["cash"] == 1000.0
+    assert totals["total_equity"] == 1220.0  # cash + sum of market values
+    assert totals["day_pnl"] == 10.0  # 2 * (110 - 105), previous close based
+    row = result.data["positions"][0]
+    assert row["day_change"] == 10.0
+    assert row["day_change_pct"] == (110.0 / 105.0 - 1) * 100
+
+
+def test_day_pnl_is_none_without_previous_close(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 2, 100.0), cash={"USD": 1000.0})
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, None)})))
+
+    result = _run(fn, _portfolio_override=book)
+
+    assert result.data["totals"]["day_pnl"] is None
+    assert any("day P&L" in w and "AAPL" in w for w in result.warnings)
+
+
+def test_total_equity_is_none_when_cash_is_not_tracked(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 2, 100.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+
+    totals = _run(fn, _portfolio_override=book).data["totals"]
+
+    assert "cash" not in totals
+    assert totals["total_equity"] is None
+
+
+def test_realized_pnl_ytd_sums_closes_dated_this_year(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0), cash={"USD": 0.0})
+    now = datetime.now(timezone.utc)
+    book.closed_positions = [
+        {"symbol": "OLD", "realized_pnl": 999.0, "closed_at": f"{now.year - 1}-06-01T00:00:00+00:00"},
+        {"symbol": "NEW", "realized_pnl": 40.0, "closed_at": now.isoformat()},
+        {"symbol": "NEW2", "realized_pnl": -15.0, "closed_at": now.isoformat()},
+    ]
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+
+    totals = _run(fn, _portfolio_override=book).data["totals"]
+
+    assert totals["realized_pnl_ytd"] == 25.0
+
+
+def test_realized_pnl_ytd_is_zero_when_nothing_closed(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0), cash={"USD": 0.0})
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+
+    totals = _run(fn, _portfolio_override=book).data["totals"]
+
+    assert totals["realized_pnl_ytd"] == 0.0

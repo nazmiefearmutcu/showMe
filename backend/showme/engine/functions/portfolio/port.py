@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -203,11 +204,13 @@ class PORTFunction(BaseFunction):
         price_sources = {"yfinance": 0, "legacy_snapshot": 0, "missing": 0}
         priced_mv = 0.0
         priced_unrl = 0.0
+        day_total = 0.0
+        day_missing: list[str] = []
         # Cost basis is qty * avg_cost, a fact of the book that needs no price,
         # so it covers every position (unpriced ones included).
         total_cost = 0.0
         by_class: dict[str, float] = {}
-        for pos, (last, price_source, _prev_close) in zip(portfolio.positions, quotes):
+        for pos, (last, price_source, prev_close) in zip(portfolio.positions, quotes):
             sym = pos.instrument.symbol
             qty = float(pos.quantity)
             avg = float(pos.avg_cost)
@@ -237,6 +240,13 @@ class PORTFunction(BaseFunction):
                 row["unrealized_pnl"] = unrl
                 priced_mv += mv
                 priced_unrl += unrl
+                if prev_close is None:
+                    day_missing.append(sym)
+                else:
+                    day = qty * (last - prev_close)
+                    row["day_change"] = day
+                    row["day_change_pct"] = (last / prev_close - 1) * 100
+                    day_total += day
                 cls = pos.instrument.asset_class.value
                 by_class[cls] = by_class.get(cls, 0.0) + mv
                 if price_source == "legacy_snapshot":
@@ -247,6 +257,26 @@ class PORTFunction(BaseFunction):
                 row["weight_pct"] = row["market_value"] / priced_mv * 100
 
         n_rows = len(rows)
+        n_unpriced = price_sources["missing"]
+        # Day P&L needs a previous close for every priced position; a partial
+        # sum would understate the move, so it is withheld instead.
+        if day_missing:
+            day_pnl = None
+            warnings.append(
+                "day P&L unavailable: no previous close for " + ", ".join(day_missing)
+            )
+        elif n_rows > n_unpriced:
+            day_pnl = day_total
+        else:
+            day_pnl = None
+        # Total equity = cash + market value; it is withheld while any position
+        # is unpriced or when the book does not track cash.
+        total_equity = (
+            priced_mv + cash_usd
+            if cash_usd is not None and n_unpriced == 0
+            else None
+        )
+        realized_ytd = _realized_pnl_ytd(portfolio, warnings)
         if n_rows and price_sources["yfinance"] == n_rows:
             price_state = "live"
         elif price_sources["yfinance"] == 0 and price_sources["missing"] == 0 and price_sources["legacy_snapshot"]:
@@ -266,7 +296,10 @@ class PORTFunction(BaseFunction):
                     "cost_basis": total_cost,
                     "unrealized_pnl": priced_unrl,
                     "n_positions": n_rows,
-                    "n_unpriced": price_sources["missing"],
+                    "n_unpriced": n_unpriced,
+                    "total_equity": total_equity,
+                    "day_pnl": day_pnl,
+                    "realized_pnl_ytd": realized_ytd,
                     **_cash_fields(cash_usd, cash_by_currency),
                 },
                 "by_asset_class": by_class,
@@ -275,6 +308,45 @@ class PORTFunction(BaseFunction):
             sources=sorted(used_sources),
             warnings=warnings,
         )
+
+
+def _realized_pnl_ytd(portfolio: PortfolioState, warnings: list[str]) -> float:
+    """Realized P&L from closes dated in the current UTC year.
+
+    Only dated close records count. Realized P&L still sitting on open
+    positions carries no date, so it is excluded and said so in a warning.
+    """
+    year = str(datetime.now(timezone.utc).year)
+    total = 0.0
+    for record in getattr(portfolio, "closed_positions", None) or []:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("closed_at") or "")[:4] != year:
+            continue
+        value = _finite_number(record.get("realized_pnl"))
+        if value is not None:
+            total += value
+    undated = [
+        pos.instrument.symbol
+        for pos in portfolio.positions
+        if (_finite_number(getattr(pos, "realized_pnl", 0)) or 0.0) != 0.0
+    ]
+    if undated:
+        warnings.append(
+            "realized P&L on open positions has no close date and is excluded from "
+            "realized_pnl_ytd: " + ", ".join(undated)
+        )
+    return total
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _legacy_last_price(pos: Any) -> float | None:
