@@ -89,7 +89,12 @@ def blak() -> FunctionManifest:
                 label="Prior covariance (Σ)",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
-                description="Covariance estimator for the prior.",
+                description=(
+                    "Covariance estimator for the prior, applied to the return "
+                    "series: sample_cov (plain sample), ledoit_wolf (Ledoit-Wolf "
+                    "2004 shrinkage toward mu*I, reports the intensity) or exp_cov "
+                    "(EWMA, 180-day span)."
+                ),
                 options=["sample_cov", "ledoit_wolf", "exp_cov"],
             ),
             InputSpec(

@@ -34,6 +34,60 @@ def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
     return pd.DataFrame(rows, index=index)
 
 
+_PRIOR_COV_ESTIMATORS = ("sample_cov", "ledoit_wolf", "exp_cov")
+_EXP_COV_SPAN = 180  # EWMA span in trading days (PyPortfolioOpt convention)
+
+
+def _ledoit_wolf_covariance(x: np.ndarray) -> tuple[np.ndarray, float]:
+    """Ledoit & Wolf (2004) shrinkage toward the scaled identity mu * I.
+
+    ``x`` holds one row per period and one column per asset (daily returns).
+    Returns ``(covariance, delta)`` where ``covariance = (1 - delta) * S + delta * mu * I``
+    on the unbiased (ddof=1) scale and ``delta`` in [0, 1] is the shrinkage
+    intensity. Math: S is the 1/T sample covariance, mu = tr(S)/N,
+    d^2 = ||S - mu I||_F^2, b^2 = min(d^2, (1/T^2) sum_t ||x_t x_t' - S||_F^2),
+    delta = b^2 / d^2.
+    """
+    t, n = x.shape
+    xc = x - x.mean(axis=0)
+    s_mle = xc.T @ xc / t
+    mu = float(np.trace(s_mle)) / n
+    d2 = float(np.sum((s_mle - mu * np.eye(n)) ** 2))
+    if d2 <= 0.0:
+        delta = 0.0
+    else:
+        norms_sq = np.sum(xc ** 2, axis=1)
+        b2 = (float(np.sum(norms_sq ** 2)) - t * float(np.sum(s_mle ** 2))) / (t ** 2)
+        delta = min(max(min(b2, d2) / d2, 0.0), 1.0)
+    scale = t / (t - 1)  # MLE -> unbiased, same scale as DataFrame.cov()
+    shrunk = (1.0 - delta) * s_mle + delta * mu * np.eye(n)
+    return shrunk * scale, delta
+
+
+def _exp_weighted_covariance(x: np.ndarray, span: int) -> np.ndarray:
+    """EWMA covariance with reliability-weight correction (unbiased scale)."""
+    t = x.shape[0]
+    alpha = 2.0 / (span + 1.0)
+    w = (1.0 - alpha) ** np.arange(t - 1, -1, -1, dtype=float)
+    w = w / w.sum()
+    mean = w @ x
+    xc = x - mean
+    cov = (xc * w[:, None]).T @ xc
+    return cov / (1.0 - float(np.sum(w ** 2)))
+
+
+def _prior_covariance(df: pd.DataFrame, estimator: str) -> tuple[np.ndarray, float | None]:
+    """Daily-scale covariance for the requested estimator plus LW intensity."""
+    if estimator == "sample_cov":
+        return df.cov().values, None
+    clean = df.dropna()
+    x = clean.values.astype(float)
+    if estimator == "ledoit_wolf":
+        cov, delta = _ledoit_wolf_covariance(x)
+        return cov, delta
+    return _exp_weighted_covariance(x, _EXP_COV_SPAN), None
+
+
 @FunctionRegistry.register
 class BLAKFunction(BaseFunction):
     code = "BLAK"
@@ -48,6 +102,20 @@ class BLAKFunction(BaseFunction):
         if not symbols:
             return FunctionResult(code=self.code, instrument=None, data={},
                                   warnings=["symbols required"])
+        # BLAK#3: the prior covariance estimator is an honest input. An unknown
+        # value is refused explicitly instead of silently using the sample cov.
+        estimator = str(params.get("prior_covariance") or "ledoit_wolf").strip().lower()
+        if estimator not in _PRIOR_COV_ESTIMATORS:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (f"prior_covariance {estimator!r} is not supported; "
+                               f"use one of {', '.join(_PRIOR_COV_ESTIMATORS)}"),
+                    "next_actions": ["Choose sample_cov, ledoit_wolf or exp_cov."],
+                },
+                warnings=[f"unsupported prior_covariance: {estimator}"],
+            )
         days = int(params.get("days", 504))
         delta = float(params.get("delta", 2.5))
         tau = float(params.get("tau", 0.05))
@@ -128,7 +196,8 @@ class BLAKFunction(BaseFunction):
             sources = ["synthetic_fallback"]
         else:
             sources = ["yfinance"] if live else ["computed_return_model"]
-        cov = df.cov().values * 252
+        cov_daily, shrinkage_delta = _prior_covariance(df, estimator)
+        cov = cov_daily * 252
         cols = list(df.columns)
         mcaps = np.array([next((m for s, _, m in results if s == c), 0.0) for c in cols])
         # BLAK#2: partial coverage used to keep the "real" label while the
@@ -246,6 +315,12 @@ class BLAKFunction(BaseFunction):
                     "requested": len(symbols),
                     "missing": mcap_missing,
                 },
+                "prior_covariance_estimator": estimator,
+                "shrinkage_intensity": shrinkage_delta,
+                "prior_covariance": {
+                    a: {b: float(cov[i][j]) for j, b in enumerate(cols)}
+                    for i, a in enumerate(cols)
+                },
                 # B4 surfaced fields so the UI can flag the synthetic fallback.
                 "live_fetch_errors": list(live_fetch_errors),
                 "live_fetch_ok_symbols": sorted(set(live_fetch_ok_symbols)),
@@ -275,7 +350,10 @@ class BLAKFunction(BaseFunction):
                     "posterior_return": "Black-Litterman expected return after blending views.",
                     "optimal_weight": "Mean-variance implied weight from posterior return and covariance.",
                     "view_active": "Whether the symbol participates in at least one submitted view row.",
-                    "market_cap_data_state": "'real' when sourced from a price-provider, 'approximate' when the equal-weight fallback fires.",
+                    "market_cap_data_state": "'real' when every requested symbol has a market value, 'partial' or 'approximate' when the equal-weight fallback fires.",
+                    "prior_covariance_estimator": "Estimator applied to the return series: sample_cov, ledoit_wolf (Ledoit-Wolf 2004 shrinkage toward mu*I) or exp_cov (EWMA, span 180 days).",
+                    "shrinkage_intensity": "Ledoit-Wolf weight on the mu*I target (0 to 1); null for sample_cov and exp_cov.",
+                    "prior_covariance": "Annualized prior covariance matrix actually used for pi and the posterior.",
                 },
             },
             sources=sources,
