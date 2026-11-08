@@ -299,6 +299,14 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   const [side, setSide] = useState("LONG");
   const [riskPct, setRiskPct] = useState("1");
   const [winRate, setWinRate] = useState("");
+  // BTFW#3: strategy, history window, train share and walk steps. The defaults are
+  // the handler defaults; a typed value is sent as typed and validated by the backend.
+  const [btfw, setBtfw] = useState<BtfwInputs>({
+    strategy: "sma_crossover",
+    window: "3Y",
+    trainPct: "0.7",
+    walkSteps: "5",
+  });
 
   const effectiveSymbol = config.usesSymbol
     ? (symbolDisplay.trim() || undefined)
@@ -329,8 +337,9 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         side,
         riskPct,
         winRate,
+        btfw,
       }),
-    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak, cash, cashAccount, horizon, side, riskPct, winRate],
+    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak, cash, cashAccount, horizon, side, riskPct, winRate, btfw],
   );
   const { state, data, error, refetch } = useFunction<PortfolioPayload>({
     code: upper,
@@ -471,6 +480,8 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setRiskPct={setRiskPct}
             winRate={winRate}
             setWinRate={setWinRate}
+            btfw={btfw}
+            setBtfw={setBtfw}
           />
           {body}
         </PaneBody>
@@ -536,6 +547,8 @@ function PortfolioControls({
   setRiskPct,
   winRate,
   setWinRate,
+  btfw,
+  setBtfw,
 }: {
   config: ToolConfig;
   code: string;
@@ -569,6 +582,8 @@ function PortfolioControls({
   setRiskPct: (value: string) => void;
   winRate: string;
   setWinRate: (value: string) => void;
+  btfw: BtfwInputs;
+  setBtfw: (value: BtfwInputs) => void;
 }) {
   if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC" && code !== "MGN") {
     return null;
@@ -668,6 +683,58 @@ function PortfolioControls({
             inputMode="numeric"
           />
         </label>
+      ) : null}
+      {code === "BTFW" ? (
+        <>
+          <label className="portfolio-control-field" htmlFor={fid("strategy")}>
+            <span>Strategy</span>
+            <select
+              id={fid("strategy")}
+              value={btfw.strategy}
+              onChange={(e) => setBtfw({ ...btfw, strategy: e.target.value })}
+            >
+              {BTFW_STRATEGIES.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("window")}>
+            <span>History</span>
+            <select
+              id={fid("window")}
+              value={btfw.window}
+              onChange={(e) => setBtfw({ ...btfw, window: e.target.value })}
+            >
+              {BTFW_WINDOWS.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("train-pct")}>
+            <span>Train share (fraction)</span>
+            <input
+              id={fid("train-pct")}
+              value={btfw.trainPct}
+              onChange={(e) => setBtfw({ ...btfw, trainPct: e.target.value })}
+              inputMode="decimal"
+              placeholder="0.1 to 0.95"
+            />
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("walk-steps")}>
+            <span>Walk steps</span>
+            <input
+              id={fid("walk-steps")}
+              value={btfw.walkSteps}
+              onChange={(e) => setBtfw({ ...btfw, walkSteps: e.target.value })}
+              inputMode="numeric"
+              placeholder="2 or more"
+            />
+          </label>
+        </>
       ) : null}
       {code === "REBA" ? (
         <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("targets")}>
@@ -1278,6 +1345,7 @@ function buildParams(
     side: string;
     riskPct: string;
     winRate: string;
+    btfw: BtfwInputs;
   },
 ): Record<string, unknown> {
   const symbols = splitSymbols(state.symbols);
@@ -1363,8 +1431,17 @@ function buildParams(
     }
     case "TRA":
       return { years: 5, live_return: state.live };
-    case "BTFW":
-      return { live: state.live };
+    case "BTFW": {
+      // BTFW#3: only what the user typed is sent (blank keeps the handler default). A typed
+      // value that does not parse is sent as the trimmed text, so the backend names it.
+      const out: Record<string, unknown> = { live: state.live, strategy_id: state.btfw.strategy };
+      out.window_length = state.btfw.window;
+      const trainPct = pscTyped(state.btfw.trainPct);
+      if (trainPct !== undefined) out.train_pct = trainPct;
+      const walkSteps = pscTyped(state.btfw.walkSteps);
+      if (walkSteps !== undefined) out.walk_steps = walkSteps;
+      return out;
+    }
     default:
       return {};
   }
@@ -1388,6 +1465,16 @@ interface BlakInputs {
 
 /** Lookback windows the BLAK seed declares (calendar days in blak.py). */
 const BLAK_WINDOWS = ["180d", "1Y", "2Y", "5Y"] as const;
+
+/** BTFW#3: typed walk-forward controls. Values mirror the manifest options. */
+interface BtfwInputs {
+  strategy: string;
+  window: string;
+  trainPct: string;
+  walkSteps: string;
+}
+const BTFW_STRATEGIES = ["sma_crossover", "rsi_meanrev", "buy_and_hold"] as const;
+const BTFW_WINDOWS = ["30d", "90d", "180d", "1Y", "2Y", "3Y"] as const;
 
 function parseTargets(raw: string): Record<string, number> {
   const out: Record<string, number> = {};
