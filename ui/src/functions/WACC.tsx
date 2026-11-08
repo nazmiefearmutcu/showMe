@@ -246,12 +246,12 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
                 <StatCard
                   label="Cost of equity"
                   value={pct(payload.re_capm)}
-                  caption={`rf ${pct(payload.rf)} · β ${(payload.beta ?? 0).toFixed(2)} · ERP ${pct(payload.erp)}`}
+                  caption={`rf ${pct(payload.rf)} · β ${beta(payload.beta)} · ERP ${pct(payload.erp)}`}
                   tone="positive"
                 />
                 <StatCard
                   label="Cost of debt (after-tax)"
-                  value={pct(((payload.rd ?? 0) * (1 - (payload.tax_rate ?? 0))))}
+                  value={afterTaxCostOfDebt(payload.rd, payload.tax_rate)}
                   caption={`Rd ${pct(payload.rd)} · Tax ${pct(payload.tax_rate)}`}
                   tone="negative"
                 />
@@ -340,6 +340,25 @@ function SensitivitySurface({ cells, baseWacc }: { cells: WACCSurfaceCell[]; bas
 function pct(v: number | undefined | null): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return `${(v * 100).toFixed(2)}%`;
+}
+
+/** Beta to two decimals, or "—" when the backend did not return one (UI-11). */
+function beta(v: number | undefined | null): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return v.toFixed(2);
+}
+
+/**
+ * After-tax cost of debt = rd × (1 − tax). Returns "—" unless BOTH rd and the
+ * tax rate are present: a defaulted 0% tax would silently overstate the cost
+ * and a defaulted rd would show 0.00% (UI-11).
+ */
+function afterTaxCostOfDebt(
+  rd: number | undefined | null,
+  tax: number | undefined | null,
+): string {
+  if (rd == null || tax == null || !Number.isFinite(rd) || !Number.isFinite(tax)) return "—";
+  return pct(rd * (1 - tax));
 }
 
 function ratio(a: number | undefined | null, b: number | undefined | null): string {
