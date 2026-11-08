@@ -129,6 +129,35 @@ def test_beta_payload_echoes_assumptions_and_observations() -> None:
     assert result.data["n_observations"] == len(yf.target) - 1
 
 
+def test_beta_manifest_output_contract_names_top_level_payload_keys() -> None:
+    """must_have lists payload keys; per-row fields (beta, window) do not count."""
+    load_seeds()
+    manifest = REGISTRY.get("BETA")
+    result = _execute(_RecordingYF())
+    top_level = set(result.data) | {"symbol"}  # symbol rides on FunctionResult.instrument
+    missing = [k for k in manifest.output_contract.must_have if k not in top_level]
+    assert missing == []
+
+
+def test_beta_manifest_table_columns_exist_in_rows() -> None:
+    load_seeds()
+    manifest = REGISTRY.get("BETA")
+    result = _execute(_RecordingYF())
+    row = next(r for r in result.data["rows"] if r["window"] == "1Y")
+    missing = [c.key for c in manifest.table_schema.columns if c.key not in row]
+    assert missing == []
+
+
+def test_beta_r_squared_is_decimal_not_percent_in_manifest() -> None:
+    """r_squared is correlation squared (0..1); the manifest must not label it percent."""
+    load_seeds()
+    manifest = REGISTRY.get("BETA")
+    columns = {c.key: c for c in manifest.table_schema.columns}
+    assert columns["r_squared"].kind != "percent"
+    slots = {s.key: s for s in manifest.card_schema.slots}
+    assert getattr(slots["r_squared"], "unit", None) != "%"
+
+
 # ── BETA#3 — methodology text matches the computed return type ─────────────
 
 

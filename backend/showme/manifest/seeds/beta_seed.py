@@ -94,7 +94,7 @@ def beta() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=3600, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["symbol", "benchmark", "beta", "window", "n_observations", "assumptions"],
+            must_have=["symbol", "benchmark", "betas", "selected_window", "n_observations", "assumptions"],
             rows=True,
             series=False,
             cards=True,
@@ -106,8 +106,8 @@ def beta() -> FunctionManifest:
                 ColumnSpec(key="window", label="Window", kind="text"),
                 ColumnSpec(key="beta", label="β", kind="number", format="%.4f"),
                 ColumnSpec(key="alpha", label="α (daily)", kind="number", format="%.4f"),
-                ColumnSpec(key="r_squared", label="R²", kind="percent", format="%.2f"),
-                ColumnSpec(key="n", label="N", kind="number"),
+                ColumnSpec(key="r_squared", label="R²", kind="number", format="%.3f"),
+                ColumnSpec(key="samples", label="N", kind="number"),
             ],
             sortable=True,
             filterable=False,
@@ -116,7 +116,7 @@ def beta() -> FunctionManifest:
             slots=[
                 CardSlot(key="beta", label="β", kind="big_number"),
                 CardSlot(key="benchmark", label="Benchmark", kind="badge"),
-                CardSlot(key="r_squared", label="R²", kind="kpi", unit="%"),
+                CardSlot(key="r_squared", label="R²", kind="kpi"),
                 CardSlot(key="n_observations", label="N", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
