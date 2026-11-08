@@ -314,3 +314,27 @@ def test_worldbank_aggregate_response_ids_map_to_our_codes(
         ],
     ]
     assert set(gmm_mod._parse_wb_series(payload)) == {expected}
+
+
+# ── GMM#3 follow-up: an empty World Bank response is an explicit empty state ──
+
+
+def test_all_null_worldbank_response_is_empty_not_ok(monkeypatch) -> None:
+    """No observation for any requested country must not present as status ok."""
+    _patch_table(monkeypatch, {})
+
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["US", "EZ"]))
+    assert result.data["status"] == "empty", result.data.get("status")
+    assert result.data.get("reason")
+    assert result.data.get("next_actions")
+    # No country row may carry a value or a score the provider never returned.
+    assert result.data["rows"] == [], "an empty matrix must not list empty country rows"
+
+
+def test_partial_worldbank_response_stays_ok(monkeypatch) -> None:
+    """One real observation is enough for an ok matrix; the rest stays null."""
+    table = {("US", "FP.CPI.TOTL.ZG"): _obs("US", "USA", "FP.CPI.TOTL.ZG", 3.1, 2025)}
+    _patch_table(monkeypatch, table)
+
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["US", "EZ"]))
+    assert result.data["status"] == "ok"

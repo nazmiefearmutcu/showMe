@@ -91,6 +91,13 @@ class GMMFunction(BaseFunction):
         requested = params.get("countries") or params.get("country")
         countries = _resolve_countries(requested)
         timeout = float(params.get("timeout", 12))
+        # Request-level warnings do not depend on the data outcome, so they are
+        # attached on every status (ok, empty, provider_unavailable).
+        unknown = [c for c in countries if c not in _COUNTRY_NAMES]
+        unknown_warnings = [
+            f"country code {c} has no display name; shown as its code and looked up as given"
+            for c in unknown
+        ]
 
         rows: list[dict[str, Any]] = []
         try:
@@ -103,6 +110,14 @@ class GMMFunction(BaseFunction):
         if not rows:
             return _provider_unavailable(
                 "worldbank returned no observations for the requested countries."
+            )
+        # GMM#3 follow-up: the matrix always lists every requested country, so a
+        # response with no observation at all would otherwise pass as an ok board
+        # of null rows. Report an explicit empty state instead.
+        if not any(row.get(k) is not None for row in rows for k in _SCORE_KEYS):
+            return _empty_matrix(
+                "worldbank answered, but no requested country has a non-null indicator observation.",
+                warnings=unknown_warnings,
             )
 
         # Score = composite macro-stress proxy: high inflation + high
@@ -145,12 +160,6 @@ class GMMFunction(BaseFunction):
                 "value": f"{fastest['country']} {fastest['gdp_growth']:.1f}%" if fastest else None,
             },
             {"key": "source", "label": "Source", "value": "World Bank"},
-        ]
-
-        unknown = [c for c in countries if c not in _COUNTRY_NAMES]
-        unknown_warnings = [
-            f"country code {c} has no display name; shown as its code and looked up as given"
-            for c in unknown
         ]
 
         return FunctionResult(
@@ -391,6 +400,31 @@ def _coerce_int(value: Any, default: int) -> int:
         return out if out > 0 else default
     except (TypeError, ValueError):
         return default
+
+
+def _empty_matrix(reason: str, *, warnings: list[str] | None = None) -> FunctionResult:
+    """Explicit empty state: the provider answered but carried no usable observation."""
+    return FunctionResult(
+        code="GMM",
+        instrument=None,
+        data={
+            "status": "empty",
+            "rows": [],
+            "cards": [
+                {"key": "economies", "label": "Economies", "value": 0},
+                {"key": "source", "label": "Source", "value": "World Bank"},
+            ],
+            "reason": reason,
+            "source_mode": "worldbank",
+            "next_actions": [
+                "Retry later; World Bank annual series are updated irregularly.",
+                "Try other country codes; some economies publish fewer indicators.",
+            ],
+        },
+        sources=["worldbank"],
+        warnings=list(warnings or []),
+        metadata={"provider": "worldbank"},
+    )
 
 
 def _provider_unavailable(reason: str) -> FunctionResult:
