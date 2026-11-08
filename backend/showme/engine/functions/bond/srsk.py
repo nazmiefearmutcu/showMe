@@ -105,6 +105,14 @@ def _leg_score(value: float | None, *, low: float, high: float, invert: bool) ->
     return round(_clamp(frac, 0.0, 1.0) * 100.0, 2)
 
 
+def _year_sort_key(text: str) -> tuple[int, str]:
+    """Sort World Bank date strings (usually a year) oldest first."""
+    try:
+        return (int(text[:4]), text)
+    except (TypeError, ValueError):
+        return (9999, text)
+
+
 class _WBUnavailable(Exception):
     """Raised when the keyless World Bank fetch fails for a country."""
 
@@ -187,16 +195,22 @@ class SRSKFunction(BaseFunction):
             _fetch_one(k, ind) for k, ind in keys_and_indicators
         ))
 
+        leg_dates: dict[str, str] = {}
         for key, indicator, val, date, err in results:
             if err:
                 notes.append(f"{indicator} fetch failed for {iso3}: {err}")
             out[key] = val
-            if date and "as_of" not in out:
-                out["as_of"] = date
+            if date:
+                leg_dates[key] = date
             if val is None and not any(
                 n.startswith(indicator) for n in notes
             ):
                 notes.append(f"{indicator} unavailable for {iso3}")
+        # The row's as_of is the OLDEST leg date: a mixed-age row must not be
+        # labelled with whichever leg happened to answer first.
+        out["as_of_by_leg"] = leg_dates
+        if leg_dates:
+            out["as_of"] = min(leg_dates.values(), key=_year_sort_key)
         return out, notes
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
@@ -371,6 +385,7 @@ class SRSKFunction(BaseFunction):
                     "recovery": recovery,
                     "source_mode": source_mode,
                     "as_of": macro.get("as_of"),
+                    "as_of_by_leg": macro.get("as_of_by_leg", {}),
                     "note": row_note,
                 }
             )
@@ -479,7 +494,9 @@ class SRSKFunction(BaseFunction):
         # data_mode names what actually priced the rows: live World Bank macro,
         # or (with no macro score at all) live FRED 10Y differentials only.
         data_mode = "live_official" if wb_success else "live"
-        as_of = next((r.get("as_of") for r in rows if r.get("as_of")), None)
+        # Card as-of is the stalest row date, so the KPI never overstates freshness.
+        row_dates = [r["as_of"] for r in rows if r.get("as_of")]
+        as_of = min(row_dates, key=_year_sort_key) if row_dates else None
         cards = {
             "highest_pd_country": highest["country"] if highest else None,
             "highest_pd": round(highest["pd_1y_pct"], 4) if highest else None,
@@ -546,6 +563,7 @@ class SRSKFunction(BaseFunction):
             "pd_1y_pct": "One-year default-probability proxy in percent (linear Hull approximation spread/(1-R)). It is not capped at 100; above 100 it is not a probability and only shows how large the spread is relative to the loss given default.",
             "recovery": "Assumed recovery rate in the Hull reduced-form approximation.",
             "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'unavailable' when no live macro data exists (score, spread and PD are null, row unranked).",
-            "as_of": "Observation year of the latest World Bank data point used.",
+            "as_of": "Observation year of the OLDEST World Bank leg used for the row (a mixed-age row is labelled with its stalest leg).",
+            "as_of_by_leg": "Observation year of the latest World Bank point for each macro leg (debt_to_gdp, reserves_months, current_account_gdp, inflation_pct).",
             "note": "Per-row caveat: missing macro legs, US benchmark note, or unscored (unavailable) row.",
         }

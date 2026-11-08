@@ -125,3 +125,35 @@ def test_default_recovery_still_works(no_network: None) -> None:
     out = asyncio.run(fn.execute(countries="TR"))
     assert out.data["status"] == "ok"
     assert out.data["rows"][0]["recovery"] == 0.4
+
+
+# SRSK#7: a row's as_of must not be the year of whichever leg happened to come
+# first. India had a 2018 debt leg and 2025 reserves/CAB/CPI; the row claimed 2018
+# as its single date with no per-leg detail.
+class _DatedWorldBank:
+    _DATA = {
+        "debt_to_gdp": ("GC.DOD.TOTL.GD.ZS", 70.0, "2018"),
+        "reserves_months": ("FI.RES.TOTL.MO", 9.0, "2025"),
+        "current_account_gdp": ("BN.CAB.XOKA.GD.ZS", -1.0, "2025"),
+        "inflation_pct": ("FP.CPI.TOTL.ZG", 4.0, "2025"),
+    }
+
+    async def indicator(self, iso3: str, indicator: str) -> Any:
+        for _key, (code, value, year) in self._DATA.items():
+            if code == indicator:
+                return [{"page": 1, "total": 1}, [{"value": value, "date": year}]]
+        return [{"page": 1, "total": 0}, None]
+
+
+def test_row_as_of_is_the_oldest_leg_with_per_leg_dates(no_network: None) -> None:
+    fn = SRSKFunction(FunctionDeps(worldbank=_DatedWorldBank()))
+    out = asyncio.run(fn.execute(countries="IN"))
+    row = out.data["rows"][0]
+    assert row["as_of"] == "2018", row
+    assert row["as_of_by_leg"] == {
+        "debt_to_gdp": "2018",
+        "reserves_months": "2025",
+        "current_account_gdp": "2025",
+        "inflation_pct": "2025",
+    }, row
+    assert out.data["cards"]["as_of"] == "2018"
