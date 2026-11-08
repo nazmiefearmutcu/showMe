@@ -475,6 +475,7 @@ class OVDVFunction(BaseFunction):
         surface = []
         series = []
         atm_1m: float | None = None
+        wing_floor_cells: list[str] = []
         for i, tenor in enumerate(tenors):
             label = tenor["label"]
             term = atm_curve[i]
@@ -488,6 +489,9 @@ class OVDVFunction(BaseFunction):
                         "25C": bf_25 + rr_25 / 2,
                         "10C": bf_25 + 0.5 * abs(rr_25) + rr_25 / 2,
                     }.get(delta, 0.0)
+                if term + wing < 0.0001:
+                    # The quoted wing pushes this cell to or below the vol floor.
+                    wing_floor_cells.append(f"{label} {delta}")
                 vol = max(0.0001, term + wing)
                 surface.append(
                     {
@@ -516,6 +520,14 @@ class OVDVFunction(BaseFunction):
         warnings: list[str] = []
         if rv_warning:
             warnings.append(rv_warning)
+        if wing_floor_cells:
+            # OVDV#2 residual: the 0.01 vol floor hides a quoted wing that is
+            # non-positive, so the surface 25C-25P no longer equals the headline RR.
+            warnings.append(
+                f"quoted risk reversal/butterfly push {', '.join(wing_floor_cells)} to or below the "
+                "0.01 vol floor; those surface cells show the floor value, so the surface 25C minus 25P "
+                "does not equal the headline risk_reversal_25d_pct"
+            )
         if vol_source == "live_realized_vol":
             # OVDV#5: a managed or pegged leg makes realized vol a managed-rate statistic.
             managed_legs = [c for c in (base, quote) if c.upper() in _OVDV_MANAGED_CCYS]
