@@ -49,6 +49,14 @@ class PCASFunction(BaseFunction):
         if not live_portfolio:
             return _empty_pcas(self.code, instrument, pc_index, k_sigma,
                                "live=true required for PCA stress", status="input_error")
+        if "live_prices" in params and not _truthy(params.get("live_prices")):
+            # The modeled template returns were removed: a synthetic series must
+            # never feed a stress result. Refuse the explicit opt-out instead.
+            return _empty_pcas(self.code, instrument, pc_index, k_sigma,
+                               "live_prices=false asks for modeled template returns, which are not "
+                               "offered; PCA stress runs on live price history only (omit live_prices "
+                               "or set it to true)",
+                               status="input_error")
 
         frequency = str(params.get("frequency") or "1d").strip()
         if frequency not in _IMPLEMENTED_FREQUENCIES:
@@ -73,50 +81,50 @@ class PCASFunction(BaseFunction):
                     if p.instrument.asset_class.value not in ("MACRO", "BOND")]
         if not eligible:
             return _empty_pcas(self.code, None, pc_index, k_sigma, "empty portfolio")
-        from showme.engine.functions.portfolio.rpar import _template_returns
-        symbols = [p.instrument.symbol for p in eligible]
-        live_prices = _truthy(params.get("live_prices"))
-        if live_prices:
-            timeout = float(params.get("timeout", 8))
+        timeout = float(params.get("timeout", 8))
 
-            async def _ret(p) -> tuple[str, pd.Series, float]:
-                try:
-                    if not self.deps.yfinance:
-                        raise RuntimeError("no yfinance")
-                    df = await asyncio.wait_for(
-                        self.deps.yfinance.fetch(DataRequest(
-                            kind=DataKind.OHLCV, instrument=p.instrument,
-                            start=datetime.now(timezone.utc) - timedelta(days=days),
-                            interval="1d",
-                        )),
-                        timeout=timeout,
-                    )
-                    last = float(df["close"].iloc[-1])
-                    return p.instrument.symbol, close_to_daily_returns(df), last
-                except Exception:
-                    return p.instrument.symbol, pd.Series(dtype=float), float(p.avg_cost or 100.0)
+        async def _ret(p) -> tuple[str, pd.Series, float | None]:
+            try:
+                if not self.deps.yfinance:
+                    raise RuntimeError("no yfinance")
+                df = await asyncio.wait_for(
+                    self.deps.yfinance.fetch(DataRequest(
+                        kind=DataKind.OHLCV, instrument=p.instrument,
+                        start=datetime.now(timezone.utc) - timedelta(days=days),
+                        interval="1d",
+                    )),
+                    timeout=timeout,
+                )
+                last = float(df["close"].iloc[-1])
+                return p.instrument.symbol, close_to_daily_returns(df), last
+            except Exception:
+                return p.instrument.symbol, pd.Series(dtype=float), None
 
-            results = await asyncio.gather(*(_ret(p) for p in eligible))
-            last_map = {s: lp for s, _, lp in results}
-            # Audit Q3 #7: forward-fill for PCA — eigen-decomposition needs a
-            # dense matrix; pairwise NaNs would invalidate the spectrum.
-            df = align_return_series(
-                ((s, r) for s, r, _ in results), policy="forward_fill"
+        results = await asyncio.gather(*(_ret(p) for p in eligible))
+        # A position without live history is not valued at its cost basis and
+        # folded into the book: the stress is refused and the gap is named.
+        missing = [s for s, r, _ in results if r.empty]
+        if missing:
+            return _empty_pcas(
+                self.code, None, pc_index, k_sigma,
+                f"no live return history for {', '.join(missing)}; PCA stress is not run on a partial book",
+                status="provider_unavailable",
             )
-            if df.shape[0] < 30:
-                return _empty_pcas(self.code, None, pc_index, k_sigma, "no live return history")
-            data_mode = "delayed_reference"
-            source = "yfinance"
-        else:
-            df = _template_returns(symbols, days)
-            last_map = {p.instrument.symbol: float(p.avg_cost or 100.0) for p in eligible}
-            data_mode = "modeled"
-            source = "portfolio_state_template_returns"
+        last_map = {s: lp for s, _, lp in results}
+        # Audit Q3 #7: forward-fill for PCA — eigen-decomposition needs a
+        # dense matrix; pairwise NaNs would invalidate the spectrum.
+        df = align_return_series(
+            ((s, r) for s, r, _ in results), policy="forward_fill"
+        )
+        if df.shape[0] < 30:
+            return _empty_pcas(self.code, None, pc_index, k_sigma, "no live return history",
+                               status="provider_unavailable")
+        data_mode = "delayed_reference"
+        source = "yfinance"
         # Build weights from positions
         notional = []
         for p in eligible:
-            px = last_map.get(p.instrument.symbol) or p.avg_cost
-            notional.append((p.instrument.symbol, p.quantity * px))
+            notional.append((p.instrument.symbol, p.quantity * last_map[p.instrument.symbol]))
         total = sum(n for _, n in notional) or 1.0
         sym_to_w = {s: n / total for s, n in notional}
         cols = list(df.columns)
@@ -242,11 +250,8 @@ class PCASFunction(BaseFunction):
                     "aggregate_impact": "Linear sum of the per-component P&L impacts.",
                 },
             },
-            # The non-live source keeps the "template" token so the pane's
-            # MODEL disclosure can label it. Only data_mode ("modeled") and
-            # this source label mark the result; the server helper
-            # _has_live_source (server.py) has no call site, so it does not
-            # demote status. Live (LIVE toggle, the pane default) is real yfinance.
+            # Every result here is built on live yfinance history; there is no
+            # modeled or template branch.
             sources=[source],
         )
 
@@ -336,7 +341,7 @@ def _empty_pcas(
             "rows": [],
             "next_actions": [
                 "Add real positions through portfolio state.",
-                "Set live=true and live_prices=true to fetch return history.",
+                "Set live=true to fetch live return history for every position.",
             ],
             "methodology": (
                 "PCA stress requires portfolio positions plus aligned return history. It shocks one "

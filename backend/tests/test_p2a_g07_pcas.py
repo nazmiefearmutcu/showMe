@@ -55,18 +55,32 @@ def test_pcas_live_false_string_is_an_input_error_not_a_provider_outage(monkeypa
     assert "live" in res.data["reason"]
 
 
-def test_pcas_live_prices_false_string_does_not_fetch_live_history(monkeypatch):
+def test_pcas_live_prices_false_string_is_an_input_error_not_template_data(monkeypatch):
     fn = _pcas(monkeypatch)
     res = _pcas_run(fn, live="true", live_prices="false")
-    # "false" must not be truthy: the template path is used, labelled as such.
-    assert res.sources == ["portfolio_state_template_returns"]
+    # "false" must not be truthy, and the modeled template path no longer exists:
+    # the request is refused honestly instead of returning synthetic returns.
+    assert res.data["status"] == "input_error"
+    assert "live_prices" in res.data["reason"]
+    assert "portfolio_state_template_returns" not in res.sources
+    assert res.data["components"] == []
+
+
+def test_pcas_never_emits_template_returns_even_when_live_prices_is_omitted(monkeypatch):
+    # live=true with no live_prices is the manifest default route: it must run on
+    # real history (or report an outage), never on the synthetic template series.
+    res = _pcas_run(_pcas(monkeypatch), live="true", n_factors=2)
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data.get("data_mode") != "modeled"
+    assert "portfolio_state_template_returns" not in res.sources
+    assert res.data["samples"] == 0
 
 
 # ---------------------------------------------------------------- PCAS #4
 
 
 def test_pcas_multi_factor_returns_components_and_aggregate(monkeypatch):
-    res = _pcas_run(_pcas(monkeypatch), live="true", n_factors=3, k_sigma=2.0)
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", n_factors=3, k_sigma=2.0)
     d = res.data
     for key in ("components", "shock_impacts", "aggregate_impact",
                 "explained_variance", "data_mode", "as_of", "n_factors"):
@@ -81,7 +95,7 @@ def test_pcas_multi_factor_returns_components_and_aggregate(monkeypatch):
 
 
 def test_pcas_shock_set_applies_per_component_sigma(monkeypatch):
-    res = _pcas_run(_pcas(monkeypatch), live="true", n_factors=2,
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", n_factors=2,
                     shock_set=[1.0, 2.0])
     sigmas = [c["shock_sigma"] for c in res.data["components"]]
     assert sigmas == [1.0, 2.0]
@@ -94,8 +108,8 @@ def test_pcas_shock_set_length_mismatch_is_an_input_error(monkeypatch):
 
 
 def test_pcas_lookback_window_sets_history_length(monkeypatch):
-    short = _pcas_run(_pcas(monkeypatch), live="true", lookback_window="90d")
-    default = _pcas_run(_pcas(monkeypatch), live="true")
+    short = _pcas_run(_pcas_live(monkeypatch), live="true", lookback_window="90d")
+    default = _pcas_run(_pcas_live(monkeypatch), live="true")
     assert short.data["lookback_days"] == 90
     assert short.data["samples"] < default.data["samples"]
 
@@ -119,7 +133,7 @@ def test_pcas_seed_frequency_offers_only_implemented_cadence():
 def test_pcas_n_factors_above_available_components_is_an_input_error(monkeypatch):
     # Four assets support at most four principal components: asking for five
     # is a user input error, not a provider outage.
-    res = _pcas_run(_pcas(monkeypatch), live="true", n_factors=5)
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", n_factors=5)
     assert res.data["status"] == "input_error"
     assert "5 principal components" in res.data["reason"]
     assert "history supports" in res.data["reason"]
@@ -188,3 +202,53 @@ def test_pcas_live_prices_without_a_provider_is_an_honest_outage_not_modeled(mon
     assert res.data["status"] == "provider_unavailable"
     assert res.data.get("data_mode") != "modeled"
     assert "portfolio_state_template_returns" not in res.sources
+
+
+class _PartialYFinance(_FakeYFinance):
+    """Serves history for every symbol except BBB, which the provider cannot price."""
+
+    async def fetch(self, req):
+        if req.instrument.symbol == "BBB":
+            raise RuntimeError("no history for BBB")
+        return await super().fetch(req)
+
+
+def test_pcas_partial_live_history_is_not_priced_at_avg_cost(monkeypatch):
+    # A symbol without live history must not be valued at its cost basis and
+    # silently folded into the book: the stress is refused and the gap is named.
+    monkeypatch.setattr(pcas_mod, "PortfolioState", lambda *a, **k: _FakeBook(("AAA", "BBB", "CCC", "DDD")))
+    fn = pcas_mod.PCASFunction(FunctionDeps(yfinance=_PartialYFinance()))
+    res = _pcas_run(fn, live="true", live_prices="true", n_factors=2)
+    assert res.data["status"] == "provider_unavailable"
+    assert "BBB" in res.data["reason"]
+    assert res.data["components"] == []
+    assert res.data["aggregate_impact"] is None
+
+
+# ---------------------------------------------------------------- PCAS seed contract
+
+
+def test_pcas_seed_declares_no_unread_provider_mode_input():
+    # The handler never reads provider_mode; live history is the only data path.
+    load_seeds()
+    spec = REGISTRY.get("PCAS")
+    assert all(i.name != "provider_mode" for i in spec.inputs)
+    assert "provider_mode" not in (spec.defaults or {})
+
+
+def test_pcas_seed_does_not_pick_n_factors_for_the_user():
+    # n_factors is a MODEL_ASSUMPTION the user owns: no injected default that
+    # would silently turn a single-PC pc_index request into a 3-factor run.
+    load_seeds()
+    spec = REGISTRY.get("PCAS")
+    assert "n_factors" not in (spec.defaults or {})
+
+
+def test_pcas_pc_index_alone_runs_the_single_component_stress(monkeypatch):
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", live_prices="true",
+                    pc_index=1, k_sigma=2.0)
+    d = res.data
+    assert d["status"] == "ok"
+    assert d["multi_factor"] is False
+    assert d["n_factors"] == 1
+    assert [c["component"] for c in d["components"]] == ["PC2"]

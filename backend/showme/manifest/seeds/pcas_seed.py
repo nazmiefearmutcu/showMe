@@ -76,10 +76,11 @@ def pcas() -> FunctionManifest:
                 name="n_factors",
                 label="N factors",
                 control=ControlKind.MODEL_ASSUMPTION,
-                required=True,
+                required=False,
                 description=(
                     "Number of principal components to retain. Choose to "
-                    "explain ≥ X% of variance or pick fixed N."
+                    "explain ≥ X% of variance or pick fixed N. Left blank, the "
+                    "run shocks the single component chosen by pc_index."
                 ),
                 min=1,
                 max=20,
@@ -111,24 +112,11 @@ def pcas() -> FunctionManifest:
                 description="Return sampling cadence for Σ. Only daily returns are implemented.",
                 options=["1d"],
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for the price history.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
             "portfolio_source": "port",
-            "n_factors": 3,
             "lookback_window": "1Y",
             "frequency": "1d",
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
