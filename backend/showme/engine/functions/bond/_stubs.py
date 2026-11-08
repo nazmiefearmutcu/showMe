@@ -210,6 +210,27 @@ def _crpr_pick(
     return None
 
 
+_SP_BUCKET = {
+    "AAA": "high_grade",
+    "AA": "high_grade",
+    "A": "investment_grade",
+    "BBB": "investment_grade",
+    "BB": "crossover",
+    "B": "high_yield",
+    "CCC": "distressed",
+    "CC": "distressed",
+    "C": "distressed",
+    "D": "distressed",
+}
+
+
+def _bucket_for_sp_rating(rating: Any) -> str:
+    """Map a pinned S&P rating (AA+, BBB-, ...) to the model's bucket scale; "n/a" if unknown."""
+    if not isinstance(rating, str):
+        return "n/a"
+    return _SP_BUCKET.get(rating.strip().upper().rstrip("+-"), "n/a")
+
+
 def _rating_bucket_from_coverage(leverage: float | None, coverage: float | None) -> tuple[str, str, str, str]:
     """Map (debt/EBITDA, interest coverage) to a transparent implied bucket.
 
@@ -251,7 +272,8 @@ class CRPRFunction(BaseFunction):
         "derived without both leverage and coverage. Leverage (debt/EBITDA) and coverage "
         "are mapped to a coarse, transparent rating bucket (AA..CCC). This is implied from "
         "financials, NOT a paid S&P/Moody's/Fitch feed. If the caller pins a ``rating`` dict "
-        "it is echoed verbatim. Sovereign issuers (no SEC CIK) get a labelled reference profile."
+        "it is echoed verbatim and its implied bucket is taken from the pinned S&P rating "
+        "(n/a when none is pinned). Sovereign issuers (no SEC CIK) get a labelled reference profile."
     )
     _FIELD_DICT = {
         "agency": "Source label for the row (model_implied or user_input).",
@@ -274,14 +296,17 @@ class CRPRFunction(BaseFunction):
                 {"agency": "Moody's", "rating": user_rating.get("moodys"), "outlook": user_rating.get("outlook", "n/a"), "watch": user_rating.get("watch", "none"), "rating_date": _as_of(), "rationale": "Operator-pinned rating override."},
                 {"agency": "Fitch", "rating": user_rating.get("fitch"), "outlook": user_rating.get("outlook", "n/a"), "watch": user_rating.get("watch", "none"), "rating_date": _as_of(), "rationale": "Operator-pinned rating override."},
             ]
+            # The bucket follows the pinned S&P rating. The ``bucket`` input is not
+            # read here: the seed injects its default (high_grade) on every call.
+            pinned_bucket = _bucket_for_sp_rating(user_rating.get("sp"))
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
                     "status": "ok",
                     "rows": rows,
-                    "summary": {"issuer": issuer, "implied_bucket": params.get("bucket", "high_grade"), "agencies": len(rows), "source_mode": "user_input"},
-                    "implied_bucket": params.get("bucket", "high_grade"),
+                    "summary": {"issuer": issuer, "implied_bucket": pinned_bucket, "agencies": len(rows), "source_mode": "user_input"},
+                    "implied_bucket": pinned_bucket,
                     "scale": self._SCALE,
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
