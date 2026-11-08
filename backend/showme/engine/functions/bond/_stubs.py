@@ -779,6 +779,11 @@ def _allq_reference_price(yield_pct: float, years: float, coupon_pct: float = _A
     return c * (1.0 - (1.0 + r) ** -n) / r + 100.0 * (1.0 + r) ** -n
 
 
+def _allq_ref_coupon_pct(years: float) -> float | None:
+    """Reference-bond coupon disclosed for a tenor; ``None`` for bills (zero-coupon discount)."""
+    return None if years <= 1.0 else _ALLQ_REF_COUPON_PCT
+
+
 def _allq_observation_date(value: Any) -> str:
     day = value.date() if hasattr(value, "date") else value
     return day.isoformat() if hasattr(day, "isoformat") else str(day)
@@ -848,10 +853,12 @@ class ALLQFunction(BaseFunction):
         as_of = _allq_observation_date(series.index[-1])
         years = float(_US_TREASURY_TENOR_YEARS.get(upper, 10.0))
         price = round(_allq_reference_price(yld, years), 4)
-        note = (
-            f"Treasury {column} par yield {yld:.3f}% on {as_of} "
-            f"(per-tenor, keyless curve; reference bond {_ALLQ_REF_COUPON_PCT:.0f}% coupon)"
+        basis = (
+            "zero-coupon simple discount"
+            if _allq_ref_coupon_pct(years) is None
+            else f"reference bond {_ALLQ_REF_COUPON_PCT:.0f}% coupon"
         )
+        note = f"Treasury {column} par yield {yld:.3f}% on {as_of} (per-tenor, keyless curve; {basis})"
         return (price, "ustreasury", note, as_of)
 
     def _build_ladder(
@@ -966,7 +973,11 @@ class ALLQFunction(BaseFunction):
                     "best_bid": max(q["bid"] for q in quotes),
                     "best_ask": min(q["ask"] for q in quotes),
                     "reference": ref_note,
-                    "reference_coupon_pct": _ALLQ_REF_COUPON_PCT if source != "user_input" else None,
+                    "reference_coupon_pct": (
+                        _allq_ref_coupon_pct(_US_TREASURY_TENOR_YEARS.get(symbol, 10.0))
+                        if source != "user_input"
+                        else None
+                    ),
                     "spread_points_input": spread,
                     "as_of": as_of,
                     "source_mode": "indicative_anchored_to_real_reference" if source != "user_input" else "indicative_user_mid",

@@ -298,3 +298,36 @@ def test_allq7_non_treasury_bond_symbol_never_uses_share_price() -> None:
     assert yf.calls == 0
     assert res.sources == []
     assert res.data["rows"] == []
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ALLQ#1 (labelling) — bill tenors are not priced off a 4% coupon
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_allq1_bill_tenor_reference_is_zero_coupon_not_4pct_coupon() -> None:
+    """US1M prices by zero-coupon simple discount, so no coupon is used.
+
+    The summary and the row reference must not claim a 4% coupon reference bond,
+    and reference_coupon_pct must be null for bill tenors.
+    Red on the old code: summary said 4% coupon for every tenor.
+    """
+    frame = pd.DataFrame([{"1 Mo": 4.02, "10 Yr": 4.86}], index=pd.to_datetime(["2026-11-06"]))
+    res = asyncio.run(_allq(FunctionDeps(ustreasury=_FakeCurve(frame))).execute(instrument=_bond("US1M")))
+
+    assert res.data["status"] == "ok"
+    summary = res.data["summary"]
+    assert summary["reference_coupon_pct"] is None
+    assert "zero-coupon simple discount" in summary["reference"]
+    assert "4% coupon" not in summary["reference"]
+    assert all("4% coupon" not in r["reference"] for r in res.data["rows"])
+    assert all("zero-coupon simple discount" in r["reference"] for r in res.data["rows"])
+    assert abs(summary["mid"] - round(_ref_price(4.02, 1 / 12), 4)) < 0.01
+
+
+def test_allq1_coupon_tenor_reference_still_discloses_4pct_coupon() -> None:
+    res = asyncio.run(_allq(FunctionDeps(ustreasury=_FakeCurve())).execute(instrument=_bond("US10Y")))
+
+    assert res.data["summary"]["reference_coupon_pct"] == 4.0
+    assert "4% coupon" in res.data["summary"]["reference"]
+    assert "zero-coupon" not in res.data["summary"]["reference"]
