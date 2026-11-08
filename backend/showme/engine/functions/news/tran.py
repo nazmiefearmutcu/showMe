@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -35,7 +36,17 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _ARCHIVE_BASE = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/{doc}"
 _FILING_INDEX = "https://www.sec.gov/cgi-bin/browse-edgar"
-_UA = {"User-Agent": "showMe research contact@example.com"}
+_SEC_UA_ENV = "SEC_EDGAR_USER_AGENT"
+
+
+def _sec_headers() -> dict[str, str]:
+    """SEC fair-access User-Agent: the operator's real contact, never a placeholder.
+
+    The contact comes from ``SEC_EDGAR_USER_AGENT``. When it is unset the request
+    still goes out with a bare product name and the run reports the missing contact.
+    """
+    contact = os.environ.get(_SEC_UA_ENV, "").strip()
+    return {"User-Agent": contact or "showMe research"}
 
 _METHODOLOGY = (
     "TRAN serves earnings-call / investor-event transcript text from real, keyless "
@@ -193,6 +204,11 @@ class TRANFunction(BaseFunction):
         sec_error: str | None = None
         sec_unreachable = False
         if not utterances:
+            if not os.environ.get(_SEC_UA_ENV, "").strip():
+                warnings.append(
+                    f"sec_edgar: {_SEC_UA_ENV} is not set; SEC fair-access asks for a real "
+                    "contact address in the User-Agent."
+                )
             # Only pass the quarter when one was asked for, so the lookup keeps its
             # default (newest filing) signature otherwise.
             sec_kwargs: dict[str, Any] = {"quarter": requested_quarter} if requested_quarter else {}
@@ -382,7 +398,7 @@ async def _resolve_cik(symbol: str, deps: Any) -> str:
     if symbol in _TICKER_CIK_CACHE:
         return _TICKER_CIK_CACHE[symbol]
     client = await _http_client()
-    resp = await client.get(_TICKERS_URL, headers=_UA)
+    resp = await client.get(_TICKERS_URL, headers=_sec_headers())
     resp.raise_for_status()
     payload = resp.json()
     iterable = payload.values() if isinstance(payload, dict) else payload
@@ -412,7 +428,7 @@ async def _fetch_sec_earnings_press_release(
     cik = await _resolve_cik(symbol, deps)
     cik_nozero = str(int(cik))
     client = await _http_client()
-    resp = await client.get(_SUBMISSIONS_URL.format(cik=cik), headers=_UA)
+    resp = await client.get(_SUBMISSIONS_URL.format(cik=cik), headers=_sec_headers())
     resp.raise_for_status()
     sub = resp.json()
     recent = ((sub or {}).get("filings") or {}).get("recent") or {}
@@ -480,7 +496,7 @@ async def _fetch_exhibit_text(client: Any, cik_nozero: str, acc_nodash: str, acc
     )
     doc_name: str | None = None
     try:
-        ir = await client.get(index_url, headers=_UA)
+        ir = await client.get(index_url, headers=_sec_headers())
         if ir.status_code == 200:
             j = ir.json()
             entries = ((j or {}).get("directory") or {}).get("item") or []
@@ -503,7 +519,7 @@ async def _fetch_exhibit_text(client: Any, cik_nozero: str, acc_nodash: str, acc
         # Fallback: read the plain directory listing (no auth needed).
         listing_url = f"https://www.sec.gov/Archives/edgar/data/{cik_nozero}/{acc_nodash}/"
         try:
-            lr = await client.get(listing_url, headers=_UA)
+            lr = await client.get(listing_url, headers=_sec_headers())
             if lr.status_code == 200:
                 names = re.findall(r'href="([^"]+\.(?:htm|html|txt))"', lr.text, flags=re.I)
                 ex = [n for n in names if re.search(r"ex.?-?99", n, re.I)]
@@ -517,7 +533,7 @@ async def _fetch_exhibit_text(client: Any, cik_nozero: str, acc_nodash: str, acc
         return ""
 
     doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik_nozero}/{acc_nodash}/{doc_name}"
-    dr = await client.get(doc_url, headers=_UA)
+    dr = await client.get(doc_url, headers=_sec_headers())
     if dr.status_code != 200:
         return ""
     return _html_to_text(dr.text)
