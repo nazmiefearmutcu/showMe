@@ -131,7 +131,13 @@ class BLAKFunction(BaseFunction):
         cov = df.cov().values * 252
         cols = list(df.columns)
         mcaps = np.array([next((m for s, _, m in results if s == c), 0.0) for c in cols])
-        if mcaps.sum() <= 0:
+        # BLAK#2: partial coverage used to keep the "real" label while the
+        # unresolved names got weight 0. Any requested name without a market
+        # value now sends the whole prior to the labelled equal-weight fallback.
+        mcap_resolved = [s for s in symbols if float(mcap_lookup.get(s) or 0.0) > 0]
+        mcap_missing = [s for s in symbols if s not in mcap_resolved]
+        mcap_partial = mcap_data_state == "partial"
+        if mcap_partial or mcaps.sum() <= 0:
             mcaps = np.ones(len(cols))
             mcap_data_state = "approximate"
         w_mkt = mcaps / mcaps.sum()
@@ -199,9 +205,21 @@ class BLAKFunction(BaseFunction):
             if src not in sources:
                 sources.append(src)
         warnings: list[str] = []
-        if mcap_data_state == "approximate":
+        if mcap_partial:
+            warnings.append(
+                f"market cap resolved for {len(mcap_resolved)}/{len(symbols)} symbols; "
+                f"no market value for {', '.join(mcap_missing)}; equal-weight prior used "
+                "for the whole universe"
+            )
+        elif mcap_data_state == "approximate":
             warnings.append(
                 "market_weight set to equal-weight prior; real market cap unavailable"
+            )
+        excluded_no_returns = [s for s in symbols if s not in cols]
+        if excluded_no_returns:
+            warnings.append(
+                "symbols excluded from the prior (no aligned return rows): "
+                + ", ".join(excluded_no_returns)
             )
         if used_synthetic and live:
             warnings.append(
@@ -223,6 +241,11 @@ class BLAKFunction(BaseFunction):
                 "posterior_returns": dict(zip(cols, pi_bl.tolist())),
                 "implied_optimal_weights": dict(zip(cols, w_opt.tolist())),
                 "market_cap_data_state": mcap_data_state,
+                "market_cap_coverage": {
+                    "resolved": len(mcap_resolved),
+                    "requested": len(symbols),
+                    "missing": mcap_missing,
+                },
                 # B4 surfaced fields so the UI can flag the synthetic fallback.
                 "live_fetch_errors": list(live_fetch_errors),
                 "live_fetch_ok_symbols": sorted(set(live_fetch_ok_symbols)),
@@ -302,11 +325,26 @@ async def _market_cap_from_coingecko(deps: Any, symbol: str) -> float:
         return 0.0
 
 
-async def _market_cap_from_yfinance(deps: Any, symbol: str) -> float:
-    """REFDATA pull for equity-style symbols. Returns 0.0 on any failure."""
+def _positive_float(value: Any) -> float:
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if number > 0 else 0.0
+
+
+async def _market_cap_from_yfinance(deps: Any, symbol: str) -> tuple[float, str | None]:
+    """REFDATA pull for equity-style symbols.
+
+    Returns ``(value, source)``; ``(0.0, None)`` on any failure. Funds carry no
+    ``marketCap`` in yfinance, so for ETF / mutual-fund quote types the total
+    net assets (``totalAssets``) is used as a labelled market-value proxy. For
+    operating companies ``totalAssets`` is balance-sheet assets and is never
+    used as a market cap.
+    """
     yfin = getattr(deps, "yfinance", None)
     if yfin is None:
-        return 0.0
+        return 0.0, None
     try:
         inst = Instrument(symbol=symbol, asset_class=AssetClass.EQUITY)
         if getattr(deps, "symbol_registry", None):
@@ -318,12 +356,17 @@ async def _market_cap_from_yfinance(deps: Any, symbol: str) -> float:
             timeout=4,
         )
     except Exception:
-        return 0.0
-    mcap = getattr(meta, "market_cap", None)
-    try:
-        return float(mcap or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+        return 0.0, None
+    mcap = _positive_float(getattr(meta, "market_cap", None))
+    if mcap > 0:
+        return mcap, "yfinance_refdata"
+    extras = getattr(meta, "extras", None)
+    raw = (extras.get("raw") or {}) if isinstance(extras, dict) else {}
+    if str(raw.get("quoteType") or "").upper() in {"ETF", "MUTUALFUND"}:
+        aum = _positive_float(raw.get("totalAssets"))
+        if aum > 0:
+            return aum, "yfinance_fund_aum"
+    return 0.0, None
 
 
 async def _resolve_market_caps(
@@ -360,9 +403,9 @@ async def _resolve_market_caps(
             mcap = await _market_cap_from_coingecko(deps, sym)
             if mcap > 0:
                 return sym, mcap, "coingecko"
-        mcap = await _market_cap_from_yfinance(deps, sym)
+        mcap, src = await _market_cap_from_yfinance(deps, sym)
         if mcap > 0:
-            return sym, mcap, "yfinance_refdata"
+            return sym, mcap, src
         return sym, 0.0, None
 
     results = await asyncio.gather(*(_resolve(s) for s in symbols))
@@ -371,5 +414,11 @@ async def _resolve_market_caps(
             lookup[sym] = mcap
             if src and src not in extra_sources:
                 extra_sources.append(src)
-    data_state = "real" if lookup else "approximate"
+    resolved = sum(1 for s in symbols if lookup.get(s, 0.0) > 0)
+    if symbols and resolved == len(symbols):
+        data_state = "real"
+    elif resolved:
+        data_state = "partial"
+    else:
+        data_state = "approximate"
     return lookup, data_state, extra_sources
