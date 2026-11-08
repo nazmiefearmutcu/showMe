@@ -136,3 +136,19 @@ def test_too_few_common_dates_is_not_reported_as_var(monkeypatch) -> None:
     assert res.data["status"] == "provider_unavailable", res.data["status"]
     assert res.data["var"] is None
     assert "common return dates" in str(res.data.get("reason", ""))
+
+
+# ── PVAR#5: legacy VaR fields use the headline sign (positive = loss) ─────
+
+
+def test_legacy_daily_var_fields_share_the_headline_sign(monkeypatch) -> None:
+    monkeypatch.setattr(pvar_mod, "PortfolioState", _Book)
+    monkeypatch.setattr(pvar_mod, "_download_returns", _fake_download)
+    res = _run(pvar_mod.PVARFunction().execute(method="parametric", confidence=0.99))
+    d = res.data
+    assert d["status"] == "ok", d.get("reason")
+    assert d["var"] > 0
+    assert d["parametric_var_dollar"] > 0
+    # Red today: the legacy fields are the negated parametric VaR.
+    assert d["portfolio_daily_var_dollar"] == pytest.approx(d["parametric_var_dollar"]), d["portfolio_daily_var_dollar"]
+    assert d["portfolio_daily_var_pct"] == pytest.approx(d["parametric_var_dollar"] / d["portfolio_total_notional"])

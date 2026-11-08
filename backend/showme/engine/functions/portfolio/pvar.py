@@ -320,10 +320,11 @@ class PVARFunction(BaseFunction):
                 "historical_es_dollar": hist_es_pct * total,
                 "portfolio_total_notional": total,
                 "portfolio_annualized_vol": port_vol,
-                # Legacy fields kept so existing UI bindings keep working
-                # (negative = loss convention here, matches prior contract).
-                "portfolio_daily_var_pct": -param_var_pct,
-                "portfolio_daily_var_dollar": -param_var_pct * total,
+                # Legacy aliases kept for old bindings. PVAR#5: they use the same
+                # sign as the headline (positive = loss) and the parametric VaR
+                # at the requested horizon, despite the historical "daily" name.
+                "portfolio_daily_var_pct": param_var_pct,
+                "portfolio_daily_var_dollar": param_var_pct * total,
                 "samples": int(len(rets_df)),
                 "return_calendar": "common_return_dates",
                 "positions_analyzed": int(len(rets_df.columns)),
@@ -361,6 +362,8 @@ class PVARFunction(BaseFunction):
                     "var": "Loss at the requested confidence and horizon; positive = loss, portfolio ccy.",
                     "expected_shortfall": "Conditional expected loss beyond VaR (>= VaR).",
                     "var_pct": "VaR as a fraction of portfolio notional.",
+                    "portfolio_daily_var_pct": "Legacy alias: parametric VaR as a positive fraction of notional at the requested horizon (positive = loss; not 1-day unless horizon=1d).",
+                    "portfolio_daily_var_dollar": "Legacy alias: parametric VaR in ccy at the requested horizon (positive = loss).",
                     "parametric_var_dollar": "Variance-covariance (Gaussian) VaR in ccy.",
                     "historical_var_dollar": "Historical-simulation empirical VaR in ccy.",
                     "component_var": "Per-symbol contribution to total VaR (sums to VaR).",
