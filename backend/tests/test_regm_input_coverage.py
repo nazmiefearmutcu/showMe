@@ -36,6 +36,18 @@ class _BoomClient:
         raise RuntimeError("network down")
 
 
+class _FakeYFinance:
+    """Deterministic benchmark fixture (seeded random walk), not live data."""
+
+    async def fetch(self, request):  # noqa: ANN001 - fake seam
+        import pandas as pd
+
+        rng = np.random.default_rng(7)
+        close = 100 * np.exp(np.cumsum(rng.normal(0.0005, 0.01, size=300)))
+        idx = pd.date_range(end="2026-09-20", periods=300, freq="D")
+        return pd.DataFrame({"close": close}, index=idx)
+
+
 def test_classify_reports_input_coverage_not_confidence() -> None:
     rng = np.random.default_rng(7)
     close = 100 * np.exp(np.cumsum(rng.normal(0.0005, 0.01, size=300)))
@@ -47,9 +59,10 @@ def test_classify_reports_input_coverage_not_confidence() -> None:
 
 
 def test_regm_payload_reports_input_coverage_not_confidence() -> None:
+    from showme.engine.core.base_function import FunctionDeps
     from showme.engine.functions.macro.regm import REGMFunction
 
-    fn = REGMFunction()
+    fn = REGMFunction(FunctionDeps(yfinance=_FakeYFinance()))
     fn._http_client = _BoomClient()
     out = asyncio.run(fn.execute(symbol="SPY", allow_model=True))
 

@@ -16,8 +16,22 @@ BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from showme.engine.core.base_function import FunctionDeps  # noqa: E402
 from showme.engine.functions.macro.regm import REGMFunction  # noqa: E402
 from showme.manifest.seeds.regm_seed import regm  # noqa: E402
+
+
+class _FakeYFinance:
+    """Deterministic benchmark fixture (seeded random walk), not live data."""
+
+    async def fetch(self, request):  # noqa: ANN001 - fake seam
+        import numpy as np
+        import pandas as pd
+
+        rng = np.random.default_rng(7)
+        close = 100 * np.exp(np.cumsum(rng.normal(0.0005, 0.01, size=300)))
+        idx = pd.date_range(end="2026-09-20", periods=300, freq="D")
+        return pd.DataFrame({"close": close}, index=idx)
 
 
 def test_output_contract_requires_input_coverage_not_confidence() -> None:
@@ -53,7 +67,7 @@ def test_seed_does_not_claim_transitional_gating() -> None:
 
 def test_seed_contract_keys_are_emitted_by_the_payload() -> None:
     """input_coverage (the renamed key) is really in the payload."""
-    fn = REGMFunction()
+    fn = REGMFunction(FunctionDeps(yfinance=_FakeYFinance()))
 
     class _Boom:
         async def get(self, url, timeout=None):  # noqa: ANN001

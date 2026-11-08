@@ -33,6 +33,7 @@ def test_regm_returns_provider_unavailable_when_yfinance_missing() -> None:
 
 
 def test_regm_allow_model_flag_never_serves_a_synthetic_series() -> None:
+    """allow_model used to serve a sine-wave 'regime_model'; it is now ignored."""
     from showme.engine.functions.macro.regm import REGMFunction
 
     # Data policy: allow_model=true no longer substitutes a templated series.

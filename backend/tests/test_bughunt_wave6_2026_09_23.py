@@ -228,7 +228,7 @@ def test_regm_keyed_fred_path_computes_curve() -> None:
     from showme.engine.functions.macro.regm import REGMFunction
 
     fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([3.4] * 5, [4.2] * 5), yfinance=_BenchmarkYahoo()))
-    out = _run(fn.execute(symbol="SPY"))
+    out = _run(fn.execute(symbol="SPY", allow_model=True))
     current = out.data["current"]
     assert current.get("curve") == "INVERTED"
     assert current.get("curve_2s10s_bp") == pytest.approx(-80.0)

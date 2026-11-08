@@ -103,10 +103,16 @@ class REGMFunction(BaseFunction):
             if np.count_nonzero(np.isfinite(close)) < 2:
                 raise RuntimeError(f"yfinance returned no usable closes for {sym}")
         except Exception as exc:
-            # Data policy: no benchmark means no regime. A synthetic series is
-            # never substituted, not even when a caller passes allow_model=true
-            # (S12 BugHunt: a sine wave once displayed as a live "regime model").
+            # Data policy: a failed benchmark is never replaced by a synthetic
+            # series (S12 BugHunt: a sine wave once displayed as a live "regime
+            # model"), so the response is always an explicit provider_unavailable
+            # state with no regime label. allow_model is accepted but ignored.
             provider_error = f"{type(exc).__name__}: {exc}"[:200]
+            warnings = [f"yfinance benchmark unavailable: {provider_error}"]
+            if _truthy(params.get("allow_model")):
+                warnings.append(
+                    "allow_model is ignored: REGM does not classify a synthetic benchmark series."
+                )
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -126,7 +132,7 @@ class REGMFunction(BaseFunction):
                 },
                 # No provider produced the benchmark, so no source is claimed.
                 sources=[],
-                warnings=[f"yfinance benchmark unavailable: {provider_error}"],
+                warnings=warnings,
                 metadata={"live": False, "fallback": False, "provider_error": provider_error},
             )
         current = rgm.classify(close, spread_2s10s_bp=spread_bp)
@@ -206,6 +212,14 @@ class REGMFunction(BaseFunction):
             },
             sources=sources,
         )
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _component_rows(symbol: str, current: dict[str, Any], sources: list[str]) -> list[dict[str, Any]]:
