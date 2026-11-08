@@ -76,9 +76,8 @@ def test_rpar_explicit_model_flag_is_explicit_state_and_skips_yfinance() -> None
 # ----------------------- SECT -----------------------
 
 def test_sect_live_mode_preserves_requested_period_header() -> None:
-    """Even though live quotes only provide 1D change, the response must
-    keep the user-requested period header and surface a warning that the
-    change values reflect a narrower window."""
+    """A requested YTD window with no daily history must not be relabelled as a
+    1D change: the change is null and a warning names the missing YTD base."""
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.functions.screen.sect import SECTFunction
 
@@ -94,8 +93,9 @@ def test_sect_live_mode_preserves_requested_period_header() -> None:
 
     out = asyncio.run(SECTFunction(FunctionDeps(yfinance=FakeYf())).execute(period="YTD", live=True))
     assert out.data["period"] == "YTD"
-    assert out.data["change_pct_period"] == "1D"
-    assert any("intraday" in w.lower() or "1D" in w for w in out.warnings)
+    assert all(r["change_pct"] is None for r in out.data["rows"])
+    assert all(r["change_pct_period"] is None for r in out.data["rows"])
+    assert any("YTD" in w for w in out.warnings), out.warnings
     assert out.metadata["live"] is True
     assert out.metadata["requested_period"] == "YTD"
 
