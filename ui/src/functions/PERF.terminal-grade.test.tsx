@@ -44,7 +44,7 @@ const _entry = (over: Partial<LeaderboardEntry>): LeaderboardEntry => ({
 
 const _metrics = (over: Partial<PerformanceMetrics> = {}): PerformanceMetrics => ({
   total_pnl: 50, win_rate: 0.6, trade_count: 30, avg_pnl: 1.7, max_drawdown: 8,
-  net_pnl: 48, sharpe: 1.42, sortino: 2.1, profit_factor: 1.8,
+  net_pnl: 48, t_stat_per_trade: 1.42, sortino_t_stat_per_trade: 2.1, profit_factor: 1.8,
   expectancy: 1.5, max_consecutive_losses: 3, ...over,
 });
 
@@ -115,11 +115,11 @@ describe("PERF F1 — equity-curve honesty", () => {
 
 // ─── F2 — surfaced risk metrics with sample-size honesty ─────────────────
 describe("PERF F2 — risk metrics + sample size", () => {
-  it("renders sharpe / sortino / profit_factor in the detail", () => {
-    seedSelected({ metrics: _metrics({ sharpe: 1.42, sortino: 2.1, profit_factor: 1.8, trade_count: 30 }) });
+  it("renders t-stat / sortino t-stat / profit_factor in the detail", () => {
+    seedSelected({ metrics: _metrics({ t_stat_per_trade: 1.42, sortino_t_stat_per_trade: 2.1, profit_factor: 1.8, trade_count: 30 }) });
     render(<PERFPane />);
-    expect(screen.getByTestId("perf-sharpe").textContent).toBe("1.42");
-    expect(screen.getByTestId("perf-sortino").textContent).toBe("2.10");
+    expect(screen.getByTestId("perf-t-stat").textContent).toBe("1.42");
+    expect(screen.getByTestId("perf-sortino-t-stat").textContent).toBe("2.10");
     expect(screen.getByTestId("perf-profit-factor").textContent).toBe("1.80");
   });
 
@@ -136,7 +136,7 @@ describe("PERF F2 — risk metrics + sample size", () => {
     expect(warn.textContent).toMatch(/Small sample/i);
     expect(warn.textContent).toMatch(/N=4/);
     // ratios de-emphasised
-    expect(screen.getByTestId("perf-sharpe").className).toMatch(/u-text-secondary/);
+    expect(screen.getByTestId("perf-t-stat").className).toMatch(/u-text-secondary/);
   });
 
   it("does NOT render the small-N caveat when trade_count >= 20", () => {
@@ -151,10 +151,10 @@ describe("PERF F2 — risk metrics + sample size", () => {
     expect(screen.getByTestId("perf-profit-factor").textContent).toBe("∞");
   });
 
-  it("renders sharpe 'inf' as ∞", () => {
-    seedSelected({ metrics: _metrics({ sharpe: "inf", trade_count: 30 }) });
+  it("renders t-stat 'inf' as ∞", () => {
+    seedSelected({ metrics: _metrics({ t_stat_per_trade: "inf", trade_count: 30 }) });
     render(<PERFPane />);
-    expect(screen.getByTestId("perf-sharpe").textContent).toBe("∞");
+    expect(screen.getByTestId("perf-t-stat").textContent).toBe("∞");
   });
 });
 
