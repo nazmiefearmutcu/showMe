@@ -673,7 +673,45 @@ class DDISFunction(BaseFunction):
 
         # 1) user-supplied schedule -> verbatim
         if params.get("maturities") is not None:
-            rows, total = self._finalize_rows(list(params.get("maturities") or []))
+            supplied = list(params.get("maturities") or [])
+            # A row that declares its own non-USD currency would put EUR
+            # principal under a USD-named amount; refuse it the same way.
+            foreign = sorted({
+                str(row.get("currency")).upper()
+                for row in supplied
+                if isinstance(row, dict) and row.get("currency") not in (None, "")
+                and str(row.get("currency")).upper() != "USD"
+            })
+            if foreign:
+                reason = (
+                    f"DDIS amounts are USD billions; row currency {', '.join(foreign)} is not supported "
+                    "and no FX conversion is applied."
+                )
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        "status": "input_error",
+                        "rows": [],
+                        "summary": {
+                            "issuer": issuer,
+                            "scheduled_principal_usd_bn": 0.0,
+                            "total_debt_usd_bn": 0.0,
+                            "currency": currency,
+                            "source_mode": "input_error",
+                        },
+                        "reason": reason,
+                        "next_actions": [
+                            "Convert the maturity amounts to USD billions and set every row currency to USD.",
+                        ],
+                        "methodology": self._METHODOLOGY,
+                        "field_dictionary": self._FIELD_DICT,
+                    },
+                    sources=[],
+                    warnings=[reason],
+                    metadata={"data_mode": "input_error", "as_of": _as_of()},
+                )
+            rows, total = self._finalize_rows(supplied)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,

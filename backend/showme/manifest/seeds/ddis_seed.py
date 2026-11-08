@@ -64,7 +64,7 @@ def ddis() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=False,
                 description="Currency used to express principal amounts.",
-                options=["USD", "EUR", "GBP", "JPY", "TRY"],
+                options=["USD"],
             ),
             InputSpec(
                 name="maturities",

@@ -163,3 +163,27 @@ def test_ddis_seed_headline_card_is_scheduled_principal() -> None:
     assert "scheduled_principal_usd_bn" in slots
     assert "Scheduled" in slots["scheduled_principal_usd_bn"].label
     assert "total_debt_usd_bn" not in slots
+
+
+def test_non_usd_row_currency_in_manual_schedule_is_rejected() -> None:
+    # A top-level USD request must not carry rows whose own currency is EUR:
+    # those amounts would be USD-named figures for EUR principal.
+    result = _run(DDISFunction().execute(
+        issuer="ACME",
+        currency="USD",
+        maturities=[
+            {"bucket": "0-1Y", "tenor_years": 0.5, "amount_usd_bn": 10.0, "currency": "USD"},
+            {"bucket": "1-3Y", "tenor_years": 2.0, "amount_usd_bn": 30.0, "currency": "EUR"},
+        ],
+    ))
+    assert result.data["status"] == "input_error", result.data
+    assert result.data["rows"] == []
+    assert "EUR" in result.data["reason"]
+
+
+def test_ddis_seed_currency_options_are_usd_only() -> None:
+    # The handler refuses every non-USD value, so the seed must not offer any.
+    from showme.manifest.seeds.ddis_seed import ddis
+
+    currency = next(spec for spec in ddis.inputs if spec.name == "currency")
+    assert list(currency.options) == ["USD"]
