@@ -247,9 +247,9 @@ class WCRSFunction(BaseFunction):
         bases = _currency_list(params.get("bases") or params.get("base"), default=_DEFAULT_CURRENCIES[:5])
         quotes = _currency_list(params.get("quotes"), default=_DEFAULT_CURRENCIES)
         history_budget = max(0.5, min(3.0, float(params.get("history_timeout", 2.5))))
-        # History gate mirrors the matrix live gate: an explicit ``live=false``
-        # turns both off, so a pure reference matrix never mixes in live
-        # change values.
+        # History gate mirrors the matrix live gate (_wcrs_fx_live): an explicit
+        # ``live_fx=false``, or ``live=false`` when live_fx is absent, turns both
+        # off, so a pure reference matrix never mixes in live change values.
         live_enabled = _wcrs_fx_live(params)
         if live_enabled:
             # The per-currency history legs run concurrently with the matrix
@@ -1165,9 +1165,10 @@ async def _cross_matrix(
     # stamped reference matrix. All-or-nothing across bases AND quotes — a
     # currency Frankfurter does not carry disables the tier, so no cell can
     # mix live and seeded levels under a live label.
-    # R3 L-4: same gate expression as the spot tier — `live=false` turns the
-    # tier off, `live_fx=true` alone opts in, default on; an explicit
-    # `live_fx=false` also turns it off (see _wcrs_fx_live).
+    # Gate: _wcrs_fx_live. An explicit `live_fx` (true or false) wins; with
+    # `live_fx` absent the generic `live` flag (default on) decides. The spot
+    # tier in _resolve_spot still uses the older expression and is owned by
+    # another group.
     if _wcrs_fx_live(params):
         timeout = float(params.get("timeout", 4))
 
