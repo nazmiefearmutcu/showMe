@@ -18,6 +18,7 @@ LOG = logging.getLogger("showme.server.function_index")
 
 
 def register(app: FastAPI, deps: AppDeps) -> None:
+    import showme.server as _server_mod  # read FUNCTION_TIMEOUT_SECONDS at call time
     from showme.server import (
         FUNCTION_TIMEOUT_SECONDS,
         _execute_showme_function,
@@ -87,50 +88,45 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 if (_time.monotonic() - hit[0]) >= 60.0:
                     home_swr_schedule(code, params, swr_key)
                 return hit[1]
+            # Cold path (no cache entry). MOST#2 / TOP#1, 2026-11-08: this used
+            # to wait 1.0 s (3.5 s when joining a boot prewarm) and then answer
+            # an empty "warming in background" envelope although the payload
+            # landed moments later - and the panes do not re-poll, so users
+            # saw empty movers/news. Wait up to the function budget instead:
+            # the answer is the real payload, an honest timeout, or the
+            # function's own error. Warm calls above still answer instantly.
+            budget = float(_server_mod.FUNCTION_TIMEOUT_SECONDS)
+            timed_out_reason = f"function timed out after {budget:.0f}s"
             # Join an in-flight boot prewarm for the same key instead of
-            # racing it: during the first minute after sidecar start this
-            # avoids returning the warming envelope while the real payload
-            # lands moments later (empty news/movers panels).
+            # racing it (never start a duplicate execution).
             joined = home_swr_inflight_task(swr_key)
             if joined is not None:
                 try:
-                    result = await asyncio.wait_for(asyncio.shield(joined), timeout=3.5)
-                except Exception:
-                    result = None
+                    result = await asyncio.wait_for(asyncio.shield(joined), timeout=budget + 1.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    home_swr_capture(code, params, swr_key, joined)
+                    return fallback_function_payload(code, params, timed_out_reason, "TimeoutError")
+                except Exception as exc:  # noqa: BLE001 - the prewarm's own failure
+                    return function_warning_payload(code, params, exc)
                 if result is not None:
                     payload = sanitize_function_payload(
                         code, params, json_safe(result.to_dict())
                     )
                     home_swr_store(swr_key, payload)
                     return payload
-                # Still running (or failed): never start a duplicate - the
-                # prewarm/capture will land the payload in this cache.
-                home_swr_capture(code, params, swr_key, joined)
-                return fallback_function_payload(
-                    code, params, "warming in background", "TimeoutError"
-                )
+                return fallback_function_payload(code, params, "function returned no result", "EmptyResult")
             task = asyncio.ensure_future(_execute_showme_function(code, params))
             home_swr_track(swr_key, task)
-            done, _pending = await asyncio.wait({task}, timeout=1.0)
-            if task not in done:
+            done, _pending = await asyncio.wait({task}, timeout=budget + 1.0)
+            if task not in done or task.cancelled():
+                # Still running past the budget: keep capturing it so the
+                # next call is warm, but say plainly that it timed out.
                 home_swr_capture(code, params, swr_key, task)
-                return fallback_function_payload(
-                    code, params, "warming in background", "TimeoutError"
-                )
-            if task.cancelled():
-                home_swr_capture(code, params, swr_key, task)
-                return fallback_function_payload(
-                    code, params, "warming in background", "TimeoutError"
-                )
+                return fallback_function_payload(code, params, timed_out_reason, "TimeoutError")
             try:
                 result = task.result()
             except TimeoutError:
-                return fallback_function_payload(
-                    code,
-                    params,
-                    f"function timed out after {FUNCTION_TIMEOUT_SECONDS:.0f}s",
-                    "TimeoutError",
-                )
+                return fallback_function_payload(code, params, timed_out_reason, "TimeoutError")
             except Exception as exc:  # noqa: BLE001
                 # HNT-08: the first (1s-head-start) execution already
                 # failed deterministically — re-running it with the full
