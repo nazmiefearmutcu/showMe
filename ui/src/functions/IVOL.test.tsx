@@ -507,3 +507,34 @@ describe("IVOL pane — footer provenance", () => {
     expect(within(footer).queryByText("mode")).toBeNull();
   });
 });
+
+describe("IVOL pane — WC1 IVOL#4 snapshot basis and short-expiry warning", () => {
+  it("states the snapshot time and IV convention, and shows the short-expiry warning", () => {
+    mockFn.state = "ok";
+    const base = livePayload();
+    mockFn.data = {
+      ...base,
+      data: {
+        ...base.data,
+        as_of: "2026-11-07T20:00:00+00:00",
+        iv_convention: "Implied vols are taken as reported by yfinance impliedVolatility.",
+        warnings: ["Front expiry 2026-11-09 is 1 calendar day(s) away."],
+      },
+    };
+    render(<IVOLPane code="IVOL" symbol="AAPL" />);
+    const snapshot = screen.getByTestId("ivol-snapshot");
+    expect(snapshot.textContent).toContain("Snapshot as of 2026-11-07T20:00:00+00:00");
+    expect(snapshot.textContent).toContain("as reported by yfinance");
+    expect(screen.getByText(/Front expiry 2026-11-09 is 1 calendar day/)).toBeInTheDocument();
+  });
+
+  it("says the snapshot time is unknown instead of implying one when the provider gives no as_of", () => {
+    mockFn.state = "ok";
+    const base = livePayload();
+    mockFn.data = { ...base, data: { ...base.data, as_of: null } };
+    render(<IVOLPane code="IVOL" symbol="AAPL" />);
+    expect(screen.getByTestId("ivol-snapshot").textContent).toContain(
+      "Snapshot time not supplied by the provider.",
+    );
+  });
+});
