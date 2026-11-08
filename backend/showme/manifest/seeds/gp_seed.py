@@ -77,7 +77,11 @@ def gp() -> FunctionManifest:
                 label="Interval",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Bar interval (validated against range).",
+                description=(
+                    "Bar interval. Not validated against the range: a window the provider "
+                    "cannot fill at this bar size is returned as a shorter span, with a warning "
+                    "and the real first/last bar."
+                ),
                 options=["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"],
                 depends_on=["range"],
             ),
@@ -293,10 +297,10 @@ def gp() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="gp_invalid_interval_for_range_rejected",
-                description="GP does not silently pass a 1M window at 1m bars: Yahoo serves 7 days of 1m, so the span is reported short with a warning.",
+                name="gp_short_intraday_span_reported_with_warning",
+                description="GP does not reject a 1M window at 1m bars: the span actually returned is reported (span_days) and a warning is added when it is shorter than the window.",
                 inputs={"symbol": "AAPL", "range": "1M", "interval": "1m"},
-                assertions=["http_422_or_degraded_with_warning"],
+                assertions=["span_days_reported", "short_span_warning_present"],
             ),
             SemanticTest(
                 name="gp_compare_overlay_normalized",
