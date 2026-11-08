@@ -156,9 +156,9 @@ export function AVPane({ code, symbol }: FunctionPaneProps) {
           tone="neutral"
         />
         <StatCard
-          label="With transcript / document"
+          label="With transcript"
           value={String(cards?.items_with_transcript ?? items.filter((i) => i.has_transcript).length)}
-          caption="PRIMARY DOC OR TRANSCRIPT ATTACHED"
+          caption="STORED TRANSCRIPT ONLY"
           tone="neutral"
         />
         <StatCard

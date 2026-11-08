@@ -41,29 +41,32 @@ _PODCAST_FEEDS = [
     "https://feeds.simplecast.com/3hnxp7yk",      # Finance/business interview archive
 ]
 
-# SEC EDGAR form code -> human media_type the manifest enumerates / understands.
-_FORM_MEDIA_TYPE = {
-    "8-K": "earnings_call",       # material events incl. earnings releases / calls
-    "8-K/A": "earnings_call",
-    "10-Q": "earnings_call",
-    "10-K": "earnings_call",
-    "ARS": "conference",          # annual report to shareholders
-    "DEF 14A": "conference",      # proxy / annual meeting
-    "DEFA14A": "conference",
-    "6-K": "earnings_call",       # foreign-issuer interim report
-    "20-F": "earnings_call",      # foreign-issuer annual report
+# SEC EDGAR forms kept as investor-relevant filings. Every SEC row is a filing
+# document, so its media_type is "filing" (not an earnings call or a conference:
+# an 8-K or 10-K is not a call recording and carries no stored transcript).
+_INVESTOR_FORMS = {
+    "8-K",
+    "8-K/A",
+    "10-Q",
+    "10-K",
+    "ARS",
+    "DEF 14A",
+    "DEFA14A",
+    "6-K",
+    "20-F",
 }
+_FILING_MEDIA_TYPE = "filing"
 
 _FIELD_DICTIONARY = {
     "event_date": "Filing / recording timestamp (ISO-8601, UTC).",
     "symbol": "Primary ticker for the issuer (uppercase).",
     "title": "Display title for the media / filing event.",
-    "media_type": "earnings_call / central_bank_presser / conference / podcast / interview.",
+    "media_type": "filing (SEC EDGAR filing document) or podcast (RSS audio episode).",
     "duration_seconds": "Asset duration in seconds when known (podcast enclosures); null for filings.",
     "play_url": "Verifiable HTTPS link to open / play the asset (SEC filing index or audio enclosure).",
     "url": "Alias of play_url for table action columns.",
     "source": "Source publisher (sec.gov, NPR Planet Money, ...).",
-    "has_transcript": "True when a textual transcript/document is directly attached.",
+    "has_transcript": "True only when a stored call transcript exists. No provider here stores one, so this is always false.",
 }
 
 _METHODOLOGY = (
@@ -292,7 +295,7 @@ class AVFunction(BaseFunction):
             )
         # Keep the investor-relevant forms; fall back to all when none match so
         # the archive is never empty for an active filer.
-        relevant = [f for f in out if f.get("form") in _FORM_MEDIA_TYPE]
+        relevant = [f for f in out if f.get("form") in _INVESTOR_FORMS]
         return relevant or out
 
     async def _resolve_cik(self, symbol: str, params: dict[str, Any]) -> int | None:
@@ -345,7 +348,6 @@ class AVFunction(BaseFunction):
                 f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/"
                 f"{accession}-index.htm"
             )
-        media_type = _FORM_MEDIA_TYPE.get(form, "conference")
         desc = str(f.get("primary_desc") or "").strip()
         edgar_items = str(f.get("edgar_items") or "").strip()
         title_bits = [f"{symbol} {form}"]
@@ -359,7 +361,7 @@ class AVFunction(BaseFunction):
             "filing_date": str(f.get("filing_date") or ""),
             "symbol": symbol,
             "title": " — ".join(title_bits),
-            "media_type": media_type,
+            "media_type": _FILING_MEDIA_TYPE,
             "duration_seconds": None,
             "play_url": play_url,
             "url": play_url,
@@ -368,7 +370,9 @@ class AVFunction(BaseFunction):
             "feed": "SEC EDGAR",
             "form": form,
             "accession": accession,
-            "has_transcript": bool(primary_doc),
+            # No transcript store is wired, so no SEC row has a stored transcript.
+            # The primary HTML document is the filing itself, not a transcript.
+            "has_transcript": False,
         }
 
     # ----------------------------------------------------------------- podcast
