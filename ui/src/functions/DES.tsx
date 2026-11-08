@@ -432,7 +432,10 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
     <DESView data={profile} symbol={effectiveSymbol} />
   );
 
-  const provider = data?.sources?.[0] ?? "pending";
+  // No answering provider is a state of its own, not a request still in flight.
+  const provider =
+    data?.sources?.[0] ??
+    (payloadStatus === "provider_unavailable" ? "unavailable" : "pending");
   const cached = !!(data as { cached?: boolean } | undefined)?.cached;
 
   return (
