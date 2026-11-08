@@ -137,7 +137,9 @@ class DDMFunction(BaseFunction):
         sensitivity = []
         for req in (r - 0.02, r, r + 0.02):
             for grow in (max(0.0, g - 0.01), g, g + 0.01):
-                value = None if req <= grow else d1 / (req - grow)
+                # D1 depends on the column's own growth: D0 * (1 + g_cell).
+                # Reusing the base-case D1 would understate the growth axis.
+                value = None if req <= grow else d0 * (1 + grow) / (req - grow)
                 sensitivity.append({
                     "required_return": round(req, 4),
                     "growth": round(grow, 4),
