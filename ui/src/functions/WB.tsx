@@ -23,7 +23,6 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
-import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -40,6 +39,7 @@ interface WBRow {
   as_of?: string;
   source_mode?: string;
   reference_vintage?: string;
+  stale?: boolean;
 }
 
 interface WBPayload {
@@ -49,6 +49,8 @@ interface WBPayload {
     tenor?: string;
     source_mode?: string;
     reference_vintage?: string;
+    latest_observation?: string;
+    stale_countries?: number;
   };
   methodology?: string;
   field_dictionary?: Record<string, string>;
@@ -121,9 +123,15 @@ export function WBPane({ code }: FunctionPaneProps) {
   // Seed contract (wb_seed.py): rank intensity / stats use the VISIBLE
   // min/max so the heat rescales when the region tab is switched.
   const stats = useMemo(() => deriveStats(rows), [rows]);
-  const utcStamp = useUtcStamp(tick);
   const sourceMode = payload.summary?.source_mode ?? rows[0]?.source_mode ?? "—";
   const isLiveSource = sourceMode === "fred";
+  // WB#1: the data date is the FRED observation date (or the template vintage),
+  // never the wall clock. Stale series are flagged, not shown as current.
+  const dataAsOf =
+    payload.summary?.latest_observation ??
+    payload.summary?.reference_vintage ??
+    null;
+  const allStale = isLiveSource && rows.length > 0 && rows.every((r) => r.stale === true);
   const modelVintage =
     payload.summary?.reference_vintage ??
     allRows.find((r) => r.reference_vintage)?.reference_vintage ??
@@ -223,7 +231,11 @@ export function WBPane({ code }: FunctionPaneProps) {
         width: 132,
         render: (r) =>
           r.source_mode === "fred" ? (
-            <Pill tone="positive" variant="soft">live FRED</Pill>
+            r.stale ? (
+              <Pill tone="warn" variant="soft">stale FRED</Pill>
+            ) : (
+              <Pill tone="positive" variant="soft">live FRED</Pill>
+            )
           ) : (
             <Pill tone="warn" variant="soft">template</Pill>
           ),
@@ -248,13 +260,13 @@ export function WBPane({ code }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>{rows.length} ctry</Pill>
-              <Pill tone="accent" variant="soft" withDot={false}>{utcStamp} UTC</Pill>
+              <Pill tone="accent" variant="soft" withDot={false}>data {dataAsOf ?? "—"}</Pill>
               <span data-testid="wb-mode-pill">
                 <Pill
-                  tone={isLiveSource ? "positive" : "warn"}
+                  tone={isLiveSource && !allStale ? "positive" : "warn"}
                   variant="soft"
                 >
-                  {isLiveSource ? "live" : "stub"}
+                  {isLiveSource ? (allStale ? "stale" : "live") : "stub"}
                 </Pill>
               </span>
               <button
@@ -297,7 +309,7 @@ export function WBPane({ code }: FunctionPaneProps) {
                 <StatCard
                   label="Avg yield"
                   value={`${stats.avg.toFixed(2)}%`}
-                  caption={`AS OF ${utcStamp} UTC · ${stats.count} ctry`}
+                  caption={`DATA AS OF ${dataAsOf ?? "—"} · ${stats.count} ctry`}
                   tone={stats.avg >= 4 ? "negative" : "positive"}
                 />
                 <StatCard

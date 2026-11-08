@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -45,6 +45,23 @@ _SOVEREIGN_FRED_IDS = {
 # were observed on the request date.
 _MODEL_TEMPLATE_VINTAGE = "2025-12-31"
 
+# WB#1: a live row whose last FRED observation is older than this is flagged
+# ``stale`` so it is never presented as a current reading.
+_STALE_AFTER_DAYS = 120
+
+
+def _observation_date(df: Any) -> str | None:
+    """ISO date of the last FRED observation, or None when it is unreadable."""
+    try:
+        last = df.index[-1]
+        return datetime.fromisoformat(str(last)[:10]).date().isoformat()
+    except Exception:
+        return None
+
+
+def _days_since(observed_on: str, today: date) -> int:
+    return (today - date.fromisoformat(observed_on)).days
+
 
 def _world_bond_template() -> dict[str, float]:
     # Static reference levels (labelled sovereign_yield_model, NOT live).
@@ -56,38 +73,55 @@ def _world_bond_template() -> dict[str, float]:
     }
 
 
-def _rows_from_yields(values: dict[str, float], source_mode: str, tenor: str = "10Y") -> dict[str, Any]:
+def _rows_from_yields(
+    values: dict[str, float],
+    source_mode: str,
+    tenor: str = "10Y",
+    observed_on: dict[str, str] | None = None,
+) -> dict[str, Any]:
     is_template = source_mode == "sovereign_yield_model"
-    as_of = (
-        _MODEL_TEMPLATE_VINTAGE
-        if is_template
-        else datetime.now(timezone.utc).date().isoformat()
-    )
-    rows = [
-        {
+    today = datetime.now(timezone.utc).date()
+    observed_on = observed_on or {}
+    rows: list[dict[str, Any]] = []
+    for country, yield_pct in values.items():
+        row: dict[str, Any] = {
             "country": country,
             "tenor": tenor,
             "yield": float(yield_pct),
-            "as_of": as_of,
             "source_mode": source_mode,
-            **({"reference_vintage": _MODEL_TEMPLATE_VINTAGE} if is_template else {}),
         }
-        for country, yield_pct in values.items()
-    ]
+        if is_template:
+            row["as_of"] = _MODEL_TEMPLATE_VINTAGE
+            row["reference_vintage"] = _MODEL_TEMPLATE_VINTAGE
+        else:
+            # WB#1: the FRED observation date, never the request date.
+            obs = observed_on[country]
+            row["as_of"] = obs
+            row["days_since_observation"] = _days_since(obs, today)
+            row["stale"] = row["days_since_observation"] > _STALE_AFTER_DAYS
+        rows.append(row)
     rows.sort(key=lambda row: str(row["country"]))
     summary: dict[str, Any] = {"countries": len(rows), "tenor": tenor, "source_mode": source_mode}
     if is_template:
         summary["reference_vintage"] = _MODEL_TEMPLATE_VINTAGE
+    else:
+        obs_dates = sorted(observed_on[c] for c in values)
+        if obs_dates:
+            summary["latest_observation"] = obs_dates[-1]
+            summary["oldest_observation"] = obs_dates[0]
+        summary["stale_countries"] = sum(1 for row in rows if row.get("stale"))
+        summary["stale_after_days"] = _STALE_AFTER_DAYS
     return {
         "rows": rows,
         "summary": summary,
-        "methodology": "WB shows sovereign benchmark yields by country. The bundled default is a 10Y comparison; each row labels country, tenor, yield, source mode, and snapshot date.",
+        "methodology": "WB shows sovereign benchmark yields by country. The bundled default is a 10Y comparison; each row labels country, tenor, yield, source mode, and the FRED observation date (or model vintage for the template).",
         "field_dictionary": {
             "country": "ISO-style country code.",
             "tenor": "Benchmark maturity used for comparison.",
             "yield": "Annualized sovereign yield percentage.",
             "source_mode": "fred when live data is available, otherwise sovereign_yield_model.",
-            "as_of": "Observation date for live rows; the model vintage for template rows.",
+            "as_of": "Last FRED observation date for live rows (not the request date); the model vintage for template rows.",
+            "stale": f"True when the last observation is more than {_STALE_AFTER_DAYS} days old.",
         },
     }
 
@@ -125,17 +159,24 @@ class WBFunction(BaseFunction):
         out: dict[str, float] = {}
         provider_errors: list[str] = []
         timeout = float(params.get("fred_timeout", 8))
+        observed_on: dict[str, str] = {}
+
         async def _one(country, fred_id):
             try:
                 df = await asyncio.wait_for(fred.series(fred_id), timeout=timeout)
-                return country, float(df["value"].iloc[-1]), None
+                obs = _observation_date(df)
+                if obs is None:
+                    return country, float("nan"), f"fred {country} ({fred_id}): observation date unavailable", None
+                return country, float(df["value"].iloc[-1]), None, obs
             except Exception as exc:
-                return country, float("nan"), f"fred {country} ({fred_id}): {exc}"
+                return country, float("nan"), f"fred {country} ({fred_id}): {exc}", None
         results = await asyncio.gather(*(
             _one(c, fid) for c, fid in fred_ids.items()
         ))
-        for c, y, err in results:
+        for c, y, err, obs in results:
             out[c] = y
+            if obs is not None:
+                observed_on[c] = obs
             if y != y:
                 # HNT-12 fix: failed/NaN countries are surfaced via
                 # provider_errors + missing_countries instead of being
@@ -148,7 +189,7 @@ class WBFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "sovereign_yield_model"), sources=["sovereign_yield_model"],
                                   warnings=["Live sovereign yields unavailable (keyed FRED adapter or keyless CSV); showing the labelled reference template.",
                                             *provider_errors])
-        data = _rows_from_yields(out, "fred")
+        data = _rows_from_yields(out, "fred", observed_on=observed_on)
         if missing_countries:
             # HNT-12 fix: partial coverage is visible in the payload, not
             # a silently shrunken heatmap.
