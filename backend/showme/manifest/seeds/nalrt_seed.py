@@ -1,9 +1,8 @@
-"""NALRT — News Alerts Center.
+"""NALRT — Critical News Alerts (high-importance sourced stories).
 
-User-defined news alerts: condition multiselect (keyword match, ticker
-match, severity, sentiment threshold, source whitelist), per-rule
-delivery (tray / notification / log), and a live alerts feed showing
-recent fires with source attribution.
+Backend handler is ``engine/functions/news/nalrt.py``. A row qualifies when its awareness
+importance score is at or above ``min_importance`` within ``hours``; severity is critical
+at 85 and up, high otherwise. The alert engine reads the same handler.
 """
 from __future__ import annotations
 
@@ -38,121 +37,61 @@ def nalrt() -> FunctionManifest:
         name="News Alerts Center",
         category=Category.NEWS_INTEL,
         intent=(
-            "User-defined news alerts: condition multiselect (keyword, ticker, severity, "
-            "sentiment threshold, source whitelist), per-rule delivery (tray / notification "
-            "/ log), and a live alerts feed showing recent fires with source attribution and "
-            "the matched rule's id."
+            "Stories whose awareness importance clears a floor within a recent window, graded "
+            "critical or high, each with publisher, sentiment and a link to the source article."
         ),
         asset_classes=[
             AssetClass.EQUITY,
             AssetClass.CRYPTO,
             AssetClass.ETF,
-            AssetClass.FX,
-            AssetClass.COMMODITY,
-            AssetClass.BOND,
-            AssetClass.RATE,
             AssetClass.INDEX,
         ],
         inputs=[
             InputSpec(
-                name="conditions",
-                label="Conditions",
-                control=ControlKind.MULTISELECT,
-                required=True,
-                description="Which alert condition primitives to enable for this rule set.",
-                options=[
-                    "keyword_match",
-                    "ticker_match",
-                    "severity_threshold",
-                    "sentiment_threshold",
-                    "source_whitelist",
-                    "topic_match",
-                    "regulatory_action",
-                    "central_bank_release",
-                ],
-            ),
-            InputSpec(
-                name="keywords",
-                label="Keywords",
-                control=ControlKind.MULTISELECT,
-                required=False,
-                description="Keyword list for keyword_match (case-insensitive, substring).",
-            ),
-            InputSpec(
-                name="tickers",
-                label="Tickers",
-                control=ControlKind.MULTISELECT,
-                required=False,
-                description="Ticker list for ticker_match (matches CN/TOP tagging output).",
-            ),
-            InputSpec(
-                name="severity_floor",
-                label="Severity floor",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Drop alerts below this severity.",
-                options=["low", "medium", "high", "critical"],
-            ),
-            InputSpec(
-                name="sentiment_threshold",
-                label="Sentiment threshold",
+                name="hours",
+                label="Window (hours)",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="|sentiment_score| >= threshold (0..1) to fire.",
+                description="Look-back window in hours (1 to 168).",
+                min=1.0,
+                max=168.0,
+                step=1.0,
+                unit="hours",
+            ),
+            InputSpec(
+                name="min_importance",
+                label="Min importance",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Awareness importance floor on the 0-100 scale; stories at or above it qualify.",
                 min=0.0,
-                max=1.0,
-                step=0.05,
+                max=100.0,
+                step=1.0,
             ),
             InputSpec(
-                name="delivery",
-                label="Delivery",
-                control=ControlKind.MULTISELECT,
+                name="limit",
+                label="Rows",
+                control=ControlKind.NUMBER,
                 required=False,
-                description="Delivery channels for matched alerts.",
-                options=["tray", "notification", "log"],
-            ),
-            InputSpec(
-                name="lookback",
-                label="Feed lookback",
-                control=ControlKind.SELECT,
-                required=False,
-                description="How far back to render the alerts feed.",
-                options=["1h", "6h", "24h", "7d"],
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Maximum number of alert rows (1 to 200).",
+                min=1.0,
+                max=200.0,
+                step=1.0,
             ),
         ],
-        defaults={
-            "conditions": ["keyword_match", "ticker_match", "severity_threshold"],
-            "keywords": [],
-            "tickers": [],
-            "severity_floor": "medium",
-            "sentiment_threshold": 0.5,
-            "delivery": ["tray"],
-            "lookback": "24h",
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
-        },
+        defaults={"hours": 6, "min_importance": 70, "limit": 30},
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["cached_snapshot"],
+            primary="awareness",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=True),
+        caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["as_of", "rules", "fires", "data_mode"],
+            must_have=["status", "rows", "alerts", "meta"],
             rows=True,
             series=False,
             cards=True,
@@ -161,55 +100,43 @@ def nalrt() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="fired_utc", label="Fired", kind="datetime", format="rel-time"),
-                ColumnSpec(key="rule_id", label="Rule", kind="tag"),
-                ColumnSpec(key="condition", label="Condition", kind="tag"),
-                ColumnSpec(key="symbol", label="Symbol", kind="tag"),
-                ColumnSpec(key="source", label="Source", kind="tag"),
-                ColumnSpec(key="title", label="Headline", kind="text"),
+                ColumnSpec(key="published_at", label="Published", kind="datetime", format="rel-time"),
                 ColumnSpec(key="severity", label="Severity", kind="tag"),
+                ColumnSpec(key="publisher", label="Source", kind="tag"),
+                ColumnSpec(key="title", label="Headline", kind="text"),
+                ColumnSpec(key="symbols", label="Symbols", kind="tag"),
                 ColumnSpec(key="sentiment", label="Sentiment", kind="tag"),
-                ColumnSpec(key="link", label="Article", kind="action"),
+                ColumnSpec(key="importance", label="Importance", kind="number", format="%.0f"),
+                ColumnSpec(key="url", label="Article", kind="action"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="rules_active", label="Rules", kind="kpi"),
-                CardSlot(key="fires_count", label="Fires", kind="kpi"),
+                CardSlot(key="alert_count", label="Alerts", kind="kpi"),
                 CardSlot(key="critical_count", label="Critical", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "NALRT scans the unified news stream (TOP + CN feeds + curated wire pulls) against "
-            "every active rule on each tick. A rule is a conjunction of the enabled condition "
-            "primitives — keyword_match (substring on title+body), ticker_match (exact match "
-            "against CN/TOP's tagger), severity_threshold (>= floor), sentiment_threshold "
-            "(|score| >= threshold), source_whitelist (publisher in list), and the curated "
-            "primitives (regulatory_action, central_bank_release). When all conditions match, "
-            "a fire row is recorded with the matched rule_id, condition list, and a verbatim "
-            "snapshot of the source article (title + source + link + published_utc). Fires are "
-            "delivered to the configured channels — tray (in-app drawer), notification (OS), "
-            "log (persistent JSONL). The feed in the response carries every fire within the "
-            "lookback window; matched rules carry no synthetic content — every row points back "
-            "to a real article URL."
+            "NALRT reads the awareness news stream collapsed to stories at quality standard or "
+            "better, keeps the stories whose importance score (0-100, awareness) is at or above "
+            "min_importance within the hours window, and grades them: critical at importance 85 "
+            "and up, high otherwise. Each row is a real publisher article with its title, "
+            "publisher, timestamp, FinBERT sentiment and link. Nothing is synthesised: when no "
+            "story clears the floor the response is empty, and when awareness is unreachable it "
+            "is provider_unavailable."
         ),
         field_dict={
-            "rules[].id": FieldDef(description="Stable rule id (hash of the rule definition).", source="computed"),
-            "rules[].conditions": FieldDef(description="Active condition primitives for this rule.", source="input"),
-            "rules[].delivery": FieldDef(description="Delivery channels for this rule's fires.", source="input"),
-            "fires[].fired_utc": FieldDef(unit="iso8601", description="When the alert fired.", source="scanner"),
-            "fires[].rule_id": FieldDef(description="Matched rule id.", source="scanner"),
-            "fires[].condition": FieldDef(description="Primary condition that triggered the fire.", source="scanner"),
-            "fires[].symbol": FieldDef(description="Symbol tag from CN/TOP.", source="tagger"),
-            "fires[].source": FieldDef(description="Publisher domain.", source="article"),
-            "fires[].title": FieldDef(description="Verbatim source headline — no rephrasing.", source="article"),
-            "fires[].severity": FieldDef(description="Severity from enrichment (low/medium/high/critical).", source="enrichment"),
-            "fires[].sentiment": FieldDef(description="pos/neu/neg from FinBERT.", source="finbert"),
-            "fires[].link": FieldDef(unit="url", description="Direct link to the source article.", source="article"),
+            "rows[].published_at": FieldDef(unit="iso8601", description="Publisher timestamp (UTC).", source="feed"),
+            "rows[].severity": FieldDef(description="critical (importance >= 85) or high.", source="computed"),
+            "rows[].publisher": FieldDef(description="Publisher name.", source="feed"),
+            "rows[].title": FieldDef(description="Headline verbatim from the publisher.", source="feed"),
+            "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (FinBERT label).", source="finbert"),
+            "rows[].importance": FieldDef(unit="0-100", description="Awareness importance score.", source="awareness"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -217,45 +144,27 @@ def nalrt() -> FunctionManifest:
             require_latency_ms=True,
         ),
         alerting=AlertingSpec(
-            conditions=[
-                "keyword_match",
-                "ticker_match",
-                "severity_threshold",
-                "sentiment_threshold",
-                "source_whitelist",
-                "topic_match",
-                "regulatory_action",
-                "central_bank_release",
-            ],
-            delivery=["tray", "notification", "log"],
+            conditions=["importance_at_or_above_min_importance"],
+            delivery=["tray", "log"],
         ),
         semantic_tests=[
             SemanticTest(
                 name="nalrt_fire_links_to_real_article",
-                description="Asserts every fire row has a non-empty link AND title is verbatim from the source article (not rephrased).",
-                inputs={"conditions": ["keyword_match"], "keywords": ["earnings"]},
-                assertions=[
-                    "every_fire_has_link",
-                    "every_fire_title_matches_source_article_verbatim",
-                ],
+                description="Every alert row has a non-empty url and a headline verbatim from the publisher.",
+                inputs={"min_importance": 70},
+                assertions=["every_row_has_url", "title_is_publisher_headline"],
             ),
             SemanticTest(
-                name="nalrt_severity_floor_excludes_below",
-                description="With severity_floor='high', asserts every fire has severity ∈ {high, critical}.",
-                inputs={"severity_floor": "high"},
-                assertions=["every_fire_severity_ge_high"],
+                name="nalrt_severity_grades_by_importance",
+                description="Rows with importance >= 85 are critical; rows between min_importance and 85 are high.",
+                inputs={"min_importance": 70},
+                assertions=["critical_iff_importance_at_least_85"],
             ),
             SemanticTest(
-                name="nalrt_rule_id_is_stable",
-                description="Same rule definition produces the same rule_id across calls (id is a hash of the rule, not random).",
-                inputs={},
-                assertions=["rule_id_deterministic_for_same_definition"],
-            ),
-            SemanticTest(
-                name="nalrt_no_synthetic_fires",
-                description="When the unified news stream has no matches in the lookback, asserts fires=[] and no synthetic placeholder row appears.",
-                inputs={"_mock": "stream_no_match"},
-                assertions=["fires_empty_array_on_no_match"],
+                name="nalrt_no_synthetic_alerts",
+                description="When no story clears min_importance, rows is empty and status is empty.",
+                inputs={"min_importance": 100},
+                assertions=["rows_empty_when_no_story_clears_floor"],
             ),
         ],
     )
