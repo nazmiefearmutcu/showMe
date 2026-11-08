@@ -912,49 +912,8 @@ def test_av_media_rows_keep_playable_audio_url(monkeypatch) -> None:
     assert _matches_query(row, "market")
 
 
-def test_brief_live_composes_from_top_items_and_returns_articles(monkeypatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.core.base_function import FunctionResult
-    from showme.engine.functions.news import top as top_mod
-    from showme.engine.functions.news.brief import BRIEFFunction
-
-    # 2026-06-01 contract change: BRIEF no longer sources headlines from the
-    # READ reading-list store (which is empty for a fresh user). It composes
-    # from TOP, which ranks live RSS/GDELT headlines under the ``items`` key —
-    # the exact key the old BRIEF ignored. This fake TOP proves BRIEF reads
-    # ``items`` and unescapes article HTML.
-    class FakeTOP:
-        def __init__(self, _deps):
-            pass
-
-        async def execute(self, **kwargs):
-            assert kwargs["live"] is True
-            sym = kwargs.get("symbol") or "MACRO"
-            return FunctionResult(
-                code="TOP",
-                instrument=None,
-                data={"items": [{
-                    "title": f"{sym} supply-chain story",
-                    "url": f"https://example.com/{sym}",
-                    "matched_symbol": sym,
-                    "source": "rss",
-                    "summary": "<p>Apple &amp; suppliers raised guidance.</p>",
-                }], "status": "ok"},
-                sources=["rss"],
-                metadata={"provider_errors": []},
-            )
-
-    monkeypatch.setattr(top_mod, "TOPFunction", FakeTOP)
-
-    result = asyncio.run(BRIEFFunction().execute(live=True, watchlist=["AAPL"]))
-
-    assert result.data["status"] == "ok"
-    assert result.data["article_count"] >= 1
-    assert "supply-chain story" in result.data["markdown"]
-    assert any(
-        a["summary"] == "Apple & suppliers raised guidance."
-        for a in result.data["articles"]
-    )
+# BRIEF composition is covered against Awareness rows in tests/test_bughunt_s02.py and
+# tests/test_f5_awareness_consumers.py (TOP macro leg + CN watchlist leg).
 
 
 def _evts_client(handler):
