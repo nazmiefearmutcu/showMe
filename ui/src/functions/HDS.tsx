@@ -368,11 +368,14 @@ function deriveStats(rows: HDSRow[]): HDSStats {
   };
 }
 
-/** Normalize a % outstanding figure: yfinance reports fractions (0.087). */
+/**
+ * pct_outstanding is a fraction of shares outstanding (yfinance pctHeld, 0.087).
+ * The unit is never guessed from magnitude: values outside [0, 1] are missing.
+ */
 function normalizePct(v: unknown): number | null {
   const n = finite(v);
-  if (n == null) return null;
-  return Math.abs(n) <= 1.5 ? n * 100 : n;
+  if (n == null || n < 0 || n > 1) return null;
+  return n * 100;
 }
 
 function fmtPctOut(v: unknown): string {
