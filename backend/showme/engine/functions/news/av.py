@@ -58,7 +58,8 @@ _INVESTOR_FORMS = {
 _FILING_MEDIA_TYPE = "filing"
 
 _FIELD_DICTIONARY = {
-    "event_date": "Filing / recording timestamp (ISO-8601, UTC).",
+    "event_date": "Filing date (SEC filingDate, ISO-8601) or episode publish date (RSS).",
+    "period_end": "SEC fiscal period end for a filing (reportDate); empty when SEC gives none.",
     "symbol": "Primary ticker for the issuer (uppercase).",
     "title": "Display title for the media / filing event.",
     "media_type": "filing (SEC EDGAR filing document) or podcast (RSS audio episode).",
@@ -355,10 +356,13 @@ class AVFunction(BaseFunction):
             title_bits.append(desc)
         elif edgar_items:
             title_bits.append(f"Items {edgar_items}")
-        event_date = str(f.get("report_date") or f.get("filing_date") or "").strip()
+        filing_date = str(f.get("filing_date") or "").strip()
         return {
-            "event_date": event_date,
-            "filing_date": str(f.get("filing_date") or ""),
+            # event_date is the filing timestamp (SEC filingDate). The fiscal
+            # period end (reportDate) is kept separately as period_end.
+            "event_date": filing_date,
+            "filing_date": filing_date,
+            "period_end": str(f.get("report_date") or "").strip(),
             "symbol": symbol,
             "title": " — ".join(title_bits),
             "media_type": _FILING_MEDIA_TYPE,
