@@ -348,3 +348,22 @@ def test_mars_malformed_weights_are_an_input_error_without_fetching(bad):
     assert result.data["reason"]
     assert yf.asked == [], "malformed weights must not trigger any live fetch"
     assert result.metadata.get("live") is False
+
+
+# ────────────────────────────────────────────────────────────────────────
+# MARS#3-RQ: a partly live result must attribute the live series to yfinance
+# and must not read as a model (data_mode modeled while risk_basis is live).
+# ────────────────────────────────────────────────────────────────────────
+
+
+def test_mars_partial_live_result_attributes_yfinance_and_is_partial():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    yf = _KeyedYfinance(ok_symbols={"AAPL", "SPY", "IWM", "VLUE", "MTUM", "QUAL", "USMV"})
+    result = _run(MARSFunction(FunctionDeps(yfinance=yf)).execute(
+        instrument=EQ, symbols=["AAPL", "BTCUSDT"], live=True,
+    ))
+    assert result.data["risk_basis"] == "live_series"
+    assert "yfinance" in result.sources, f"live series must be attributed, got {result.sources}"
+    assert result.metadata.get("data_mode") == "partial_live", result.metadata
+    assert result.metadata.get("data_mode") != "modeled"

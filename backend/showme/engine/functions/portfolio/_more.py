@@ -805,12 +805,30 @@ class MARSFunction(BaseFunction):
         leg_weights = _mars_leg_weights(port_ret.columns, holdings)
         port_series = (port_ret * leg_weights).sum(axis=1)
         metadata["weighting"] = weighting
+        # MARS#3-RQ: every live series that feeds the result is attributed to
+        # yfinance, and a result that mixes live and template or dropped inputs
+        # is labelled partial_live (not modeled), so its label matches its basis.
+        live_factors = (not factors_template) and bool(loaded_proxies)
+        live_legs = (not portfolio_template) and len(port_ret.columns) > 0
+        any_live = live_factors or live_legs
+        any_template = factors_template or portfolio_template
+        if metadata.get("live") is True:
+            pass  # fully live: data_mode stays live_yfinance
+        elif any_live:
+            metadata.update({"live": False, "fallback": True, "data_mode": "partial_live"})
+        else:
+            metadata.update({"live": False, "data_mode": "modeled"})
+        series_sources: list[str] = []
+        if any_live:
+            series_sources.append("yfinance")
+        if any_template or not any_live:
+            series_sources.append("multi_asset_risk_model")
         return _mars_result(
             code=self.code,
             instrument=instrument,
             factors=factors,
             port_series=port_series,
-            sources=["yfinance"] if metadata.get("live") else ["multi_asset_risk_model"],
+            sources=series_sources,
             warnings=warnings,
             metadata=metadata,
             factors_are_template=factors_template,

@@ -81,8 +81,10 @@ def test_mars_partial_proxy_coverage_is_labelled_not_live():
     metadata = result.metadata or {}
     assert metadata.get("live") is False, "partial proxy coverage must not claim live"
     assert metadata.get("fallback") is True
-    assert metadata.get("data_mode") == "modeled"
-    assert result.sources == ["multi_asset_risk_model"]
+    # MARS#3-RQ: the five live proxies and the live leg feed the regression, so
+    # the result is partial_live and yfinance is attributed (not a model).
+    assert metadata.get("data_mode") == "partial_live"
+    assert result.sources == ["yfinance"]
     # The warning names the missing factor and the survivors.
     joined = " ".join(result.warnings).lower()
     assert "bab" in joined, f"warning must name the missing factor, got: {result.warnings}"
