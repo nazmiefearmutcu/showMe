@@ -212,3 +212,22 @@ def test_onch_outage_data_mode_is_provider_unavailable_not_not_configured(monkey
     assert data["status"] == "provider_unavailable"
     assert data["data_mode"] == "provider_unavailable"
     assert data["rows"] == []
+
+
+def test_onch_mempool_backlog_is_the_mempool_count_not_the_projected_sum(monkeypatch: Any) -> None:
+    result = _run_onch(monkeypatch, _OnchClient())
+    data = result.data
+    assert data["status"] == "ok"
+    rows = {r["metric"]: r for r in data["rows"]}
+
+    # The label says mempool backlog: it must be the mempool-wide count that
+    # /api/mempool reports, not the sum over the 8 projected blocks.
+    assert rows["Mempool Backlog"]["value"] == f"{_ONCH_MEMPOOL_COUNT:,}"
+    assert "projected" not in rows["Mempool Backlog"]["context"].lower()
+
+    # The projected-window sum stays available, honestly labelled as such.
+    projected = rows["Projected Block Txs"]
+    assert projected["value"] == f"{sum(_ONCH_BLOCK_TXS):,}"
+    assert "projected" in projected["context"].lower()
+    assert data["cards"][1]["value"] == f"{_ONCH_MEMPOOL_COUNT:,} tx"
+    assert f"{_ONCH_MEMPOOL_COUNT:,} txs in the mempool" in data["summary"]

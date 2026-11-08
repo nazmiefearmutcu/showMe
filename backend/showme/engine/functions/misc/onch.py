@@ -128,12 +128,13 @@ class ONCHFunction(BaseFunction):
             return resp.json()
 
         # mempool.space core (all keyless, all required for a healthy payload)
-        fees, blocks, diff, hashr, tip = await asyncio.gather(
+        fees, blocks, diff, hashr, tip, mempool_info = await asyncio.gather(
             _json(f"{_MEMPOOL_BASE}/v1/fees/recommended"),
             _json(f"{_MEMPOOL_BASE}/v1/fees/mempool-blocks"),
             _json(f"{_MEMPOOL_BASE}/v1/difficulty-adjustment"),
             _json(f"{_MEMPOOL_BASE}/v1/mining/hashrate/3d"),
             _json(f"{_MEMPOOL_BASE}/blocks/tip/height"),
+            _json(f"{_MEMPOOL_BASE}/mempool"),
         )
 
         if not isinstance(blocks, list):
@@ -151,8 +152,16 @@ class ONCHFunction(BaseFunction):
         economy = _as_num(fees.get("economyFee"))
         minimum = _as_num(fees.get("minimumFee"))
 
-        mempool_count = sum(int(b.get("nTx", 0) or 0) for b in blocks)
+        # Mempool-wide backlog is the count /api/mempool reports. The sum over
+        # the projected next blocks is a different (window-capped) quantity and
+        # is kept as its own row.
+        mempool_count: int | None = None
+        if isinstance(mempool_info, dict):
+            raw_count = _as_num(mempool_info.get("count"))
+            mempool_count = int(raw_count) if raw_count is not None else None
+        projected_tx = sum(int(b.get("nTx", 0) or 0) for b in blocks)
         projected_blocks = len(blocks)
+        mempool_label = f"{mempool_count:,}" if mempool_count is not None else "—"
 
         hashrate_hs = _as_num(hashr.get("currentHashrate"))
         hashrate_eh = (hashrate_hs / 1e18) if hashrate_hs is not None else None
@@ -188,8 +197,10 @@ class ONCHFunction(BaseFunction):
             }
 
         rows: list[dict[str, Any]] = [
-            _row("Mempool Backlog", f"{mempool_count:,}", "tx", "mempool",
-                 f"Across {projected_blocks} projected blocks"),
+            _row("Mempool Backlog", mempool_label, "tx", "mempool",
+                 "Unconfirmed transactions in the mempool (mempool-wide)"),
+            _row("Projected Block Txs", f"{projected_tx:,}", "tx", "mempool",
+                 f"Sum over the {projected_blocks} projected next blocks"),
             _row("Fastest Fee", _fmt(fastest), "sat/vB", "mempool", "Next-block inclusion"),
             _row("Half-Hour Fee", _fmt(half_hour), "sat/vB", "mempool", "~30 min confirmation"),
             _row("Hour Fee", _fmt(hour), "sat/vB", "mempool", "~60 min confirmation"),
@@ -265,7 +276,7 @@ class ONCHFunction(BaseFunction):
 
         cards = [
             {"label": "Chain", "value": "BTC"},
-            {"label": "Mempool", "value": f"{mempool_count:,} tx"},
+            {"label": "Mempool", "value": f"{mempool_label} tx"},
             {"label": "Fastest Fee", "value": f"{_fmt(fastest)} sat/vB"},
             {"label": "Hashrate",
              "value": f"{_fmt(hashrate_eh, 1)} EH/s" if hashrate_eh is not None else "—"},
@@ -274,7 +285,7 @@ class ONCHFunction(BaseFunction):
         ]
 
         summary = (
-            f"{mempool_count:,} txs in the mempool; next-block fee "
+            f"{mempool_label} txs in the mempool; next-block fee "
             f"{_fmt(fastest)} sat/vB; hashrate {_fmt(hashrate_eh, 1)} EH/s "
             f"at difficulty {_fmt(difficulty_t, 2)} T"
         )
