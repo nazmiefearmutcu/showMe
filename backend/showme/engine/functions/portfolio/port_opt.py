@@ -84,18 +84,33 @@ class PortOptFunction(BaseFunction):
                 "weights": ms.weights, "return": ms.expected_return,
                 "vol": ms.volatility, "sharpe": ms.sharpe,
             }
+        warnings: list[str] = []
         if mode in ("min_vol", "all"):
-            mv = min_volatility(rets, allow_short=allow_short)
+            mv = min_volatility(rets, allow_short=allow_short, risk_free=rf)
             out["min_volatility"] = {
                 "weights": mv.weights, "return": mv.expected_return,
                 "vol": mv.volatility, "sharpe": mv.sharpe,
             }
         if mode in ("risk_parity", "all"):
-            rp = risk_parity(rets)
-            out["risk_parity"] = {
-                "weights": rp.weights, "return": rp.expected_return,
-                "vol": rp.volatility, "sharpe": rp.sharpe,
-            }
+            try:
+                rp = risk_parity(rets, risk_free=rf)
+            except ValueError as exc:
+                # A zero-variance asset has no defined risk contribution: report
+                # that honestly instead of inventing equal-risk weights.
+                rp = None
+                warnings.append(f"risk_parity unavailable: {exc}")
+            if rp is not None:
+                out["risk_parity"] = {
+                    "weights": rp.weights, "return": rp.expected_return,
+                    "vol": rp.volatility, "sharpe": rp.sharpe,
+                    "converged": rp.converged,
+                    "max_risk_contribution_error": rp.max_rc_error,
+                }
+                if not rp.converged:
+                    warnings.append(
+                        "risk_parity did not reach equal risk contribution "
+                        f"(max RC deviation {rp.max_rc_error:.2e}); weights are not ERC."
+                    )
         weight_rows: list[dict[str, Any]] = []
         for section in ("max_sharpe", "min_volatility", "risk_parity"):
             result = out.get(section)
@@ -137,6 +152,7 @@ class PortOptFunction(BaseFunction):
         }
         return FunctionResult(code=self.code, instrument=None, data=out,
                               sources=sources,
+                              warnings=warnings,
                               metadata={"mode": mode, "days": days,
                                          "risk_free": rf,
                                          "allow_short": allow_short,
