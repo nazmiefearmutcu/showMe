@@ -68,7 +68,7 @@ def test_sector_view_lists_every_sp500_name_in_the_sector() -> None:
     assert expected > 10
     symbols = {r["symbol"] for r in data["rows"]}
     assert {"AAPL", "MSFT", "NVDA"} <= symbols
-    assert "showme_security_master" in res.sources
+    assert "showme_security_master_reference" in res.sources
     assert "showme_gics_reference" not in res.sources
 
 
@@ -102,5 +102,5 @@ def test_missing_security_master_never_serves_partial_sector_as_full(monkeypatch
     }
     assert data["summary"]["coverage"] == data["coverage"]
     assert "showme_gics_reference" in res.sources
-    assert "showme_security_master" not in res.sources
+    assert "showme_security_master_reference" not in res.sources
     assert len(data["rows"]) == len(icx_mod._SECTOR_CONSTITUENTS["Information Technology"])

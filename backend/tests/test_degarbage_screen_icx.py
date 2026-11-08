@@ -68,7 +68,7 @@ def test_icx_returns_real_constituents():
     assert "wikipedia" not in [s.lower() for s in result.sources]
     assert "Wikipedia" not in data["methodology"]
     assert data["methodology"]
-    assert "showme_security_master" in result.sources  # sector membership source (ICX#2)
+    assert "showme_security_master_reference" in result.sources  # sector membership source (ICX#2), labelled reference
 
     summary = data["summary"]
     assert summary["sector"] == "Information Technology"
