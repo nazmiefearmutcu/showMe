@@ -12,6 +12,7 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions._fred_csv import fetch_fred_csv_series
 from showme.engine.functions.fx._frankfurter import fetch_frankfurter_rate, fetch_frankfurter_rates_dated
+from showme.engine.services.fx_hedge import decimal_rate_error
 
 
 _MAJOR_PAIRS = [
@@ -92,6 +93,9 @@ class FXFCFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         base, quote, pair = _pair_from(instrument, params)
+        rate_error = _rate_input_error(params)
+        if rate_error:
+            return _rate_error_result(self.code, instrument, pair, base, quote, rate_error)
         spot_quote_info: dict[str, Any] = {}
         spot, spot_source, source_mode = await _resolve_spot(
             self, pair, params, quote_info=spot_quote_info
@@ -364,6 +368,9 @@ class FXIPFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         base, quote, pair = _pair_from(instrument, params)
+        rate_error = _rate_input_error(params)
+        if rate_error:
+            return _rate_error_result(self.code, instrument, pair, base, quote, rate_error)
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
         r_base, base_rate_source = _fxip_rate(base, params.get("r_base"))
         r_quote, quote_rate_source = _fxip_rate(quote, params.get("r_quote"))
@@ -611,6 +618,9 @@ class FRDFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         params = _frd_canonical_params(params)
         base, quote, pair = _frd_pair(instrument, params)
+        rate_error = _rate_input_error(params)
+        if rate_error:
+            return _rate_error_result(self.code, instrument, pair, base, quote, rate_error, day_count=_FRD_DAY_COUNT)
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
         base_leg, quote_leg = await asyncio.gather(
             _frd_policy_rate(self, base, params.get("r_base"), params),
@@ -1013,6 +1023,51 @@ class OVDVFunction(BaseFunction):
             sources=_unique(sources),
             warnings=warnings,
         )
+
+
+def _rate_input_error(params: dict[str, Any]) -> str | None:
+    """XCON-6: refuse a percent-scale explicit rate (3.5 for 3.5 %) on any FX pane."""
+    return decimal_rate_error("r_base", params.get("r_base")) or decimal_rate_error(
+        "r_quote", params.get("r_quote")
+    )
+
+
+def _rate_error_result(
+    code: str,
+    instrument: Instrument | None,
+    pair: str,
+    base: str,
+    quote: str,
+    reason: str,
+    day_count: str | None = None,
+) -> FunctionResult:
+    """Explicit input_error state: no spot fetch, no forward, no fabricated level."""
+    data: dict[str, Any] = {
+        "status": "input_error",
+        "reason": reason,
+        "pair": pair,
+        "base": base,
+        "quote": quote,
+        "rows": [],
+        "curve": [],
+        "forecast": [],
+        "forward_points": None,
+        "forecast_value": None,
+        "one_month_forward": None,
+        "three_month_forward": None,
+        "carry_annualized": None,
+        "next_actions": ["Enter r_base and r_quote as decimal annual rates (3.5 % = 0.035)."],
+    }
+    if day_count is not None:
+        data["day_count"] = day_count
+    return FunctionResult(
+        code=code,
+        instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
+        data=data,
+        sources=["covered_interest_parity_formula"],
+        warnings=[reason],
+        metadata={"data_mode": "explicit_unavailable"},
+    )
 
 
 def _truthy(value: Any) -> bool:

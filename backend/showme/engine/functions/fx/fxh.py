@@ -9,7 +9,13 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.services.fx_hedge import SIDE_SIGN, FXExposure, forward_rate, hedge_book
+from showme.engine.services.fx_hedge import (
+    SIDE_SIGN,
+    FXExposure,
+    decimal_rate_error,
+    forward_rate,
+    hedge_book,
+)
 
 # Illustrative-book defaults. The pane exposes explicit inputs for all three;
 # these remain for API callers and are echoed as ``assumed_defaults`` so a
@@ -118,6 +124,11 @@ class FXHFunction(BaseFunction):
                     f"Unknown exposure side {e['side']!r}; expected long_foreign or short_foreign.",
                 )
             e["side"] = str(e["side"]).strip().lower()
+            # XCON-6: a percent entry (3.5 for 3.5 %) is refused, not used as 3.5x.
+            for rate_key in ("base_rate", "home_rate"):
+                rate_error = decimal_rate_error(rate_key, e.get(rate_key))
+                if rate_error:
+                    return _input_error(self.code, rate_error)
         # Resolve spot rates if missing. _fill_spots returns the list of
         # currencies whose spot could NOT be resolved live and were not
         # supplied manually. We do not substitute 1.0 silently — the hedge

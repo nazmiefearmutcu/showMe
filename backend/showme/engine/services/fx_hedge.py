@@ -19,6 +19,7 @@ where:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,6 +43,32 @@ def side_sign(side: str) -> float:
     if side not in SIDE_SIGN:
         raise ValueError(f"unknown exposure side {side!r}")
     return SIDE_SIGN[side]
+
+
+#: Rate inputs are decimal annual rates (3.5 % = 0.035). Anything above this
+#: magnitude is almost certainly a percent entry and is refused (XCON-6).
+RATE_DECIMAL_LIMIT = 1.0
+
+
+def decimal_rate_error(label: str, value: Any) -> str | None:
+    """Reason a rate input is unusable, or None when it is a usable decimal.
+
+    A blank value is not an error here (callers decide whether it is required).
+    """
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return f"{label}={value!r} is not a number; rates are decimal annual (3.5 % = 0.035)."
+    if not math.isfinite(number):
+        return f"{label}={value!r} is not finite; rates are decimal annual (3.5 % = 0.035)."
+    if abs(number) > RATE_DECIMAL_LIMIT:
+        return (
+            f"{label}={value:g} is above {RATE_DECIMAL_LIMIT:g}: rates are decimal annual "
+            "(3.5 % = 0.035), not percent. Enter the decimal rate."
+        )
+    return None
 
 
 def forward_rate(*, spot: float, home_rate: float, base_rate: float,
