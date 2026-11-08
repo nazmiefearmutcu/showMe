@@ -98,3 +98,30 @@ def test_fred_only_xx_and_us_is_not_status_ok(no_network: None) -> None:
     out = asyncio.run(fn.execute(countries="US,XX"))
     assert out.data["status"] in {"empty", "provider_unavailable"}, out.data
     assert out.data["rows"] == []
+
+
+# SRSK#1: recovery is a probability bounded by the seed's max 0.95. Out-of-range
+# input must be an explicit input_error, never a PD above 100% (R=1.0 gave 668%).
+@pytest.mark.parametrize("bad", [1.0, 0.99, 1.5, -0.1, "abc", float("nan")])
+def test_out_of_range_recovery_is_input_error(no_network: None, bad: Any) -> None:
+    fn = SRSKFunction(FunctionDeps(worldbank=_PartialWorldBank()))
+    out = asyncio.run(fn.execute(countries="TR,US", recovery=bad))
+    assert out.data["status"] == "input_error", out.data
+    assert out.data["rows"] == []
+    assert out.data.get("reason")
+    assert out.data.get("next_actions")
+
+
+def test_boundary_recovery_is_accepted_and_uses_the_hull_identity(no_network: None) -> None:
+    fn = SRSKFunction(FunctionDeps(worldbank=_PartialWorldBank()))
+    out = asyncio.run(fn.execute(countries="TR,US", recovery=0.95))
+    assert out.data["status"] == "ok"
+    for row in out.data["rows"]:
+        assert row["pd_1y_pct"] == pytest.approx(row["proxy_spread_pct"] / (1 - 0.95), rel=1e-6), row
+
+
+def test_default_recovery_still_works(no_network: None) -> None:
+    fn = SRSKFunction(FunctionDeps(worldbank=_PartialWorldBank()))
+    out = asyncio.run(fn.execute(countries="TR"))
+    assert out.data["status"] == "ok"
+    assert out.data["rows"][0]["recovery"] == 0.4

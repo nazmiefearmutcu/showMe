@@ -26,6 +26,7 @@ network outage, ``empty`` when the World Bank answered with no data.
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -52,6 +53,9 @@ _WB_INDICATORS: dict[str, str] = {
 }
 
 _WB_BASE = "https://api.worldbank.org/v2"
+
+# Upper bound for the recovery input (matches the seed's max); R near 1 blows up the Hull PD.
+_MAX_RECOVERY = 0.95
 
 
 def _latest_wb_value(payload: Any) -> tuple[float | None, str | None]:
@@ -202,7 +206,39 @@ class SRSKFunction(BaseFunction):
         else:
             countries = [str(item).strip().upper() for item in raw_countries if str(item).strip()]
         countries = countries[:12] or ["TR"]
-        recovery = float(params.get("recovery", 0.4))
+        recovery_raw = params.get("recovery")
+        if recovery_raw is None:
+            recovery_raw = 0.4
+        try:
+            recovery = float(recovery_raw)
+        except (TypeError, ValueError):
+            recovery = float("nan")
+        # Recovery is a probability bounded by the seed's max (0.95). Outside it the
+        # Hull denominator max(0.01, 1 - R) produces PD above 100%, so reject it.
+        if not math.isfinite(recovery) or not 0.0 <= recovery <= _MAX_RECOVERY:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (
+                        f"recovery must be a number between 0 and {_MAX_RECOVERY}; "
+                        f"got {recovery_raw!r}. No spread or PD was computed."
+                    ),
+                    "rows": [],
+                    "summary": {
+                        "countries": 0,
+                        "recovery": None,
+                        "formula": "PD ~= spread / (1 - recovery)",
+                    },
+                    "next_actions": [
+                        f"Pass a recovery rate between 0 and {_MAX_RECOVERY} (Hull default 0.4).",
+                    ],
+                },
+                sources=[],
+                warnings=[f"recovery out of range: {recovery_raw!r}"],
+                metadata={"live": False, "fallback": False},
+            )
 
         warnings: list[str] = []
         rows: list[dict[str, Any]] = []
@@ -507,7 +543,7 @@ class SRSKFunction(BaseFunction):
             "risk_score": "Composite 0-100 sovereign macro risk score (higher = riskier).",
             "proxy_spread_pct": "CDS-style proxy spread in percentage points derived from the risk score (or a real FRED yield differential when available).",
             "pd_1y_proxy": "One-year default-probability proxy as a decimal.",
-            "pd_1y_pct": "One-year default-probability proxy in percent.",
+            "pd_1y_pct": "One-year default-probability proxy in percent (linear Hull approximation spread/(1-R)). It is not capped at 100; above 100 it is not a probability and only shows how large the spread is relative to the loss given default.",
             "recovery": "Assumed recovery rate in the Hull reduced-form approximation.",
             "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'unavailable' when no live macro data exists (score, spread and PD are null, row unranked).",
             "as_of": "Observation year of the latest World Bank data point used.",
