@@ -487,7 +487,7 @@ def test_gmm_resolves_comma_separated_country_string() -> None:
     assert set(resolved) == {"US", "CN"}
     assert _resolve_countries(" US , cn ") == resolved
     # Single codes and the euro-area proxy keep working.
-    assert set(_resolve_countries("EZ")) == {"DE"}
+    assert set(_resolve_countries("EZ")) == {"EZ"}  # euro area, not Germany
 
 
 def test_gmm_seed_drops_inputs_the_handler_ignores() -> None:

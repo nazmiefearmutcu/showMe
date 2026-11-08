@@ -45,6 +45,26 @@ _DEFAULT_COUNTRIES: dict[str, str] = {
     "TR": "Turkey",
 }
 
+# Display names for every country code the manifest offers, including the
+# aggregates. EZ is the euro area and EU the European Union; neither is a
+# proxy for a member state.
+_COUNTRY_NAMES: dict[str, str] = {
+    **_DEFAULT_COUNTRIES,
+    "CH": "Switzerland",
+    "EZ": "Euro area",
+    "EU": "European Union",
+}
+
+# Our code -> World Bank request id, where the two differ (aggregates).
+_WB_REQUEST_CODE: dict[str, str] = {"EZ": "EMU", "EU": "EUU"}
+
+# World Bank response id (country.id or countryiso3code) -> our code.
+_WB_RESPONSE_CODE: dict[str, str] = {
+    "XC": "EZ",
+    "EMU": "EZ",
+    "EUU": "EU",
+}
+
 # Indicator code -> (output key, human label, unit). World Bank codes:
 #   NY.GDP.MKTP.KD.ZG  GDP growth (annual %)
 #   FP.CPI.TOTL.ZG     Inflation, consumer prices (annual %)
@@ -120,6 +140,12 @@ class GMMFunction(BaseFunction):
             {"key": "source", "label": "Source", "value": "World Bank"},
         ]
 
+        unknown = [c for c in countries if c not in _COUNTRY_NAMES]
+        unknown_warnings = [
+            f"country code {c} has no display name; shown as its code and looked up as given"
+            for c in unknown
+        ]
+
         return FunctionResult(
             code=self.code,
             instrument=None,
@@ -162,7 +188,7 @@ class GMMFunction(BaseFunction):
                 "source_mode": "worldbank",
             },
             sources=["worldbank"],
-            warnings=[],
+            warnings=unknown_warnings,
             metadata={"provider": "worldbank", "indicators": list(_INDICATORS.keys())},
         )
 
@@ -184,13 +210,11 @@ def _resolve_countries(requested: Any) -> dict[str, str]:
     out: dict[str, str] = {}
     for raw in codes:
         code = str(raw).strip().upper()
-        # Accept "EZ"/"EU" as euro-area proxy -> Germany is the largest member
-        # series available; otherwise keep known majors and pass through unknowns
-        # using the code as its own label so World Bank can still resolve it.
-        if code in _DEFAULT_COUNTRIES:
-            out[code] = _DEFAULT_COUNTRIES[code]
-        elif code in ("EZ", "EU"):
-            out["DE"] = _DEFAULT_COUNTRIES["DE"]
+        # Known codes (majors, CH, the EZ/EU aggregates) get their real name.
+        # Unknown codes pass through with the code as label so World Bank can
+        # still try them; execute() flags them with a warning.
+        if code in _COUNTRY_NAMES:
+            out[code] = _COUNTRY_NAMES[code]
         elif code:
             out[code] = code
     return out or dict(_DEFAULT_COUNTRIES)
@@ -206,7 +230,7 @@ async def _fetch_worldbank_matrix(countries: dict[str, str]) -> list[dict[str, A
     from showme.providers._http import get_client
 
     client = await get_client()
-    country_param = ";".join(countries.keys())
+    country_param = ";".join(_WB_REQUEST_CODE.get(c, c) for c in countries)
 
     async def _one_indicator(ind_code: str) -> dict[str, tuple[float, int]]:
         url = f"{_WB_BASE}/country/{country_param}/indicator/{ind_code}"
@@ -268,6 +292,9 @@ def _parse_wb_series(payload: Any) -> dict[str, tuple[float, int]]:
         iso2 = country_obj.get("id") or _iso3_to_iso2(country)
         if not iso2:
             continue
+        # Aggregates come back under their WB id (euro area = XC); map them to
+        # the code we requested so the row lands on the right country.
+        iso2 = _WB_RESPONSE_CODE.get(iso2, _WB_RESPONSE_CODE.get(country, iso2))
         try:
             year = int(obs.get("date"))
         except (TypeError, ValueError):
@@ -287,7 +314,7 @@ def _parse_wb_series(payload: Any) -> dict[str, tuple[float, int]]:
 _ISO3_ISO2 = {
     "USA": "US", "CHN": "CN", "JPN": "JP", "DEU": "DE", "GBR": "GB",
     "FRA": "FR", "IND": "IN", "BRA": "BR", "CAN": "CA", "ITA": "IT",
-    "KOR": "KR", "AUS": "AU", "MEX": "MX", "TUR": "TR",
+    "KOR": "KR", "AUS": "AU", "MEX": "MX", "TUR": "TR", "CHE": "CH",
 }
 
 

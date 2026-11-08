@@ -37,7 +37,7 @@ def test_resolve_countries_defaults_to_majors():
     assert "US" in majors and "CN" in majors and "DE" in majors
     assert majors["US"] == "United States"
     # euro-area proxy collapses to Germany series
-    assert "DE" in _resolve_countries(["EZ"])
+    assert "EZ" in _resolve_countries(["EZ"])  # euro area aggregate, not DE
 
 
 def test_parse_wb_series_extracts_latest_non_null():
