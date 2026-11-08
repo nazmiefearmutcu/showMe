@@ -798,6 +798,7 @@ class ALLQFunction(BaseFunction):
         "size": "Indicative notional size.",
         "spread_points": "Bid/ask spread in price points.",
         "spread_bps_of_price": "Bid/ask spread in basis points of mid.",
+        "synthetic": "Always true: rows are modeled from one reference anchor and one spread input, never observed dealer or TRACE quotes.",
         "quote_time": "Observation date of the reference yield (end-of-day curve), or the request time for an operator-supplied mid.",
     }
 
@@ -870,6 +871,7 @@ class ALLQFunction(BaseFunction):
             q["spread_points"] = round(q["ask"] - q["bid"], 6)
             q["spread_bps_of_price"] = round((q["spread_points"] / q["mid"]) * 10_000, 3) if q["mid"] else 0.0
             q["reference"] = ref_note
+            q["synthetic"] = True
         return quotes
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
@@ -967,6 +969,7 @@ class ALLQFunction(BaseFunction):
                 "spread_curve": [{"dealer": q["dealer"], "spread_bps_of_price": q["spread_bps_of_price"]} for q in quotes],
                 "summary": {
                     "bond": symbol,
+                    "synthetic": True,
                     "mid": round(anchor, 6),
                     "best_bid": max(q["bid"] for q in quotes),
                     "best_ask": min(q["ask"] for q in quotes),

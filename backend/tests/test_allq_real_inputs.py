@@ -447,3 +447,26 @@ def test_allq7_unavailable_summary_does_not_claim_a_source_mode() -> None:
     assert failed.data["status"] == "provider_unavailable"
     assert failed.data["summary"]["source_mode"] == "unavailable"
     assert failed.data["rows"] == []
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ALLQ#4 (flag) — every ladder row and the summary carry an explicit synthetic flag
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_allq4_rows_and_summary_carry_an_explicit_synthetic_flag() -> None:
+    """Modeled composite rows are flagged synthetic=True; the flag is never implied.
+
+    Red on the old code: no row or summary carried a synthetic key.
+    """
+    res = asyncio.run(_allq(FunctionDeps(ustreasury=_FakeCurve())).execute(instrument=_bond("US10Y")))
+    assert res.data["status"] == "ok"
+    assert all(r.get("synthetic") is True for r in res.data["rows"])
+    assert res.data["summary"].get("synthetic") is True
+    assert "synthetic" in res.data["field_dictionary"]
+
+    override = asyncio.run(
+        _allq(FunctionDeps(ustreasury=_FakeCurve())).execute(instrument=_bond("US10Y"), mid=99.5)
+    )
+    assert all(r.get("synthetic") is True for r in override.data["rows"])
+    assert override.data["summary"].get("synthetic") is True
