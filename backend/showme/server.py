@@ -87,6 +87,7 @@ from showme.chart_history import (
     normalize_history_interval,
     parse_history_bars,
 )
+from showme.chart_history import INTERVAL_SECONDS as _CHART_INTERVAL_SECONDS
 from showme.function_contracts import normalize_function_contract
 
 LOG = logging.getLogger("showme.server")
@@ -689,15 +690,29 @@ async def _execute_price_history_alias(
     rows: list[dict[str, Any]] = []
     source_name = ""
     deep = _truthy_value(params.get("deep_history", params.get("deep", True)))
+    # GP-only: fetch a warm-up before the window so overlays are not computed
+    # from the window's first bar, and report the span actually returned.
+    gp_mode = str(code).upper() == "GP"
+    fetch_days, fetch_bars = (
+        _gp_fetch_extent(days, bars, interval) if gp_mode else (days, bars)
+    )
     try:
         history = await fetch_longest_history(
             symbol=getattr(instrument, "symbol", ""),
             asset_class=str(asset_class).upper(),
             interval=interval,
-            days=days,
-            bars=bars,
+            days=fetch_days,
+            bars=fetch_bars,
             deep_history=deep,
         )
+        overlay_payload: dict[str, Any] = {}
+        span_payload: dict[str, Any] = {}
+        if history.rows and gp_mode:
+            history, overlay_payload, span_payload = _gp_window_history(
+                history, code=code, days=days, bars=bars
+            )
+        elif history.rows:
+            overlay_payload = _price_history_overlays(code, history.rows)
         if history.rows:
             FunctionResult = registry_mod.FunctionResult
             return FunctionResult(
@@ -734,7 +749,8 @@ async def _execute_price_history_alias(
                     "winner_first_ts_ms": history.metadata.get(
                         "winner_first_ts_ms"
                     ),
-                    **_price_history_overlays(code, history.rows),
+                    **overlay_payload,
+                    **span_payload,
                 },
                 sources=[history.source],
                 warnings=history.warnings,
@@ -793,6 +809,103 @@ async def _execute_price_history_alias(
             "selection_reason": "adapter_fallback",
         },
     )
+
+
+GP_INDICATOR_WARMUP_BARS = 200
+# A returned span shorter than this share of the requested window is reported.
+GP_SPAN_TOLERANCE = 0.9
+
+
+def _gp_fetch_extent(days: int, bars: int, interval: str) -> tuple[int, int]:
+    """Widen the GP history request by a warm-up before the requested window.
+
+    The extra calendar days cover ``GP_INDICATOR_WARMUP_BARS`` bars at the
+    interval (5 trading days per 7 calendar days, plus a small margin).
+    """
+    seconds = _CHART_INTERVAL_SECONDS.get(interval, 86_400)
+    warm_days = (GP_INDICATOR_WARMUP_BARS * seconds * 7) // (86_400 * 5) + 2
+    return days + warm_days, bars + GP_INDICATOR_WARMUP_BARS
+
+
+def _gp_row_seconds(row: dict[str, Any]) -> float | None:
+    try:
+        value = float(row.get("time"))
+        return value / 1000 if value >= 10_000_000_000 else value
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(row.get("date")).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _gp_window_history(
+    history: Any, *, code: str, days: int, bars: int
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """GP-only: clip the widened series to the requested window.
+
+    Overlays are computed on the full series (warm-up included) and then
+    clipped to the window. The returned span is the real first/last bar, and
+    a warning is added when it is shorter than the requested window.
+    """
+    full = list(history.rows)
+    window_start = datetime.now(tz=timezone.utc).timestamp() - days * 86_400
+    in_window = sum(
+        1
+        for row in full
+        if (_gp_row_seconds(row) or 0.0) >= window_start
+    )
+    window_rows = full[len(full) - in_window:] if in_window else full
+    display = window_rows[-bars:] if bars > 0 else window_rows
+    display_start = len(full) - len(display)
+
+    first_s = _gp_row_seconds(display[0]) if display else None
+    last_s = _gp_row_seconds(display[-1]) if display else None
+    span_days = (
+        round((last_s - first_s) / 86_400, 2)
+        if first_s is not None and last_s is not None
+        else None
+    )
+
+    overlay_payload: dict[str, Any] = {}
+    indicators = _price_history_overlays(code, full).get("indicators", {})
+    if first_s is not None and indicators:
+        clipped = {
+            name: [
+                point
+                for point in series
+                if isinstance(point.get("time"), (int, float))
+                and point["time"] >= first_s
+            ]
+            for name, series in indicators.items()
+        }
+        clipped = {name: series for name, series in clipped.items() if series}
+        if clipped:
+            overlay_payload = {"indicators": clipped}
+
+    warnings = list(history.warnings)
+    if span_days is not None and span_days < days * GP_SPAN_TOLERANCE:
+        warnings.append(
+            f"Returned history spans {span_days:g} days, shorter than the requested "
+            f"{days}-day window (provider limit, bar cap or first available bar)."
+        )
+    history.rows = display
+    history.warnings = warnings
+
+    span_payload: dict[str, Any] = {
+        "span_days": span_days,
+        "requested_days": days,
+        "first_bar_time": int(first_s) if first_s is not None else None,
+        "last_bar_time": int(last_s) if last_s is not None else None,
+        "indicator_warmup_bars": display_start,
+    }
+    if display_start > 0:
+        # Full warm-up series so the client's RSI/MACD/ATR rail reads the same history.
+        span_payload["indicator_ohlcv"] = full
+    return history, overlay_payload, span_payload
 
 
 def _price_history_overlays(code: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
