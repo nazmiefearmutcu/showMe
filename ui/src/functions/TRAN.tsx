@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * TRAN — Earnings Transcript or Release.
  *
@@ -9,6 +8,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * speakers, and jump-to-section anchors. Data honesty: when the provider is
  * unavailable / not configured the pane says so explicitly — never fake text.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Empty,

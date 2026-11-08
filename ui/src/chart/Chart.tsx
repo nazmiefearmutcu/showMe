@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * showMe chart engine — React shell (milestone 1).
  *
@@ -9,6 +8,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * zoom, drag pan, dblclick fit, keyboard), and theme integration (palette
  * resolved from the live CSS variables — every theme works).
  */
+import { foldSearchText } from "@/lib/search-fold";
 import {
   useCallback,
   useEffect,

@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * FLDS — Field Lookup (Excel autocomplete over the ShowMe field catalog).
  *
@@ -8,6 +7,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * market-data request — the pane keeps that honesty in a header pill and
  * surfaces the methodology instead of dressing rows up as quotes.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   DataGrid,

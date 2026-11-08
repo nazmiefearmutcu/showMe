@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * DEBT — Sovereign debt board.
  *
@@ -9,6 +8,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * `summary.portfolio_linked` so the macro table is never misread as real
  * portfolio exposure — surfaced honestly via the mode pill + footer.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import {
   useEffect,
   useMemo,

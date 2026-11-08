@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * PaneChrome — small top strip on every leaf with split / close / target.
  *
@@ -6,6 +5,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * primitive). Round 16 promotes this into a draggable handle for relocating
  * a pane inside the tree.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { LINK_GROUP_IDS as LINK_GROUPS, useWorkspace } from "@/lib/workspace";
 import { useAppStore } from "@/lib/store";

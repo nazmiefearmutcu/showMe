@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * BTMM — central-bank policy-rate monitor.
  *
@@ -6,6 +5,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * ribbon for hike/cut/hold tally, full-width policy-rate history chart,
  * sparkline column, sectioned filter strip, hover-lift rows.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   DataGrid,

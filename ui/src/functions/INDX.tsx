@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * INDX — Indicator Index. Sub-system F user surface.
  *
@@ -10,6 +9,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * assessment — NOT a backtested/validated metric. It is disclosed as such next to
  * every place it is shown. `suggested_strategy` is illustrative, not validated.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useEffect, useMemo, useState } from "react";
 import {
   type IndicatorEntry, type IndicatorParam,

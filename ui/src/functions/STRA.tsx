@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * STRA — Strategy editor. Sub-system E user surface.
  *
@@ -12,6 +11,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * (synthetic random-walk preview — disclosed in the UI), all via
  * `@/lib/strategy-store`.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import {
   useEffect, useState,
   type CSSProperties, type KeyboardEvent, type ReactNode,

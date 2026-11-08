@@ -1,4 +1,3 @@
-import { foldSearchText } from "@/lib/search-fold";
 /**
  * LANG — Language Switch (terminal locale options).
  *
@@ -20,6 +19,7 @@ import { foldSearchText } from "@/lib/search-fold";
  * additionally flips the document to RTL. The sidecar-persisted value is
  * shown separately and never conflated with the active UI locale.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
