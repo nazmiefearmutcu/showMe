@@ -156,6 +156,9 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
   const isReferenceModel =
     sourceMode === "model" || status === "reference_model";
   const isProviderDown = status === "provider_unavailable";
+  // NGAS#1: a contract the pane cannot serve is an explicit state, never a
+  // substituted quote. The backend sends the reason; the pane shows it.
+  const isUnsupported = status === "unsupported_contract";
   // Honesty: "live" is earned by the backend's live_* source modes only
   // (live_yfinance, live_eia, …). Model/fallback envelopes never claim it.
   const isLive = status === "ok" && /^live_/.test(sourceMode);
@@ -189,7 +192,13 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
     />
   ) : rows.length === 0 ? (
     <Empty
-      title={isProviderDown ? "No live quote returned" : "No spot rows returned"}
+      title={
+        isUnsupported
+          ? "Contract not served"
+          : isProviderDown
+            ? "No live quote returned"
+            : "No spot rows returned"
+      }
       body={
         payload?.reason ??
         "The quote provider returned no usable live snapshot. Retry once the provider recovers."
