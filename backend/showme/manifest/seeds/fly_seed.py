@@ -78,8 +78,8 @@ def fly() -> FunctionManifest:
             "limit": 25,
         },
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["opensky"],
+            primary="opensky",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.PROVIDER_UNAVAILABLE,

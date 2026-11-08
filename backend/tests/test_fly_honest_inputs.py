@@ -108,3 +108,11 @@ def test_seed_semantic_tests_match_the_feed_contract() -> None:
     joined = " ".join(f"{t.name} {t.description}" for t in tests).lower()
     assert "unavailable" in joined
     assert "store" not in joined and "operator" not in joined
+
+
+def test_provider_chain_names_the_opensky_feed_the_handler_calls() -> None:
+    # The handler calls only the opensky adapter and sources=["opensky"]; the
+    # declared chain must say the same instead of an internal-store primary.
+    chain = fly.provider_chain
+    assert chain.primary == "opensky"
+    assert chain.fallbacks == []

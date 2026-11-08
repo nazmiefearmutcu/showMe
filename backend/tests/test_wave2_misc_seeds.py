@@ -79,7 +79,12 @@ def test_misc_seed_is_registered(code: str) -> None:
     )
 
 
-@pytest.mark.parametrize("code", MISC_CODES)
+# FLY is a live external feed (OpenSky) with primary=opensky, so it is checked
+# against its own provider contract in test_fly_honest_inputs.py, not here.
+MISC_SHAPE_CODES = tuple(code for code in MISC_CODES if code != "FLY")
+
+
+@pytest.mark.parametrize("code", MISC_SHAPE_CODES)
 def test_misc_seed_shape(code: str) -> None:
     """Shape floor: MISC category, internal-friendly chain, real methodology, ≥1 test."""
     entry = MISC_ENTRIES[code]
