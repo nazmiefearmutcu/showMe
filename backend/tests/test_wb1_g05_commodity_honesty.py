@@ -261,3 +261,25 @@ def test_wetr3_model_rows_use_the_same_risk_helper() -> None:
     for row in _weather_model_rows(16, 40.0, -74.0, "US_NORTHEAST", "corn"):
         expected = _wetr_risk_flag(row["temp_c"], row["precip_mm"])
         assert row["risk_flag"] == expected
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# WETR#5 — a keyless model forecast is not labelled as official data
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_wetr5_open_meteo_live_rows_do_not_claim_live_official() -> None:
+    from showme.engine.functions.commodity._funcs import WETRFunction
+
+    class _Fake:
+        async def onecall(self, lat: float, lon: float, days: int = 10) -> dict[str, Any]:  # noqa: ARG002
+            return {"daily": [{
+                "dt": datetime(2026, 11, 8, tzinfo=timezone.utc).timestamp(),
+                "temp": {"day": 12.0, "min": 8.0, "max": 16.0},
+                "precipitation": 0.0,
+            }]}
+
+    result = asyncio.run(WETRFunction(FunctionDeps(open_meteo=_Fake())).execute())
+    assert result.data["status"] == "ok"
+    assert result.metadata.get("data_mode") != "live_official"
+    assert result.metadata.get("data_mode") == "live"
