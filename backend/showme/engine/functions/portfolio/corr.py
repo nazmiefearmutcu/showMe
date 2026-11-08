@@ -274,7 +274,8 @@ class CORRFunction(BaseFunction):
                 "provider_symbol": previous.get("provider_symbol") or _provider_symbol(symbol),
                 "message": (
                     f"More than {int(NAN_DROP_THRESHOLD * 100)}% of its expected trading sessions have "
-                    "no data; removed from correlation matrix. Weekend and holiday gaps are not counted."
+                    "no data; removed from correlation matrix. Holidays count as missing sessions; "
+                    "weekend gaps of weekday-only symbols are not counted."
                 ),
             }
         active_symbols = [s for s in symbols if s not in dropped_symbols]
@@ -310,7 +311,8 @@ class CORRFunction(BaseFunction):
         if dropped_symbols:
             warnings.insert(
                 0,
-                f"Dropped {len(dropped_symbols)} null-heavy symbol(s): "
+                f"Dropped {len(dropped_symbols)} symbol(s) missing more than "
+                f"{int(NAN_DROP_THRESHOLD * 100)}% of expected trading sessions: "
                 f"{', '.join(dropped_symbols)}",
             )
         return FunctionResult(
