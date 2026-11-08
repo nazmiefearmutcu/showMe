@@ -108,3 +108,15 @@ def test_pcas_seed_frequency_offers_only_implemented_cadence():
     spec = REGISTRY.get("PCAS")
     freq = next(i for i in spec.inputs if i.name == "frequency")
     assert list(freq.options or []) == ["1d"]
+
+
+# ---------------------------------------------------------------- PCAS #5 (n_factors is input, not provider)
+
+
+def test_pcas_n_factors_above_available_components_is_an_input_error(monkeypatch):
+    # Four assets support at most four principal components: asking for five
+    # is a user input error, not a provider outage.
+    res = _pcas_run(_pcas(monkeypatch), live="true", n_factors=5)
+    assert res.data["status"] == "input_error"
+    assert "5 principal components" in res.data["reason"]
+    assert "history supports" in res.data["reason"]

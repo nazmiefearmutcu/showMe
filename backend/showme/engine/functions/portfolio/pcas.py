@@ -124,11 +124,18 @@ class PCASFunction(BaseFunction):
         # PCA + factor shock
         try:
             decomp = pca_stress.pca_decompose(df.values)
-            if max(indices) >= decomp["loadings"].shape[0]:
-                raise ValueError(
-                    f"needs {max(indices) + 1} principal components, "
-                    f"history supports {decomp['loadings'].shape[0]}"
-                )
+        except Exception as e:
+            return _pca_failure(self.code, pc_index, k_sigma, e, df)
+        available = int(decomp["loadings"].shape[0])
+        if max(indices) >= available:
+            # Asking for more components than the history supports is a user
+            # input error (lower n_factors), not a provider outage.
+            return _empty_pcas(
+                self.code, None, pc_index, k_sigma,
+                f"needs {max(indices) + 1} principal components, history supports {available}",
+                status="input_error",
+            )
+        try:
             shocks_out = [
                 pca_stress.apply_to_portfolio(weights, df.values, pc_index=idx, k_sigma=sig)
                 for idx, sig in zip(indices, shocks)
@@ -137,16 +144,7 @@ class PCASFunction(BaseFunction):
             combined_returns = np.sum([np.asarray(s["asset_returns"]) for s in shocks_out], axis=0)
             combined_return = float(weights @ combined_returns)
         except Exception as e:
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data={
-                    **_empty_pcas(self.code, None, pc_index, k_sigma, f"pca: {e}").data,
-                    "samples": int(df.shape[0]) if hasattr(df, "shape") else 0,
-                },
-                sources=["portfolio_state"],
-                metadata={"provider_errors": [f"pca: {e}"]},
-            )
+            return _pca_failure(self.code, pc_index, k_sigma, e, df)
         top = pca_stress.top_loadings(decomp["loadings"], cols, pc_index=pc_index,
                                       top_n=top_n)
         asset_returns = [
@@ -284,6 +282,20 @@ def _factor_plan(
         return False, [], [], f"shock_set has {len(shock_list)} values for {n} factors"
     shocks = shock_list if shock_list is not None else [k_sigma] * n
     return True, list(range(n)), shocks, None
+
+
+def _pca_failure(code: str, pc_index: int, k_sigma: float, error: Exception, df: Any) -> FunctionResult:
+    """Decomposition or shock failure on the history itself (provider-side state)."""
+    return FunctionResult(
+        code=code,
+        instrument=None,
+        data={
+            **_empty_pcas(code, None, pc_index, k_sigma, f"pca: {error}").data,
+            "samples": int(df.shape[0]) if hasattr(df, "shape") else 0,
+        },
+        sources=["portfolio_state"],
+        metadata={"provider_errors": [f"pca: {error}"]},
+    )
 
 
 def _truthy(value: Any) -> bool:
