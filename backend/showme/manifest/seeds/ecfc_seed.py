@@ -1,9 +1,9 @@
 """ECFC — Economic Forecasts.
 
-IMF/OECD-style multi-indicator multi-year forecast table for a given
-country. Surfaces both the forecast vintage and the source mode so an
-analyst can tell at a glance whether a 2027 GDP growth row is an IMF
-WEO Oct vintage, an OECD interim projection, or a modeled fallback.
+Multi-indicator, multi-year IMF World Economic Outlook projection table for a
+given country, read from the keyless IMF DataMapper API. Every row is an IMF
+projection; no value is modeled or filled in. The DataMapper publishes no WEO
+edition or release date, so the vintage field names the source family only.
 """
 from __future__ import annotations
 
@@ -37,10 +37,9 @@ def ecfc() -> FunctionManifest:
         name="Economic Forecasts",
         category=Category.MACRO,
         intent=(
-            "IMF/OECD-style multi-indicator multi-year forecast table per country — "
-            "GDP growth, inflation, unemployment, current account, fiscal balance — "
-            "with explicit forecast vintage and source-mode chips so analysts can "
-            "tell a live IMF WEO row from an internally modeled fallback."
+            "IMF World Economic Outlook forecast table per country from the keyless IMF "
+            "DataMapper: GDP growth, inflation, unemployment, fiscal balance, government "
+            "debt, with source and retrieval-time labels on every payload."
         ),
         asset_classes=[
             AssetClass.RATE,
@@ -82,42 +81,18 @@ def ecfc() -> FunctionManifest:
                 max=6,
                 step=1,
             ),
-            InputSpec(
-                name="vintage",
-                label="Vintage",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Forecast publication vintage to pin (latest = newest available).",
-                options=["latest", "weo_oct", "weo_apr", "oecd_jun", "oecd_nov"],
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.MODELED.value,
-                ],
-            ),
         ],
         defaults={
             "country": "USA",
             "indicators": ["NGDP_RPCH", "PCPIPCH", "LUR", "GGXCNL_NGDP", "GGXWDG_NGDP"],
             "years": 5,
-            "vintage": "latest",
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
-            primary="fred",
-            fallbacks=["internal", "cached_snapshot"],
+            primary="imf",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.DELAYED_REFERENCE,
-                DataMode.MODELED,
-                DataMode.CACHED_SNAPSHOT,
+                DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=3600, scope="per_input", persist=True),
@@ -153,28 +128,29 @@ def ecfc() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "ECFC builds the forecast table by querying FRED's IMF WEO + OECD release series for "
-            "the requested country and indicator set, then aligning every (indicator, year) row "
-            "to a single vintage label so the analyst can pin the publication batch. The vintage "
-            "is read straight from the FRED release_dates metadata — never inferred from row "
-            "values. When FRED has no row for a (country, indicator, year) tuple the internal "
-            "fallback fills the cell with a modeled projection AND tags source_mode='modeled'; "
-            "the response also surfaces a warning naming every modeled row so it can't pass as "
-            "a live IMF row. Cards summarise indicator + year coverage and surface the dominant "
-            "source_mode and as_of timestamp. The forecast vintage is visible in the payload as "
-            "both the top-level `vintage` field and per-row `vintage` cell."
+            "ECFC reads the IMF World Economic Outlook projection series for the requested "
+            "country from the keyless IMF DataMapper API "
+            "(imf.org/external/datamapper/api/v1/{indicator}/{country}). For each requested "
+            "indicator the full per-country series is fetched and the forward years (current "
+            "year onward, up to the requested horizon) are sliced out as rows. A year the API "
+            "does not list for the country is omitted, never filled with a modeled value. Rows "
+            "carry source_mode='imf_weo'. The DataMapper publishes no WEO edition or release "
+            "date, so the top-level vintage names the source family only and as_of is the "
+            "retrieval time. When the IMF request fails the pane reports provider_unavailable "
+            "with the reason. Cards summarise the nearest-year forecast per indicator."
         ),
         field_dict={
-            "country": FieldDef(description="Country code echoed back (ISO 3166-1 alpha-3).", source="input"),
-            "vintage": FieldDef(description="Top-level forecast vintage label (e.g. weo_oct_2025).", source="fred release_dates"),
-            "rows[].indicator": FieldDef(description="IMF WEO / OECD indicator code.", source="fred"),
+            "country": FieldDef(description="Country code echoed back (ISO 3166-1 alpha-3 or IMF group code).", source="input"),
+            "vintage": FieldDef(description="Source family 'imf_weo' (IMF WEO projections via DataMapper). No WEO edition or release date is exposed, so a forecast batch cannot be pinned.", source="imf datamapper"),
+            "as_of": FieldDef(description="UTC time the IMF response was retrieved. This is a fetch time, not a WEO release date.", source="derived"),
+            "rows[].indicator": FieldDef(description="IMF WEO indicator code.", source="imf datamapper"),
             "rows[].metric": FieldDef(description="Human-readable label.", source="reference"),
-            "rows[].year": FieldDef(description="Forecast year (integer).", source="fred"),
-            "rows[].forecast_value": FieldDef(unit="varies", description="Forecast value in the indicator's native unit.", source="fred / internal"),
-            "rows[].unit": FieldDef(description="Display unit (% YoY, % of GDP, etc.).", source="reference"),
-            "rows[].vintage": FieldDef(description="Per-row forecast vintage (matches top-level vintage for live rows).", source="fred"),
-            "rows[].source_mode": FieldDef(description="Per-row source mode (imf_oecd / modeled / cached_snapshot).", source="derived"),
-            "source_mode": FieldDef(description="Dominant source mode for the payload.", source="derived"),
+            "rows[].year": FieldDef(description="Forecast year (integer).", source="imf datamapper"),
+            "rows[].forecast_value": FieldDef(unit="varies", description="IMF projection in the indicator's unit (see rows[].unit).", source="imf datamapper"),
+            "rows[].unit": FieldDef(description="Display unit (% y/y, % of GDP, USD bn).", source="reference"),
+            "rows[].vintage": FieldDef(description="Same source family as the top-level vintage ('imf_weo').", source="imf datamapper"),
+            "rows[].source_mode": FieldDef(description="Always 'imf_weo' for returned rows; no modeled rows exist.", source="derived"),
+            "source_mode": FieldDef(description="'imf_weo' for live rows, 'provider_unavailable' otherwise.", source="derived"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -193,12 +169,12 @@ def ecfc() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="ecfc_modeled_rows_are_tagged",
-                description="When FRED has no live row for a tuple, asserts the modeled fallback row carries source_mode='modeled' and a warning names the modeled row count.",
-                inputs={"country": "USA", "_mock": "fred_partial"},
+                name="ecfc_missing_year_is_omitted_not_modeled",
+                description="When the IMF series has no value for a forecast year, asserts no row is produced for that (indicator, year) and no modeled value is filled in.",
+                inputs={"country": "USA", "_mock": "imf_missing_year"},
                 assertions=[
-                    "modeled_rows_carry_source_mode_modeled",
-                    "warning_mentions_modeled_row_count",
+                    "missing_year_absent_from_rows",
+                    "no_row_has_modeled_source_mode",
                 ],
             ),
             SemanticTest(
