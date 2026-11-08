@@ -202,6 +202,29 @@ def normalize_function_contract(
     return payload
 
 
+def _status_family(data_status: str) -> str:
+    """Map a function's own ``data.status`` onto the envelope family.
+
+    Functions use many specific statuses (``no_price_history``,
+    ``archive_unavailable``, ``unsupported_location`` ...). An unknown one used
+    to fall through to ``ok``, so an empty or failed payload was published as
+    ok/live (offline audit T10, 2026-11-08). Negative shapes are classified by
+    prefix/suffix; anything else keeps the old behaviour.
+    """
+    s = data_status
+    if s in {PROVIDER_UNAVAILABLE, "not_configured", "unavailable"} or s.endswith("_unavailable"):
+        return PROVIDER_UNAVAILABLE
+    if s in {"unsupported_asset", INPUT_ERROR, INPUT_REQUIRED, "needs_input"} or s.startswith(
+        ("unsupported_", "not_applicable")
+    ):
+        return INPUT_ERROR
+    if s == CALC_ERROR or (s.endswith("_error") and s != INPUT_ERROR):
+        return CALC_ERROR
+    if s in {EMPTY, "empty_portfolio", "ready_no_positions", "insufficient_history"} or s.startswith("no_"):
+        return EMPTY
+    return ""
+
+
 def _derive_status(
     code: str,
     data: Any,
@@ -214,23 +237,21 @@ def _derive_status(
     data_status = _data_status(data)
     reason = _data_reason(data)
     actions = _data_actions(data)
+    family = _status_family(data_status)
 
-    if metadata.get("fallback") or data_status in {
-        PROVIDER_UNAVAILABLE,
-        "not_configured",
-    }:
+    if metadata.get("fallback") or family == PROVIDER_UNAVAILABLE:
         return (
             PROVIDER_UNAVAILABLE,
             reason or _first(metadata.get("provider_errors")) or "provider unavailable",
             _first(actions) or "Connect the required provider and rerun the function.",
         )
-    if data_status in {"unsupported_asset", INPUT_ERROR, INPUT_REQUIRED}:
+    if family == INPUT_ERROR:
         return (
             INPUT_ERROR,
             reason or "input is not compatible with this function",
             _first(actions) or "Change the function input to a supported symbol or asset class.",
         )
-    if data_status in {CALC_ERROR}:
+    if family == CALC_ERROR:
         return (
             CALC_ERROR,
             reason or "calculation failed",
@@ -255,7 +276,7 @@ def _derive_status(
                 _first(actions) or "Refresh fundamentals or connect a statement provider with ratio inputs.",
             )
 
-    if data_status in {EMPTY, "empty_portfolio", "ready_no_positions"}:
+    if family == EMPTY:
         return (
             EMPTY,
             reason or "no records returned for the current input",
@@ -349,7 +370,7 @@ def _extract_cards(data: Any) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for key in CARD_KEYS:
         value = data.get(key)
-        if isinstance(value, dict) and value:
+        if isinstance(value, dict) and value and not _is_blank_value(value):
             cards.append({"section": key, **value})
         elif isinstance(value, list):
             cards.extend(_objectify(row) for row in value if isinstance(row, dict))
@@ -360,7 +381,10 @@ def _extract_cards(data: Any) -> list[dict[str, Any]]:
         for key, value in data.items()
         if not isinstance(value, (dict, list)) and value not in (None, "")
     }
-    return [scalar_items] if scalar_items else []
+    # A card made only of echoed input / method / provenance fields is not data.
+    if not any(key not in _NON_DATA_KEYS for key in scalar_items):
+        return []
+    return [scalar_items]
 
 
 def _objectify(value: Any) -> dict[str, Any]:
@@ -422,15 +446,20 @@ def _is_effectively_empty(
     if isinstance(data, list):
         return len(data) == 0
     if isinstance(data, dict):
-        useful = {
-            key: value
-            for key, value in data.items()
-            if key not in {"status", "reason", "nextAction", "next_actions", "requested"}
-        }
-        if not useful:
-            return True
-        return all(_is_blank_value(value) for value in useful.values())
+        return _is_blank_value(data)
     return False
+
+
+# Keys that echo the request, describe the method or carry provenance: they
+# are present even when the provider returned nothing, so they never make a
+# payload "useful" on their own (a DES answer with only symbol/asset_class
+# filled, or a TECH answer whose only content is {"symbol", "days"}).
+_NON_DATA_KEYS = frozenset({
+    "status", "reason", "nextAction", "next_actions", "requested", "symbol", "ticker", "asset_class",
+    "code", "query", "interval", "days", "range", "period", "params", "input", "inputs", "methodology",
+    "field_dictionary", "disclaimer", "as_of", "asOf", "fetched_at", "generated_at", "source", "sources",
+    "provider",
+})
 
 
 def _is_blank_value(value: Any) -> bool:
@@ -439,7 +468,8 @@ def _is_blank_value(value: Any) -> bool:
     if isinstance(value, list):
         return len(value) == 0
     if isinstance(value, dict):
-        return not value or all(_is_blank_value(child) for child in value.values())
+        useful = [child for key, child in value.items() if key not in _NON_DATA_KEYS]
+        return all(_is_blank_value(child) for child in useful)
     return False
 
 

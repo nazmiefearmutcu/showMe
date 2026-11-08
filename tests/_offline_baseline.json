@@ -1,0 +1,69 @@
+{
+  "_doc": "Offline honesty ratchet (backend/showme/audit/offline.py): per function, count per '<check>:<rule>' with the network cut. Counts may only go down. Regenerate downward with SHOWME_UPDATE_OFFLINE_BASELINE=1 pytest tests/test_offline_honesty.py.",
+  "total": 29,
+  "counts": {
+    "BIO": {
+      "T10:offline_live_claim": 1
+    },
+    "BLAK": {
+      "T2:fake_source": 1
+    },
+    "BMC": {
+      "T10:offline_live_claim": 1
+    },
+    "BQUANT": {
+      "T10:offline_live_claim": 1
+    },
+    "BTMM": {
+      "T10:offline_live_claim": 1
+    },
+    "DAPI": {
+      "T10:offline_live_claim": 1
+    },
+    "DDM": {
+      "T10:offline_live_claim": 2
+    },
+    "DES": {
+      "T10:offline_live_claim": 2
+    },
+    "FLDS": {
+      "T10:offline_live_claim": 1
+    },
+    "GEX": {
+      "T4:placeholder_value": 2
+    },
+    "GRAB": {
+      "T10:offline_live_claim": 1
+    },
+    "GREEKS": {
+      "T4:placeholder_value": 1
+    },
+    "HFS": {
+      "T10:offline_live_claim": 2
+    },
+    "IVOL": {
+      "T4:placeholder_value": 2
+    },
+    "LANG": {
+      "T10:offline_live_claim": 1
+    },
+    "OSA": {
+      "T4:placeholder_value": 1
+    },
+    "OVDV": {
+      "T10:offline_live_claim": 2
+    },
+    "OVME": {
+      "T4:placeholder_value": 1
+    },
+    "RV": {
+      "T10:offline_live_claim": 2
+    },
+    "TRDH": {
+      "T10:offline_live_claim": 1
+    },
+    "WACC": {
+      "T2:fake_source": 2
+    }
+  }
+}
