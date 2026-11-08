@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -71,13 +72,13 @@ _FIELD_DICTIONARY = {
     "ts_ms": "Epoch-ms of the historical bar in effect at the release instant (the bar that contains it).",
     "qty": "Quantity scheduled for this slice (algo-weighted).",
     "cum_qty": "Cumulative quantity scheduled through this slice.",
-    "bar_close": "Close price of the live bar (the marketable reference).",
+    "bar_close": "Close price of the historical bar in effect at the release instant (replayed reference from stored bars).",
     "interval_vwap": "Typical-price VWAP of the bar = (H+L+C)/3 weighted by bar volume.",
     "benchmark_px": "Per-slice benchmark = interval_vwap (slippage reference).",
     "slip_bps": "(bar_close - benchmark_px)/benchmark_px * 1e4, in basis points.",
     "is_bps": "Implementation shortfall vs arrival for this slice, side-signed bps.",
     "pace_pct": "Cumulative scheduled qty / target_qty * 100.",
-    "execution_mode": "'planned' — a hypothetical schedule over live interval bars; no order was sent.",
+    "execution_mode": "'planned' — a hypothetical schedule replayed over historical interval bars; no order was sent.",
 }
 
 
@@ -102,6 +103,13 @@ def _plan_interval(asset_class: str, slot_s: float) -> str:
     change the choice (both venues serve 1m and 5m klines).
     """
     return "1m" if slot_s < 300 else "5m"
+
+
+def _drop_forming_bar(bars: list[dict[str, Any]], bar_s: float, now_s: float) -> list[dict[str, Any]]:
+    """Keep only completed bars: a bar opening at ``t`` is complete once
+    ``t + bar_s <= now_s``. The intraday feeds can return the bar still forming
+    at the request instant, which must not be replayed or set the window end."""
+    return [b for b in bars if float(b["time"]) + bar_s <= now_s]
 
 
 def _median_spacing(times: list[float]) -> float | None:
@@ -436,6 +444,9 @@ class EXECFunction(BaseFunction):
                 metadata={"status": "provider_unavailable", "provider": provider,
                           "asset_class": asset_class, "interval": interval},
             )
+
+        # EXEC#3 follow-up: replay completed bars only (see _drop_forming_bar).
+        bars = _drop_forming_bar(bars, float(bar_s_nominal), time.time())
 
         if not bars:
             return FunctionResult(
