@@ -98,6 +98,20 @@ def test_broker_listed_submitted_order_is_open(monkeypatch):
     assert res.data["rows"][0]["confirmed_open"] is True
 
 
+def test_live_broker_submitted_status_is_open(monkeypatch):
+    """A live adapter listing is itself proof of a working order, so a status
+    the broker reports as 'submitted' (e.g. IBKR "Submitted") must count as open.
+    Only history rows, which are never broker-confirmed, stay out of open_count."""
+    live = {"order_id": "ord-7", "symbol": "AAPL", "side": "BUY", "quantity": 3,
+            "price": 190.0, "status": "submitted"}
+    _install_history(monkeypatch, [])
+    deps = SimpleNamespace(ibkr_broker=_Broker("ibkr_broker", [live]))
+    res = _run(_aim(deps).execute())
+    assert res.data["cards"]["open_count"] == 1
+    assert res.data["rows"][0]["status"] == "submitted"
+    assert res.data["rows"][0]["confirmed_open"] is True
+
+
 def test_open_count_uses_same_open_vocabulary_as_pane(monkeypatch):
     live = [
         {"order_id": "a", "symbol": "AAPL", "side": "BUY", "quantity": 1, "price": 1.0, "status": "new"},

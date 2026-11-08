@@ -244,12 +244,13 @@ class AIMFunction(BaseFunction):
 
     _BROKERS = ("binance_broker", "alpaca_broker", "ibkr_broker", "oanda_broker")
 
-    # Lifecycle states that still count as working when a live broker lists
-    # the order. "submitted" is deliberately absent: it is the placement-time
-    # state EMSX / BBGT write to history, not a broker-reported state.
+    # Lifecycle states that count as working when a live adapter lists the
+    # order. "submitted" is included: a broker that reports it (IBKR "Submitted")
+    # is working the order. History rows never reach this check; EMSX/BBGT write
+    # "submitted" to history at placement and that row is never broker-confirmed.
     _OPEN_STATUSES = frozenset({
         "open", "new", "accepted", "pending", "pending_new", "working",
-        "partially_filled",
+        "partially_filled", "submitted",
     })
 
     _FIELD_DICTIONARY = {
