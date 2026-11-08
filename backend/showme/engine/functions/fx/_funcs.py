@@ -692,11 +692,19 @@ async def _atm_term_structure(
     returns = _log_returns(closes)
     if len(returns) >= 4:
         curve: list[float] = []
+        window_notes: list[str] = []
         for tenor in tenors:
             window = _TENOR_WINDOW_DAYS.get(tenor["label"].upper())
             if window is None:
                 window = max(5, min(252, int(round(tenor["years"] * 252))))
             win = returns[-window:] if len(returns) >= window else returns
+            if len(win) < window:
+                # OVDV#4: history shorter than the tenor window. The value is still
+                # live realized vol, but over fewer days than its label implies.
+                window_notes.append(
+                    f"{tenor['label']} realized vol uses {len(win)} of the {window} daily returns "
+                    "requested (history too short for that window)"
+                )
             atm = _annualized_vol(win)
             if atm is None or atm <= 0:
                 # Never swap a single tenor for a constant: the whole curve is unavailable.
@@ -709,7 +717,7 @@ async def _atm_term_structure(
                     "no reference vol is substituted",
                 )
             curve.append(atm)
-        return curve, "live_realized_vol", "delayed_reference", "yfinance", None
+        return curve, "live_realized_vol", "delayed_reference", "yfinance", ("; ".join(window_notes) or None)
 
     return (
         None,
