@@ -2273,13 +2273,20 @@ def _merge_live_most_rows(
     return out
 
 
-def _below_mover_floor(row: dict[str, Any]) -> bool:
-    """True when a row's 24h notional is known and under the movers floor."""
-    # Spot FX publishes no traded volume, so the notional floor cannot apply.
+def _mover_liquidity_tier(row: dict[str, Any]) -> int:
+    """Rank tier for the abs_change board: 2 liquid, 1 thin, 0 no evidence.
+
+    Missing data is never treated as liquidity: a row whose 24h notional is
+    unknown (or an unavailable row with null market fields) sorts below rows
+    with a known notional, thin or not. Spot FX publishes no traded volume, so
+    the notional floor cannot apply and FX rows rank as liquid.
+    """
     if _normalize_most_asset_class(row.get("asset_class")) == "fx":
-        return False
+        return 2
     dollar = row.get("dollar_volume")
-    return dollar is not None and float(dollar) < _MOST_MOVERS_MIN_DOLLAR_VOLUME
+    if dollar is None:
+        return 0
+    return 2 if float(dollar) >= _MOST_MOVERS_MIN_DOLLAR_VOLUME else 1
 
 
 def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[dict[str, Any]]:
@@ -2309,8 +2316,9 @@ def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[di
             return float(row.get("volume") or 0)
     elif sort_key in {"abs_change", "change", "mover"}:
         def key(row):
-            # wb1-g17 / MOST#4: liquid movers first; thin names sort after them.
-            return (not _below_mover_floor(row), abs(float(row.get("change_pct") or 0)))
+            # wb1-g17 / MOST#4: liquid movers first, then thin names, then rows
+            # with no liquidity evidence (unknown notional / unavailable).
+            return (_mover_liquidity_tier(row), abs(float(row.get("change_pct") or 0)))
     elif sort_key in {"activity", "score"}:
         def key(row):
             return float(row.get("activity_score") or 0)

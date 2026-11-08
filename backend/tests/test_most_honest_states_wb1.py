@@ -149,6 +149,33 @@ def test_abs_change_board_ranks_liquid_movers_before_thin_ones() -> None:
     assert len(ranked) == 3
 
 
+def test_abs_change_board_never_ranks_unavailable_rows_above_thin_movers() -> None:
+    """Missing data is not liquidity: an all-null unavailable row sorts below a thin mover."""
+    rows = [
+        {"symbol": "THIN", "asset_class": "crypto", "last": 0.0018, "volume": 1.0,
+         "dollar_volume": 3_834_192.0, "change_pct": 30.0, "quote_state": "live"},
+        {"symbol": "LIQ", "asset_class": "crypto", "last": 1.0, "volume": 1.0,
+         "dollar_volume": 45_000_000.0, "change_pct": 2.0, "quote_state": "live"},
+        {"symbol": "UNAVAIL", "asset_class": "crypto", "last": None, "volume": None,
+         "dollar_volume": None, "change_pct": None, "quote_state": "unavailable"},
+        {"symbol": "FXP", "asset_class": "fx", "last": 1.08, "volume": None,
+         "change_pct": 0.5, "quote_state": "live"},
+    ]
+    ranked = _rank_most_active_rows(rows, "abs_change")
+    assert [row["symbol"] for row in ranked] == ["LIQ", "FXP", "THIN", "UNAVAIL"]
+
+
+def test_abs_change_board_ranks_unknown_notional_below_known_thin_movers() -> None:
+    rows = [
+        {"symbol": "UNKNOWN", "asset_class": "crypto", "last": 2.0, "volume": None,
+         "dollar_volume": None, "change_pct": 9.0, "quote_state": "live"},
+        {"symbol": "THIN", "asset_class": "crypto", "last": 0.0018, "volume": 1.0,
+         "dollar_volume": 3_834_192.0, "change_pct": -5.0, "quote_state": "live"},
+    ]
+    ranked = _rank_most_active_rows(rows, "abs_change")
+    assert [row["symbol"] for row in ranked] == ["THIN", "UNKNOWN"]
+
+
 def test_fx_rows_never_report_zero_dollar_volume_in_ranking() -> None:
     ranked = _rank_most_active_rows(
         [{"symbol": "USDJPY=X", "asset_class": "fx", "last": 153.0, "volume": 0,
