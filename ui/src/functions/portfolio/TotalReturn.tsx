@@ -3,7 +3,8 @@
  *
  * Purpose-built screen for `portfolio/_more.py` TRAFunction: a growth-of-$1
  * chart from the sampled `series[]`, a TWR / IRR / CAGR / price-return KPI
- * row, a client-computed max-drawdown read on that same real series, and a
+ * row (labelled by total_return_basis), the backend max drawdown computed on the
+ * full daily series, and a
  * tail observation table. Live price history is the backend default; the
  * MODEL toggle opts into the labelled template series (`reference=true`),
  * which the shared data-quality badge then discloses.
@@ -48,6 +49,8 @@ interface TraPayload {
   twr_total?: number | null;
   irr_annualized?: number | null;
   cagr?: number | null;
+  max_drawdown?: number | null;
+  total_return_basis?: string;
   dividends_count?: number;
   dividends_total?: number;
   n_observations?: number;
@@ -133,18 +136,22 @@ export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
     [points],
   );
 
-  const maxDrawdown = useMemo(() => {
-    let peak = Number.NEGATIVE_INFINITY;
-    let worst = 0;
-    for (const value of growthValues) {
-      if (value > peak) peak = value;
-      if (peak > 0) {
-        const drawdown = value / peak - 1;
-        if (drawdown < worst) worst = drawdown;
-      }
-    }
-    return growthValues.length > 1 ? worst : null;
-  }, [growthValues]);
+  // TRA#3: the drawdown comes from the backend's full daily series. The
+  // sampled chart points cannot show peak-to-trough moves between samples.
+  const maxDrawdown =
+    typeof payload?.max_drawdown === "number" && Number.isFinite(payload.max_drawdown)
+      ? payload.max_drawdown
+      : null;
+  // TRA#2: label TWR and CAGR by the basis the backend actually used.
+  const totalBasis = str(payload?.total_return_basis);
+  const hasTotalReturn = totalBasis === "dividends_reinvested";
+  const priceOnly = totalBasis === "price_only_dividends_unavailable";
+  const twrLabel = hasTotalReturn ? "TWR (total return)" : priceOnly ? "TWR (price only)" : "TWR";
+  const cagrLabel = hasTotalReturn ? "CAGR (total return)" : priceOnly ? "CAGR (price only)" : "CAGR";
+  const drawdownTitle =
+    maxDrawdown == null
+      ? "No full-series drawdown was returned"
+      : `Full daily series, ${hasTotalReturn ? "dividends reinvested" : "price only"}`;
 
   const latestGrowth = growthValues.length ? growthValues[growthValues.length - 1] : null;
   const warnings = data?.warnings ?? [];
@@ -190,7 +197,7 @@ export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
               metrics={[
                 {
                   key: "twr",
-                  label: "TWR (total)",
+                  label: twrLabel,
                   value: fmtPct(payload?.twr_total, { fromFraction: true, signed: true }),
                   tone: toneClass(typeof payload?.twr_total === "number" ? payload.twr_total : null),
                 },
@@ -202,7 +209,7 @@ export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
                 },
                 {
                   key: "cagr",
-                  label: "CAGR",
+                  label: cagrLabel,
                   value: fmtPct(payload?.cagr, { fromFraction: true, signed: true }),
                   tone: toneClass(typeof payload?.cagr === "number" ? payload.cagr : null),
                 },
@@ -219,7 +226,7 @@ export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
                   label: "Max drawdown",
                   value: maxDrawdown == null ? "—" : formatPercent(maxDrawdown, { fromFraction: true }),
                   tone: toneClass(maxDrawdown),
-                  title: "Computed from the growth-of-1 series",
+                  title: drawdownTitle,
                 },
                 {
                   key: "dividends",
@@ -241,7 +248,7 @@ export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
 
             <aside className="portfolio-analytics-rail">
               <section className="portfolio-visual-panel">
-                <SectionHead title="Recent observations" meta="tail 15" />
+                <SectionHead title="Recent observations" meta="last 15 sampled points" />
                 <DataGrid
                   columns={OBSERVATION_COLUMNS}
                   rows={tailRows}

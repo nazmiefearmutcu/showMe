@@ -321,6 +321,23 @@ def _twr(period_returns: list[float]) -> float:
     return factor - 1.0
 
 
+def _total_daily_returns(close: pd.Series, dividends: pd.Series | None) -> list[float]:
+    """Daily total returns (close + dividend) / prior close - 1, dividends reinvested."""
+    prev = close.shift(1)
+    cash = dividends.reindex(close.index).fillna(0.0) if dividends is not None else 0.0
+    ret = (close + cash) / prev - 1.0
+    return [float(r) for r in ret.iloc[1:].tolist() if np.isfinite(r)]
+
+
+def _max_drawdown(daily_returns: list[float]) -> float | None:
+    """Most negative peak-to-trough move of the compounded index (<= 0), or None."""
+    if not daily_returns:
+        return None
+    index = np.concatenate([[1.0], np.cumprod(1.0 + np.asarray(daily_returns, dtype=float))])
+    running_peak = np.maximum.accumulate(index)
+    return float((index / running_peak - 1.0).min())
+
+
 def _irr(cashflows: list[tuple[datetime, float]],
          guess: float = 0.05, max_iter: int = 100, tol: float = 1e-6) -> float | None:
     """XIRR — Newton-Raphson on (date, amount) pairs."""
@@ -413,9 +430,16 @@ class TRAFunction(BaseFunction):
         div_count = int((divs > 0).sum()) if dividends_known else None
         div_total = float(divs.sum()) if dividends_known else None
         price_ret = float(close.iloc[-1] / close.iloc[0] - 1)
-        # TWR (daily compounded)
-        daily_returns = close.pct_change().dropna().tolist()
+        # TRA#2: TWR is a total return: each day compounds (close + dividend) over
+        # the prior close, so dividends are reinvested at the ex-date close. With
+        # no dividend series the figure is price-only and the basis says so.
+        total_basis = (
+            "dividends_reinvested" if dividends_known else "price_only_dividends_unavailable"
+        )
+        daily_returns = _total_daily_returns(close, divs if dividends_known else None)
         twr = _twr(daily_returns)
+        # TRA#3: drawdown on the full daily total-return index, not on sampled points.
+        max_dd = _max_drawdown(daily_returns)
         # MWR / IRR — buy 1 share at start, dividends as positive cashflows, sell at end
         cashflows = [(close.index[0].to_pydatetime(), -float(close.iloc[0]))]
         for d, amt in zip(divs.index, divs.values):
@@ -433,11 +457,17 @@ class TRAFunction(BaseFunction):
             )
         except Exception:
             actual_years = float(years)
+        # CAGR annualizes the same total-return growth factor as TWR (TRA#2).
+        growth_factor = 1.0 + twr
         cagr = (
-            (close.iloc[-1] / close.iloc[0]) ** (1 / actual_years) - 1
-            if actual_years > 0 and close.iloc[0] > 0
+            growth_factor ** (1 / actual_years) - 1
+            if actual_years > 0 and close.iloc[0] > 0 and growth_factor > 0
             else None
         )
+        # Chart points: every Nth bar, always including the last observation so
+        # the growth readout and the "last" date agree.
+        step = max(1, len(close) // 250)
+        sample_positions = sorted(set(range(0, len(close), step)) | {len(close) - 1})
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -456,24 +486,36 @@ class TRAFunction(BaseFunction):
                         "close": float(value),
                         "growth_of_1": float(value / close.iloc[0]) if close.iloc[0] else None,
                     }
-                    for idx, value in close.iloc[:: max(1, len(close) // 250)].items()
+                    for idx, value in close.iloc[sample_positions].items()
                 ],
                 "summary": {
                     "symbol": instrument.symbol,
                     "price_return_total": price_ret,
                     "twr_total": twr,
                     "irr_annualized": irr,
+                    "cagr": float(cagr) if cagr is not None else None,
+                    "max_drawdown": max_dd,
+                    "total_return_basis": total_basis,
                     "dividends_total": div_total,
                 },
+                "total_return_basis": total_basis,
+                "max_drawdown": max_dd,
                 "methodology": (
-                    "Compute price return from first and last adjusted closes, compound daily returns for "
-                    "time-weighted return, and estimate XIRR from buy, dividend, and sale cash flows."
+                    "Compute price return from first and last closes (raw, not dividend-adjusted). "
+                    "Compound daily total returns (close plus dividend, over the prior close) for "
+                    "time-weighted return, with dividends reinvested at their ex-date close. Estimate "
+                    "IRR from buy, dividend, and sale cash flows. Max drawdown is measured on the full "
+                    "daily total-return index. Without a dividend series, TWR and CAGR are price-only "
+                    "and total_return_basis says so."
                 ),
                 "field_dictionary": {
-                    "price_return_total": "Last close divided by first close minus one.",
-                    "twr_total": "Time-weighted return from compounded daily returns.",
+                    "price_return_total": "Last close divided by first close minus one; excludes dividends.",
+                    "twr_total": "Time-weighted total return from daily returns with dividends reinvested; price-only when total_return_basis says so.",
                     "irr_annualized": "Money-weighted annualized return from cash flows.",
-                    "growth_of_1": "Value of one invested dollar over the selected period.",
+                    "cagr": "Annualized growth of the same basis as twr_total over the observed span.",
+                    "max_drawdown": "Most negative peak-to-trough move of the daily total-return index (<= 0).",
+                    "total_return_basis": "dividends_reinvested when a dividend series was available, else price_only_dividends_unavailable.",
+                    "growth_of_1": "Value of one invested dollar over the selected period (price basis, sampled points).",
                 },
             },
             sources=sources,
