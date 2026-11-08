@@ -41,6 +41,8 @@ const MISPane = lazy(() => import("./MIS").then((m) => ({ default: m.MISPane }))
 const ASKPane = lazy(() => import("./ASK").then((m) => ({ default: m.ASKPane })));
 const TOPPane = lazy(() => import("./TOP").then((m) => ({ default: m.TOPPane })));
 const ECOPane = lazy(() => import("./ECO").then((m) => ({ default: m.ECOPane })));
+const ERNPane = lazy(() => import("./ERN").then((m) => ({ default: m.ERNPane })));
+const IPOPane = lazy(() => import("./IPO").then((m) => ({ default: m.IPOPane })));
 const WATCHPane = lazy(() => import("./WATCH").then((m) => ({ default: m.WATCHPane })));
 const ALRTPane = lazy(() => import("./ALRT").then((m) => ({ default: m.ALRTPane })));
 const NIPane = lazy(() => import("./NI").then((m) => ({ default: m.NIPane })));
@@ -221,6 +223,8 @@ const PANES: Record<string, PaneComponent> = {
   ASK: ASKPane,
   TOP: TOPPane,
   ECO: ECOPane,
+  ERN: ERNPane,
+  IPO: IPOPane,
   WATCH: WATCHPane,
   ALRT: ALRTPane,
   NI: NIPane,
