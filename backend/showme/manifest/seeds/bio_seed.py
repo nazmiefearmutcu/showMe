@@ -16,8 +16,6 @@ from ..enums import (
 from ..registry import manifest
 from ..spec import (
     CachingPolicy,
-    CardSchema,
-    CardSlot,
     FieldDef,
     FunctionManifest,
     InputSpec,
@@ -46,7 +44,7 @@ def bio() -> FunctionManifest:
                 label="Prompt reason",
                 control=ControlKind.TEXT,
                 required=True,
-                description="Reason text shown in the OS biometric prompt.",
+                description="Reason text for the OS biometric prompt. The BIO pane passes it to the Tauri bridge; this endpoint does not prompt and ignores it.",
             ),
             InputSpec(
                 name="action",
@@ -71,38 +69,29 @@ def bio() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=0, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["allowed", "via"],
-            rows=False,
+            must_have=["status", "rows"],
+            rows=True,
             series=False,
             cards=True,
             warnings=True,
-            next_actions=False,
+            next_actions=True,
         ),
-        card_schema=CardSchema(
-            slots=[
-                CardSlot(key="biometry_kind", label="Biometry", kind="badge"),
-                CardSlot(key="biometry_available", label="Available", kind="badge"),
-                CardSlot(key="passcode_available", label="Passcode", kind="badge"),
-                CardSlot(key="last_result", label="Last Verify", kind="mode_pill"),
-                CardSlot(key="session_allowed", label="Allowed", kind="kpi"),
-                CardSlot(key="session_denied", label="Denied", kind="kpi"),
-            ],
-        ),
+        card_schema=None,
         methodology=(
             "BIO is a security gate for paper→live transitions and other privileged actions. "
-            "It exposes two operations: capabilities() returns {biometry_kind, biometry_available, "
-            "passcode_available}; requestBiometric(reason) opens the macOS LocalAuthentication "
-            "prompt and resolves to {allowed, via, reason}. When the Tauri biometric bridge is "
-            "missing (browser fallback / non-Mac), the result is allowed=False with via='unavailable' "
-            "and an explicit warning — BIO never silently approves. No external provider is involved; "
-            "verifier history is in-memory only (not persisted)."
+            "The sidecar endpoint cannot probe or prompt LocalAuthentication, so it only reports "
+            "static reference rows for the host platform (status ready on macOS, unavailable "
+            "elsewhere, with a reason). The BIO pane calls the Tauri biometric bridge directly: "
+            "capabilities() and requestBiometric(reason) resolve there to {allowed, via, reason}. "
+            "When that bridge is missing (browser fallback / non-Mac), the pane gets allowed=False "
+            "with via='unavailable' and an explicit warning — BIO never silently approves. No external "
+            "provider is involved; verifier history is in-memory only (not persisted)."
         ),
         field_dict={
-            "allowed": FieldDef(description="True if the OS reported a successful authentication.", source="local_auth"),
-            "via": FieldDef(description="touch_id | watch | passcode | unavailable.", source="local_auth"),
-            "biometry_kind": FieldDef(description="touch_id | face_id | none — reported by the OS.", source="local_auth"),
-            "biometry_available": FieldDef(description="Whether the device has a usable biometry enrolment.", source="local_auth"),
-            "passcode_available": FieldDef(description="Whether the device has an owner passcode set.", source="local_auth"),
+            "status": FieldDef(description="ready on macOS; unavailable on other hosts (reason is set).", source="local_platform"),
+            "rows": FieldDef(description="Static reference rows for capabilities, verify and credential_registry; not a live probe.", source="static_reference_documentation"),
+            "host_platform": FieldDef(description="sys.platform of the sidecar host.", source="local_platform"),
+            "reason": FieldDef(description="Why verify is denied on this host, when it is.", source="local_platform"),
         },
         provenance=ProvenanceSpec(
             require_source_list=False,
@@ -112,18 +101,19 @@ def bio() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="bio_capabilities_returns_kind_and_flags",
-                description="capabilities() returns {biometry_kind, biometry_available, passcode_available} without prompting the user.",
+                name="bio_endpoint_reports_reference_status_without_probe",
+                description="The endpoint returns static reference rows and host_platform without probing or prompting the OS; on non-macOS hosts status is unavailable with a reason, never ready.",
                 inputs={},
                 assertions=[
-                    "result_has_biometry_kind",
-                    "result_has_biometry_available_bool",
-                    "result_has_passcode_available_bool",
+                    "status_is_ready_or_unavailable",
+                    "rows_describe_capabilities_verify_and_registry",
+                    "sources_static_reference_documentation",
+                    "live_is_false",
                 ],
             ),
             SemanticTest(
                 name="bio_unavailable_when_no_local_auth_bridge",
-                description="If the Tauri biometric bridge is missing (browser / non-Mac), verify resolves allowed=False with via='unavailable' and an explicit not_configured warning — never silently allowed.",
+                description="Pane-side: if the Tauri biometric bridge is missing (browser / non-Mac), verify resolves allowed=False with via='unavailable' and an explicit not_configured warning — never silently allowed.",
                 inputs={"_env": "no_local_auth_bridge"},
                 assertions=[
                     "allowed_is_false",
@@ -134,7 +124,7 @@ def bio() -> FunctionManifest:
             ),
             SemanticTest(
                 name="bio_denied_does_not_count_as_allowed",
-                description="A user-denied prompt resolves allowed=False with via='user_cancel'; session counters increment the denied bucket.",
+                description="Pane-side: a user-denied prompt resolves allowed=False with via='user_cancel'; session counters increment the denied bucket.",
                 inputs={"_mock": "user_cancel"},
                 assertions=[
                     "allowed_is_false",
