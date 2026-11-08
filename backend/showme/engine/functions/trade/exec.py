@@ -64,6 +64,7 @@ _PLAN_DEFAULT_SYMBOL = {
     "CRYPTO": "BTCUSDT",
 }
 _DEFAULT_PLAN_SYMBOL = "AAPL"
+_PLAN_SUPPORTED_ALGOS = ("TWAP", "VWAP", "ICEBERG", "SNIPER")
 
 _FIELD_DICTIONARY = {
     "slice_idx": "Zero-based slice index in the execution schedule.",
@@ -206,7 +207,7 @@ def _algo_schedule(
     """Return (schedule, resolved_algo). ``schedule`` is a list of
     ``{offset_s, qty}`` slices from the real algo modules."""
     upper = (algo or "TWAP").upper()
-    if upper == "VWAP" or upper == "POV":
+    if upper == "VWAP":
         sched = VWAPAlgo(target_quantity=target_qty, duration_seconds=horizon_s, slices=slices).schedule()
         return sched, "VWAP"
     if upper == "ICEBERG":
@@ -381,13 +382,67 @@ class EXECFunction(BaseFunction):
             symbol = _PLAN_DEFAULT_SYMBOL.get(asset_class, _DEFAULT_PLAN_SYMBOL)
 
         algo = (params.get("algo") or "TWAP").upper()
+        # EXEC#7: only algos the engine actually schedules. Anything else is refused
+        # rather than replaced by TWAP/VWAP.
+        if algo not in _PLAN_SUPPORTED_ALGOS:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "unsupported_algo",
+                    "action": "plan",
+                    "symbol": symbol,
+                    "algo": algo,
+                    "reason": (
+                        f"algo '{algo}' is not scheduled by EXEC action=plan; "
+                        f"supported: {', '.join(_PLAN_SUPPORTED_ALGOS)}"
+                    ),
+                    "supported_algos": list(_PLAN_SUPPORTED_ALGOS),
+                    "rows": [],
+                    "orders": [],
+                    "n": 0,
+                    "series": [],
+                    "cards": {},
+                    "methodology": self._plan_methodology(),
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "next_actions": [
+                        "Re-run with one of the supported algos: " + ", ".join(_PLAN_SUPPORTED_ALGOS) + ".",
+                    ],
+                },
+                sources=[],
+                metadata={"status": "unsupported_algo", "algo": algo},
+            )
         try:
-            target_qty = float(params.get("target_qty") or 100.0)
+            raw_qty = params.get("target_qty")
+            target_qty = float(raw_qty) if raw_qty is not None and str(raw_qty).strip() != "" else None
             horizon_s = int(params.get("horizon_seconds") or 600)
             slices = int(params.get("slices") or 12)
         except (TypeError, ValueError) as exc:
             return _error_result(self.code, "plan", f"invalid field value: {exc}")
-        target_qty = max(target_qty, 1e-9)
+        # EXEC#6: no silent 100-unit schedule when the parent quantity is missing.
+        if target_qty is None or target_qty <= 0:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "needs_input",
+                    "action": "plan",
+                    "symbol": symbol,
+                    "algo": algo,
+                    "reason": "target_qty (total quantity to schedule) is required and must be greater than 0.",
+                    "missing_fields": ["target_qty"],
+                    "rows": [],
+                    "orders": [],
+                    "n": 0,
+                    "series": [],
+                    "cards": {},
+                    "methodology": self._plan_methodology(),
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "next_actions": ["Pass target_qty (the parent quantity) and retry."],
+                },
+                sources=[],
+                metadata={"status": "needs_input", "missing_fields": ["target_qty"]},
+            )
         slices = max(2, min(slices, 24))
         side = (params.get("side") or "BUY").upper()
         arrival_price = params.get("arrival_price")

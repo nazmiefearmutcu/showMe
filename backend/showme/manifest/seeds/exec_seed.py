@@ -45,7 +45,7 @@ def exec_() -> FunctionManifest:
         category=Category.TRADE_EXECUTION,
         intent=(
             "Track parent-order execution slice-by-slice: pace vs schedule, slippage vs benchmark, "
-            "implementation shortfall, and venue fill quality for VWAP/TWAP/POV algos."
+            "implementation shortfall, and venue fill quality for VWAP/TWAP/ICEBERG/SNIPER algos."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -113,7 +113,7 @@ def exec_() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=False,
                 description="Execution algo tag for the parent.",
-                options=["VWAP", "TWAP", "POV", "ARRIVAL", "MARKET"],
+                options=["TWAP", "VWAP", "ICEBERG", "SNIPER"],
             ),
             InputSpec(
                 name="horizon_seconds",
@@ -273,7 +273,7 @@ def exec_() -> FunctionManifest:
         },
         field_dict={
             "orders[].parent_id": FieldDef(description="Caller-assigned parent identifier.", source="exec_monitor"),
-            "orders[].algo": FieldDef(description="Algo tag (TWAP/VWAP/POV/ARRIVAL/MARKET).", source="exec_monitor"),
+            "orders[].algo": FieldDef(description="Algo tag (TWAP/VWAP/ICEBERG/SNIPER).", source="exec_monitor"),
             "orders[].target_qty": FieldDef(unit="base", description="Total quantity to execute.", source="exec_monitor"),
             "orders[].filled_qty": FieldDef(unit="base", description="Cumulative quantity filled.", source="exec_monitor"),
             "orders[].avg_fill_px": FieldDef(unit="quote", description="VWAP of fills.", source="computed"),
