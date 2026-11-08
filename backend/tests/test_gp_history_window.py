@@ -118,6 +118,22 @@ def test_gp_fetch_is_widened_by_warmup_and_display_is_clipped(
     assert all(p["time"] >= first_display for p in indicators["sma_20"])
 
 
+def test_gp_warmup_count_excludes_in_window_rows_trimmed_by_bar_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 2200 daily rows; the provider cap (1200 fetched bars) leaves no row before
+    # the 5Y window, and the 1000-bar display cap trims in-window rows only.
+    # No warm-up bar exists, so the warm-up count must be 0, not the trimmed 200.
+    seen: dict[str, Any] = {}
+    _fake_history(monkeypatch, _series(86_400, 2_200), seen)
+    result = _run("GP", {"days": 1825, "range": "5Y", "interval": "1d", "bars": 1000})
+
+    assert len(result.data["ohlcv"]) == 1000
+    assert result.data["indicator_warmup_bars"] == 0
+    # The shortfall is still reported as a window-span warning.
+    assert any("shorter" in w for w in result.warnings), result.warnings
+
+
 def test_non_gp_alias_fetch_is_not_widened(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
     _fake_history(monkeypatch, _series(86_400, 400), seen)

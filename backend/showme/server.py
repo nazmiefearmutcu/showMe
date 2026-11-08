@@ -861,6 +861,9 @@ def _gp_window_history(
     window_rows = full[len(full) - in_window:] if in_window else full
     display = window_rows[-bars:] if bars > 0 else window_rows
     display_start = len(full) - len(display)
+    # Warm-up bars are only the rows fetched before the window start; rows that
+    # the bars cap trims from inside the window are not warm-up.
+    warmup_bars = len(full) - len(window_rows)
 
     first_s = _gp_row_seconds(display[0]) if display else None
     last_s = _gp_row_seconds(display[-1]) if display else None
@@ -900,7 +903,7 @@ def _gp_window_history(
         "requested_days": days,
         "first_bar_time": int(first_s) if first_s is not None else None,
         "last_bar_time": int(last_s) if last_s is not None else None,
-        "indicator_warmup_bars": display_start,
+        "indicator_warmup_bars": warmup_bars,
     }
     if display_start > 0:
         # Full warm-up series so the client's RSI/MACD/ATR rail reads the same history.
