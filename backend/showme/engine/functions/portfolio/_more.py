@@ -349,6 +349,7 @@ class TRAFunction(BaseFunction):
     code = "TRA"
     name = "Total Return Analysis"
     category = "portfolio"
+    description = "Total return (dividends reinvested), IRR, CAGR, price return and max drawdown."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
