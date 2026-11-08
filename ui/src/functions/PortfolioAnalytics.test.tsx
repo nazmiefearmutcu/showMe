@@ -576,3 +576,12 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
     expect(mockArgs.current?.symbol).toBe("AAPL");
   });
 });
+
+describe("BMTX pane identity (wc1-g08 BMTX#7)", () => {
+  it("is titled after the Backtest Matrix function, not a behavior diagnostic", () => {
+    mockOk({ status: "needs_input", cells: [] });
+    render(<PortfolioAnalyticsPane code="BMTX" symbol="" />);
+    expect(screen.getAllByText("Backtest Matrix").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Behavior Matrix")).toBeNull();
+  });
+});

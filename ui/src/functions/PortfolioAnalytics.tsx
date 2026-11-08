@@ -116,8 +116,8 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     supportsLive: true,
   },
   BMTX: {
-    title: "Behavior Matrix",
-    subtitle: "Portfolio behavior diagnostics",
+    title: "Backtest Matrix",
+    subtitle: "Strategy by symbol backtests, in-sample ranking with holdout check",
     usesUniverse: true,
     supportsLive: true,
   },
