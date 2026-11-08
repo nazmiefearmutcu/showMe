@@ -62,6 +62,7 @@ def btfw() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Strategy spec to evaluate.",
+                options=["sma_crossover", "rsi_meanrev", "buy_and_hold"],
             ),
             InputSpec(
                 name="symbol",
@@ -72,10 +73,10 @@ def btfw() -> FunctionManifest:
             ),
             InputSpec(
                 name="train_pct",
-                label="Train % per window",
+                label="Train share (fraction)",
                 control=ControlKind.NUMBER,
                 required=True,
-                description="Share of each window dedicated to fitting parameters.",
+                description="Fraction of each window (0.1 to 0.95) dedicated to fitting parameters.",
                 min=0.1,
                 max=0.95,
                 step=0.05,
@@ -85,7 +86,7 @@ def btfw() -> FunctionManifest:
                 label="Walk steps",
                 control=ControlKind.NUMBER,
                 required=True,
-                description="Number of forward walks to perform.",
+                description="Number of forward walks (folds) to perform, at least 2.",
                 min=2,
                 max=200,
                 step=1,
@@ -100,11 +101,14 @@ def btfw() -> FunctionManifest:
             ),
             InputSpec(
                 name="window_length",
-                label="Window length",
+                label="Window",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Length of each train+test window.",
-                options=["30d", "90d", "180d", "1Y", "2Y"],
+                description=(
+                    "History span of the backtest (30d to 3Y). Used as the history length when "
+                    "days is not given; days takes precedence when both are sent."
+                ),
+                options=["30d", "90d", "180d", "1Y", "2Y", "3Y"],
             ),
             InputSpec(
                 name="frequency",
@@ -145,10 +149,11 @@ def btfw() -> FunctionManifest:
             ),
         ],
         defaults={
+            "strategy_id": "sma_crossover",
             "train_pct": 0.7,
-            "walk_steps": 12,
+            "walk_steps": 5,
             "walk_mode": "anchored",
-            "window_length": "1Y",
+            "window_length": "3Y",
             "frequency": "1d",
             "commission_bps": 5.0,
             "paper_mode": True,
