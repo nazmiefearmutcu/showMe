@@ -47,6 +47,19 @@ class ECSTFunction(BaseFunction):
             except Exception:
                 start_date = (today - datetime.timedelta(days=3650)).strftime("%Y-%m-%d")
                 
+        # ECST#5: level (as published) or y/y % change. A y/y value needs the observation
+        # one year earlier, so the fetch starts ~400 days before the window; the window
+        # itself is applied after the transform.
+        transform_raw = str(params.get("transform") or "level").strip().lower()
+        transform = transform_raw if transform_raw in _TRANSFORMS else "level"
+        transform_warnings: list[str] = (
+            [] if transform_raw in _TRANSFORMS
+            else [f"ECST: unknown transform {transform_raw!r}; level served"]
+        )
+        fetch_start = start_date
+        if transform == "yoy" and start_date:
+            fetch_start = (pd.Timestamp(start_date) - pd.Timedelta(days=_YOY_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+
         df = pd.DataFrame()
         compare_df = pd.DataFrame()
         sources: list[str] = []
@@ -75,8 +88,8 @@ class ECSTFunction(BaseFunction):
             try:
                 df = await asyncio.wait_for(
                     fred.series(
-                        sid, 
-                        start=start_date, 
+                        sid,
+                        start=fetch_start,
                         frequency=params.get("frequency"),
                         vintage=params.get("vintage")
                     ),
@@ -95,8 +108,8 @@ class ECSTFunction(BaseFunction):
                 try:
                     compare_df = await asyncio.wait_for(
                         fred.series(
-                            compare_sid, 
-                            start=start_date, 
+                            compare_sid,
+                            start=fetch_start,
                             frequency=params.get("frequency"),
                             vintage=params.get("vintage")
                         ),
@@ -176,6 +189,8 @@ class ECSTFunction(BaseFunction):
             else:
                 df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
             df = df.set_index("date")
+            if transform == "yoy":
+                df = _yoy_frame(df)
             if start_date:
                 df = df[df.index >= start_date]
 
@@ -189,6 +204,8 @@ class ECSTFunction(BaseFunction):
             else:
                 compare_df["date"] = pd.to_datetime(compare_df["date"]).dt.strftime("%Y-%m-%d")
             compare_df = compare_df.set_index("date")
+            if transform == "yoy":
+                compare_df = _yoy_frame(compare_df)
             if start_date:
                 compare_df = compare_df[compare_df.index >= start_date]
 
@@ -203,14 +220,21 @@ class ECSTFunction(BaseFunction):
 
         # Normalize and construct response metadata
         rows = _normalize_rows(df, sid, source_mode, compare_sid)
+        if transform == "yoy":
+            for row in rows:
+                row["unit"] = YOY_UNIT
+                row["transform"] = "yoy"
         latest = rows[-1] if rows else {}
-        
+
         catalog = _series_meta(sid)
         label = series_info.get("title") or catalog["label"]
         unit = series_info.get("units") or catalog["unit"]
         frequency = series_info.get("frequency") or catalog["frequency"]
-        
-        warnings: list[str] = list(provider_errors)
+        if transform == "yoy":
+            label = f"{label} (y/y % change)"
+            unit = YOY_UNIT
+
+        warnings: list[str] = [*provider_errors, *transform_warnings]
         reason: str | None = None
         if not main_available:
             reason = (
@@ -239,6 +263,7 @@ class ECSTFunction(BaseFunction):
             "series_name": label,
             "unit": unit,
             "frequency": frequency,
+            "transform": transform,
             "status": (
                 "ok" if main_in_window
                 else "empty" if main_available
@@ -297,6 +322,53 @@ class ECSTFunction(BaseFunction):
             metadata={"series_id": sid, "provider_errors": provider_errors, "source_mode": source_mode}
             if provider_errors else {"series_id": sid, "source_mode": source_mode},
         )
+
+
+_TRANSFORMS = frozenset({"level", "yoy"})
+YOY_UNIT = "% y/y"
+# Calendar slack so the observation a year before the window start is fetched.
+_YOY_LOOKBACK_DAYS = 400
+# A prior-year observation must sit within this many days of the same date a year earlier.
+_YOY_MATCH_TOLERANCE_DAYS = 10
+
+
+def _yoy_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Percent change against the observation one calendar year earlier.
+
+    Input and output are indexed by ISO date strings with a ``value`` column. The prior
+    observation is the nearest one within ``_YOY_MATCH_TOLERANCE_DAYS`` of the same date
+    a year earlier. A date with no such observation is dropped: a y/y value is never
+    estimated or carried forward.
+    """
+    empty = frame.iloc[0:0]
+    if frame.empty or "value" not in frame.columns:
+        return empty
+    base = pd.DataFrame({
+        "date": pd.to_datetime(frame.index),
+        "value": pd.to_numeric(frame["value"], errors="coerce").to_numpy(),
+    }).dropna(subset=["value"]).sort_values("date").reset_index(drop=True)
+    if base.empty:
+        return empty
+    prior = base.rename(columns={"date": "prior_date", "value": "prior_value"})
+    base["target"] = base["date"] - pd.DateOffset(years=1)
+    merged = pd.merge_asof(
+        base.sort_values("target"),
+        prior.sort_values("prior_date"),
+        left_on="target",
+        right_on="prior_date",
+        direction="nearest",
+        tolerance=pd.Timedelta(days=_YOY_MATCH_TOLERANCE_DAYS),
+    )
+    merged = merged.dropna(subset=["prior_value"])
+    merged = merged[merged["prior_value"] != 0]
+    if merged.empty:
+        return empty
+    out = pd.DataFrame(
+        {"value": ((merged["value"] / merged["prior_value"] - 1.0) * 100.0).to_numpy()},
+        index=merged["date"].dt.strftime("%Y-%m-%d").to_numpy(),
+    )
+    out.index.name = "date"
+    return out.sort_index()
 
 
 def _series_meta(series_id: str) -> dict[str, str]:

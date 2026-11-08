@@ -65,6 +65,18 @@ def ecst() -> FunctionManifest:
                 options=["1Y", "3Y", "5Y", "10Y", "20Y", "MAX"],
             ),
             InputSpec(
+                name="transform",
+                label="Transform",
+                control=ControlKind.SELECT,
+                required=False,
+                description=(
+                    "level shows the series as published. yoy shows the percent change "
+                    "from the observation one calendar year earlier; a date with no "
+                    "prior-year observation is dropped, never estimated."
+                ),
+                options=["level", "yoy"],
+            ),
+            InputSpec(
                 name="compare_with",
                 label="Compare with",
                 control=ControlKind.TEXT,
@@ -107,6 +119,7 @@ def ecst() -> FunctionManifest:
             "series_id": "CPIAUCSL",
             "date_range": "10Y",
             "frequency": "native",
+            "transform": "level",
             "vintage": "latest",
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
@@ -172,7 +185,10 @@ def ecst() -> FunctionManifest:
             "and rendered on the same chart for visual comparison. Frequency normalization uses "
             "FRED's native resampling; 'native' leaves the series at its publication frequency. "
             "When `vintage` is non-default, ALFRED is consulted for the series as it appeared on "
-            "that release date — surfacing revisions. A labelled baseline is only used when no "
+            "that release date — surfacing revisions. `date_range` sets the window. With "
+            "`transform=yoy` each observation is shown as the percent change from the "
+            "observation one calendar year earlier (unit '% y/y'); an observation with no "
+            "prior-year observation is dropped, never estimated. A labelled baseline is only used when no "
             "provider returns data, and that mode is flagged in `source_mode`."
         ),
         formula_dict={
