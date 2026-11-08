@@ -94,15 +94,21 @@ class FXHFunction(BaseFunction):
                 sources=[source_mode],
                 warnings=warnings,
             )
-        objs = [
-            FXExposure(
+        objs: list[FXExposure] = []
+        for e in exposures:
+            # Any rate the caller did not supply falls back to the documented
+            # engine default and is echoed in assumed_defaults (never a silent
+            # literal such as the old 0.04 base-rate fallback).
+            for rate_key in ("base_rate", "home_rate"):
+                if _missing(e.get(rate_key)) and rate_key not in assumed_defaults:
+                    assumed_defaults.append(rate_key)
+            objs.append(FXExposure(
                 currency=e["currency"].upper(), home_currency=home,
                 notional=float(e["notional"]),
                 spot_rate=float(e["spot_rate"]),
-                base_rate=float(e.get("base_rate", 0.04)),
-                home_rate=float(e.get("home_rate", 0.045)),
-            ) for e in exposures
-        ]
+                base_rate=_rate(e.get("base_rate"), DEFAULT_BASE_RATE),
+                home_rate=_rate(e.get("home_rate"), DEFAULT_HOME_RATE),
+            ))
         # Effective source_mode reflects whether ANY spot came from the live
         # provider — not a blanket "yfinance,ecb" claim.
         effective_source = (
@@ -252,6 +258,14 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _missing(value: Any) -> bool:
+    return value is None or value == ""
+
+
+def _rate(value: Any, default: float) -> float:
+    return default if _missing(value) else float(value)
 
 
 def _scenario_curve(objs: list[FXExposure], hedge_ratio: float, days: int) -> list[dict[str, Any]]:
