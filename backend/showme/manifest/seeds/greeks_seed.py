@@ -62,9 +62,13 @@ def greeks() -> FunctionManifest:
                 description=(
                     "JSON array of contracts: {symbol, kind: call|put, strike, expiry "
                     "(ISO date) or T (years), quantity, and optionally spot, vol, r, q, "
-                    "contract_size}. Missing spot/vol come from daily history, a missing "
-                    "rate from FRED DGS3MO, a missing contract_size defaults to 100 and a "
-                    "missing q to 0; each default is reported."
+                    "contract_size, rate_pct, rate_bps}. r is a decimal (0.045 = 4.5%); a "
+                    "plain r above 1 is read as a percent and a plain r between 0.2 and 1 is "
+                    "refused as ambiguous. To state the unit explicitly, give rate_pct "
+                    "(4.5 = 4.5%) or rate_bps (450 = 4.5%) in place of r, one of the three. "
+                    "Missing spot/vol come from daily history, a missing rate from FRED "
+                    "DGS3MO, a missing contract_size defaults to 100 and a missing q to 0; "
+                    "each default is reported."
                 ),
             ),
         ],
