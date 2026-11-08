@@ -568,6 +568,8 @@ class BOILFunction(BaseFunction):
         days = _int_param(params, "days", 365, 20, 1095)
         timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
         live = _truthy(params.get("live", True))
+        # BOIL#3: show_spread gates the Brent-WTI envelope (manifest default on).
+        show_spread = _truthy(params.get("show_spread", True))
         selector = str(params.get("benchmark") or params.get("contract") or "").strip().upper()
         requested = (
             instrument.symbol.strip().upper()
@@ -641,7 +643,7 @@ class BOILFunction(BaseFunction):
             )
 
         spread = None
-        if len(rows) >= 2 and rows[0].get("last") is not None and rows[1].get("last") is not None:
+        if show_spread and len(rows) >= 2 and rows[0].get("last") is not None and rows[1].get("last") is not None:
             by_symbol = {row["symbol"]: row for row in rows}
             if "BZ=F" in by_symbol and "CL=F" in by_symbol:
                 spread = by_symbol["BZ=F"]["last"] - by_symbol["CL=F"]["last"]
@@ -655,6 +657,7 @@ class BOILFunction(BaseFunction):
             "history": chart_history,
             "history_by_symbol": {sym: history_by_symbol.get(sym, []) for sym in symbols},
             "spread": spread,
+            "show_spread": show_spread,
             "methodology": "BOIL reports front-month WTI (CL=F) and Brent (BZ=F) futures. Change % is (last / previous close - 1) * 100; history is daily OHLCV from Yahoo chart data.",
             "field_dictionary": _commodity_field_dictionary(),
         }
