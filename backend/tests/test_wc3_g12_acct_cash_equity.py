@@ -102,7 +102,9 @@ def test_two_currencies_are_not_summed_into_one_total(monkeypatch) -> None:
     assert summary["total_equity"] is None
 
 
-def test_non_numeric_cash_is_ignored_not_guessed(monkeypatch) -> None:
+def test_non_numeric_cash_is_unknown_not_zero(monkeypatch) -> None:
+    # ACCT#2: unreadable cash makes that currency's equity unknown; it is not
+    # served as market value + 0.
     data = _run(
         monkeypatch,
         [_pos("TLT", 10.0, 90.0)],
@@ -111,8 +113,9 @@ def test_non_numeric_cash_is_ignored_not_guessed(monkeypatch) -> None:
     )
     summary = data["summary"]
     assert summary["cash_by_currency"] == {}
-    assert summary["equity_by_currency"] == {"USD": pytest.approx(1000.0)}
-    assert summary["total_equity"] == pytest.approx(1000.0)
+    assert summary["unreadable_cash_currencies"] == ["USD"]
+    assert summary["equity_by_currency"] == {"USD": None}
+    assert summary["total_equity"] is None
 
 
 def test_supplied_positions_state_that_cash_is_not_read(monkeypatch) -> None:

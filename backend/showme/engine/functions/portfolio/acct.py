@@ -341,11 +341,15 @@ def _equity_block(cash: Any, inputs: list[tuple[str, float | None]]) -> dict[str
     total. ``total_equity`` is a single number only when one currency is present.
     """
     cash_by_currency: dict[str, float] = {}
+    unreadable_cash: set[str] = set()
     if isinstance(cash, dict):
         for ccy, amount in cash.items():
             value = _finite_or_none(amount)
             if value is not None:
                 cash_by_currency[str(ccy).upper()] = value
+            else:
+                # ACCT#2: an unreadable saved cash value is unknown, not zero.
+                unreadable_cash.add(str(ccy).upper())
     mv_by_currency: dict[str, float] = {}
     unpriced_currencies: set[str] = set()
     seen: set[str] = set()
@@ -356,14 +360,15 @@ def _equity_block(cash: Any, inputs: list[tuple[str, float | None]]) -> dict[str
         else:
             mv_by_currency[ccy] = mv_by_currency.get(ccy, 0.0) + mv
     equity_by_currency: dict[str, float | None] = {}
-    for ccy in sorted(seen | set(cash_by_currency)):
-        if ccy in unpriced_currencies:
+    for ccy in sorted(seen | set(cash_by_currency) | unreadable_cash):
+        if ccy in unpriced_currencies or ccy in unreadable_cash:
             equity_by_currency[ccy] = None
         else:
             equity_by_currency[ccy] = mv_by_currency.get(ccy, 0.0) + cash_by_currency.get(ccy, 0.0)
     total_equity = next(iter(equity_by_currency.values())) if len(equity_by_currency) == 1 else None
     return {
         "cash_by_currency": cash_by_currency,
+        "unreadable_cash_currencies": sorted(unreadable_cash),
         "equity_by_currency": equity_by_currency,
         "total_equity": total_equity,
     }

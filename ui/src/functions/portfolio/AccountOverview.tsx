@@ -266,6 +266,21 @@ export function AccountOverviewPane({ code }: FunctionPaneProps) {
   );
   const cross = useMemo(() => asRecord(payload?.cross), [payload]);
   const summary = useMemo(() => asRecord(payload?.summary), [payload]);
+  // ACCT#2: cash and equity are portfolio-wide per currency (the cash book has
+  // no account key), so they are shown here, not as per-account columns.
+  const cashByCcy = useMemo(() => asRecord(summary?.cash_by_currency) ?? {}, [summary]);
+  const equityByCcy = useMemo(() => asRecord(summary?.equity_by_currency) ?? {}, [summary]);
+  const unreadableCash = Array.isArray(summary?.unreadable_cash_currencies)
+    ? (summary?.unreadable_cash_currencies as unknown[]).map(String)
+    : [];
+  const cashText = Object.keys(cashByCcy).length
+    ? Object.entries(cashByCcy).map(([ccy, v]) => `${ccy} ${fmtMoney(v)}`).join(" · ")
+    : unreadableCash.length ? `unreadable (${unreadableCash.join(", ")})` : formatMissing;
+  const equityText = Object.keys(equityByCcy).length
+    ? Object.entries(equityByCcy)
+        .map(([ccy, v]) => `${ccy} ${typeof v === "number" ? fmtMoney(v) : "unknown"}`)
+        .join(" · ")
+    : formatMissing;
 
   const positions = useMemo<Row[]>(
     () =>
@@ -392,6 +407,16 @@ export function AccountOverviewPane({ code }: FunctionPaneProps) {
                   tone: toneClass(totalUnrealized),
                 },
                 {
+                  key: "cash",
+                  label: "Cash",
+                  value: cashText,
+                },
+                {
+                  key: "equity",
+                  label: "Equity",
+                  value: equityText,
+                },
+                {
                   key: "top_class",
                   label: "Top Class",
                   value: byAssetClass[0]?.label ?? formatMissing,
@@ -419,9 +444,9 @@ export function AccountOverviewPane({ code }: FunctionPaneProps) {
                         <span
                           data-testid="acct-cash-margin-note"
                           className="u-text-secondary"
-                          title="The ACCT payload (acct.py) emits market value / unrealized P&L / exposure only; cash and margin columns stay hidden rather than showing fabricated zeros."
+                          title="Cash is a portfolio-wide book per currency (shown in the summary as Cash / Equity), not per account; margin is not in the ACCT payload. No zero columns are fabricated."
                         >
-                          {" · cash/margin not in payload"}
+                          {" · cash is portfolio-wide (summary); margin not in payload"}
                         </span>
                       ) : null}
                     </>
