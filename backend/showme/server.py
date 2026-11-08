@@ -87,7 +87,6 @@ from showme.chart_history import (
     normalize_history_interval,
     parse_history_bars,
 )
-from showme.chart_history import INTERVAL_SECONDS as _CHART_INTERVAL_SECONDS
 from showme.function_contracts import normalize_function_contract
 
 LOG = logging.getLogger("showme.server")
@@ -709,7 +708,7 @@ async def _execute_price_history_alias(
         span_payload: dict[str, Any] = {}
         if history.rows and gp_mode:
             history, overlay_payload, span_payload = _gp_window_history(
-                history, code=code, days=days, bars=bars
+                history, code=code, days=days, bars=bars, interval=interval
             )
         elif history.rows:
             overlay_payload = _price_history_overlays(code, history.rows)
@@ -816,13 +815,20 @@ GP_INDICATOR_WARMUP_BARS = 200
 GP_SPAN_TOLERANCE = 0.9
 
 
+def _gp_bar_seconds(interval: str) -> int:
+    # Local import keeps the shared chart_history import block in this module untouched.
+    from showme.chart_history import INTERVAL_SECONDS
+
+    return INTERVAL_SECONDS.get(interval, 86_400)
+
+
 def _gp_fetch_extent(days: int, bars: int, interval: str) -> tuple[int, int]:
     """Widen the GP history request by a warm-up before the requested window.
 
     The extra calendar days cover ``GP_INDICATOR_WARMUP_BARS`` bars at the
     interval (5 trading days per 7 calendar days, plus a small margin).
     """
-    seconds = _CHART_INTERVAL_SECONDS.get(interval, 86_400)
+    seconds = _gp_bar_seconds(interval)
     warm_days = (GP_INDICATOR_WARMUP_BARS * seconds * 7) // (86_400 * 5) + 2
     return days + warm_days, bars + GP_INDICATOR_WARMUP_BARS
 
@@ -843,7 +849,7 @@ def _gp_row_seconds(row: dict[str, Any]) -> float | None:
 
 
 def _gp_window_history(
-    history: Any, *, code: str, days: int, bars: int
+    history: Any, *, code: str, days: int, bars: int, interval: str
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     """GP-only: clip the widened series to the requested window.
 
@@ -890,7 +896,10 @@ def _gp_window_history(
             overlay_payload = {"indicators": clipped}
 
     warnings = list(history.warnings)
-    if span_days is not None and span_days < days * GP_SPAN_TOLERANCE:
+    # first/last bar start times miss one bar of grain; a monthly series cannot
+    # span a 1M window any closer than that, so the grain is counted as covered.
+    bar_days = _gp_bar_seconds(interval) / 86_400
+    if span_days is not None and span_days + bar_days < days * GP_SPAN_TOLERANCE:
         warnings.append(
             f"Returned history spans {span_days:g} days, shorter than the requested "
             f"{days}-day window (provider limit, bar cap or first available bar)."

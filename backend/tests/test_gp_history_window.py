@@ -142,3 +142,16 @@ def test_non_gp_alias_fetch_is_not_widened(monkeypatch: pytest.MonkeyPatch) -> N
     assert seen["bars"] == 1000
 
 
+
+
+def test_gp_coarse_interval_is_not_flagged_as_short_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Monthly bars cannot place a first and last bar 30 days apart inside a
+    # 1M window: one bar is all the provider can serve. That is the bar grain,
+    # not a shortfall, so no "shorter than requested" warning.
+    _fake_history(monkeypatch, _series(30 * 86_400, 14), {})
+    result = _run("GP", {"days": 30, "range": "1M", "interval": "1mo", "bars": 1000})
+
+    assert result.data["bar_count"] >= 1
+    assert not any("shorter" in w for w in result.warnings), result.warnings
