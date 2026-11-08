@@ -136,3 +136,18 @@ def test_crpr_sovereign_with_user_rating_still_echoes_override() -> None:
     assert res.data["status"] == "ok"
     assert res.data["summary"]["source_mode"] == "user_input"
     assert res.data["rows"][0]["rating"] == "AA"
+
+
+# ---- CRPR#1 follow-up: equity symbols are not sovereigns by substring -------
+
+
+@pytest.mark.parametrize("symbol", ["BOAT", "GOVT"])
+def test_equity_symbol_containing_a_sovereign_hint_takes_the_sec_path(symbol: str, fake_client: _FakeClient) -> None:
+    # "BOAT" contains "OAT" and "GOVT" is a sovereign-looking ETF symbol. Once
+    # EQUITY is admitted they must be looked up as equities, not labelled as
+    # sovereign issuers.
+    instrument = Instrument(symbol=symbol, asset_class=AssetClass.EQUITY)
+    res = _run(CRPRFunction().execute(instrument=instrument))
+    assert res.data["summary"]["source_mode"] != "sovereign_not_applicable", res.data
+    assert "sovereign" not in str(res.data.get("reason") or "").lower()
+    assert any("company_tickers" in u for u in fake_client.urls)

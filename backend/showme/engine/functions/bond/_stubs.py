@@ -106,6 +106,10 @@ def _is_sovereign(token: str) -> bool:
     return any(hint in upper for hint in _SOVEREIGN_HINTS)
 
 
+def _is_equity_instrument(instrument: Instrument | None) -> bool:
+    return instrument is not None and getattr(instrument, "asset_class", None) == AssetClass.EQUITY
+
+
 def _treasury_security_type(symbol: str) -> str | None:
     """Map a Treasury alias like ``US2Y`` / ``US30Y`` to its FiscalData type.
 
@@ -254,7 +258,10 @@ class CRPRFunction(BaseFunction):
         # file, and no keyless sovereign-rating feed is wired. A constant rating
         # here would be placeholder data presented as model output, so the
         # payload carries no rating row at all.
-        if _is_sovereign(issuer):
+        # An EQUITY instrument is never a sovereign: the hint list matches by
+        # substring, so an ETF or company symbol such as BOAT or GOVT would
+        # otherwise be labelled a sovereign issuer.
+        if _is_sovereign(issuer) and not _is_equity_instrument(instrument):
             reason = (
                 f"{issuer!r} is a sovereign issuer: CRPR's SEC-financials model does not apply "
                 "and no keyless sovereign rating feed is wired, so no rating is shown."
