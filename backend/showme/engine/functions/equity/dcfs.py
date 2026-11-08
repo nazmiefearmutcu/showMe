@@ -119,7 +119,7 @@ class DCFSensitivityFunction(BaseFunction):
                             "value": None,
                             "delta": None,
                             "status": "invalid_perturbation",
-                            "reason": "One side of the ±20% perturbation produced no fair value (e.g. WACC fell below terminal growth).",
+                            "reason": "One side of the ±20% perturbation produced no fair value (e.g. the discount rate fell below terminal growth).",
                         })
                         continue
                     tornado.append({

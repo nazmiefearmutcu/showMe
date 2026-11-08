@@ -62,6 +62,13 @@ def _patch(monkeypatch: pytest.MonkeyPatch) -> None:
     quotes.quote_cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_bbo_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The quote helper fetches a v7 bid/ask (cookie + crumb via a requests
+    Session) when the chart has none; keep it offline so the test is hermetic."""
+    monkeypatch.setattr(quotes, "_fetch_yahoo_v7_bbo", lambda symbol: {})
+
+
 def test_commodity_quote_row_change_is_the_prior_session_move(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch(monkeypatch)
     rows = asyncio.run(screen_funcs._csrc_quote_snapshot_rows(
