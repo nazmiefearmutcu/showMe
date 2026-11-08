@@ -15,12 +15,11 @@ def _provider_mode_description() -> str:
 
 def test_provider_mode_description_states_it_does_not_change_the_chain():
     text = _provider_mode_description()
-    assert "no effect" in text or "ignored" in text or "does not" in text, text
+    assert "no effect on the source chain" in text, text
     assert "the chain may downgrade" not in text, text
 
 
 def test_methodology_does_not_present_delayed_yahoo_rows_as_live():
     text = esg.methodology.lower()
-    if "live_yfinance" in text:
-        # The handler's tag is live_yfinance, but the rows are a delayed reference.
-        assert "not real-time" in text, text
+    assert "live_yfinance" not in text, text
+    assert "delayed reference" in text and "not real-time" in text, text

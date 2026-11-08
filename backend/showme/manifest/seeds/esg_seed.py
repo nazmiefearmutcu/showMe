@@ -72,7 +72,7 @@ def esg() -> FunctionManifest:
             fallbacks=["sec_edgar"],
             acceptable_modes=[
                 DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
+                DataMode.LIVE_OFFICIAL,
                 DataMode.NOT_CONFIGURED,
             ],
         ),
@@ -109,11 +109,12 @@ def esg() -> FunctionManifest:
         methodology=(
             "Primary: Yahoo Finance sustainability table (Sustainalytics-derived ESG risk scores: "
             "total, E, S, G and highest controversy 1-5; lower total = lower unmanaged ESG risk), "
-            "keyless, delayed reference (the handler tags these rows source_mode=live_yfinance, but "
-            "they are not real-time). Fallback when Yahoo publishes "
+            "keyless, delayed reference (the handler tags these rows source_mode=delayed_reference and "
+            "data_mode=delayed_reference; they are not real-time). Fallback when Yahoo publishes "
             "no sustainability table for the ticker: a DERIVED SEC EDGAR proxy counting "
             "environmental, social and governance phrases in recent 10-K filings via the keyless "
-            "EDGAR full-text search (source_mode=sec_text_proxy). Proxy values are filing-mention "
+            "EDGAR full-text search (source_mode=sec_text_proxy, data_mode=live_official: a live fetch of SEC filings, "
+            "not a cached snapshot). Proxy values are filing-mention "
             "counts, not risk scores, and are not comparable to vendor ratings. No paid vendor "
             "plugin is required. If neither source responds the status is provider_unavailable "
             "with next_actions."
@@ -126,7 +127,7 @@ def esg() -> FunctionManifest:
             "socialScore": FieldDef(description="S pillar score (vendor score, or proxy mention count).", source="provider"),
             "governanceScore": FieldDef(description="G pillar score (vendor score, or proxy mention count).", source="provider"),
             "controversyLevel": FieldDef(description="Highest active controversy level 1-5 (Yahoo only; null for the proxy).", source="provider"),
-            "data_mode": FieldDef(description="delayed_reference (Yahoo) | cached_snapshot (EDGAR proxy label) | not_configured (no source).", source="envelope"),
+            "data_mode": FieldDef(description="delayed_reference (Yahoo) | live_official (EDGAR proxy: live SEC filings, rows labelled sec_text_proxy) | not_configured (no source).", source="envelope"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -141,7 +142,7 @@ def esg() -> FunctionManifest:
                 inputs={"symbol": "AAPL"},
                 assertions=[
                     "status_in_unavailable_set",
-                    "data_mode_in_not_configured_or_cached_snapshot",
+                    "data_mode_in_not_configured_or_live_official",
                     "next_actions_non_empty",
                 ],
             ),

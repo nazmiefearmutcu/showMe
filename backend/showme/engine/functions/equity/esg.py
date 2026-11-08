@@ -111,7 +111,7 @@ def _build_rows_from_sustainability(flat: dict[str, Any]) -> list[dict[str, Any]
                 "scale": "vendor risk scale (lower=better)"
                 if label != "controversy"
                 else "level 1-5",
-                "source_mode": "live_yfinance",
+                "source_mode": "delayed_reference",
             }
         )
     return rows if has_value else None
@@ -307,7 +307,7 @@ class ESGFunction(BaseFunction):
                 "socialScore": counts["social"],
                 "governanceScore": counts["governance"],
                 "controversyLevel": None,
-                "data_mode": "cached_snapshot",
+                "data_mode": "live_official",
                 "window": proxy_window(),
                 "rows": proxy_rows,
                 "warnings": [

@@ -36,6 +36,6 @@ def test_methodology_describes_sustainalytics_source_and_labelled_proxy():
 
 def test_acceptable_modes_match_what_the_handler_emits():
     modes = set(_manifest().provider_chain.acceptable_modes)
-    # yfinance path -> delayed_reference; EDGAR proxy -> cached_snapshot label;
-    # unavailable / empty -> not_configured.
-    assert modes == {DataMode.DELAYED_REFERENCE, DataMode.CACHED_SNAPSHOT, DataMode.NOT_CONFIGURED}
+    # yfinance path -> delayed_reference; EDGAR proxy -> live_official (a live
+    # fetch of SEC filings); unavailable / empty -> not_configured.
+    assert modes == {DataMode.DELAYED_REFERENCE, DataMode.LIVE_OFFICIAL, DataMode.NOT_CONFIGURED}

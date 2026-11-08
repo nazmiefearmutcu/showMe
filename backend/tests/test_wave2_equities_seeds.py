@@ -179,7 +179,7 @@ def test_esg_declares_yahoo_source_and_labelled_sec_proxy() -> None:
     """
     entry = REGISTRY.get("ESG")
     modes = set(entry.provider_chain.acceptable_modes)
-    assert modes == {DataMode.DELAYED_REFERENCE, DataMode.CACHED_SNAPSHOT, DataMode.NOT_CONFIGURED}, modes
+    assert modes == {DataMode.DELAYED_REFERENCE, DataMode.LIVE_OFFICIAL, DataMode.NOT_CONFIGURED}, modes
     text = entry.methodology.lower()
     assert "sustainalytics" in text and "sec edgar" in text and "not risk scores" in text
     assert "requires a paid vendor" not in text
