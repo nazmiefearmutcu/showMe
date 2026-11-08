@@ -78,6 +78,18 @@ class LOTSFunction(BaseFunction):
                     f"{action} needs {', '.join(missing)} as numeric input; no lot was written.",
                     missing,
                 )
+            # A zero or negative quantity (or a negative price) would be written
+            # or sold as an invisible or nonsensical row, so reject it up front.
+            invalid = []
+            if quantity <= 0:
+                invalid.append("quantity")
+            if price < 0:
+                invalid.append("price")
+            if invalid:
+                return _input_error(
+                    f"{action} needs quantity > 0 and price >= 0; no lot was written.",
+                    invalid,
+                )
         if action == "open":
             lot_id = tax_lots.open_lot(
                 symbol=symbol,

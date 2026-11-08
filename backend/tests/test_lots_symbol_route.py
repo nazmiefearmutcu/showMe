@@ -79,3 +79,31 @@ def test_open_with_bad_quantity_is_input_error_and_writes_nothing() -> None:
     assert result.data.get("status") == "input_error"
     assert "quantity" in result.data.get("missing", [])
     assert tax_lots.list_open_lots() == []
+
+
+def test_open_with_zero_or_negative_quantity_is_input_error_and_writes_nothing() -> None:
+    # A zero or negative lot is accepted by open_lot but never listed, so it
+    # would be a silent invisible row. It must be rejected before any write.
+    for quantity in (0, -5):
+        result = _run(instrument=SYM, action="open", quantity=quantity, price=100)
+        assert result.data.get("status") == "input_error", quantity
+        assert "quantity" in result.data.get("missing", [])
+    assert tax_lots.list_open_lots() == []
+
+
+def test_open_with_negative_price_is_input_error_and_writes_nothing() -> None:
+    result = _run(instrument=SYM, action="open", quantity=10, price=-1)
+    assert result.data.get("status") == "input_error"
+    assert "price" in result.data.get("missing", [])
+    assert tax_lots.list_open_lots() == []
+
+
+def test_sell_with_non_positive_quantity_is_input_error_and_keeps_the_lot() -> None:
+    _run(instrument=SYM, action="open", quantity=10, price=100)
+    for quantity in (0, -3):
+        result = _run(instrument=SYM, action="sell", quantity=quantity, price=120, method="FIFO")
+        assert result.data.get("status") == "input_error", quantity
+        assert "quantity" in result.data.get("missing", [])
+    lots = tax_lots.list_open_lots(symbol="AUDTEST")
+    assert len(lots) == 1
+    assert lots[0]["quantity"] == pytest.approx(10.0)
