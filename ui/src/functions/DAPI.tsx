@@ -28,6 +28,7 @@ import {
 } from "@/design-system";
 import { PaneState } from "@/design-system/PaneState";
 import { copyTextToClipboard } from "@/design-system/clipboard";
+import { sidecarBaseUrl } from "@/lib/sidecar";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -138,7 +139,9 @@ export function DAPIPane({ code }: FunctionPaneProps) {
 
   const isLive =
     (summary?.source_mode ?? "") === "live_router_introspection";
-  const baseUrl = summary?.base_url ?? "http://127.0.0.1:<sidecar-port>";
+  // The engine no longer invents a base URL (it does not know the bound port);
+  // the pane uses the sidecar address it is actually connected to.
+  const baseUrl = summary?.base_url || sidecarBaseUrl();
 
   const COLS: DataGridColumn<DAPIRoute>[] = useMemo(
     () => [

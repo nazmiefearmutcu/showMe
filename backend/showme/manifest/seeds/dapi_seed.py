@@ -114,8 +114,9 @@ def dapi() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "DAPI surfaces the ShowMe sidecar's REST manifest. When the running sidecar publishes a "
-            "live route-introspection callable via deps.dapi_route_provider, DAPI returns the actual "
+            "DAPI surfaces the ShowMe sidecar's REST manifest. If a live route-introspection callable "
+            "is assigned to deps.dapi_route_provider (none is assigned in this build, so source_mode is "
+            "always curated_manifest), DAPI returns the actual "
             "FastAPI router table so Excel/external clients see the same shape the engine serves. "
             "Otherwise it falls back to the curated route manifest in engine/functions/api/dapi.py:: "
             "DAPI_CURATED_ROUTES — which is kept aligned with backend/showme/server_routes/*.py and "
