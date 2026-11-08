@@ -804,6 +804,11 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # nobody asked for — worst case ~32 s serial against the 14 s
         # function timeout. Drop it when the caller sent none.
         defaults.pop("symbols", None)
+    if code.upper() == "TLDR" and not merged.get("symbols"):
+        # TLDR's ``symbols`` is the caller's watchlist. The generic agent peer
+        # group (BTC/ETH/SOL for crypto routes) must not stand in for the
+        # user's holdings: with no list sent, TLDR ranks PortfolioState itself.
+        defaults.pop("symbols", None)
     if code.upper() == "ICX" and defaults.get("query") and not merged.get("index"):
         defaults["index"] = str(defaults["query"]).strip().upper()
     if code.upper() == "TRQA" and defaults.get("query") and not merged.get("questions"):

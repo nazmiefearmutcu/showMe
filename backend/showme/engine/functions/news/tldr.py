@@ -32,21 +32,23 @@ class TLDRFunction(BaseFunction):
                 return 0.0
             return max(floor, min(float(default), remaining))
 
+        sources: list[str] = []
+        warnings: list[str] = []
+
         symbols = _parse_symbols(params.get("symbols"))
-        # Pull from PortfolioState if no list
+        watchlist_source = "explicit" if symbols else ""
+        # No explicit list: the user's own holdings are the scope. No invented
+        # default watchlist is substituted when there are no holdings.
         if not symbols:
             try:
                 from showme.engine.portfolio.state import PortfolioState
                 p = PortfolioState()
                 p.import_legacy_crypto()
                 symbols = [pos.instrument.symbol for pos in p.positions[:15]]
-            except Exception:
-                pass
-        if not symbols:
-            symbols = ["AAPL", "MSFT", "TSLA", "BTCUSDT", "EURUSD", "DGS10"]
-
-        sources: list[str] = []
-        warnings: list[str] = []
+                watchlist_source = "portfolio" if symbols else "portfolio_empty"
+            except Exception as exc:
+                watchlist_source = "portfolio_unavailable"
+                warnings.append(f"portfolio: {exc}")
 
         # Quotes (best-effort) — BugHunt 2026-05-24:
         # TLDR previously walked deps.yfinance / deps.ccxt_failover with its
@@ -188,6 +190,7 @@ class TLDRFunction(BaseFunction):
                     "news": news_summary,
                     "events": events,
                     "watchlist": symbols,
+                    "watchlist_source": watchlist_source,
                     "next_actions": [
                         "Retry TLDR after quote/news providers recover.",
                         "Increase timeout/news_timeout/quote_timeout for an interactive summary.",
@@ -203,6 +206,8 @@ class TLDRFunction(BaseFunction):
             movers = [q for q in quotes if q.get("change_pct") is not None]
             ups_line = _format_movers(movers, positive=True)
             downs_line = _format_movers(movers, positive=False)
+            if not symbols:
+                ups_line = downs_line = "no holdings or symbols to rank (pass a symbol list)."
             prose = (
                 f"# ShowMe TL;DR — {datetime.now(timezone.utc):%Y-%m-%d}\n\n"
                 f"- **Top movers up:** {ups_line}"
@@ -217,7 +222,8 @@ class TLDRFunction(BaseFunction):
             code=self.code, instrument=None,
             data={"markdown": prose, "quotes": quotes,
                    "news": news_summary, "events": events,
-                   "watchlist": symbols, "summary_model": summary_model,
+                   "watchlist": symbols, "watchlist_source": watchlist_source,
+                   "summary_model": summary_model,
                    "quote_count": len([q for q in quotes if q.get("last") is not None]),
                    "mover_count": len([q for q in quotes if q.get("change_pct") is not None])},
             sources=list(set(sources)) or ["local_briefing_model"],
