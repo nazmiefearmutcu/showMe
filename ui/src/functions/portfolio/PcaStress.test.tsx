@@ -2,7 +2,7 @@
  * PCAS — specialized PCA Stress pane tests.
  *
  * Pins the four render states, the PC/k-σ controls mapped to real backend
- * params, and the MODEL disclosure path for template returns.
+ * params, and that returns are always live yfinance history (no MODEL toggle).
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -169,19 +169,17 @@ describe("PCAS cumulative variance curve (real derivation)", () => {
     );
   });
 
-  it("omits live_prices on the MODEL path so the backend serves template returns", () => {
+  it("offers no template-returns toggle and always requests live yfinance history", () => {
     ok(LIVE_PAYLOAD);
     render(<PcaStressPane code="PCAS" />);
-    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
-    const latest = recordedCalls[recordedCalls.length - 1].params ?? {};
-    expect("live_prices" in latest).toBe(false);
-    expect(latest.live).toBe(true);
-    expect(screen.getByRole("button", { name: "MODEL" })).toBeInTheDocument();
-  });
-
-  it("keeps live_prices=true on the LIVE path", () => {
-    ok(LIVE_PAYLOAD);
-    render(<PcaStressPane code="PCAS" />);
-    expect(recordedCalls.some((call) => call.params?.live_prices === true)).toBe(true);
+    // PCAS#4 follow-up: the backend serves no template returns, so the pane must not
+    // offer a MODEL path that comes back as delayed live data under a template label.
+    expect(screen.queryByRole("button", { name: "MODEL" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "LIVE" })).toBeNull();
+    expect(screen.getByText(/LIVE · yfinance daily/)).toBeInTheDocument();
+    for (const call of recordedCalls) {
+      expect(call.params?.live).toBe(true);
+      expect(call.params?.live_prices).toBe(true);
+    }
   });
 });
