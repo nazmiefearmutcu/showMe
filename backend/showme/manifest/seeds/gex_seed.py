@@ -121,8 +121,9 @@ def gex() -> FunctionManifest:
             # honour a historical snapshot or a provider mode. The snapshot time
             # is reported as output (as_of, data_mode) from the chain itself.
         ],
+        # No default underlying: the ticker must be supplied (GEX never prices
+        # a silent SPY, data policy / GEX#3).
         defaults={
-            "underlying": "SPY",
             "expiry_filter": ["next_3"],
             "oi_source": "exchange",
             "risk_free": 0.045,

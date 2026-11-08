@@ -298,14 +298,19 @@ class GEXFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         # The underlying must be a user choice. The router injects a default
-        # symbol and flags it __explicit_symbol=False; GEX never prices a
-        # guessed ticker (GEX#3 / data policy), so that case is needs_input.
+        # symbol and flags it __explicit_symbol=False (it drops that default
+        # ``symbol`` key). The manifest's primary input is ``underlying``, which
+        # the router never injects, so a supplied ``underlying`` is the user's
+        # choice even when the symbol is not explicit (GEX#3). With neither,
+        # the case is needs_input: GEX never prices a guessed ticker.
         explicit = params.get("__explicit_symbol", True) is not False
         raw_symbol = ""
         if explicit:
-            raw_symbol = str(params.get("symbol") or params.get("underlying") or "").strip()
+            raw_symbol = str(params.get("symbol") or "").strip()
             if instrument is not None and instrument.symbol:
                 raw_symbol = str(instrument.symbol).strip()
+        if not raw_symbol:
+            raw_symbol = str(params.get("underlying") or "").strip()
         sym = raw_symbol.upper()
         live_options = _truthy(params.get("live_options") or params.get("deep"))
         if not sym:
@@ -314,7 +319,12 @@ class GEXFunction(BaseFunction):
                 reason="GEX needs an underlying symbol; none was supplied.",
                 next_actions=["Pass symbol=<ticker>, for example SPY or NVDA"],
             ))
-        spot_inst = instrument or Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
+        # The chain must be fetched for the resolved symbol, never for an
+        # instrument the dispatcher built from a router default ticker.
+        if instrument is not None and str(instrument.symbol or "").strip().upper() == sym:
+            spot_inst = instrument
+        else:
+            spot_inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
 
         # 1. Validate every declared input before any network call.
         try:
