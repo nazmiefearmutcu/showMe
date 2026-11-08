@@ -1,11 +1,9 @@
-"""FLY — Travel / flight pick utility (non-core).
+"""FLY — Flight tracking (OpenSky ADS-B state vectors, keyless).
 
-FLY is an auxiliary off-topic utility that lets the operator stash a
-short list of travel ideas (flights, hotels, trip notes). It is not a
-finance function and has no external provider — entries live in the
-Round 16 preset filesystem. FLY is explicitly low-priority in the
-cockpit's nav weighting; it belongs in the auxiliary tray, not the
-finance-first workspace default.
+FLY reads OpenSky ``/states/all`` through the ``opensky`` adapter and returns
+aircraft state vectors. Route origin and destination are not inferred. When
+OpenSky is unavailable, not configured, or returns no match, the handler says
+so explicitly; it never shows sample aircraft.
 """
 from __future__ import annotations
 
@@ -35,39 +33,56 @@ from ..spec import (
 def fly() -> FunctionManifest:
     return FunctionManifest(
         code="FLY",
-        name="Travel Picks",
+        name="Flight Tracking",
         category=Category.MISC,
         intent=(
-            "Operator-curated short list of travel ideas (flights, hotels, trip notes) — "
-            "an auxiliary off-topic utility for the cockpit's miscellaneous tray, not a "
-            "finance function."
+            "Live aircraft positions from the OpenSky ADS-B state-vector feed, "
+            "filterable by callsign and origin country."
         ),
         asset_classes=[],
         inputs=[
             InputSpec(
-                name="kind",
-                label="Kind",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Filter by entry kind.",
-                options=["any", "flight", "hotel", "rental", "note"],
-            ),
-            InputSpec(
-                name="destination",
-                label="Destination",
+                name="callsign",
+                label="Callsign",
                 control=ControlKind.TEXT,
                 required=False,
-                description="Free-text destination filter (case-insensitive contains).",
+                description="Callsign substring filter (case-insensitive). Blank returns any callsign.",
+            ),
+            InputSpec(
+                name="country",
+                label="Country",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Origin-country substring filter (case-insensitive). Blank returns any country.",
+            ),
+            InputSpec(
+                name="limit",
+                label="Limit",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Maximum aircraft rows returned (1 to 100).",
+                min=1,
+                max=100,
+                step=1,
+                unit="aircraft",
+            ),
+            InputSpec(
+                name="reference",
+                label="Reference only",
+                control=ControlKind.BOOLEAN,
+                required=False,
+                description="Skip the live OpenSky feed and return an explicit empty state.",
             ),
         ],
         defaults={
-            "kind": "any",
+            "limit": 25,
         },
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=[],
+            fallbacks=["opensky"],
             acceptable_modes=[
-                DataMode.CACHED_SNAPSHOT,
+                DataMode.LIVE_OFFICIAL,
+                DataMode.PROVIDER_UNAVAILABLE,
                 DataMode.NOT_CONFIGURED,
             ],
         ),
@@ -78,56 +93,63 @@ def fly() -> FunctionManifest:
             series=False,
             cards=True,
             warnings=False,
-            next_actions=False,
+            next_actions=True,
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="kind", label="Kind", kind="tag"),
-                ColumnSpec(key="destination", label="Destination", kind="text"),
-                ColumnSpec(key="when", label="When", kind="date"),
-                ColumnSpec(key="cost", label="Cost", kind="currency", format="%.2f"),
-                ColumnSpec(key="note", label="Note", kind="text"),
+                ColumnSpec(key="callsign", label="Callsign", kind="tag"),
+                ColumnSpec(key="origin_country", label="Origin", kind="text"),
+                ColumnSpec(key="altitude_ft", label="Altitude", kind="number", unit="ft", format="%.0f"),
+                ColumnSpec(key="speed_kt", label="Speed", kind="number", unit="kt", format="%.1f"),
+                ColumnSpec(key="heading", label="Heading", kind="number", unit="deg", format="%.0f"),
+                ColumnSpec(key="last_contact_utc", label="Last contact (UTC)", kind="datetime"),
             ],
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="entry_count", label="Entries", kind="kpi"),
-                CardSlot(key="next_trip", label="Next trip", kind="timestamp"),
+                CardSlot(key="aircraft_count", label="Aircraft", kind="kpi"),
+                CardSlot(key="source_time", label="Source time", kind="timestamp"),
             ],
         ),
         methodology=(
-            "FLY is an auxiliary utility, low nav weight in the finance-first workspace. "
-            "It does not belong on the default cockpit grid; it lives in the miscellaneous "
-            "tray for operators who want a personal travel list inside the same app. There "
-            "is no external provider (no Skyscanner / Kayak / Booking integration), no "
-            "network calls, and no live pricing — entries are operator-supplied and "
-            "persisted in the Round 16 preset filesystem alongside other personal lists."
+            "FLY reads the OpenSky /states/all state-vector feed and normalizes each aircraft into "
+            "callsign, origin country, last-contact time (UTC), position, altitude (ft), speed (kt), "
+            "heading and vertical rate. Positions are ADS-B snapshots. Route origin and destination "
+            "are not inferred. OpenSky credentials are optional. An outage or a missing adapter returns "
+            "provider_unavailable with rows=[]; no sample aircraft are ever shown."
         ),
         field_dict={
-            "rows[].kind": FieldDef(description="flight / hotel / rental / note.", source="store"),
-            "rows[].destination": FieldDef(description="Free-text destination.", source="store"),
-            "rows[].when": FieldDef(description="Optional departure / start date.", source="store"),
-            "rows[].cost": FieldDef(description="Operator-supplied cost estimate.", source="store"),
-            "rows[].note": FieldDef(description="Free-text note.", source="store"),
+            "rows[].callsign": FieldDef(description="Aircraft callsign reported by ADS-B/OpenSky.", source="opensky"),
+            "rows[].origin_country": FieldDef(description="OpenSky origin country field.", source="opensky"),
+            "rows[].last_contact_utc": FieldDef(description="Last contact timestamp in UTC.", source="opensky"),
+            "rows[].altitude_ft": FieldDef(description="Barometric altitude converted from meters to feet.", unit="ft", source="opensky"),
+            "rows[].speed_kt": FieldDef(description="Ground speed converted from m/s to knots.", unit="kt", source="opensky"),
+            "rows[].heading": FieldDef(description="True track in degrees clockwise from north.", unit="deg", source="opensky"),
         },
         provenance=ProvenanceSpec(
-            require_source_list=False,
+            require_source_list=True,
             require_as_of=True,
             require_latency_ms=False,
         ),
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="fly_returns_only_operator_entries_no_synthetic_seed",
-                description="With an empty store, FLY returns rows=[] — it never seeds synthetic flights or hotels.",
+                name="fly_unavailable_is_explicit_no_sample_aircraft",
+                description="When OpenSky is unavailable or not configured, FLY returns provider_unavailable with rows=[] and no sample aircraft.",
                 inputs={},
-                assertions=["rows_is_empty_array_when_store_empty"],
+                assertions=["status_is_provider_unavailable", "rows_is_empty_array"],
             ),
             SemanticTest(
-                name="fly_filter_kind_excludes_others",
-                description="With kind='flight' every returned row has kind == 'flight'.",
-                inputs={"kind": "flight"},
-                assertions=["every_row_kind_equals_flight"],
+                name="fly_callsign_filter_matches_callsign_only",
+                description="With callsign='THY' every returned row has a callsign containing THY.",
+                inputs={"callsign": "THY"},
+                assertions=["every_row_callsign_contains_THY"],
+            ),
+            SemanticTest(
+                name="fly_invalid_limit_is_input_error",
+                description="A non-numeric limit returns input_error naming the limit field, before any provider call.",
+                inputs={"limit": "abc"},
+                assertions=["status_is_input_error", "opensky_not_called"],
             ),
         ],
     )

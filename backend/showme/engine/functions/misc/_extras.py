@@ -283,7 +283,16 @@ class FLYFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         callsign_filter = str(params.get("callsign") or params.get("flight") or "").strip().upper()
         country_filter = str(params.get("country") or "").strip().lower()
-        limit = max(1, min(int(params.get("limit") or 25), 100))
+        # Input validation happens before any provider call so a bad value is
+        # reported as an input error, never as an OpenSky outage.
+        try:
+            limit = max(1, min(int(params.get("limit") or 25), 100))
+        except (TypeError, ValueError):
+            return _flight_input_error(self.code, "limit", params.get("limit"), "a whole number from 1 to 100")
+        try:
+            timeout = max(1.0, min(float(params.get("flight_timeout", params.get("timeout", 3))), 5.0))
+        except (TypeError, ValueError):
+            return _flight_input_error(self.code, "flight_timeout", params.get("flight_timeout"), "a number of seconds")
         # Default-polarity flip (2026-09-08): FLY polls the live OpenSky
         # feed by default; ``reference=true`` skips the provider and every
         # failure path stays honest (no sample aircraft, ever).
@@ -302,7 +311,6 @@ class FLYFunction(BaseFunction):
                                   metadata={"live": False, "fallback": True,
                                             "data_mode": "provider_unavailable"})
         try:
-            timeout = max(1.0, min(float(params.get("flight_timeout", params.get("timeout", 3))), 5.0))
             data = await asyncio.wait_for(self.deps.opensky.fetch(None), timeout=timeout)
         except Exception as exc:
             payload = _flight_unavailable(callsign_filter, country_filter)
@@ -337,7 +345,7 @@ class FLYFunction(BaseFunction):
                 ],
                 "cards": [
                     {"label": "Aircraft", "value": len(rows)},
-                    {"label": "Source time", "value": data.get("time") if isinstance(data, dict) else None},
+                    {"label": "Source time", "value": _unix_to_iso(data.get("time")) if isinstance(data, dict) else None},
                 ],
                 "methodology": (
                     "FLY reads OpenSky /states/all and normalizes aircraft state vectors into callsign, "
@@ -553,6 +561,23 @@ def _bmc_lessons() -> list[dict[str, str]]:
                 "quiz": quiz,
             })
     return rows
+
+
+def _flight_input_error(code: str, field_name: str, raw: Any, expected: str) -> FunctionResult:
+    reason = f"FLY input {field_name} must be {expected} (got {raw!r})."
+    return FunctionResult(
+        code=code,
+        instrument=None,
+        data={
+            "status": "input_error",
+            "reason": reason,
+            "rows": [],
+            "next_actions": [f"Set {field_name} to {expected}."],
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"live": False, "data_mode": "input_error"},
+    )
 
 
 def _flight_unavailable(callsign_filter: str, country_filter: str) -> dict[str, Any]:

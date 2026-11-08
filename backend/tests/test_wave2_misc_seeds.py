@@ -167,9 +167,12 @@ def test_sat_methodology_mentions_real_or_unavailable() -> None:
     assert "never" in text and ("pretend" in text or "synthetic" in text)
 
 
-@pytest.mark.parametrize("code", ("DINE", "FLY", "GRAB"))
+# FLY is no longer in this list: its seed was rewritten from the travel-picks
+# utility to the OpenSky flight feed it actually serves (FLY#4), so it is not
+# an auxiliary travel list any more.
+@pytest.mark.parametrize("code", ("DINE", "GRAB"))
 def test_non_core_utility_methodology_admits_auxiliary_status(code: str) -> None:
-    """DINE/FLY/GRAB must say they're auxiliary / low nav weight in finance-first cockpit."""
+    """DINE/GRAB must say they're auxiliary / low nav weight in finance-first cockpit."""
     entry = MISC_ENTRIES[code]
     text = entry.methodology.lower()
     assert "auxiliary" in text, (
