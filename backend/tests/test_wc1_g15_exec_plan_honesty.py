@@ -242,3 +242,26 @@ def test_non_finite_or_non_numeric_arrival_price_is_refused(monkeypatch, arrival
     data = res.data
     assert data["status"] == "invalid_request", data
     assert "arrival_price" in data["reason"], data
+
+
+# --- EXEC#7 latent path: the scheduler must not map unknown tags to TWAP ------
+
+@pytest.mark.parametrize("algo", ["MARKET", "ARRIVAL", "POV"])
+def test_algo_schedule_refuses_unscheduled_tags(algo) -> None:
+    """Defence in depth: even if a caller skipped the supported-algo check, the
+    scheduler must not return a TWAP schedule under the requested tag."""
+    from showme.engine.functions.trade.exec import _algo_schedule
+
+    with pytest.raises(ValueError, match="not scheduled"):
+        _algo_schedule(algo, target_qty=100.0, horizon_s=600, slices=12, side="BUY", ref_price=300.0)
+
+
+def test_algo_schedule_still_schedules_supported_algos() -> None:
+    from showme.engine.functions.trade.exec import _algo_schedule
+
+    for algo in ("TWAP", "VWAP", "ICEBERG", "SNIPER"):
+        sched, resolved = _algo_schedule(
+            algo, target_qty=100.0, horizon_s=600, slices=12, side="BUY", ref_price=300.0,
+        )
+        assert resolved == algo and sched, (algo, resolved)
+        assert sum(s["qty"] for s in sched) == pytest.approx(100.0, rel=1e-6), algo

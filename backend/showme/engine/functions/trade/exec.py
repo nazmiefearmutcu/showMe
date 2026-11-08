@@ -251,9 +251,11 @@ def _algo_schedule(
         # Sniper waits for a favourable touch then fires the whole parent in one
         # marketable clip; schedule is a single slice at t0.
         return [{"offset_s": 0, "qty": target_qty}], "SNIPER"
-    # default: TWAP equal time slices
-    sched = TWAPAlgo(target_quantity=target_qty, duration_seconds=horizon_s, slices=slices).schedule()
-    return sched, "TWAP"
+    if upper == "TWAP":
+        sched = TWAPAlgo(target_quantity=target_qty, duration_seconds=horizon_s, slices=slices).schedule()
+        return sched, "TWAP"
+    # EXEC#7: no silent TWAP fallback for tags the engine does not schedule.
+    raise ValueError(f"algo '{upper}' is not scheduled by EXEC")
 
 
 @FunctionRegistry.register
