@@ -647,6 +647,30 @@ class DEBTFunction(BaseFunction):
             iso2 = _ISO3_TO_ISO2.get(c, c)
             if iso2 not in normalised:
                 normalised.append(iso2)
+        # Codes with no World Bank mapping are named in the response, never
+        # silently dropped from the requested set.
+        unsupported = [c for c in normalised if c not in _ISO2_TO_ISO3]
+        normalised = [c for c in normalised if c in _ISO2_TO_ISO3]
+        unsupported_warning = (
+            [f"Unsupported country code(s) not fetched: {', '.join(unsupported)}."]
+            if unsupported else []
+        )
+        if not normalised:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"No World Bank debt series for: {', '.join(unsupported)}.",
+                    "rows": [],
+                    "summary": {"countries": 0, "avg_debt_to_gdp": 0.0, "measure": "world_bank", "portfolio_linked": False, "unsupported_countries": unsupported},
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Use ISO-2 codes that the World Bank publishes, such as US, DE, JP or BR."],
+                },
+                sources=[],
+                warnings=unsupported_warning,
+            )
 
         started = time.monotonic()
         rows: list[dict[str, Any]] = []
@@ -703,12 +727,12 @@ class DEBTFunction(BaseFunction):
                     "next_actions": ["Retry when the World Bank API (api.worldbank.org) is reachable."],
                 },
                 sources=["worldbank"],
-                warnings=[f"World Bank debt-to-GDP fetch returned no data{f': {any_error}' if any_error else ''}."],
+                warnings=[f"World Bank debt-to-GDP fetch returned no data{f': {any_error}' if any_error else ''}.", *unsupported_warning],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 
         avg = round(sum(r["debt_to_gdp"] for r in rows) / len(rows), 2)
-        warnings = ["local_currency_share is a published reference, not a live World Bank series."]
+        warnings = ["local_currency_share is a published reference, not a live World Bank series.", *unsupported_warning]
         if any_error:
             warnings.append("Some countries were skipped due to World Bank fetch errors.")
         return FunctionResult(
@@ -717,7 +741,7 @@ class DEBTFunction(BaseFunction):
             data={
                 "status": "ok",
                 "rows": rows,
-                "summary": {"countries": len(rows), "avg_debt_to_gdp": avg, "measure": "world_bank_debt_to_gdp", "portfolio_linked": False},
+                "summary": {"countries": len(rows), "avg_debt_to_gdp": avg, "measure": "world_bank_debt_to_gdp", "portfolio_linked": False, "unsupported_countries": unsupported},
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             },
