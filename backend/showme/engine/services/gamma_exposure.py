@@ -68,6 +68,11 @@ def bs_gamma(spot: float, strike: float, vol: float, T: float, r: float = 0.04,
 _FLIP_GRID_PCT = 0.10
 _FLIP_GRID_STEP = 0.0025
 
+# Smallest observed implied vol (annualized decimal, 0.01%) that is priced as
+# given. Below it the Black-Scholes term sigma*sqrt(T) is numerically degenerate,
+# so such a contract is excluded and counted in ``excluded.implied_vol``.
+MIN_USABLE_IV = 1e-4
+
 
 def _gamma_flip_spot_grid(spot: float, total_gex_at: Any) -> float | None:
     """Spot level nearest ``spot`` where total dealer GEX changes sign.
@@ -165,10 +170,13 @@ def chain_gex(
         return time_to_expiry_years(exp, now)
 
     def _vol(opt: dict[str, Any]) -> float | None:
+        # The observed market IV is used as it is. An IV too small to price
+        # safely is not lifted to a floor (that would substitute a constant for
+        # observed data); the contract is excluded and counted instead (GEX#5).
         for key in ("impliedVolatility", "iv"):
             v = _finite_positive(opt.get(key))
             if v is not None:
-                return max(v, 0.05)
+                return v if v >= MIN_USABLE_IV else None
         return None
 
     def _oi(opt: dict[str, Any]) -> float | None:
