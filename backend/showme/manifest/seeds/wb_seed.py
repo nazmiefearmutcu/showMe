@@ -3,8 +3,9 @@
 Bloomberg ``WB<GO>`` analogue: a country × 10Y yield grid with a
 developed-market / emerging-market tab split, heatmap rank against the
 visible distribution, spread vs US Treasury 10Y, and a 30 s poll on the
-FRED-backed live path. The sovereign_yield_model fallback ships labelled
-template rows so the pane never silently fakes a live read.
+FRED-backed live path. When no live yield is usable the response is an explicit
+provider_unavailable state with no rows; the labelled sovereign_yield_model template is
+served only on request (reference=true), never as a silent substitute.
 """
 from __future__ import annotations
 
@@ -144,6 +145,8 @@ def wb() -> FunctionManifest:
             " on the backend. With ``reference=false`` (default) the engine fans out FRED long-rate series"
             " IDs (DGS10, IRLTLT01* family) per country and pins them into the grid with each FRED"
             " observation date as as_of; countries whose series fail are listed in missing_countries."
+            " If no country returns a usable observation the response is data.status=provider_unavailable"
+            " with no rows (the template is never substituted for a failed live fetch)."
             " With ``reference=true`` the response carries labelled ``source_mode=sovereign_yield_model``"
             " rows so the pane never silently fakes a live read."
             " Δ-vs-US is computed client-side as (country_yield - US_yield) × 100 bp; rank intensity"

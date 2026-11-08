@@ -56,6 +56,9 @@ interface WBPayload {
   field_dictionary?: Record<string, string>;
   /** WB#2: requested countries whose live FRED series returned nothing usable. */
   missing_countries?: string[];
+  /** "provider_unavailable" when no live yield was usable (no rows are substituted). */
+  status?: string;
+  reason?: string;
 }
 
 // Bucket countries the engine ships today (`_SOVEREIGN_FRED_IDS` /
@@ -335,7 +338,15 @@ export function WBPane({ code }: FunctionPaneProps) {
           ) : rows.length === 0 ? (
             <>
               {missingBox}
-              <Empty title="No yields" body={`No WB rows for ${region}.`} />
+              {payload.status === "provider_unavailable" ? (
+                <Empty
+                  title="Live yields unavailable"
+                  body={payload.reason ?? "No live FRED sovereign yield was usable."}
+                  icon="!"
+                />
+              ) : (
+                <Empty title="No yields" body={`No WB rows for ${region}.`} />
+              )}
             </>
           ) : (
             <div className="u-grid-gap-14">

@@ -198,7 +198,10 @@ def test_wb_default_live_keyless_and_offline_fallback_labelled():
     offline = WBFunction(FunctionDeps())
     offline._http_client = _FakeClient(boom=True)
     result = _run(offline.execute(countries="US,DE,JP"))
-    assert result.sources == ["sovereign_yield_model"]
+    # A failed live fetch is an explicit state with no substituted template rows.
+    assert result.sources == []
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["rows"] == []
     assert result.warnings
 
 

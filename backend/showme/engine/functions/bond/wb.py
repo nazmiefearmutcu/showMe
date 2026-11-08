@@ -213,10 +213,30 @@ class WBFunction(BaseFunction):
         missing_countries = sorted(c for c, y in out.items() if y != y)
         out = {c: y for c, y in out.items() if y == y}
         if not out:
-            out = {country: value for country, value in _world_bond_template().items() if country in selected}
-            return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "sovereign_yield_model"), sources=["sovereign_yield_model"],
-                                  warnings=["Live sovereign yields unavailable (keyed FRED adapter or keyless CSV); showing the labelled reference template.",
-                                            *provider_errors])
+            # Data policy: a failed live fetch is an explicit state, never a silent
+            # substitution of the static template. The labelled reference rows are
+            # served only when the caller asks for them (reference=true).
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "No live FRED sovereign yield returned a usable observation (keyless fredgraph.csv).",
+                    "next_actions": [
+                        "Retry the live fetch later.",
+                        "Set reference=true to view the labelled sovereign_yield_model reference template.",
+                    ],
+                    "rows": [],
+                    "missing_countries": missing_countries,
+                    "summary": {"countries": 0, "tenor": "10Y", "source_mode": "fred",
+                                "missing_countries": len(missing_countries)},
+                    "as_of": None,
+                },
+                sources=[],
+                metadata={"live": False, "data_mode": "provider_unavailable",
+                          **({"provider_errors": provider_errors} if provider_errors else {})},
+                warnings=["Live sovereign yields unavailable (keyed FRED adapter or keyless CSV); no rows substituted.",
+                          *provider_errors],
+            )
         data = _rows_from_yields(out, "fred", observed_on=observed_on)
         if missing_countries:
             # HNT-12 fix: partial coverage is visible in the payload, not
