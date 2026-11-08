@@ -186,7 +186,15 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
         sortable: true,
         sortValue: (r) => r.sentiment ?? null,
         render: (r) => (
-          <span style={{ ...monoStrongStyle, color: toneColor(r.sentiment) }}>
+          <span
+            style={{
+              ...monoStrongStyle,
+              color: toneColor(
+                r.sentiment,
+                r.platform === GDELT_PLATFORM ? GDELT_TONE_BAND : undefined,
+              ),
+            }}
+          >
             {fmtSigned(r.sentiment)}
           </span>
         ),
@@ -269,7 +277,7 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
             label="GDELT tone"
             value={fmtSigned(latestTone)}
             caption="NATIVE GDELT SCALE"
-            tone={sentimentTone(latestTone)}
+            tone={sentimentTone(latestTone, GDELT_TONE_BAND)}
           />
         </section>
 
@@ -435,13 +443,20 @@ function sentimentLabel(v: number | null | undefined): string {
   return v > 0.05 ? "bullish" : v < -0.05 ? "bearish" : "neutral";
 }
 
-function sentimentTone(v: number | null | undefined): "positive" | "negative" | "neutral" {
+/** GDELT tone is on its native scale (about -10..+10): neutral band ±1, as the backend trend. */
+const GDELT_TONE_BAND = 1;
+const GDELT_PLATFORM = "GDELT tone";
+
+function sentimentTone(
+  v: number | null | undefined,
+  band = 0.05,
+): "positive" | "negative" | "neutral" {
   if (v == null || !Number.isFinite(v)) return "neutral";
-  return v > 0.05 ? "positive" : v < -0.05 ? "negative" : "neutral";
+  return v > band ? "positive" : v < -band ? "negative" : "neutral";
 }
 
-function toneColor(v: number | null | undefined): string {
-  const tone = sentimentTone(v);
+function toneColor(v: number | null | undefined, band = 0.05): string {
+  const tone = sentimentTone(v, band);
   if (tone === "positive") return "var(--positive)";
   if (tone === "negative") return "var(--negative)";
   return "var(--text-primary)";
