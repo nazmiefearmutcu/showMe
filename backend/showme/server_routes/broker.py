@@ -51,6 +51,46 @@ def _expected_confirmation_token(broker_name: str | None) -> str:
         return ""
 
 
+def _provided_confirmation(body: dict[str, Any]) -> str:
+    """Typed confirmation echoed by the client (same field rules as
+    ``OrderRequest.resolved_confirmation``: ``confirmation_token`` wins, the
+    legacy ``confirm_account_label`` alias is accepted)."""
+    raw = body.get("confirmation_token") or body.get("confirm_account_label") or ""
+    return str(raw).strip()
+
+
+def _require_typed_confirmation(broker: Any, provided: str) -> None:
+    """Reject a live-capable broker action unless the client echoed the
+    account label. Shared by order submit and position close (SEC-4)."""
+    expected = _expected_confirmation_token(broker.name)
+    if not expected:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirmation_token required: no active account label "
+                "could be resolved for broker "
+                f"'{broker.name}'. Reconnect the credential and retry."
+            ),
+        )
+    if not provided:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirmation_token required: client must echo the "
+                "account label as the typed confirmation "
+                f"(expected '{expected}')."
+            ),
+        )
+    if provided != expected:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirmation_token mismatch: typed label does not "
+                "match the active account."
+            ),
+        )
+
+
 def register(app: FastAPI, deps: AppDeps) -> None:
     router = APIRouter()
 
@@ -125,6 +165,10 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        # SEC-4: a close submits a live exit order (quantity omitted closes the
+        # whole position), so it needs the same typed-account-label gate as
+        # POST /api/broker/orders before the broker is asked to act.
+        _require_typed_confirmation(broker, _provided_confirmation(body))
         qty = body.get("quantity")
         try:
             quantity = float(qty) if qty not in (None, "") else None
@@ -167,34 +211,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         # broker is asked to fill anything. Applies to paper too: keeping
         # the contract uniform makes wiring a live credential a no-op for
         # the UI and removes "but it worked in paper" regressions.
-        provided = payload.resolved_confirmation()
-        expected = _expected_confirmation_token(broker.name)
-        if not expected:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "confirmation_token required: no active account label "
-                    "could be resolved for broker "
-                    f"'{broker.name}'. Reconnect the credential and retry."
-                ),
-            )
-        if not provided:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "confirmation_token required: client must echo the "
-                    "account label as the typed confirmation "
-                    f"(expected '{expected}')."
-                ),
-            )
-        if provided != expected:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "confirmation_token mismatch: typed label does not "
-                    "match the active account."
-                ),
-            )
+        _require_typed_confirmation(broker, payload.resolved_confirmation())
         # E2: paper market orders need a resolvable fill price. When the
         # caller supplied none (no ``last:`` hint, no limit_price), fetch
         # a live quote and append the hint ourselves so the honest-reject
