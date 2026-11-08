@@ -40,7 +40,8 @@ def _realized_vol_1m(closes: list[float]) -> float:
     rets = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]
     win = rets[-21:]
     mean = sum(win) / len(win)
-    var = sum((r - mean) ** 2 for r in win) / len(win)
+    # Sample (n-1) estimator, as fx._annualized_vol uses since XCON-11.
+    var = sum((r - mean) ** 2 for r in win) / (len(win) - 1)
     return math.sqrt(var) * math.sqrt(252.0)
 
 
