@@ -69,3 +69,16 @@ def test_out_of_range_confidence_is_an_input_error_not_a_silent_default(monkeypa
     assert res.data["status"] == "input_error", res.data["status"]
     assert res.data["var"] is None
     assert "confidence" in str(res.data.get("reason", "")).lower()
+
+
+# ── PVAR#3: an unsupported method is an input error, not a silent swap ────
+
+
+def test_monte_carlo_request_is_not_silently_replaced_by_historical(monkeypatch) -> None:
+    monkeypatch.setattr(pvar_mod, "PortfolioState", _Book)
+    monkeypatch.setattr(pvar_mod, "_download_returns", _fake_download)
+    res = _run(pvar_mod.PVARFunction().execute(method="monte_carlo", confidence=0.99))
+    # Red today: status is "ok" and method silently reads "historical".
+    assert res.data["status"] == "input_error", res.data["status"]
+    assert "monte_carlo" in str(res.data.get("reason", ""))
+    assert res.data["var"] is None

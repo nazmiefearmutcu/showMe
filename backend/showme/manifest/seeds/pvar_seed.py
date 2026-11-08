@@ -1,9 +1,9 @@
 """PVAR — Portfolio Value-at-Risk and Expected Shortfall.
 
-Three computation methods (parametric / historical / monte_carlo), each
-with its own model assumptions. confidence_level, horizon, and method
-ride MODEL_ASSUMPTION controls so the user owns the choice — VaR is
-notorious for hiding behind defaults.
+Two computation methods (parametric / historical), each with its own model
+assumptions. monte_carlo is not implemented and is rejected (PVAR#3).
+confidence_level, horizon, and method ride MODEL_ASSUMPTION controls so the
+user owns the choice — VaR is notorious for hiding behind defaults.
 """
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ def pvar() -> FunctionManifest:
         category=Category.PORTFOLIO,
         intent=(
             "Compute portfolio Value-at-Risk and Expected Shortfall at user-"
-            "selected confidence and horizon, by parametric (Gaussian), "
-            "historical-simulation, or Monte Carlo methods. Confidence, "
+            "selected confidence and horizon, by parametric (Gaussian) or "
+            "historical-simulation methods. Confidence, "
             "horizon, and method are model_assumption controls — VaR has "
             "no defensible silent default."
         ),
@@ -100,8 +100,11 @@ def pvar() -> FunctionManifest:
                 label="Method",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
-                description="Computation method — each has different distributional assumptions.",
-                options=["parametric", "historical", "monte_carlo"],
+                description=(
+                    "Computation method — each has different distributional assumptions. "
+                    "Monte Carlo is not implemented and is rejected with an input_error."
+                ),
+                options=["parametric", "historical"],
             ),
             InputSpec(
                 name="lookback_window",
@@ -110,17 +113,6 @@ def pvar() -> FunctionManifest:
                 required=True,
                 description="History used to estimate Σ (parametric) or to resample (historical).",
                 options=["180d", "1Y", "2Y", "5Y"],
-            ),
-            InputSpec(
-                name="mc_paths",
-                label="MC paths",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Monte Carlo sample count.",
-                min=1000,
-                max=200000,
-                step=1000,
-                depends_on=["method"],
             ),
             InputSpec(
                 name="provider_mode",
@@ -140,7 +132,6 @@ def pvar() -> FunctionManifest:
             "horizon": "1d",
             "method": "historical",
             "lookback_window": "1Y",
-            "mc_paths": 20000,
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
@@ -205,9 +196,7 @@ def pvar() -> FunctionManifest:
             "multivariate Gaussian: VaR = -μ_p Δt + z_α σ_p √Δt where z_α is "
             "the one-sided normal quantile. Historical simulation resamples "
             "P&L vectors from the actual lookback; VaR is the empirical "
-            "quantile and ES the conditional tail mean. Monte Carlo "
-            "simulates `mc_paths` correlated draws under a fitted "
-            "multivariate t (degrees of freedom estimated). Component VaR "
+            "quantile and ES the conditional tail mean. Component VaR "
             "decomposes total VaR back to per-asset contributions using "
             "marginal VaR × position weight. The method and confidence are "
             "echoed verbatim so backtests can reproduce the run."

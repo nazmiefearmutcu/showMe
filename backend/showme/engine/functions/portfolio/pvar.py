@@ -92,13 +92,20 @@ class PVARFunction(BaseFunction):
             return _input_error(
                 self.code, params, instrument,
                 f"confidence must be strictly between 0 and 1 (got {raw_confidence!r}).",
+                "Pass a confidence strictly between 0 and 1, for example 0.95 or 0.99.",
             )
         horizon_days = _horizon_days(params.get("horizon", "1d"))
         method = str(params.get("method", "parametric")).strip().lower()
-        if method not in {"parametric", "historical"}:
-            # monte_carlo is not implemented keyless-ly; fall back to the
-            # most honest empirical estimator we can actually compute.
-            method = "historical"
+        if method not in _SUPPORTED_METHODS:
+            # PVAR#3: monte_carlo is not implemented. Substituting another
+            # estimator would present its numbers as the requested method, so
+            # the request is rejected with the reason instead.
+            return _input_error(
+                self.code, params, instrument,
+                f"method {method!r} is not implemented; use one of "
+                f"{', '.join(sorted(_SUPPORTED_METHODS))}.",
+                f"Pass method as one of {', '.join(sorted(_SUPPORTED_METHODS))}.",
+            )
         max_positions = max(1, int(params.get("max_positions", 12)))
         provider_timeout = float(params.get("yfinance_timeout", params.get("quote_timeout", 4)))
         # Live, real-data is now the DEFAULT path. `live_risk=false` only
@@ -368,6 +375,7 @@ class PVARFunction(BaseFunction):
 _HORIZON_MAP = {"1d": 1, "5d": 5, "10d": 10, "20d": 20}
 # Must equal pvar_seed defaults["confidence_level"].
 _DEFAULT_CONFIDENCE = 0.99
+_SUPPORTED_METHODS = frozenset({"parametric", "historical"})
 
 
 def _horizon_days(value: Any) -> int:
@@ -504,6 +512,7 @@ def _input_error(
     params: dict[str, Any],
     instrument: Instrument | None,
     reason: str,
+    next_action: str,
 ) -> FunctionResult:
     """Explicit input_error envelope: no numbers, the rejected input is named."""
     return FunctionResult(
@@ -527,7 +536,7 @@ def _input_error(
             "rows": [],
             "series": [],
             "cards": {},
-            "next_actions": ["Pass a confidence strictly between 0 and 1, for example 0.95 or 0.99."],
+            "next_actions": [next_action],
             "methodology": (
                 "VaR/ES needs an explicit confidence level in (0, 1); none is substituted silently."
             ),
