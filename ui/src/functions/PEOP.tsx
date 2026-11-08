@@ -244,7 +244,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
                 buildTsvRow([
                   r.full_name,
                   r.role,
-                  r.company,
+                  firmText(r),
                   r.contact_status,
                   r.source_url ?? r.source,
                 ]),
@@ -310,7 +310,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
           <StatCard
             label="Top match"
             value={items[0]?.full_name ?? "—"}
-            caption={items[0]?.company ?? ""}
+            caption={items[0] ? firmText(items[0]) : ""}
             tone="neutral"
           />
         </section>

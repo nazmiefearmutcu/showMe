@@ -308,6 +308,45 @@ describe("PEOP pane — company provenance (PEOP#7)", () => {
     );
   });
 
+  it("labels a summary-derived company in the Top match card too", () => {
+    const payload = wikiPayload();
+    payload.items[0].company_source = "summary_pattern";
+    setMockFn({ state: "ok", data: { data: payload } });
+    render(<PEOPPane code="PEOP" />);
+    fireEvent.change(screen.getByLabelText(/People search query/i), {
+      target: { value: "jensen" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    const summary = screen.getByLabelText("PEOP summary");
+    expect(summary.textContent).toContain(
+      "Nvidia (mentioned in summary, not an employer claim)",
+    );
+  });
+
+  it("keeps the summary-derived caveat when copying a contact row", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    const payload = wikiPayload();
+    payload.items[0].company_source = "summary_pattern";
+    setMockFn({ state: "ok", data: { data: payload } });
+    render(<PEOPPane code="PEOP" />);
+    fireEvent.change(screen.getByLabelText(/People search query/i), {
+      target: { value: "jensen" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(screen.getByTitle(/Copy .* contact row/));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).toContain(
+      "Nvidia (mentioned in summary, not an employer claim)",
+    );
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
   it("keeps a Wikidata employer claim unlabelled", () => {
     const payload = wikiPayload();
     payload.items[0].company_source = "wikidata:P108";
