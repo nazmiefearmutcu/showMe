@@ -12,12 +12,12 @@
  *    tool: the symbol control is shown and the dock symbol is forwarded.
  *  - Tools that really take a symbol (BTFW, TRA) still receive the dock symbol.
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
 const mockArgs: {
-  current: { code?: string; symbol?: string; params?: Record<string, unknown> } | null;
+  current: { code?: string; symbol?: string; params?: Record<string, unknown>; enabled?: boolean } | null;
 } = { current: null };
 vi.mock("@/lib/useFunction", () => ({
   useFunction: (args: unknown) => {
@@ -69,5 +69,41 @@ describe("XPORT-R1 dock symbol forwarding", () => {
     mockOk({ status: "ok", rows: [] });
     render(<PortfolioAnalyticsPane code="TRA" symbol="NVDA" />);
     expect(mockArgs.current?.symbol).toBe("NVDA");
+  });
+});
+
+describe("XPORT-R1 typed symbol and blank input", () => {
+  it("a symbol typed into MLSIG wins over the linked dock symbol", () => {
+    mockOk({ status: "ok", rows: [] });
+    render(<PortfolioAnalyticsPane code="MLSIG" symbol="AAPL" />);
+    fireEvent.change(screen.getByLabelText(/symbol/i), { target: { value: "msft" } });
+    expect(mockArgs.current?.symbol).toBe("MSFT");
+  });
+
+  it("a blank MLSIG symbol is never requested, so no backend default (BTCUSDT) runs", () => {
+    mockOk({ status: "ok", rows: [] });
+    render(<PortfolioAnalyticsPane code="MLSIG" />);
+    expect(mockArgs.current?.symbol).toBeUndefined();
+    expect(mockArgs.current?.enabled).toBe(false);
+    fireEvent.change(screen.getByLabelText(/symbol/i), { target: { value: "" } });
+    expect(mockArgs.current?.enabled).toBe(false);
+    expect(screen.getByText(/enter a symbol/i)).toBeTruthy();
+  });
+
+  it("the dock symbol still drives MLSIG until the user types their own", () => {
+    mockOk({ status: "ok", rows: [] });
+    const { rerender } = render(<PortfolioAnalyticsPane code="MLSIG" symbol="AAPL" />);
+    expect(mockArgs.current?.symbol).toBe("AAPL");
+    rerender(<PortfolioAnalyticsPane code="MLSIG" symbol="NVDA" />);
+    expect(mockArgs.current?.symbol).toBe("NVDA");
+  });
+
+  it("RPAR with a cleared universe is not requested, so the backend list never runs", () => {
+    mockOk({ status: "ok", rows: [] });
+    render(<PortfolioAnalyticsPane code="RPAR" />);
+    expect(mockArgs.current?.enabled).not.toBe(false);
+    fireEvent.change(screen.getByLabelText(/universe/i), { target: { value: "" } });
+    expect(mockArgs.current?.enabled).toBe(false);
+    expect(screen.getByText(/enter at least one symbol/i)).toBeTruthy();
   });
 });

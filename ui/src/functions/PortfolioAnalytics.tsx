@@ -72,6 +72,8 @@ interface ToolConfig {
   usesSymbol?: boolean;
   /** Shows a bar-count horizon input that is sent as the backend's label_horizon. */
   usesHorizon?: boolean;
+  /** true: the pane will not run until the universe has at least one symbol. */
+  requiresUniverse?: boolean;
   /** false: never forward the dock/linked symbol (portfolio-wide tools whose
    *  backend treats a symbol as a filter, e.g. LOTS list). */
   sendsDockSymbol?: boolean;
@@ -218,6 +220,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     subtitle: "Equal-risk-contribution (default) and inverse-vol allocation",
     defaultSymbols: "AAPL,MSFT,BTCUSDT,EURUSD,GC=F",
     usesUniverse: true,
+    requiresUniverse: true,
     supportsLive: true,
     // ERC is the first (default) mode: inverse-vol is only an approximation,
     // and the default view must match the Risk Parity title.
@@ -250,7 +253,12 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   };
   const [symbols, setSymbols] = useState(config.defaultSymbols ?? "SPY,QQQ,TLT,GLD");
   const [targetText, setTargetText] = useState("SPY:40, QQQ:25, TLT:20, GLD:15");
-  const [symbolInput, setSymbolInput] = useState(symbol ?? config.defaultSymbol ?? "AAPL");
+  // XPORT-R1: the typed Symbol control wins once the user has typed in it.
+  // Until then the linked dock symbol (or the tool's own default) is shown
+  // and used, so the control never shows one value while another is sent.
+  const [symbolInput, setSymbolInput] = useState("");
+  const [symbolTouched, setSymbolTouched] = useState(false);
+  const symbolDisplay = symbolTouched ? symbolInput : (symbol || config.defaultSymbol || "");
   const [live, setLive] = useState(false);
   const [mode, setMode] = useState(config.modes?.[0] ?? "all");
   // MLSIG label horizon in bars (sent as label_horizon). Default matches the
@@ -294,10 +302,15 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   const [winRate, setWinRate] = useState("");
 
   const effectiveSymbol = config.usesSymbol
-    ? (symbol || symbolInput || config.defaultSymbol)
+    ? (symbolDisplay.trim() || undefined)
     : config.sendsDockSymbol === false
       ? undefined
       : symbol;
+  // A blank input must not fall through to a backend default (MLSIG would
+  // analyse BTCUSDT, RPAR a built-in five-name list): the pane waits instead.
+  const missingInput = config.usesSymbol
+    ? !effectiveSymbol
+    : Boolean(config.requiresUniverse) && splitSymbols(symbols).length === 0;
   const params = useMemo(
     () =>
       buildParams(upper, {
@@ -324,6 +337,7 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
     code: upper,
     symbol: effectiveSymbol,
     params,
+    enabled: !missingInput,
   });
 
   const payload = data?.data;
@@ -343,8 +357,15 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
     [payload, data?.metadata, data?.sources],
   );
 
-  const body =
-    state === "loading" || state === "idle" ? (
+  const body = missingInput ? (
+    <div role="status">
+      <Empty
+        title="Input Required"
+        body={config.usesSymbol ? "Enter a symbol to run this analysis." : "Enter at least one symbol in the universe."}
+        icon="⌖"
+      />
+    </div>
+  ) : state === "loading" || state === "idle" ? (
       <div className="portfolio-analytics-loading">
         <Skeleton height={70} />
         <Skeleton height={180} />
@@ -422,8 +443,11 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setSymbols={setSymbols}
             targetText={targetText}
             setTargetText={setTargetText}
-            symbolInput={symbolInput}
-            setSymbolInput={setSymbolInput}
+            symbolInput={symbolDisplay}
+            setSymbolInput={(value: string) => {
+              setSymbolTouched(true);
+              setSymbolInput(value);
+            }}
             account={account}
             setAccount={setAccount}
             capital={capital}
