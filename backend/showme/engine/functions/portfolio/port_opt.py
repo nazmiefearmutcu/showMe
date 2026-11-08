@@ -143,41 +143,56 @@ class PortOptFunction(BaseFunction):
             rets = pd.DataFrame()
         warnings: list[str] = []
         if rets.empty or len(rets.columns) < 2:
-            if live:
-                # Live returns were requested but are not available for enough
-                # symbols. Do not optimise on synthetic returns in their place.
+            # No usable live returns. Synthetic template returns never stand in for
+            # them (data policy), with LIVE off or on: no weights are computed.
+            no_weights_meta = {"mode": mode, "days": days, "days_basis": "calendar_days",
+                               "risk_free": rf, "allow_short": allow_short,
+                               "live": False, "fallback": False}
+            if not live:
                 return FunctionResult(
                     code=self.code, instrument=None,
                     data={
-                        "status": "provider_unavailable",
+                        "status": "needs_input",
                         "reason": (
-                            "Live yfinance returns are unavailable for at least two of the "
-                            "requested symbols, so no weights were computed."
+                            "PORT_OPT optimises on live yfinance daily returns, and LIVE is off, "
+                            "so no weights were computed."
                         ),
-                        "dropped_symbols": dropped,
+                        # The requested universe (not returns-backed): nothing was optimised.
+                        "symbols": list(symbols),
+                        "dropped_symbols": [],
                         "unapplied_inputs": unapplied,
                         "next_actions": [
-                            "Retry once the market-data provider is reachable.",
-                            "Or turn LIVE off to optimise on labelled model returns (not market data).",
+                            "Turn LIVE on to optimise on yfinance daily closes for the universe.",
                         ],
                     },
                     sources=[],
                     warnings=[
-                        "Live yfinance returns unavailable: no weights were computed.",
+                        "LIVE is off: no weights were computed (no template returns are used).",
                         *_unapplied_warning(unapplied),
                     ],
-                    metadata={"mode": mode, "days": days, "days_basis": "calendar_days",
-                              "risk_free": rf, "allow_short": allow_short,
-                              "live": False, "fallback": False},
+                    metadata=no_weights_meta,
                 )
-            from showme.engine.functions.portfolio.rpar import _template_returns
-            rets = _template_returns(symbols, days)
-            sources = ["computed_return_model"]
-            fallback = True
-            # Model returns are an explicit user choice (LIVE off); the weights
-            # must still never be read as market-data results.
-            warnings.append(
-                "Weights come from labelled model returns (computed_return_model), not market data."
+            # Live returns were requested but are not available for enough symbols.
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": (
+                        "Live yfinance returns are unavailable for at least two of the "
+                        "requested symbols, so no weights were computed."
+                    ),
+                    "dropped_symbols": dropped,
+                    "unapplied_inputs": unapplied,
+                    "next_actions": [
+                        "Retry once the market-data provider is reachable.",
+                    ],
+                },
+                sources=[],
+                warnings=[
+                    "Live yfinance returns unavailable: no weights were computed.",
+                    *_unapplied_warning(unapplied),
+                ],
+                metadata=no_weights_meta,
             )
         else:
             sources = ["yfinance"]

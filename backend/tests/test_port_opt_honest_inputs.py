@@ -41,12 +41,13 @@ def test_window_input_sets_lookback_when_days_absent() -> None:
 
 
 def test_objective_input_selects_the_solver_mode() -> None:
-    result = _run(None, symbols=["AAPL", "MSFT", "NVDA"], objective="max_sharpe", live=False)
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, objective="max_sharpe", live=True, days=756)
     assert "max_sharpe" in result.data, sorted(result.data)
+    assert "min_volatility" not in result.data, sorted(result.data)
 
 
 def test_risk_free_rate_input_is_applied() -> None:
-    result = _run(None, symbols=["AAPL", "MSFT", "NVDA"], risk_free_rate=0.03, live=False)
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, risk_free_rate=0.03, live=True, days=756)
     assert result.data["summary"]["risk_free"] == 0.03
 
 
@@ -144,13 +145,15 @@ def test_lookback_is_labelled_as_calendar_days() -> None:
     assert result.data["summary"]["lookback_calendar_days"] == 756
 
 
-def test_model_returns_are_labelled_when_live_is_off() -> None:
-    """LIVE off is an explicit user choice: the model-returns result is allowed,
-    but it must never be read as market data."""
+def test_live_off_reports_needs_input_and_no_model_returns() -> None:
+    """LIVE off: the template (cosine) returns used to feed the optimum and were
+    labelled 'ok'. Now no weights are computed and the state says so."""
     result = _run(None, symbols=SYMBOLS, mode="risk_parity", live=False, days=756)
-    assert result.sources == ["computed_return_model"]
-    assert result.metadata["fallback"] is True
-    assert any("not market data" in w for w in result.warnings), result.warnings
+    assert result.data["status"] == "needs_input", result.data["status"]
+    assert result.sources == []
+    assert result.metadata["fallback"] is False
+    assert "risk_parity" not in result.data
+    assert any("no weights" in w for w in result.warnings), result.warnings
 
 
 # --- PORT_OPT#3 follow-up: inputs that were still silently ignored -------------
