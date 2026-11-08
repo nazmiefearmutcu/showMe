@@ -74,6 +74,8 @@ interface DESData {
   currentPrice?: number;
   regularMarketPrice?: number;
   previousClose?: number;
+  /** Crypto only: last price minus the 24h-ago price (USD). previousClose is null for crypto. */
+  change_24h?: number | null;
   regularMarketChangePercent?: number;
   fiftyTwoWeekHigh?: number;
   fiftyTwoWeekLow?: number;
@@ -391,7 +393,14 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
     (last != null && typeof prev === "number" && Number.isFinite(prev) && prev > 0
       ? ((last - prev) / prev) * 100
       : null);
-  const change = last != null && prev != null ? last - prev : null;
+  // ASOF-9: crypto has no previousClose; its absolute change is the declared 24h rolling
+  // change (change_24h), never a derived prior close.
+  const change24h =
+    typeof profile?.change_24h === "number" && Number.isFinite(profile.change_24h)
+      ? profile.change_24h
+      : null;
+  const change =
+    last != null && prev != null ? last - prev : change24h;
   // S12 alignment (HP/GP already migrated): the prior `hasLive` flag was
   // derived from `payloadStatus === "ok"`, which is the same misleading
   // "real-time session" wording HP shipped before S12. Replace with the
