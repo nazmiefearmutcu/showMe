@@ -93,3 +93,71 @@ def test_tauc_manifest_default_live_matches_handler() -> None:
         "manifest says live_auctions defaults to False but the handler goes live when it is absent"
     )
     assert "opt-in" not in tauc.methodology.lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# EREV#2 — missing coverage and a single period must not read as a real zero
+# EREV#1/#3 — methodology is recommendation buckets, not EPS estimates
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class _FinnhubFake:
+    def __init__(self, recs: list[dict[str, Any]]):
+        self.recs = recs
+
+    async def recommendations(self, symbol: str) -> list[dict[str, Any]]:
+        return self.recs
+
+
+def _bucket(period: str, sb=0, b=0, h=0, s=0, ss=0) -> dict[str, Any]:
+    return {"period": period, "strongBuy": sb, "buy": b, "hold": h, "sell": s, "strongSell": ss}
+
+
+def _erev(recs):
+    from showme.engine.functions.equity.erev import EREVFunction
+
+    aapl = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    return asyncio.run(
+        EREVFunction(FunctionDeps(finnhub=_FinnhubFake(recs))).execute(instrument=aapl)
+    )
+
+
+def test_erev_single_period_velocity_is_null_not_zero() -> None:
+    res = _erev([_bucket("2026-09-01", sb=5, b=3, h=2)])
+    assert res.data["status"] == "ok"
+    assert res.data["velocity_avg"] is None
+    assert res.data["revisions"] == []
+
+
+def test_erev_zero_analyst_period_has_null_average() -> None:
+    res = _erev([
+        _bucket("2026-08-01", sb=4, b=2, h=1, s=0, ss=0),
+        _bucket("2026-09-01"),  # no analysts this month
+    ])
+    latest = res.data["trend"][-1]
+    assert latest["n"] == 0
+    assert latest["avg"] is None, "zero coverage must not be a neutral 0.0 consensus"
+    assert res.data["velocity_avg"] is None
+    assert res.data["revisions"][0]["delta_avg"] is None
+
+
+def test_erev_all_zero_feed_is_empty_not_ok() -> None:
+    res = _erev([_bucket("2026-08-01"), _bucket("2026-09-01")])
+    assert res.data["status"] == "empty"
+    assert res.data["velocity_avg"] is None
+    assert res.data["current_score"]["avg"] is None
+
+
+def test_erev_methodology_describes_recommendations_not_eps() -> None:
+    res = _erev([_bucket("2026-08-01", sb=1), _bucket("2026-09-01", sb=2)])
+    text = res.data["methodology"]
+    assert "recommendation" in text.lower()
+    # The disclaimer may name EPS, but the methodology must not claim EPS data.
+    assert "eps estimate" not in text.lower()
+    assert "eps revision" not in text.lower()
+    from showme.engine.functions.equity import erev as erev_mod
+
+    doc = erev_mod.__doc__ or ""
+    for claim in ("EPS/revenue revisions", "EPS estimate trend", "EPS estimate revisions"):
+        assert claim not in doc
+        assert claim not in erev_mod.EREVFunction.description
