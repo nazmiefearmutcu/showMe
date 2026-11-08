@@ -92,6 +92,33 @@ async def test_add_rejects_unparseable_condition(alrt_home: Path) -> None:
     assert await _listed_count(fn) == 0
 
 
+_CORRUPT_STORE = '[{"id": "old1", "condition": "AAPL.price > 100"'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"action": "add", "condition": "MSFT.price > 400"},
+        {"action": "remove", "id": "old1"},
+        {"action": "toggle", "id": "old1"},
+    ],
+    ids=["add", "remove", "toggle"],
+)
+async def test_mutations_do_not_overwrite_unreadable_store(alrt_home: Path, params: dict) -> None:
+    """ALRT#4: an unreadable alerts.json must survive a later write intact."""
+    store = _store()
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(_CORRUPT_STORE)
+
+    fn = ALRTFunction()
+    res = await fn.execute(**params)
+
+    assert res.data["status"] == "input_error", res.data
+    assert store.read_text() == _CORRUPT_STORE, "unreadable store was overwritten"
+    assert any("unreadable" in w for w in res.warnings), res.warnings
+
+
 @pytest.mark.asyncio
 async def test_add_accepts_documented_condition_forms(alrt_home: Path) -> None:
     fn = ALRTFunction()

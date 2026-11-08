@@ -24,6 +24,8 @@ LOG = logging.getLogger("showme.alrt")
 # so two simultaneous `add`s on the same `/api/fn/ALRT` cannot drop one alert.
 _STORE_LOCK = threading.Lock()
 
+_MUTATING_ACTIONS = frozenset({"add", "remove", "toggle"})
+
 _NOT_ARMED_WARNING = (
     "Alert stored but not armed: no background evaluator is wired in this build, "
     "so this rule will not fire."
@@ -107,6 +109,15 @@ class ALRTFunction(BaseFunction):
         with _STORE_LOCK:
             alerts, load_warning = _load_alerts()
             warnings = [load_warning] if load_warning else []
+            if load_warning and action in _MUTATING_ACTIONS:
+                # ALRT#4: _load_alerts returns [] for an unreadable file, so
+                # saving now would replace the user's bytes with a near-empty list.
+                return _alrt_input_error(
+                    self.code,
+                    "alerts.json is unreadable, so this change was refused to avoid overwriting it.",
+                    f"Inspect or restore {_store()}, then retry.",
+                    warnings,
+                )
             if action == "list":
                 return FunctionResult(
                     code=self.code,
