@@ -319,12 +319,15 @@ class ECSTFunction(BaseFunction):
         applied_by_fred = main_available and source_mode == "fred" and not keyless_fred
         # The keyed API aggregated the series to the requested frequency, so the response
         # and every row report that frequency, not the native catalog one.
+        # ECST#3: the World Bank indicators this adapter serves are annual, whatever the
+        # catalog frequency of the FRED series says, so the rows must not claim monthly.
+        served_native_frequency = _WORLDBANK_NATIVE_FREQUENCY if source_mode == "worldbank" else None
         rows = _normalize_rows(
             df,
             sid,
             source_mode,
             compare_sid,
-            frequency=requested_frequency if applied_by_fred else None,
+            frequency=requested_frequency if applied_by_fred else served_native_frequency,
         )
         if transform == "yoy":
             for row in rows:
@@ -336,14 +339,19 @@ class ECSTFunction(BaseFunction):
         label = series_info.get("title") or catalog["label"]
         unit = series_info.get("units") or catalog["unit"]
         frequency = series_info.get("frequency") or catalog["frequency"]
+        if source_mode == "worldbank":
+            frequency = _WORLDBANK_NATIVE_FREQUENCY
         if transform == "yoy":
             label = f"{label} (y/y % change)"
             unit = YOY_UNIT
 
         # ECST#5: only the keyed FRED adapter applies a frequency or pinned vintage; the keyless
         # CSV shim serves native-frequency latest-vintage data. Say so rather than imply it.
-        frequency_applied = fred_frequency is None or not main_available or applied_by_fred
-        vintage_applied = fred_vintage is None or not main_available or applied_by_fred
+        # A request is applied only when the keyed FRED adapter served the series, or when
+        # it asked for nothing (native / latest). With no observations nothing was applied.
+        worldbank_native_request = source_mode == "worldbank" and requested_frequency == _WORLDBANK_NATIVE_FREQUENCY
+        frequency_applied = fred_frequency is None or applied_by_fred or worldbank_native_request
+        vintage_applied = fred_vintage is None or applied_by_fred
         if requested_frequency and applied_by_fred:
             # The keyed API aggregated the series to the requested frequency, so the
             # response reports that frequency, not the native one.
@@ -465,7 +473,14 @@ class ECSTFunction(BaseFunction):
 _TRANSFORMS = frozenset({"level", "yoy"})
 
 
+_WORLDBANK_NATIVE_FREQUENCY = "annual"
+
+
 def _not_applied_reason(keyless: bool, source_mode: str | None) -> str:
+    if source_mode == "worldbank":
+        return "the series was served by worldbank, which publishes annual data and does not apply a frequency or vintage"
+    if source_mode in (None, "provider_unavailable"):
+        return "no live provider returned observations, so nothing was served with the request"
     if keyless:
         return "the keyless FRED CSV serves native-frequency, latest-vintage data only (a FRED API key applies it)"
     return f"the series was served by {source_mode or 'no provider'}, which does not apply it"
