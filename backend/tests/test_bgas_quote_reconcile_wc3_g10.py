@@ -87,3 +87,51 @@ def test_as_of_is_the_exchange_market_time_not_the_fetch_time() -> None:
     row = result.data["rows"][0]
     assert str(row["as_of"]).startswith("2026-11-06"), row["as_of"]
     assert result.data["as_of"] == row["as_of"]
+
+
+class _BarsFake(_NGFake):
+    """Quote plus caller-chosen daily bars, to exercise the unplaceable-session branches."""
+
+    def __init__(self, *, prev: float, quote_time: datetime, dates: list[str], closes: list[float]) -> None:
+        super().__init__(prev=prev, quote_time=quote_time)
+        self.dates = dates
+        self.closes = closes
+
+    async def fetch(self, request: Any) -> Any:
+        if request.kind.name == "QUOTE":
+            return await super().fetch(request)
+        index = pd.to_datetime(self.dates)
+        n = len(self.dates)
+        return pd.DataFrame(
+            {
+                "open": self.closes,
+                "high": self.closes,
+                "low": self.closes,
+                "close": self.closes,
+                "volume": [100.0] * n,
+            },
+            index=index,
+        )
+
+
+@pytest.mark.parametrize(
+    ("dates", "closes"),
+    [
+        (["2026-11-06"], [2.998]),  # one bar only: history < 2
+        (["2026-11-06", "2026-11-09"], [2.998, 3.01]),  # quote session is the first bar, no prior bar
+        (["2026-11-09", "2026-11-10"], [3.01, 3.02]),  # bars all after the quote session
+    ],
+)
+def test_unplaceable_session_keeps_quote_prev_only_with_label_and_warning(
+    dates: list[str], closes: list[float]
+) -> None:
+    """BGAS#1 silent branch: an unverified previousClose must be labelled and warned about."""
+    fn = BGASFunction(
+        deps=FunctionDeps(
+            yfinance=_BarsFake(prev=3.533, quote_time=_FRIDAY_MARKET_TIME, dates=dates, closes=closes)
+        )
+    )
+    result = _run(fn.execute(contract="NG=F"))
+    row = result.data["rows"][0]
+    assert row["prev_source"] == "quote_unreconciled", row
+    assert any("not reconciled" in w and "previousClose" in w for w in result.warnings), result.warnings

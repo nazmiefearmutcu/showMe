@@ -819,6 +819,28 @@ def _bgas_decorate_rows(rows: list[dict[str, Any]], *, as_of_day: Any) -> list[d
 _BGAS_PREV_TOLERANCE = 1e-4  # relative; a quote prev within 0.01% of the bar is the same print
 
 
+def _bgas_unreconciled(
+    row: dict[str, Any],
+    warnings: list[str],
+    reason: str,
+) -> dict[str, Any]:
+    """BGAS#1: label a quote previousClose that no daily bar could verify.
+
+    The quote's own previousClose is kept (no value is invented), but the row
+    says so and the warning names the reason, so the change is never silently
+    trusted.
+    """
+    row = dict(row)
+    row["prev_source"] = "quote_unreconciled"
+    quote_prev = _finite(row.get("prev"))
+    if quote_prev is not None:
+        warnings.append(
+            f"NG=F quote previousClose {quote_prev} is not reconciled with the daily bars "
+            f"({reason}); the change uses the unverified quote previousClose."
+        )
+    return row
+
+
 def _bgas_reconcile_prev(
     row: dict[str, Any] | None,
     history: list[dict[str, Any]],
@@ -833,8 +855,10 @@ def _bgas_reconcile_prev(
     names both values. When the bars cannot place the quote's session, the
     quote's own previous close is kept and no reconciliation is claimed.
     """
-    if row is None or len(history) < 2:
+    if row is None:
         return row
+    if len(history) < 2:
+        return _bgas_unreconciled(row, warnings, "fewer than two daily bars")
     quote_day = str(row.get("as_of") or "")[:10]
     dates = [str(h.get("date") or "")[:10] for h in history]
     bar_prev: float | None = None
@@ -849,7 +873,7 @@ def _bgas_reconcile_prev(
         bar_prev = _finite(history[-1].get("close"))
         bar_day = dates[-1]
     if bar_prev is None or bar_prev <= 0:
-        return row
+        return _bgas_unreconciled(row, warnings, "the daily bars cannot place the quote session")
     quote_prev = _finite(row.get("prev"))
     row = dict(row)
     if quote_prev is not None and abs(quote_prev - bar_prev) <= _BGAS_PREV_TOLERANCE * abs(bar_prev):
