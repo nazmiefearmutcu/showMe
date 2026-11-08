@@ -46,13 +46,19 @@ def _usd(val: float, end: str) -> dict[str, Any]:
     return {"units": {"USD": [{"val": val, "end": end}]}}
 
 
+def _annual_usd(val: float, end: str) -> dict[str, Any]:
+    # Flow concepts carry a period start; a full-year entry spans about 365 days.
+    start = f"{int(end[:4]) - 1}{end[4:]}"
+    return {"units": {"USD": [{"val": val, "start": start, "end": end, "fp": "FY", "form": "10-K"}]}}
+
+
 _FACTS = {
     "facts": {
         "us-gaap": {
-            "OperatingIncomeLoss": _usd(120e9, "2026-03-31"),
-            "DepreciationDepletionAndAmortization": _usd(10e9, "2026-03-31"),
+            "OperatingIncomeLoss": _annual_usd(120e9, "2026-03-31"),
+            "DepreciationDepletionAndAmortization": _annual_usd(10e9, "2026-03-31"),
             "LongTermDebtNoncurrent": _usd(40e9, "2026-03-31"),
-            "InterestExpense": _usd(4e9, "2026-03-31"),
+            "InterestExpense": _annual_usd(4e9, "2026-03-31"),
         }
     }
 }

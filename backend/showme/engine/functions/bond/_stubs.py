@@ -157,6 +157,59 @@ def _first_fact(facts: dict[str, Any], concepts: tuple[str, ...]) -> tuple[float
 # ---------------------------------------------------------------------------
 
 
+_CRPR_ANNUAL_DAYS = (350, 380)
+
+
+def _crpr_duration_days(item: dict[str, Any]) -> int | None:
+    start, end = item.get("start"), item.get("end")
+    if not start or not end:
+        return None
+    try:
+        return (datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))).days
+    except ValueError:
+        return None
+
+
+def _crpr_pick(
+    facts: dict[str, Any],
+    concepts: tuple[str, ...],
+    *,
+    flow: bool,
+    period_end: str | None = None,
+) -> tuple[float, str, str] | None:
+    """Return ``(value, end, concept)`` for the first concept with a qualifying USD entry.
+
+    ``flow=True`` keeps annual entries only (about 365 days), so a 10-Q year-to-date
+    or single-quarter value is never read as a full-year figure. ``flow=False`` keeps
+    point-in-time balances only (entries with no start date). ``period_end``, when
+    given, restricts to that exact period end so numerator and denominator share a
+    fiscal period. Ties on the end date go to the entry filed most recently.
+    """
+    lo, hi = _CRPR_ANNUAL_DAYS
+    for concept in concepts:
+        units = facts.get("facts", {}).get("us-gaap", {}).get(concept, {}).get("units", {}) or {}
+        items = units.get("USD") or []
+        best: tuple[tuple[str, str], float, str] | None = None
+        for item in items:
+            val, end = item.get("val"), item.get("end")
+            if val is None or end is None:
+                continue
+            if flow:
+                days = _crpr_duration_days(item)
+                if days is None or not (lo <= days <= hi):
+                    continue
+            elif item.get("start"):
+                continue
+            if period_end is not None and str(end) != period_end:
+                continue
+            key = (str(end), str(item.get("filed") or ""))
+            if best is None or key > best[0]:
+                best = (key, float(val), str(end))
+        if best is not None:
+            return (best[1], best[2], concept)
+    return None
+
+
 def _rating_bucket_from_coverage(leverage: float | None, coverage: float | None) -> tuple[str, str, str, str]:
     """Map (debt/EBITDA, interest coverage) to a transparent implied bucket.
 
@@ -315,18 +368,31 @@ class CRPRFunction(BaseFunction):
             )
 
         latency_ms = int((time.monotonic() - started) * 1000)
-        lt_debt = _first_fact(facts, ("LongTermDebtNoncurrent", "LongTermDebt"))
-        lt_debt_cur = _first_fact(facts, ("LongTermDebtCurrent", "DebtCurrent"))
-        short_debt = _first_fact(facts, ("ShortTermBorrowings",))
-        op_income = _first_fact(facts, ("OperatingIncomeLoss",))
-        dep_amort = _first_fact(facts, ("DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "DepreciationAmortizationAndAccretionNet"))
-        interest = _first_fact(facts, ("InterestExpense", "InterestExpenseDebt", "InterestAndDebtExpense"))
+        # Flow facts are annual and share the EBIT fiscal period; balances are instants.
+        op_income = _crpr_pick(facts, ("OperatingIncomeLoss",), flow=True)
+        period_end = op_income[1] if op_income else None
+        dep_amort = _crpr_pick(facts, ("DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "DepreciationAmortizationAndAccretionNet"), flow=True, period_end=period_end)
+        interest_concepts = ("InterestExpense", "InterestExpenseDebt", "InterestAndDebtExpense")
+        interest = _crpr_pick(facts, interest_concepts, flow=True, period_end=period_end)
+        lt_debt = _crpr_pick(facts, ("LongTermDebtNoncurrent", "LongTermDebt"), flow=False)
+        lt_debt_cur = _crpr_pick(facts, ("LongTermDebtCurrent", "DebtCurrent"), flow=False)
+        short_debt = _crpr_pick(facts, ("ShortTermBorrowings",), flow=False)
 
         gross_debt = sum(x[0] for x in (lt_debt, lt_debt_cur, short_debt) if x is not None)
         ebitda = (op_income[0] if op_income else 0.0) + (dep_amort[0] if dep_amort else 0.0)
         leverage = round(gross_debt / ebitda, 3) if ebitda > 0 else None
         coverage = round(ebitda / interest[0], 3) if interest and interest[0] > 0 else None
         fin_date = next((x[1] for x in (op_income, lt_debt, interest) if x is not None), _as_of())
+        coverage_warnings: list[str] = []
+        if op_income is not None and interest is None:
+            latest_interest = _crpr_pick(facts, interest_concepts, flow=True)
+            if latest_interest is not None:
+                coverage_warnings.append(
+                    f"Interest expense has no annual entry for the EBIT period ending {period_end} "
+                    f"(latest annual interest ends {latest_interest[1]}); interest coverage is not computed."
+                )
+            else:
+                coverage_warnings.append("No annual interest expense reported; interest coverage is not computed.")
 
         if gross_debt <= 0 and ebitda <= 0:
             return FunctionResult(
@@ -344,6 +410,44 @@ class CRPRFunction(BaseFunction):
                 sources=["sec_edgar"],
                 warnings=["SEC companyfacts did not expose the debt/EBITDA concepts required to imply a rating."],
                 metadata={"latency_ms": latency_ms, "data_mode": "empty", "as_of": _as_of()},
+            )
+
+        interest_fields = {
+            "interest_expense_usd": interest[0] if interest else None,
+            "interest_period_end": interest[1] if interest else None,
+        }
+        if coverage is None:
+            # A null input must not reach the bucket map, which would score it as CCC.
+            reason = coverage_warnings[0] if coverage_warnings else (
+                "Interest coverage is not positive, so no implied rating is derived from these filings."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "empty",
+                    "rows": [],
+                    "summary": {
+                        "issuer": issuer,
+                        "cik": cik,
+                        "implied_bucket": "n/a",
+                        "agencies": 0,
+                        "leverage_x": leverage,
+                        "interest_coverage_x": None,
+                        "gross_debt_usd": gross_debt,
+                        "ebitda_proxy_usd": ebitda,
+                        **interest_fields,
+                        "source_mode": "sec_edgar",
+                    },
+                    "reason": reason,
+                    "scale": self._SCALE,
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Provide a ``rating`` override, or retry when the filings report matching annual interest expense."],
+                },
+                sources=["sec_edgar"],
+                warnings=[reason],
+                metadata={"latency_ms": latency_ms, "data_mode": "empty", "as_of": fin_date},
             )
 
         rating, sp_like, bucket, outlook = _rating_bucket_from_coverage(leverage, coverage)
@@ -370,6 +474,7 @@ class CRPRFunction(BaseFunction):
                     "interest_coverage_x": coverage,
                     "gross_debt_usd": gross_debt,
                     "ebitda_proxy_usd": ebitda,
+                    **interest_fields,
                     "source_mode": "model_implied_from_financials",
                 },
                 "implied_bucket": bucket,
