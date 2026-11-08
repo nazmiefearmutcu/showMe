@@ -244,15 +244,22 @@ def _patch_sat_http(monkeypatch, tile_for) -> list[str]:
         if "gibs.earthdata" in url:
             requested.append(url)
             day = re.search(r"TIME=([0-9-]+)", url).group(1)
-            return _Resp(content=tile_for(day))
-        return _Resp(payload={
-            "current": {"temperature_2m": 12.0, "cloud_cover": 40.0, "wind_speed_10m": 3.0, "weather_code": 1},
-            "daily": {"cloud_cover_mean": [35.0], "temperature_2m_max": [15.0],
-                      "temperature_2m_min": [5.0], "precipitation_sum": [0.0]},
-        })
+            content = tile_for(day)
+            if content is None:  # tile_for signals a transport failure for this day
+                raise ConnectionError("connection reset")
+            return _Resp(content=content)
+        return _meteo_resp()
 
     monkeypatch.setattr(sat_mod, "_http_get_raw", _get)
     return requested
+
+
+def _meteo_resp() -> _Resp:
+    return _Resp(payload={
+        "current": {"temperature_2m": 12.0, "cloud_cover": 40.0, "wind_speed_10m": 3.0, "weather_code": 1},
+        "daily": {"cloud_cover_mean": [35.0], "temperature_2m_max": [15.0],
+                  "temperature_2m_min": [5.0], "precipitation_sum": [0.0]},
+    })
 
 
 def test_sat_routed_default_does_not_pin_san_francisco_bbox(monkeypatch) -> None:
@@ -361,6 +368,49 @@ def test_sat_blank_todays_tile_walks_back_to_real_capture(monkeypatch) -> None:
     assert f"TIME={yesterday}" in data["tile_url"]
     assert data["cards"][0]["latest_capture"] == yesterday
     assert data["rows"][0]["capture_utc"] == yesterday
+
+
+def test_sat_blank_today_and_unreachable_yesterday_claims_no_capture(monkeypatch) -> None:
+    """SAT#2 mixed case: today's tile is verified blank and yesterday's probe
+    failed. Neither is imagery, so no capture date may be attributed (today's
+    blank tile must not be shown as latest_capture)."""
+    from datetime import datetime, timedelta, timezone
+
+    import showme.engine.functions.misc.sat as sat_mod
+
+    today = datetime.now(timezone.utc).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    blank = _blank_png()
+    _patch_sat_http(monkeypatch, lambda day: None if day == yesterday else blank)
+    result = asyncio.run(sat_mod.SATFunction().execute(aoi="cushing_ok", layer="true_color"))
+    data = result.data
+    assert data["status"] == "provider_unavailable", data["status"]
+    assert data["cards"] == []
+    assert data["rows"] == []
+    assert not result.data.get("tile_url")
+    assert any(check["date"] == today.isoformat() and check["state"] == "blank" for check in data["tile_checks"])
+
+
+def test_sat_tile_lookup_timeout_claims_no_capture(monkeypatch) -> None:
+    """SAT#2 timeout path: when the GIBS lookup times out nothing was verified,
+    so the requested day must not be presented as the latest capture."""
+    import showme.engine.functions.misc.sat as sat_mod
+
+    monkeypatch.setattr(sat_mod, "_TILE_RESOLVE_TIMEOUT", 0.05)
+
+    async def _slow_get(url, params=None):
+        if "gibs.earthdata" in url:
+            await asyncio.sleep(2.0)
+            return _Resp(content=_imagery_png())
+        return _meteo_resp()
+
+    monkeypatch.setattr(sat_mod, "_http_get_raw", _slow_get)
+    result = asyncio.run(sat_mod.SATFunction().execute(aoi="cushing_ok", layer="true_color"))
+    data = result.data
+    assert data["status"] == "provider_unavailable", data["status"]
+    assert data["cards"] == []
+    assert data["rows"] == []
+    assert "exceeded" in data["reason"]
 
 
 def test_sat_all_blank_tiles_is_explicit_empty_state(monkeypatch) -> None:

@@ -123,8 +123,41 @@ class SATFunction(BaseFunction):
         sources = ["nasa_gibs"]
         warnings: list[str] = []
 
+        def _provider_unavailable(reason: str, tile_checks: list[dict[str, Any]]) -> FunctionResult:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "provider_unavailable",
+                    "data_mode": "not_configured",
+                    "reason": reason,
+                    "rows": [],
+                    "cards": [],
+                    "methodology": methodology,
+                    "field_dictionary": field_dictionary,
+                    "aoi": aoi_key,
+                    "aoi_label": aoi_label,
+                    "layer": layer_key,
+                    "bbox": list(bbox),
+                    "as_of": now_iso,
+                    "tile_checks": tile_checks,
+                    "next_actions": [
+                        "Retry SAT; NASA GIBS and Open-Meteo are keyless public services and may be briefly unavailable.",
+                        "Pick a different capture date inside GIBS coverage (last ~2 weeks are most reliable).",
+                    ],
+                },
+                sources=sources,
+                warnings=warnings,
+                metadata={"fallback": True, "degraded": True, "latency_ms": None},
+            )
+
         # --- Newest GIBS tile that actually carries imagery -------------------
         tile = await self._resolve_tile(bbox, gibs_layer_id, requested_date)
+        if tile["capture_date"] is None and tile["state"] != "empty":
+            # No tile was verified as imagery and no capture day can be attributed.
+            # Presenting the requested day here would show an unverified or blank tile.
+            warnings.append(tile["reason"])
+            return _provider_unavailable(tile["reason"], tile["checks"])
         if tile["state"] == "empty":
             # Every candidate day is blank: explicit empty state, no tile row.
             return FunctionResult(
@@ -180,31 +213,9 @@ class SATFunction(BaseFunction):
 
         if not tile_reachable and cloud_pct is None and not weather_summary:
             # Both providers down -> honest outage, no fabrication.
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data={
-                    "status": "provider_unavailable",
-                    "data_mode": "not_configured",
-                    "reason": "; ".join(warnings) or "No live satellite/conditions source reachable.",
-                    "rows": [],
-                    "cards": [],
-                    "methodology": methodology,
-                    "field_dictionary": field_dictionary,
-                    "aoi": aoi_key,
-                    "aoi_label": aoi_label,
-                    "layer": layer_key,
-                    "bbox": list(bbox),
-                    "as_of": now_iso,
-                    "tile_checks": tile["checks"],
-                    "next_actions": [
-                        "Retry SAT; NASA GIBS and Open-Meteo are keyless public services and may be briefly unavailable.",
-                        "Pick a different capture date inside GIBS coverage (last ~2 weeks are most reliable).",
-                    ],
-                },
-                sources=sources,
-                warnings=warnings,
-                metadata={"fallback": True, "degraded": True, "latency_ms": None},
+            return _provider_unavailable(
+                "; ".join(warnings) or "No live satellite/conditions source reachable.",
+                tile["checks"],
             )
 
         row = {
@@ -441,11 +452,12 @@ async def _resolve_tile_candidates(
         if state == "unreachable":
             unreachable.append(detail)
     if unreachable:
-        # Cannot verify the newest tile: keep the requested day, flagged as unverified.
+        # No day was verified as imagery and at least one probe failed. The requested
+        # day may be blank (checked above), so no capture date is attributed here.
         return {
             "state": "unreachable",
-            "capture_date": requested,
-            "tile_url": _gibs_wms_url(bbox, layer_id, requested),
+            "capture_date": None,
+            "tile_url": None,
             "checks": checks,
             "reason": unreachable[0] or "nasa_gibs: tile could not be verified",
         }
