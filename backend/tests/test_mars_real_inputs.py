@@ -216,3 +216,64 @@ def test_mars_live_full_coverage_still_estimates_regression():
     assert result.data["regression_state"] == "estimated"
     assert isinstance(result.data["r_squared"], float)
     assert result.data["factor_loadings"]
+
+
+# ────────────────────────────────────────────────────────────────────────
+# MARS#2: the factor labels were Fama-French style, but the proxies are
+# long-only ETFs that are highly collinear with the market. The output must
+# name the proxy in each meaning and warn when the betas are not separable.
+# ────────────────────────────────────────────────────────────────────────
+
+
+class _CorrelatedYfinance:
+    """ETF-like proxies: every series is the market plus its own noise."""
+
+    def __init__(self, noise: float = 0.15):
+        self.noise = noise
+
+    async def fetch(self, request: Any, *args: Any, **kwargs: Any) -> pd.DataFrame:
+        symbol = request.instrument.symbol
+        days = 400
+        idx = pd.date_range(end=datetime.now(timezone.utc), periods=days, freq="1D", tz="UTC")
+        market = np.random.default_rng(12345).normal(0.0004, 0.01, size=days)
+        if symbol == "SPY":
+            steps = market
+        else:
+            own = np.random.default_rng(sum(ord(c) for c in symbol)).normal(0.0, 0.01, size=days)
+            steps = market + self.noise * own
+        close = 100.0 * np.exp(np.cumsum(steps))
+        return pd.DataFrame({"close": close}, index=idx)
+
+
+def test_mars_factor_meanings_name_the_etf_proxy_not_a_long_short_premium():
+    from showme.engine.functions.portfolio._more import _factor_meaning
+
+    expected = {"MKT": "SPY", "SMB": "IWM", "HML": "VLUE", "MOM": "MTUM", "QMJ": "QUAL", "BAB": "USMV"}
+    for factor, ticker in expected.items():
+        meaning = _factor_meaning(factor)
+        assert ticker in meaning, f"{factor} meaning must name its proxy {ticker}: {meaning!r}"
+        assert "versus" not in meaning.lower(), f"{factor} must not read as a long-short premium"
+
+
+def test_mars_collinear_etf_proxies_are_warned_with_vif():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    result = _run(MARSFunction(FunctionDeps(yfinance=_CorrelatedYfinance())).execute(
+        instrument=EQ, symbols=["AAPL"], live=True,
+    ))
+    assert result.metadata.get("live") is True, result.warnings
+    assert result.data["regression_state"] == "estimated"
+    vif = result.data["factor_vif"]
+    assert set(vif) == {"MKT", "SMB", "HML", "MOM", "QMJ", "BAB"}
+    assert result.data["max_vif"] is not None and result.data["max_vif"] > 10
+    assert any("collinear" in w.lower() for w in result.warnings), result.warnings
+
+
+def test_mars_independent_proxies_carry_no_collinearity_warning():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    result = _run(MARSFunction(FunctionDeps(yfinance=_KeyedYfinance())).execute(
+        instrument=EQ, symbols=["AAPL"], live=True,
+    ))
+    assert result.data["max_vif"] is not None and result.data["max_vif"] < 10
+    assert not any("collinear" in w.lower() for w in result.warnings), result.warnings

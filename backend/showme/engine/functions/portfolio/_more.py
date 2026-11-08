@@ -868,6 +868,9 @@ def _mars_result(
     loadings: dict[str, float] = {}
     r2: float | None = None
     samples: int | None = None
+    vifs: dict[str, float | None] = {}
+    max_vif: float | None = None
+    collinearity_state = "not_estimated"
     if regression_valid:
         y = joined["portfolio"].values
         X = joined.drop(columns="portfolio").values
@@ -879,6 +882,26 @@ def _mars_result(
         ss_tot = float(((y - y.mean()) ** 2).sum())
         r2 = float(1 - (resid ** 2).sum() / ss_tot) if ss_tot else 0.0
         samples = int(len(joined))
+        vifs = _factor_vifs(joined.drop(columns="portfolio"))
+        finite_vifs = [v for v in vifs.values() if v is not None]
+        max_vif = max(finite_vifs) if finite_vifs else None
+        if any(v is None for v in vifs.values()):
+            collinearity_state = "perfect"
+        elif any(v > _VIF_COLLINEAR_THRESHOLD for v in finite_vifs):
+            collinearity_state = "high"
+        else:
+            collinearity_state = "ok"
+        if collinearity_state != "ok":
+            flagged = [f for f, v in vifs.items() if v is None or v > _VIF_COLLINEAR_THRESHOLD]
+            if collinearity_state == "perfect":
+                detail = "are perfectly collinear with the other proxies"
+            else:
+                detail = f"are collinear (max VIF {max_vif:.1f}, threshold {_VIF_COLLINEAR_THRESHOLD:g})"
+            warnings.append(
+                "Factor proxies " + ", ".join(flagged) + " " + detail + ". The ETF proxies "
+                "are long-only and largely move with the market, so individual betas are "
+                "not separable exposures; read R-squared and alpha, not single loadings."
+            )
     else:
         warnings.append(
             "Regression statistics (R-squared, alpha, factor loadings) are not "
@@ -920,6 +943,9 @@ def _mars_result(
             ],
             "r_squared": r2,
             "regression_state": "estimated" if regression_valid else "not_estimated_template",
+            "factor_vif": vifs,
+            "max_vif": max_vif,
+            "collinearity_state": collinearity_state,
             # Basis of the volatility and VaR figures: the portfolio series actually used.
             "risk_basis": "template_series" if portfolio_is_template else "live_series",
             "annualized_volatility": ann_vol,
@@ -958,14 +984,46 @@ def _mars_result(
 
 
 def _factor_meaning(factor: str) -> str:
+    # Each label names the ETF whose total return is the regressor. These are
+    # long-only proxies, so a beta is sensitivity to that ETF, not a long-short
+    # size, value or momentum premium.
     return {
-        "MKT": "Broad equity market beta.",
-        "SMB": "Small-cap versus large-cap tilt.",
-        "HML": "Value versus growth tilt.",
-        "MOM": "Momentum factor sensitivity.",
-        "QMJ": "Quality factor sensitivity.",
-        "BAB": "Low-volatility / betting-against-beta proxy.",
+        "MKT": "Beta to SPY total return (broad US equity proxy).",
+        "SMB": "Beta to IWM total return (small-cap ETF proxy, not a long-short size premium).",
+        "HML": "Beta to VLUE total return (value ETF proxy, not a long-short value premium).",
+        "MOM": "Beta to MTUM total return (momentum ETF proxy).",
+        "QMJ": "Beta to QUAL total return (quality ETF proxy).",
+        "BAB": "Beta to USMV total return (low-volatility ETF proxy).",
     }.get(factor, "Portfolio factor sensitivity.")
+
+
+_VIF_COLLINEAR_THRESHOLD = 10.0
+
+
+def _factor_vifs(factors: pd.DataFrame) -> dict[str, float | None]:
+    """Variance inflation factor per proxy: 1 / (1 - R^2) of that proxy on the others.
+
+    None means the proxy is an exact linear combination of the others (infinite
+    VIF), which JSON cannot carry, so it is reported as None and flagged upstream.
+    """
+    values = factors.values.astype(float)
+    out: dict[str, float | None] = {}
+    for j, name in enumerate(factors.columns):
+        y = values[:, j]
+        others = np.delete(values, j, axis=1)
+        if others.shape[1] == 0:
+            out[str(name)] = 1.0
+            continue
+        Xo = np.column_stack([np.ones(others.shape[0]), others])
+        beta, *_ = np.linalg.lstsq(Xo, y, rcond=None)
+        resid = y - Xo @ beta
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        if ss_tot <= 0:
+            out[str(name)] = None
+            continue
+        slack = float((resid ** 2).sum()) / ss_tot  # 1 - R^2 of proxy on the others
+        out[str(name)] = None if slack <= 1e-9 else float(1.0 / slack)
+    return out
 
 
 def _tz_naive_series(series: pd.Series) -> pd.Series:
