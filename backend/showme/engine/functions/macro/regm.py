@@ -182,7 +182,22 @@ class REGMFunction(BaseFunction):
                 warnings=[] if current.get("curve") != "UNKNOWN" else ["FRED curve spread unavailable; curve component is UNKNOWN"],
             )
         # action == "history": classify rolling window + cluster
-        window = int(params.get("window", 60))
+        raw_window = params.get("window", 60)
+        try:
+            window = int(raw_window)
+        except (TypeError, ValueError):
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={
+                    "symbol": sym,
+                    "status": "input_error",
+                    "reason": f"REGM history window {raw_window!r} is not an integer bar count.",
+                    "rows": [],
+                    "next_actions": ["Pass window=<integer bar count>, e.g. window=60."],
+                },
+                sources=sources,
+                warnings=[],
+            )
         labels: list[dict[str, Any]] = []
         feats: list[list[float]] = []
         for i in range(window, len(close)):
