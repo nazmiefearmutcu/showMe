@@ -171,6 +171,14 @@ describe("PVAR Position VaR pane", () => {
     fireEvent.click(ninetyFive);
     expect(screen.getByRole("button", { name: "95%" })).toBeDisabled();
   });
+
+  it("starts on the manifest default method (historical), not parametric", () => {
+    ok(LIVE_PAYLOAD);
+    render(<PositionVarPane code="PVAR" />);
+    // PVAR#2-RQ: pvar_seed defaults method="historical"; the pane must preselect the same.
+    expect(screen.getByRole("button", { name: "historical" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "parametric" })).not.toBeDisabled();
+  });
 });
 
 const EXCEPTION_SERIES = [

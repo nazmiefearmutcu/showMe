@@ -192,7 +192,7 @@ def pvar() -> FunctionManifest:
         ),
         methodology=(
             "PVAR computes portfolio loss at the chosen confidence and "
-            "horizon by one of three methods. Parametric assumes returns are "
+            "horizon by one of two methods. Parametric assumes returns are "
             "multivariate Gaussian: VaR = -μ_p Δt + z_α σ_p √Δt where z_α is "
             "the one-sided normal quantile. Historical simulation resamples "
             "P&L vectors from the actual lookback; VaR is the empirical "

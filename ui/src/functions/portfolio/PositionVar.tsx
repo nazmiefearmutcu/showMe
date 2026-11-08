@@ -215,7 +215,8 @@ const COMPONENT_COLUMNS: DataGridColumn<Row>[] = [
 ];
 
 export function PositionVarPane({ code }: FunctionPaneProps) {
-  const [method, setMethod] = useState<"parametric" | "historical">("parametric");
+  // PVAR#2-RQ: mirrors the backend default (pvar_seed method="historical").
+  const [method, setMethod] = useState<"parametric" | "historical">("historical");
   // Initial value mirrors the backend default (pvar_seed confidence_level 0.99).
   const [confidence, setConfidence] = useState<0.95 | 0.99>(0.99);
   const [live, setLive] = useState(true);
