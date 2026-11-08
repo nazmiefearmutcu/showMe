@@ -71,6 +71,13 @@ _TENOR_WINDOW_DAYS = {
     "1Y": 252,
     "2Y": 504,
 }
+# OVDV#5: below this many daily returns a realized-vol estimate is statistically weak.
+_OVDV_MIN_RELIABLE_RETURNS = 21
+# OVDV#5: managed, crawling-peg or hard-pegged currencies. Their realized vol reflects
+# a managed rate path, not an option-market level. Examples, not an exhaustive list.
+_OVDV_MANAGED_CCYS = frozenset(
+    {"TRY", "CNY", "CNH", "SAR", "AED", "HKD", "ARS", "EGP", "NGN", "PKR", "VND", "BDT", "QAR", "OMR", "BHD", "JOD", "KWD"}
+)
 
 
 @FunctionRegistry.register
@@ -509,6 +516,14 @@ class OVDVFunction(BaseFunction):
         warnings: list[str] = []
         if rv_warning:
             warnings.append(rv_warning)
+        if vol_source == "live_realized_vol":
+            # OVDV#5: a managed or pegged leg makes realized vol a managed-rate statistic.
+            managed_legs = [c for c in (base, quote) if c.upper() in _OVDV_MANAGED_CCYS]
+            if managed_legs:
+                warnings.append(
+                    f"{pair} involves managed or pegged currency {', '.join(managed_legs)}: its realized "
+                    "vol reflects a managed rate path, not an option-market level"
+                )
 
         data = {
             "pair": pair,
@@ -704,6 +719,12 @@ async def _atm_term_structure(
                 window_notes.append(
                     f"{tenor['label']} realized vol uses {len(win)} of the {window} daily returns "
                     "requested (history too short for that window)"
+                )
+            if len(win) < _OVDV_MIN_RELIABLE_RETURNS:
+                # OVDV#5: e.g. 1W rests on 5 returns, which is a noisy estimate.
+                window_notes.append(
+                    f"{tenor['label']} realized vol rests on only {len(win)} daily returns; "
+                    "the estimate is statistically weak"
                 )
             atm = _annualized_vol(win)
             if atm is None or atm <= 0:
