@@ -154,7 +154,11 @@ class REBAFunction(BaseFunction):
             sym = p.instrument.symbol.upper()
             px = prices.get(sym) or 0.0
             cur_value[sym] = cur_value.get(sym, 0) + p.quantity * px
-        total = sum(cur_value.values())
+        # REBA#4: the NAV is invested value plus USD cash. Targets are weights
+        # of this NAV, so a "CASH" target keeps cash and any other target
+        # deploys it.
+        cash_usd, other_cash = _cash_balances(portfolio)
+        total = sum(cur_value.values()) + cash_usd
         if total <= 0:
             return FunctionResult(
                 code=self.code,
@@ -182,10 +186,26 @@ class REBAFunction(BaseFunction):
         if cash_cap:
             total = min(total, float(cash_cap))
         cur_weights = {s: v / total for s, v in cur_value.items()}
+        cash_weight = cash_usd / total
+        warnings: list[str] = []
+        if other_cash:
+            named = ", ".join(f"{amt:,.2f} {ccy}" for ccy, amt in sorted(other_cash.items()))
+            warnings.append(
+                f"REBA: non-USD cash ({named}) is excluded from the NAV; REBA has no FX conversion."
+            )
+        target_keys = {str(k).upper() for k in targets}
+        if cash_usd > 0 and "CASH" not in target_keys:
+            warnings.append(
+                f"REBA: targets are applied to NAV including {cash_usd:,.2f} USD cash, so this cash "
+                "is deployed. Add a CASH target to keep part of it."
+            )
         # Compute order list
         orders = []
         for sym, target_w in targets.items():
             sym = sym.upper()
+            if sym == "CASH":
+                # A cash target is a weight to keep, not an order.
+                continue
             cur_w = cur_weights.get(sym, 0)
             drift = target_w - cur_w
             if abs(drift) < threshold:
@@ -228,11 +248,24 @@ class REBAFunction(BaseFunction):
                     "current_weight_pct": cur_weights[sym] * 100,
                     "target_weight_pct": 0,
                 })
+        # Funding check: buys must be covered by USD cash plus sell proceeds.
+        buys = sum(o["notional_delta"] for o in orders if o["notional_delta"] > 0)
+        proceeds = -sum(o["notional_delta"] for o in orders + liquidations if o["notional_delta"] < 0)
+        shortfall = buys - proceeds - max(cash_usd, 0.0)
+        if shortfall > 1.0:
+            warnings.append(
+                f"REBA: buy orders need {shortfall:,.2f} more than USD cash plus sell proceeds."
+            )
+        current_weights = {k: v * 100 for k, v in cur_weights.items()}
+        if cash_usd:
+            current_weights["CASH"] = cash_weight * 100
         return FunctionResult(
             code=self.code, instrument=None,
             data={
                 "total_value": total,
-                "current_weights_pct": {k: v * 100 for k, v in cur_weights.items()},
+                "cash_usd": cash_usd,
+                "cash_weight_pct": cash_weight * 100,
+                "current_weights_pct": current_weights,
                 "target_weights_pct": {k: v * 100 for k, v in targets.items()},
                 "orders": orders,
                 "liquidations": liquidations,
@@ -245,8 +278,27 @@ class REBAFunction(BaseFunction):
                 "methodology": _methodology(),
                 "field_dictionary": _field_dictionary(),
             },
-            sources=["yfinance"],
+            sources=["portfolio_state", "yfinance"],
+            warnings=warnings,
         )
+
+
+def _cash_balances(portfolio: Any) -> tuple[float, dict[str, float]]:
+    """USD cash for the NAV, plus any non-USD balances (not valued here)."""
+    raw = getattr(portfolio, "cash", None) or {}
+    usd = 0.0
+    other: dict[str, float] = {}
+    for ccy, amount in raw.items():
+        try:
+            value = float(amount)
+        except (TypeError, ValueError):
+            continue
+        code = str(ccy).strip().upper()
+        if code == "USD":
+            usd += value
+        elif value:
+            other[code] = value
+    return usd, other
 
 
 def _truthy(value: Any) -> bool:
@@ -314,4 +366,6 @@ def _field_dictionary() -> dict[str, str]:
         "drift_pct": "Target weight minus current weight.",
         "notional_delta": "Dollar buy/sell amount required to move toward target.",
         "quantity": "Estimated units based on the displayed price; null with price_unavailable=true when no live quote resolved.",
+        "cash_usd": "USD cash balance included in total_value (the NAV the targets apply to).",
+        "cash_weight_pct": "USD cash as a percent of total_value.",
     }

@@ -103,3 +103,57 @@ def test_reba3_fully_priced_book_values_at_live_marks(monkeypatch):
     assert res.data["current_weights_pct"]["AAPL"] == pytest.approx(
         10 * 342.37 / (10 * 342.37 + 40 * 186.64) * 100
     )
+
+
+# ── REBA#4: USD cash is part of the NAV the targets apply to ─────────────
+
+
+def test_reba4_cash_only_book_is_sized_against_cash(monkeypatch):
+    # The reviewer's case: a book that is all cash must not be reported as
+    # "no positions"; its USD balance is the NAV the targets deploy.
+    _patch_book(monkeypatch, _Book([], cash={"USD": 25_000.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"SPY": 100.0}))).execute(
+        targets={"SPY": 1.0}, live_portfolio=True,
+    ))
+    assert res.data.get("status") is None
+    assert res.data["total_value"] == pytest.approx(25_000.0)
+    assert res.data["cash_usd"] == pytest.approx(25_000.0)
+    assert res.data["current_weights_pct"]["CASH"] == pytest.approx(100.0)
+    buy = next(o for o in res.data["orders"] if o["symbol"] == "SPY")
+    assert buy["action"] == "BUY"
+    assert buy["notional_delta"] == pytest.approx(25_000.0)
+
+
+def test_reba4_cash_is_in_denominator_and_own_weight(monkeypatch):
+    # 10 AAPL at 342.37 = 3,423.70 invested plus 25,000 cash = 28,423.70 NAV.
+    _patch_book(monkeypatch, _Book([_Pos("AAPL", 10, 100.0)], cash={"USD": 25_000.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({
+        "AAPL": 342.37, "SPY": 100.0,
+    }))).execute(targets={"AAPL": 0.2, "CASH": 0.8}, live_portfolio=True))
+    nav = 10 * 342.37 + 25_000.0
+    assert res.data["total_value"] == pytest.approx(nav)
+    assert res.data["current_weights_pct"]["AAPL"] == pytest.approx(10 * 342.37 / nav * 100)
+    assert res.data["current_weights_pct"]["CASH"] == pytest.approx(25_000.0 / nav * 100)
+    assert res.data["target_weights_pct"]["CASH"] == pytest.approx(80.0)
+    # A CASH target is a weight to keep, not an order.
+    assert all(o["symbol"] != "CASH" for o in res.data["orders"])
+    aapl = next(o for o in res.data["orders"] if o["symbol"] == "AAPL")
+    assert aapl["notional_delta"] == pytest.approx(0.2 * nav - 10 * 342.37)
+
+
+def test_reba4_warns_when_cash_is_deployed_without_cash_target(monkeypatch):
+    _patch_book(monkeypatch, _Book([_Pos("AAPL", 10, 100.0)], cash={"USD": 25_000.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"AAPL": 342.37}))).execute(
+        targets={"AAPL": 1.0}, live_portfolio=True,
+    ))
+    assert any("CASH" in w and "USD cash" in w for w in res.warnings)
+
+
+def test_reba4_non_usd_cash_is_excluded_and_named(monkeypatch):
+    _patch_book(monkeypatch, _Book([_Pos("AAPL", 10, 100.0)], cash={"EUR": 500.0}))
+    res = _run(REBAFunction(FunctionDeps(yfinance=_PriceYf({"AAPL": 342.37}))).execute(
+        targets={"AAPL": 1.0}, live_portfolio=True,
+    ))
+    assert res.data["total_value"] == pytest.approx(10 * 342.37)
+    assert "CASH" not in res.data["current_weights_pct"]
+    assert any("EUR" in w for w in res.warnings)
