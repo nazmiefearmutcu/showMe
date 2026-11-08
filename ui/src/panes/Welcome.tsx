@@ -2,7 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { Pill, Skeleton, Sparkline } from "@/design-system";
 import { navigate } from "@/lib/router";
 import { toast } from "@/lib/toast";
-import { useSentimentStore } from "@/lib/sentiment-store";
+import { useSentimentStore, isGaugeStale, type MarketGauge } from "@/lib/sentiment-store";
+import {
+  FearGreedGauge,
+  fearGreedZone,
+  formatSignedDelta,
+  formatUtcStamp,
+} from "@/functions/awareness/FearGreedGauge";
 import { sidecarFetch, type FunctionEntry } from "@/lib/sidecar";
 import { useAppStore } from "@/lib/store";
 import { useFunction } from "@/lib/useFunction";
@@ -28,10 +34,7 @@ import {
   formatSignedCurrency,
 } from "@/lib/format";
 import { loadWatchlist, type WatchlistRow } from "@/lib/watchlist";
-import {
-  describeNyseMarketState,
-  getNyseMarketState,
-} from "@/lib/market-state";
+import { describeNyseMarketState, getNyseMarketState } from "@/lib/market-state";
 import {
   formatDateStamp,
   formatNewsTimestamp,
@@ -39,7 +42,6 @@ import {
   useTimezone,
 } from "@/lib/timezone";
 
-const SENTIMENT_FALLBACK_SYMBOLS = ["AAPL", "MSFT", "GOOG", "BTC/USDT", "ETH/USDT"];
 const SENTIMENT_REFRESH_MS = 60_000;
 /**
  * Hard ceiling on how long we keep the sentiment gauge in `Loading…` before
@@ -47,7 +49,6 @@ const SENTIMENT_REFRESH_MS = 60_000;
  * is Agent A's scope; here we just make sure the UI never stays stuck.
  */
 const SENTIMENT_LOAD_TIMEOUT_MS = 30_000;
-
 
 interface PortfolioPosition {
   symbol: string;
@@ -225,9 +226,9 @@ export const MARKET_STRIP_SEED: MarketTile[] = [
 ];
 
 /** Symbols on the KPI strip whose live snapshot we should fan out for. */
-const MARKET_STRIP_QUOTE_SYMBOLS = MARKET_STRIP_SEED.filter(
-  (t) => !!t.quoteSymbol,
-).map((t) => t.quoteSymbol as string);
+const MARKET_STRIP_QUOTE_SYMBOLS = MARKET_STRIP_SEED.filter((t) => !!t.quoteSymbol).map(
+  (t) => t.quoteSymbol as string,
+);
 
 /**
  * No hardcoded watchlist fallback. If the user hasn't saved any symbols and
@@ -403,12 +404,17 @@ const QUICK_STORE_KEY = "showme.quick-functions.v1";
 
 function loadQuickCodes(): string[] {
   try {
-    const raw = typeof window !== "undefined" ? window.localStorage.getItem(QUICK_STORE_KEY) : null;
+    const raw =
+      typeof window !== "undefined" ? window.localStorage.getItem(QUICK_STORE_KEY) : null;
     if (!raw) return [...QUICK_CODES];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [...QUICK_CODES];
     const cleaned = parsed
-      .map((value) => String(value ?? "").trim().toUpperCase())
+      .map((value) =>
+        String(value ?? "")
+          .trim()
+          .toUpperCase(),
+      )
       .filter(Boolean);
     return cleaned.length ? cleaned.slice(0, QUICK_CODES.length) : [...QUICK_CODES];
   } catch {
@@ -516,7 +522,10 @@ export function Welcome() {
   // joined), then memoize the actual array on that key alone.
   const liveQuoteKey = useMemo(() => {
     const baseSymbols = positions.length
-      ? positions.slice(0, 12).map((p) => p.symbol).filter(Boolean)
+      ? positions
+          .slice(0, 12)
+          .map((p) => p.symbol)
+          .filter(Boolean)
       : savedWatchSymbols;
     const merged = [...baseSymbols, ...MARKET_STRIP_QUOTE_SYMBOLS];
     return Array.from(new Set(merged)).sort().join(",");
@@ -553,8 +562,7 @@ export function Welcome() {
   // Daily closes win over tick history (ticks are second-scale noise, not a
   // trend); tick series stay as the fallback while candles load or fail.
   const dailySymbols = useMemo(
-    () =>
-      Array.from(new Set(baseWatchRows.map((r) => r.symbol).filter(Boolean))).sort(),
+    () => Array.from(new Set(baseWatchRows.map((r) => r.symbol).filter(Boolean))).sort(),
     [baseWatchRows],
   );
   const dailyTrends = useDailyTrends(dailySymbols, { enabled: status === "healthy" });
@@ -626,21 +634,12 @@ export function Welcome() {
     params: { live: true, limit: 24 },
     enabled: status === "healthy" && moversAvailable,
   });
-  const liveMovers = useMemo(
-    () => buildMovers(moversFn.data?.data),
-    [moversFn.data],
-  );
+  const liveMovers = useMemo(() => buildMovers(moversFn.data?.data), [moversFn.data]);
   const moversRows: MoverRowData[] = liveMovers.length ? liveMovers : DEMO_MOVERS;
   const moversAreDemo = liveMovers.length === 0;
   // Partition once per render instead of filtering four times in the JSX.
-  const moverGainers = useMemo(
-    () => moversRows.filter((m) => m.change > 0),
-    [moversRows],
-  );
-  const moverLosers = useMemo(
-    () => moversRows.filter((m) => m.change < 0),
-    [moversRows],
-  );
+  const moverGainers = useMemo(() => moversRows.filter((m) => m.change > 0), [moversRows]);
+  const moverLosers = useMemo(() => moversRows.filter((m) => m.change < 0), [moversRows]);
 
   // BRIEF: compose the "Today's brief" ribbons from the live BRIEF function,
   // which aggregates real TOP RSS/GDELT headlines (no LLM, no fabricated
@@ -696,57 +695,41 @@ export function Welcome() {
     return () => window.clearInterval(id);
   }, []);
 
-  // Faz 5: sentiment panel — fan-out /api/x/symbol_chip for watchlist symbols
-  // (or a default mega-cap deck when the watchlist is empty) and aggregate
-  // the score into the gauge.
-  const sentimentScore = useSentimentStore((s) => s.score);
-  const sentimentLabel = useSentimentStore((s) => s.label);
-  const sentimentLoading = useSentimentStore((s) => s.loading);
-  const sentimentError = useSentimentStore((s) => s.error);
-  const sentimentUpdated = useSentimentStore((s) => s.lastUpdated);
-  const sentimentMentions = useSentimentStore((s) => s.mentions);
-  const refreshSentiment = useSentimentStore((s) => s.refresh);
-  // Stabilise the symbol list so the refresh effect only refires when the
-  // watchlist composition actually changes, not on every render.
-  const sentimentSymbols = useMemo(() => {
-    const fromWatch = watchRows.map((r) => r.symbol).slice(0, 12);
-    return fromWatch.length ? fromWatch : SENTIMENT_FALLBACK_SYMBOLS;
-  }, [watchRows]);
-  const sentimentSymbolsKey = sentimentSymbols.join("|");
+  // Market mood: CNN Fear & Greed from the market-gauge route (awareness-markets).
+  // The store only holds a value the backend accepted; when it has none, the
+  // backend's own reason is shown and no number is rendered.
+  const moodGauge = useSentimentStore((s) => s.gauge);
+  const moodReason = useSentimentStore((s) => s.unavailableReason);
+  const moodLoading = useSentimentStore((s) => s.loading);
+  const moodError = useSentimentStore((s) => s.error);
+  const moodUpdated = useSentimentStore((s) => s.lastUpdated);
+  const refreshMood = useSentimentStore((s) => s.refresh);
   useEffect(() => {
     if (status !== "healthy") return;
-    refreshSentiment(sentimentSymbols);
-    const id = window.setInterval(
-      () => refreshSentiment(sentimentSymbols),
-      SENTIMENT_REFRESH_MS,
-    );
+    void refreshMood();
+    const id = window.setInterval(() => void refreshMood(), SENTIMENT_REFRESH_MS);
     return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, sentimentSymbolsKey, refreshSentiment]);
+  }, [status, refreshMood]);
 
-  // Sentiment loading-watchdog: if the store stays `loading=true` past
-  // SENTIMENT_LOAD_TIMEOUT_MS without ever resolving (`lastUpdated` still
-  // null), surface a synthetic error so the gauge transitions out of the
-  // infinite "Loading…0%" trap that prompted the QA report. Agent A is
-  // fixing the backend hang; this is the UI-side belt.
+  // Loading watchdog: a request that never answers must not leave the card in
+  // "Loading…" forever. After SENTIMENT_LOAD_TIMEOUT_MS with no answer at all,
+  // surface an error with Retry.
   useEffect(() => {
-    if (!sentimentLoading || sentimentUpdated) return;
+    if (!moodLoading || moodUpdated || moodReason) return;
     const id = window.setTimeout(() => {
-      // Pull a fresh snapshot before clobbering — another refresh may have
-      // resolved between scheduling and firing.
       const snap = useSentimentStore.getState();
-      if (snap.loading && snap.lastUpdated == null) {
+      if (snap.loading && snap.lastUpdated == null && snap.gauge == null) {
         useSentimentStore.setState({
           loading: false,
-          error: "Sentiment unavailable (timeout)",
+          error: "Market mood unavailable (timeout)",
         });
       }
     }, SENTIMENT_LOAD_TIMEOUT_MS);
     return () => window.clearTimeout(id);
-  }, [sentimentLoading, sentimentUpdated]);
+  }, [moodLoading, moodUpdated, moodReason]);
 
-  const sentimentRetry = () => {
-    refreshSentiment(sentimentSymbols);
+  const moodRetry = () => {
+    void refreshMood();
   };
 
   /* Quick-functions deck: swap any pinned shortcut from the panel header. */
@@ -788,7 +771,8 @@ export function Welcome() {
       <section className="terminal-home__masthead showme-home__section showme-home__section--0">
         <div className="terminal-home__headline-wrap">
           <p className="terminal-home__eyebrow">
-            OVERVIEW / {dateStamp} / {localTime} {tzLabel.toUpperCase()} / {session.toUpperCase()}
+            OVERVIEW / {dateStamp} / {localTime} {tzLabel.toUpperCase()} /{" "}
+            {session.toUpperCase()}
           </p>
           <button
             type="button"
@@ -902,14 +886,13 @@ export function Welcome() {
                   Demo data
                 </Pill>
                 <span>
-                  No live brief yet — BRIEF returned no headlines even after
-                  retries (start the sidecar / check the news provider). Copy
-                  below is illustrative only.
+                  No live brief yet — BRIEF returned no headlines even after retries (start
+                  the sidecar / check the news provider). Copy below is illustrative only.
                 </span>
               </div>
               <p className="terminal-brief-copy">
-                Three weeks of cooling inflation prints left a still-resilient labor market, and
-                a Fed path has rediscovered patience. The tape is calm, but cross-asset
+                Three weeks of cooling inflation prints left a still-resilient labor market,
+                and a Fed path has rediscovered patience. The tape is calm, but cross-asset
                 positioning underneath it is the most lopsided it has been since November.
               </p>
               <div className="terminal-brief-ribbons">
@@ -926,89 +909,49 @@ export function Welcome() {
           )}
         </div>
 
-        <div className="terminal-panel terminal-panel--sentiment">
-          <div
-            className="terminal-gauge"
-            aria-label={
-              sentimentError && !sentimentUpdated
-                ? "Sentiment unavailable"
-                : `Sentiment ${sentimentLabel.toLowerCase()}`
-            }
-            data-testid="sentiment-gauge"
-            data-score={sentimentScore.toFixed(3)}
-          >
-            <svg
-              className="terminal-gauge__arc"
-              viewBox="0 0 96 52"
-              aria-hidden="true"
-              focusable="false"
+        <div
+          className="terminal-panel terminal-panel--sentiment aw-mood"
+          data-testid="market-mood"
+        >
+          <div className="aw-mood__head">
+            <span className="aw-mood__title">Market mood</span>
+            <button
+              type="button"
+              className="aw-link aw-mood__jump"
+              title="Open market sentiment (MSENT)"
+              onClick={() => navigate("/fn/MSENT")}
             >
-              {/* Two 90° arcs of a 44px-radius circle centred at the needle
-                  pivot (48,48): red = [-90°, 0°] bearish, green = [0°, +90°]
-                  bullish, exactly matching sentimentNeedleAngle's scale. */}
-              <path className="terminal-gauge__arc-neg" d="M 4 48 A 44 44 0 0 1 48 4" />
-              <path className="terminal-gauge__arc-pos" d="M 48 4 A 44 44 0 0 1 92 48" />
-            </svg>
-            <span
-              className="terminal-gauge__needle"
-              data-testid="sentiment-needle"
-              style={{
-                transform: `rotate(${sentimentNeedleAngle(sentimentScore)}deg)`,
-              }}
-            />
+              MSENT
+            </button>
           </div>
-          <div role="status" aria-live="polite">
-            <span className="terminal-panel__meta">
-              {sentimentEyebrow({
-                loading: sentimentLoading,
-                error: sentimentError,
-                lastUpdated: sentimentUpdated,
-                mentions: sentimentMentions,
-              })}
-            </span>
-            {sentimentError && !sentimentUpdated ? (
-              <>
-                {/* Error-with-retry replaces the infinite Loading… trap. */}
-                <strong data-testid="sentiment-label">Sentiment unavailable</strong>
-                <span
-                  className="terminal-change terminal-change--neutral"
-                  data-testid="sentiment-change"
-                >
-                  —
-                </span>
-                <button
-                  type="button"
-                  className="terminal-action terminal-action--retry"
-                  data-testid="sentiment-retry"
-                  aria-label="Retry sentiment fetch"
-                  onClick={sentimentRetry}
-                >
-                  Retry
-                </button>
-              </>
-            ) : (
-              <>
-                <strong data-testid="sentiment-label">
-                  {sentimentUpdated || !sentimentLoading ? sentimentLabel : "Loading…"}
-                </strong>
-                {sentimentUpdated || sentimentLoading ? (
-                  <span
-                    className={`${toneClass("terminal-change", sentimentScore)} terminal-grid-numeric`}
-                    data-testid="sentiment-change"
-                  >
-                    {formatSentimentPct(sentimentScore)}
-                  </span>
-                ) : (
-                  <span
-                    className="terminal-change terminal-change--neutral"
-                    data-testid="sentiment-change"
-                  >
-                    —
-                  </span>
-                )}
-              </>
-            )}
-          </div>
+          {moodReason ? (
+            <div className="aw-mood__body" role="status">
+              <strong data-testid="sentiment-label">Market mood unavailable</strong>
+              <p className="aw-mood__reason" data-testid="sentiment-reason">
+                {moodReason}
+              </p>
+            </div>
+          ) : moodGauge ? (
+            <MarketMoodReading gauge={moodGauge} />
+          ) : moodError ? (
+            <div className="aw-mood__body" role="status">
+              <strong data-testid="sentiment-label">Market mood unavailable</strong>
+              <p className="aw-mood__reason">{moodError}</p>
+              <button
+                type="button"
+                className="terminal-action terminal-action--retry"
+                data-testid="sentiment-retry"
+                aria-label="Retry market mood fetch"
+                onClick={moodRetry}
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="aw-mood__body" role="status">
+              <strong data-testid="sentiment-label">Loading…</strong>
+            </div>
+          )}
         </div>
 
         <div className="terminal-panel terminal-panel--movers">
@@ -1047,9 +990,7 @@ export function Welcome() {
               {moverLosers.map((mover) => (
                 <MoverRow key={`l-${mover.symbol}`} mover={mover} />
               ))}
-              {moverLosers.length === 0 && moversAreDemo && (
-                <DemoMoverRows kind="loser" />
-              )}
+              {moverLosers.length === 0 && moversAreDemo && <DemoMoverRows kind="loser" />}
             </div>
           </div>
         </div>
@@ -1210,10 +1151,7 @@ export function Welcome() {
         </div>
 
         <aside className="terminal-home__right-rail">
-          <NewsflowPanel
-            ready={status === "healthy" && index.length > 0}
-            tz={tz}
-          />
+          <NewsflowPanel ready={status === "healthy" && index.length > 0} tz={tz} />
 
           <div className="terminal-panel terminal-panel--commands">
             <div className="terminal-panel__header">
@@ -1225,8 +1163,12 @@ export function Welcome() {
                   className={`terminal-quick-edit${quickEditing ? " is-active" : ""}`}
                   data-testid="quick-functions-edit"
                   aria-pressed={quickEditing}
-                  title={quickEditing ? "Finish editing quick functions" : "Edit quick functions"}
-                  aria-label={quickEditing ? "Finish editing quick functions" : "Edit quick functions"}
+                  title={
+                    quickEditing ? "Finish editing quick functions" : "Edit quick functions"
+                  }
+                  aria-label={
+                    quickEditing ? "Finish editing quick functions" : "Edit quick functions"
+                  }
                   onClick={() => {
                     setQuickEditing((value) => !value);
                     setQuickQuery("");
@@ -1350,9 +1292,7 @@ export function Welcome() {
                       <strong>{assetLabel(row.label)}</strong>
                       <span>
                         {row.count} sym
-                        {row.change == null
-                          ? " — -"
-                          : ` — ${formatPct(row.change)}`}
+                        {row.change == null ? " — -" : ` — ${formatPct(row.change)}`}
                       </span>
                     </div>
                     <span className="terminal-exposure__track" aria-hidden>
@@ -1477,9 +1417,7 @@ export function FirstRunCard({
       markFirstRunDone();
       onAnswered();
       toast.success(
-        outcome === "opened-existing"
-          ? "KAOS Multibot opened"
-          : "New KAOS Multibot draft",
+        outcome === "opened-existing" ? "KAOS Multibot opened" : "New KAOS Multibot draft",
         "Scans crypto + NASDAQ venues. Shadow mode until you enable live.",
       );
     } catch (e) {
@@ -1516,9 +1454,9 @@ export function FirstRunCard({
     <div className="wx-firstrun" data-testid="first-run-card">
       <h4 className="wx-firstrun__title">Set up your desk</h4>
       <p className="wx-firstrun__body">
-        Start KAOS — the default bot that scans crypto and NASDAQ venues —
-        load a ready-made multi-pane desk, seed a starter watchlist, or skip;
-        you can rearrange everything later from the ⌘ Layout menu.
+        Start KAOS — the default bot that scans crypto and NASDAQ venues — load a ready-made
+        multi-pane desk, seed a starter watchlist, or skip; you can rearrange everything
+        later from the ⌘ Layout menu.
       </p>
       <div className="wx-firstrun__actions">
         <button
@@ -1530,8 +1468,7 @@ export function FirstRunCard({
         >
           <strong>{startingKaos ? "Opening…" : "Start KAOS"}</strong>
           <span>
-            KAOS Multibot — scans crypto + NASDAQ. Shadow mode until you
-            enable live.
+            KAOS Multibot — scans crypto + NASDAQ. Shadow mode until you enable live.
           </span>
         </button>
         {ordered.map((preset) => (
@@ -1621,9 +1558,7 @@ function MoverRow({ mover }: { mover: MoverRowData }) {
  * the change column so the placeholder never looks like a real move.
  */
 function DemoMoverRows({ kind }: { kind: "gainer" | "loser" }) {
-  const slice = kind === "gainer"
-    ? DEMO_MOVERS.slice(0, 4)
-    : DEMO_MOVERS.slice(4);
+  const slice = kind === "gainer" ? DEMO_MOVERS.slice(0, 4) : DEMO_MOVERS.slice(4);
   return (
     <>
       {slice.map((m) => (
@@ -1639,7 +1574,9 @@ function DemoMoverRows({ kind }: { kind: "gainer" | "loser" }) {
  * each row has to be readable in every theme). Synonyms fold to one key.
  */
 function assetKey(label: string): string {
-  const slug = String(label || "").trim().toLowerCase();
+  const slug = String(label || "")
+    .trim()
+    .toLowerCase();
   if (!slug) return "other";
   if (slug.includes("crypto")) return "crypto";
   if (slug.includes("equit") || slug.includes("stock")) return "equity";
@@ -1736,7 +1673,11 @@ function AddPositionForm({ onAdded }: { onAdded: () => void }) {
   };
 
   return (
-    <form className="terminal-exposure__add" data-testid="exposure-add-form" onSubmit={submit}>
+    <form
+      className="terminal-exposure__add"
+      data-testid="exposure-add-form"
+      onSubmit={submit}
+    >
       <input
         value={symbol}
         onChange={(e) => setSymbol(e.target.value)}
@@ -1795,7 +1736,7 @@ export function buildPortfolioWatchRows(
       const liveAsk = quote?.lastTick?.ask ?? quote?.snapshot?.ask ?? null;
       const liveChangePct = quote?.changePct ?? null;
       // Live trumps portfolio-derived last; portfolio-derived stays as last-good.
-      const lastNumeric = livePrice ?? (position.market_value ?? null);
+      const lastNumeric = livePrice ?? position.market_value ?? null;
       const last = lastNumeric != null ? formatPrice(lastNumeric) : "—";
       const effectiveChange = liveChangePct != null ? liveChangePct : change;
       const notionalValue =
@@ -1812,8 +1753,11 @@ export function buildPortfolioWatchRows(
         change: effectiveChange,
         trend: [],
         volume:
-          position.weight_pct != null ? `${position.weight_pct.toFixed(1)}% wt` : formatMissing,
-        notional: notionalValue != null ? formatSignedCurrency(notionalValue) : formatMissing,
+          position.weight_pct != null
+            ? `${position.weight_pct.toFixed(1)}% wt`
+            : formatMissing,
+        notional:
+          notionalValue != null ? formatSignedCurrency(notionalValue) : formatMissing,
       };
     });
 }
@@ -1861,9 +1805,7 @@ export function buildSavedWatchRows(
     const bid = quote?.lastTick?.bid ?? quote?.snapshot?.bid ?? null;
     const ask = quote?.lastTick?.ask ?? quote?.snapshot?.ask ?? null;
     const notionalValue =
-      price != null && quote?.changePct != null
-        ? (quote.changePct / 100) * price
-        : null;
+      price != null && quote?.changePct != null ? (quote.changePct / 100) * price : null;
     return {
       symbol: row.symbol,
       name: row.label ?? row.symbol,
@@ -1987,35 +1929,36 @@ function formatPct(value: number): string {
   return `${prefix}${value.toFixed(2)}%`;
 }
 
-// Sentiment helpers — exported for unit tests in Welcome.sentiment.test.tsx.
-export function sentimentNeedleAngle(score: number): number {
-  // Map `[-1, +1]` → `[-90deg, +90deg]`. score=0 lands at 0deg (straight up).
-  const clamped = Math.max(-1, Math.min(1, score));
-  return -90 + ((clamped + 1) / 2) * 180;
-}
-
-export function formatSentimentPct(score: number): string {
-  const pct = Math.round(score * 100);
-  const prefix = pct > 0 ? "+" : "";
-  return `${prefix}${pct}%`;
-}
-
-function sentimentEyebrow({
-  loading,
-  error,
-  lastUpdated,
-  mentions,
-}: {
-  loading: boolean;
-  error: string | null;
-  lastUpdated: Date | null;
-  mentions: number;
-}): string {
-  if (loading && !lastUpdated) return "SENTIMENT / loading…";
-  if (error && !lastUpdated) return "SENTIMENT / unavailable";
-  if (!lastUpdated) return "SENTIMENT / 24H";
-  const suffix = mentions > 0 ? ` / ${mentions.toLocaleString("en-US")} mentions` : "";
-  return `SENTIMENT / 24H${suffix}`;
+/**
+ * Market mood reading: CNN Fear & Greed score, rating, change against the
+ * previous close, and the source line with its as-of stamp. Shows "stale" when
+ * the reading is older than the store's staleness window.
+ */
+function MarketMoodReading({ gauge }: { gauge: MarketGauge }) {
+  const zone = fearGreedZone(gauge.score);
+  const rating = gauge.rating ?? zone.label;
+  const delta = gauge.previous_close == null ? null : gauge.score - gauge.previous_close;
+  const stale = isGaugeStale(gauge.as_of);
+  return (
+    <div className="aw-mood__body">
+      <FearGreedGauge score={gauge.score} testId="sentiment-gauge" />
+      <div className="aw-mood__figures">
+        <span className="aw-mood__score" data-testid="sentiment-score">
+          {Math.round(gauge.score)}
+        </span>
+        <strong data-testid="sentiment-label" style={{ color: zone.color }}>
+          {rating}
+        </strong>
+        <span className="aw-mood__delta" data-testid="sentiment-change">
+          {delta == null ? "—" : `${formatSignedDelta(delta)} vs prev close`}
+        </span>
+      </div>
+      <p className="aw-mood__source">
+        CNN Fear &amp; Greed, as of {formatUtcStamp(gauge.as_of)}.
+        {stale ? <span className="aw-mood__stale"> stale</span> : null}
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -2065,7 +2008,12 @@ function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
               : "live RSS"}
         </span>
       </div>
-      <div className="terminal-newsflow" role="list" aria-live="polite" aria-busy={top.state === "loading"}>
+      <div
+        className="terminal-newsflow"
+        role="list"
+        aria-live="polite"
+        aria-busy={top.state === "loading"}
+      >
         {top.state === "idle" && (
           <div className="terminal-newsflow__placeholder" role="status">
             Engine offline — start the sidecar to stream live headlines.
@@ -2096,9 +2044,7 @@ function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
           const key = `${href ?? title}-${idx}`;
           const content = (
             <>
-              <span
-                className={`terminal-newsflow__dot terminal-newsflow__dot--${tone}`}
-              />
+              <span className={`terminal-newsflow__dot terminal-newsflow__dot--${tone}`} />
               <span className="terminal-newsflow__time">{stamp || "—"}</span>
               <span className="terminal-newsflow__body">
                 <strong>{source}</strong>

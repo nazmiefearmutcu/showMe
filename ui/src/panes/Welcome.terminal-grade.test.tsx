@@ -44,9 +44,7 @@ vi.mock("@/lib/market-data", () => ({
 }));
 
 vi.mock("@/lib/watchlist", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/watchlist")>(
-    "@/lib/watchlist",
-  );
+  const actual = await vi.importActual<typeof import("@/lib/watchlist")>("@/lib/watchlist");
   return actual;
 });
 
@@ -66,9 +64,8 @@ beforeEach(() => {
     ],
   });
   useSentimentStore.setState({
-    score: 0,
-    label: "Neutral",
-    mentions: 0,
+    gauge: null,
+    unavailableReason: null,
     loading: false,
     error: null,
     lastUpdated: null,
@@ -158,8 +155,8 @@ describe("B3. aria-labels on interactive elements", () => {
     const btc = await findByTestId("kpi-tile-BTC");
     expect(btc.getAttribute("aria-label")).toMatch(/bitcoin/i);
     // A quick-function button exposes its code.
-    const quick = Array.from(container.querySelectorAll(".terminal-command")).find(
-      (b) => b.textContent?.includes("OMON"),
+    const quick = Array.from(container.querySelectorAll(".terminal-command")).find((b) =>
+      b.textContent?.includes("OMON"),
     );
     expect(quick?.getAttribute("aria-label")).toMatch(/OMON/);
     // A mover row exposes its symbol.
@@ -241,13 +238,9 @@ describe("Movers data honesty", () => {
   it("demo mover rows render the missing sentinel for change, not a fake tick", async () => {
     const { container } = render(<Welcome />);
     await waitFor(() => {
-      expect(
-        container.querySelector("[data-testid^='mover-row-']"),
-      ).not.toBeNull();
+      expect(container.querySelector("[data-testid^='mover-row-']")).not.toBeNull();
     });
-    const demoRow = container.querySelector(
-      "[data-testid^='mover-row-'][data-demo='1']",
-    );
+    const demoRow = container.querySelector("[data-testid^='mover-row-'][data-demo='1']");
     expect(demoRow).not.toBeNull();
     // The change cell must not show a fabricated "+0.01%/-0.01%".
     expect(demoRow!.textContent).not.toMatch(/0\.01%/);

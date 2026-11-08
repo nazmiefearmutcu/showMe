@@ -48,9 +48,7 @@ vi.mock("@/lib/market-data", () => ({
 
 // In jsdom watchlist load resolves immediately to whatever localStorage holds.
 vi.mock("@/lib/watchlist", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/watchlist")>(
-    "@/lib/watchlist",
-  );
+  const actual = await vi.importActual<typeof import("@/lib/watchlist")>("@/lib/watchlist");
   return actual;
 });
 
@@ -65,13 +63,13 @@ beforeEach(() => {
     functionIndex: [],
   });
   useSentimentStore.setState({
-    score: 0,
-    label: "Neutral",
-    mentions: 0,
+    gauge: null,
+    unavailableReason: null,
     loading: false,
     error: null,
     lastUpdated: null,
     _inflight: null,
+    refresh: vi.fn(),
   });
 });
 
@@ -182,18 +180,15 @@ describe("Welcome watchlist — empty state + CTA", () => {
   });
 
   it("buildSavedWatchRows surfaces live bid/ask and a sign-correct notional", () => {
-    const rows = buildSavedWatchRows(
-      [{ symbol: "NVDA" }],
-      {
-        NVDA: {
-          symbol: "NVDA",
-          price: 1100,
-          changePct: -1.5,
-          lastTick: { bid: 1099.95, ask: 1100.05 } as unknown as NormalizedTick,
-          snapshot: { volume: 3500000, asset_class: "EQUITY" } as unknown as QuoteSnapshot,
-        } as unknown as QuoteView,
-      },
-    );
+    const rows = buildSavedWatchRows([{ symbol: "NVDA" }], {
+      NVDA: {
+        symbol: "NVDA",
+        price: 1100,
+        changePct: -1.5,
+        lastTick: { bid: 1099.95, ask: 1100.05 } as unknown as NormalizedTick,
+        snapshot: { volume: 3500000, asset_class: "EQUITY" } as unknown as QuoteSnapshot,
+      } as unknown as QuoteView,
+    });
     expect(rows[0]!.bid).toBe("1099.95");
     expect(rows[0]!.ask).toBe("1100.05");
     expect(rows[0]!.last).toBe("1100.00");
@@ -223,9 +218,7 @@ describe("Welcome movers — buildMovers contract", () => {
         { symbol: "DDD", last: 50, change_pct: NaN },
       ],
     });
-    expect(out).toEqual([
-      { symbol: "AAA", price: "10.00", change: 1.2 },
-    ]);
+    expect(out).toEqual([{ symbol: "AAA", price: "10.00", change: 1.2 }]);
   });
 
   it("returns up to 4 gainers + 4 losers sorted by magnitude", () => {
@@ -249,9 +242,7 @@ describe("Welcome movers — DOM", () => {
     const banner = await findByTestId("movers-demo-banner");
     expect(banner.textContent).toMatch(/Demo data/i);
     // At least one demo pill should be visible (depends on top-4 split).
-    const anyDemoPill = document.querySelector(
-      "[data-testid^='mover-demo-']",
-    );
+    const anyDemoPill = document.querySelector("[data-testid^='mover-demo-']");
     expect(anyDemoPill).not.toBeNull();
   });
 });
@@ -351,14 +342,13 @@ describe("Welcome sentiment — error path renders Retry", () => {
     const { findByTestId } = render(<Welcome />);
     const retry = await findByTestId("sentiment-retry");
     expect(retry.textContent).toMatch(/retry/i);
-    expect((await findByTestId("sentiment-label")).textContent).toMatch(
-      /unavailable/i,
+    expect((await findByTestId("sentiment-label")).textContent).toMatch(/unavailable/i);
+    expect((await findByTestId("market-mood")).textContent).toMatch(
+      /Market mood unavailable/,
     );
-    expect((await findByTestId("sentiment-gauge")).getAttribute("aria-label"))
-      .toBe("Sentiment unavailable");
   });
 
-  it("Retry button calls refreshSentiment with the symbol list", async () => {
+  it("Retry button calls the market-mood refresh", async () => {
     const refreshSpy = vi.fn();
     useSentimentStore.setState({
       loading: false,
@@ -372,9 +362,7 @@ describe("Welcome sentiment — error path renders Retry", () => {
       fireEvent.click(retry);
     });
     expect(refreshSpy).toHaveBeenCalled();
-    const calledSymbols = refreshSpy.mock.calls[0]![0] as string[];
-    expect(Array.isArray(calledSymbols)).toBe(true);
-    expect(calledSymbols.length).toBeGreaterThan(0);
+    expect(refreshSpy.mock.calls[0]).toEqual([]);
   });
 
   it("sentiment timeout: after SENTIMENT_LOAD_TIMEOUT_MS of loading without lastUpdated, store flips to error", async () => {
@@ -436,9 +424,9 @@ describe("Welcome watchlist — ARIA grid semantics", () => {
     await waitFor(() => {
       expect(container.querySelector("[role='grid']")).not.toBeNull();
     });
-    const headers = Array.from(
-      container.querySelectorAll("[role='columnheader']"),
-    ).map((n) => n.textContent);
+    const headers = Array.from(container.querySelectorAll("[role='columnheader']")).map(
+      (n) => n.textContent,
+    );
     expect(headers).toContain("1D Notional");
     // The old misleading "Mkt cap" column is gone.
     expect(headers).not.toContain("Mkt cap");
