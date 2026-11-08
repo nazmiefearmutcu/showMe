@@ -43,14 +43,14 @@ class UnsafeURLError(ValueError):
     """Raised when a user-supplied audio URL targets a non-public address."""
 
 
-def _assert_public_url(url: str) -> None:
+def _assert_public_url(url: str) -> str:
     """Reject URLs that could drive a server-side request forgery (SSRF).
 
     Requires an ``http``/``https`` scheme and resolves the hostname, rejecting
     if ANY resolved IP is private, loopback, link-local, reserved, multicast or
-    otherwise non-global. ``file://`` and every other scheme are refused. The
-    caller fetches with ``follow_redirects=False`` and re-validates each hop,
-    so this guard runs once per concrete host before the socket is opened.
+    otherwise non-global. ``file://`` and every other scheme are refused.
+    Returns the first validated address; the caller connects to that address
+    (see :func:`_pinned_target`), so the connect cannot re-resolve the name.
     """
     parts = urlsplit(url)
     scheme = (parts.scheme or "").lower()
@@ -70,6 +70,7 @@ def _assert_public_url(url: str) -> None:
     if not infos:
         raise UnsafeURLError(f"host {host!r} did not resolve")
 
+    validated: list[str] = []
     for info in infos:
         sockaddr = info[4]
         ip_str = sockaddr[0]
@@ -89,6 +90,28 @@ def _assert_public_url(url: str) -> None:
             raise UnsafeURLError(
                 f"host {host!r} resolves to non-public address {ip_str}"
             )
+        validated.append(ip_str)
+    return validated[0]
+
+
+def _pinned_target(url: str) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Validate ``url`` and build a request pinned to the checked address.
+
+    SSRF#7 (DNS rebinding): validating the name and then letting httpx resolve
+    it again leaves a window in which the second lookup returns an internal
+    address. The request is sent to the validated IP instead, with the original
+    Host header and the hostname as SNI, so TLS still checks the certificate
+    against the name and the socket never re-resolves it.
+    """
+    ip = _assert_public_url(url)
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = parts.port
+    literal = f"[{ip}]" if ":" in ip else ip
+    netloc = f"{literal}:{port}" if port else literal
+    host_literal = f"[{host}]" if ":" in host else host
+    host_header = f"{host_literal}:{port}" if port else host_literal
+    return parts._replace(netloc=netloc).geturl(), {"Host": host_header}, {"sni_hostname": host}
 
 
 def _media_base_dirs() -> list[Path]:
@@ -283,26 +306,21 @@ async def transcribe_url(url: str, *, language: str | None = None,
     """
     import httpx
 
-    # SSRF guard: validate the user-supplied URL (and every redirect hop)
-    # against the public-address allowlist BEFORE opening a socket, and never
-    # let httpx auto-follow a redirect into an internal host.
-    try:
-        _assert_public_url(url)
-    except UnsafeURLError as exc:
-        LOG.warning("transcribe_url: rejected URL %r: %s", url, exc)
-        return {"error": f"url rejected: {exc}"}
-
+    # SSRF guard: every hop (the URL and each redirect target) is validated and
+    # pinned to the checked address by _pinned_target before a socket is opened,
+    # and httpx never auto-follows a redirect into an internal host.
     current = url
     try:
         async with httpx.AsyncClient(timeout=120, follow_redirects=False) as cli:
             for _ in range(5):  # bounded redirect chain
-                r = await cli.get(current)
+                # Each hop is validated and then connected to the checked IP.
+                pinned, headers, extensions = _pinned_target(current)
+                r = await cli.get(pinned, headers=headers, extensions=extensions)
                 if r.is_redirect:
                     location = r.headers.get("location")
                     if not location:
                         raise UnsafeURLError("redirect without Location header")
-                    current = str(httpx.URL(r.url).join(location))
-                    _assert_public_url(current)
+                    current = str(httpx.URL(current).join(location))
                     continue
                 r.raise_for_status()
                 content = r.content
