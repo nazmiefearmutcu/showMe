@@ -603,6 +603,138 @@ def _function_usage(
             ],
             "example": _standalone_function_defaults("OSA"),
         }
+    if upper == "TOP":
+        return {
+            "purpose": 'Most important market news right now, collapsed into stories with every corroborating source, from Awareness.',
+            "scope": 'global',
+            "inputs": ['hours', 'limit', 'min_quality', 'topics', 'asset_classes', 'countries', 'q'],
+            "steps": [
+                'Pick the window (hours) and the quality floor; optionally a topic, asset class or search text.',
+                'Each row is one story: publisher and tier, UTC time, summary, entities, sentiment and the quality verdict with its reasons.',
+                "Open '+N sources' to see every outlet that reported the same story.",
+            ],
+            "example": {'hours': 24, 'min_quality': 'standard'},
+        }
+    if upper == "NI":
+        return {
+            "purpose": 'News for one theme (macro, rates, energy, crypto, banks, chips …) from Awareness, quality-gated and sourced.',
+            "scope": 'global',
+            "inputs": ['topic', 'hours', 'limit'],
+            "steps": [
+                'Pick a topic preset and the window in hours, then Run.',
+                'Rows are stories with publisher, tier, UTC time, summary, entities and sentiment.',
+                'Empty means no story passed the quality floor in the window.',
+            ],
+            "example": {'topic': 'MACRO', 'hours': 48},
+        }
+    if upper == "CN":
+        return {
+            "purpose": 'Company news for one symbol: stories that name it prominently, with sources, sentiment and quality.',
+            "scope": 'symbol',
+            "inputs": ['symbol', 'hours', 'limit'],
+            "steps": [
+                'Pick a symbol (equity, crypto or BIST code) and the window, then Run.',
+                'Only items where the company is salient are listed; market price rows are never mixed in.',
+                "Open a row's sources to compare how outlets covered it.",
+            ],
+            "example": {'symbol': 'NVDA', 'hours': 168},
+        }
+    if upper == "NALRT":
+        return {
+            "purpose": 'High-importance market alerts from the last hours (central banks, macro releases, major corporate events).',
+            "scope": 'global',
+            "inputs": ['hours', 'min_importance', 'limit'],
+            "steps": [
+                'Set the look-back window and the importance threshold (70 by default), then Run.',
+                'Critical rows score 85 or more; high rows 70 to 84.',
+                'Every alert keeps its publisher, time and link.',
+            ],
+            "example": {'hours': 6, 'min_importance': 70},
+        }
+    if upper == "NSE":
+        return {
+            "purpose": 'Full-text news search across the Awareness corpus with an honest quality floor.',
+            "scope": 'global',
+            "inputs": ['q', 'symbol', 'hours', 'min_quality', 'limit'],
+            "steps": [
+                'Type search words (company names work) and optionally a symbol and window, then Run.',
+                'Results respect the quality floor; when lower-quality matches exist the pane offers to show them.',
+                'Each result links to the original article.',
+            ],
+            "example": {'q': 'buyback', 'hours': 720},
+        }
+    if upper == "ECO":
+        return {
+            "purpose": 'Economic calendar: scheduled and released macro events with actual, forecast, previous and surprise, merged from several providers.',
+            "scope": 'global',
+            "inputs": ['country', 'days', 'from', 'importance', 'status'],
+            "steps": [
+                'Pick countries, the start date and window, and the minimum importance, then Run.',
+                'Released rows show actual versus consensus with the surprise direction; central-bank decisions are marked.',
+                'Each row lists the providers that supplied it.',
+            ],
+            "example": {'country': 'US,EU,GB,JP,TR', 'days': 7, 'importance': 2},
+        }
+    if upper == "MEET":
+        return {
+            "purpose": 'World events board: upcoming central-bank meetings and macro releases plus country holidays and headlines, from Awareness.',
+            "scope": 'global',
+            "inputs": ['countries', 'days_ahead', 'days_back', 'impact', 'kind', 'limit'],
+            "steps": [
+                'Pick countries and the window, optionally an impact level or event kind, then Run.',
+                'Calendar rows come from the merged Awareness economic calendar; holidays from public and exchange calendars.',
+                'An empty forward window is reported as empty, not as OK.',
+            ],
+            "example": {'countries': 'US,EU,TR', 'days_ahead': 14},
+        }
+    if upper == "EVTS":
+        return {
+            "purpose": 'Corporate events for one company: earnings dates, dividends, splits, IPO and SEC filings, upcoming and recent.',
+            "scope": 'symbol',
+            "inputs": ['symbol', 'days_back', 'days_ahead', 'types'],
+            "steps": [
+                'Pick a symbol and the windows, optionally restrict the event types, then Run.',
+                'Upcoming events are listed soonest first, recent ones newest first.',
+                'Each row names its source (Nasdaq calendar or SEC EDGAR).',
+            ],
+            "example": {'symbol': 'AAPL', 'days_back': 90, 'days_ahead': 180},
+        }
+    if upper == "DVD":
+        return {
+            "purpose": 'Dividends for one equity: confirmed upcoming ex-dates from the Awareness calendar plus the paid history.',
+            "scope": 'symbol',
+            "inputs": ['symbol', 'history'],
+            "steps": [
+                'Pick a symbol, then Run; switch history off to see only upcoming payments.',
+                'Upcoming rows show ex, record and pay dates with the amount; history comes from the market-data provider.',
+                'Nothing is estimated: no rows means no dividend data was found.',
+            ],
+            "example": {'symbol': 'KO', 'history': True},
+        }
+    if upper == "CACT":
+        return {
+            "purpose": 'Corporate actions for one equity: dividends, splits and material 8-K filings, merged and de-duplicated.',
+            "scope": 'symbol',
+            "inputs": ['symbol', 'days_back', 'days_ahead'],
+            "steps": [
+                'Pick a symbol and the windows, then Run.',
+                'Rows carry their source; duplicates across providers are merged.',
+                '8-K rows list their decoded item numbers.',
+            ],
+            "example": {'symbol': 'AAPL', 'days_back': 365, 'days_ahead': 90},
+        }
+    if upper == "TRDH":
+        return {
+            "purpose": 'Trading sessions, lunch breaks, early closes and holidays for exchanges, computed from official exchange calendars.',
+            "scope": 'global',
+            "inputs": ['exchanges', 'days'],
+            "steps": [
+                'Pick exchanges (MIC codes or common names) and the number of days, then Run.',
+                "Each exchange shows today's session in local and UTC time, whether it is open now, and upcoming closures.",
+                'Early closes and lunch breaks come from the exchange rule sets.',
+            ],
+            "example": {'exchanges': 'XNYS,XIST,XTKS', 'days': 14},
+        }
     if upper == "MSENT":
         return {
             "purpose": "Market-wide sentiment dashboard: CNN and crypto Fear & Greed, VIX term structure and social buzz from Awareness.",

@@ -913,6 +913,16 @@
         "ui/src/panes/Welcome.tsx"
       ]
     },
+    "MSENT": {
+      "keys": [
+        "history_days"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/MSENT.tsx"
+      ]
+    },
     "NALRT": {
       "keys": [
         "hours",
@@ -1206,11 +1216,12 @@
     },
     "SOSC": {
       "keys": [
-        "days"
+        "window"
       ],
       "conditional": [],
       "dynamic": false,
       "files": [
+        "ui/src/functions/MSENT.tsx",
         "ui/src/functions/SOSC.tsx"
       ]
     },
@@ -1510,7 +1521,7 @@
       "why": "code not resolvable to a registry entry"
     },
     {
-      "where": "ui/src/functions/awareness/StoryRow.tsx:63",
+      "where": "ui/src/functions/awareness/StoryRow.tsx:65",
       "why": "code not resolvable to a registry entry"
     },
     {
