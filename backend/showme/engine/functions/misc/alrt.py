@@ -125,6 +125,8 @@ class ALRTFunction(BaseFunction):
                     instrument=None,
                     data={
                         "alerts": [asdict(a) for a in alerts],
+                        # The seed's output contract and table read `rows`.
+                        "rows": [asdict(a) for a in alerts],
                         "count": len(alerts),
                         "actions": ["list", "add", "remove", "toggle"],
                         "evaluator_status": "not_running",
