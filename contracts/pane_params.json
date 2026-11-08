@@ -40,6 +40,7 @@
     },
     "AV": {
       "keys": [
+        "limit",
         "query",
         "symbol"
       ],
@@ -79,8 +80,13 @@
     },
     "BLAK": {
       "keys": [
+        "delta",
         "live",
-        "symbols"
+        "market_caps",
+        "symbols",
+        "tau",
+        "views_text",
+        "window"
       ],
       "conditional": [],
       "dynamic": false,
@@ -373,7 +379,9 @@
     "ECST": {
       "keys": [
         "compare_with",
-        "series_id"
+        "date_range",
+        "series_id",
+        "transform"
       ],
       "conditional": [],
       "dynamic": false,
@@ -540,6 +548,8 @@
     },
     "FTS": {
       "keys": [
+        "date_from",
+        "date_to",
         "forms",
         "limit",
         "live",
@@ -796,7 +806,8 @@
     "MARS": {
       "keys": [
         "reference",
-        "symbols"
+        "symbols",
+        "weights"
       ],
       "conditional": [],
       "dynamic": false,
@@ -825,7 +836,10 @@
       ]
     },
     "MGN": {
-      "keys": [],
+      "keys": [
+        "account",
+        "cash"
+      ],
       "conditional": [],
       "dynamic": false,
       "files": [
@@ -844,6 +858,7 @@
     },
     "MLSIG": {
       "keys": [
+        "label_horizon",
         "live_ml"
       ],
       "conditional": [],
@@ -939,7 +954,8 @@
         "legs",
         "rate",
         "spot",
-        "strategy"
+        "strategy",
+        "underlying"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1054,7 +1070,9 @@
     },
     "PSC": {
       "keys": [
-        "risk_pct"
+        "risk_pct",
+        "side",
+        "win_rate"
       ],
       "conditional": [],
       "dynamic": true,
@@ -1123,7 +1141,9 @@
       ]
     },
     "RV": {
-      "keys": [],
+      "keys": [
+        "peers"
+      ],
       "conditional": [],
       "dynamic": false,
       "files": [
@@ -1420,7 +1440,8 @@
     "WETR": {
       "keys": [
         "days",
-        "location"
+        "location",
+        "provider_mode"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1471,7 +1492,7 @@
   },
   "unresolved": [
     {
-      "where": "ui/src/functions/CDE.tsx:79",
+      "where": "ui/src/functions/CDE.tsx:81",
       "why": "params expression not resolvable (AsExpression)"
     },
     {
@@ -1479,7 +1500,7 @@
       "why": "code not resolvable to a registry entry"
     },
     {
-      "where": "ui/src/functions/CRVF.tsx:86",
+      "where": "ui/src/functions/CRVF.tsx:97",
       "why": "params expression not resolvable (Identifier)"
     },
     {
@@ -1507,7 +1528,7 @@
       "why": "code not resolvable to a registry entry"
     },
     {
-      "where": "ui/src/manifest/ManifestPane.tsx:139",
+      "where": "ui/src/manifest/ManifestPane.tsx:148",
       "why": "code not resolvable to a registry entry"
     },
     {
