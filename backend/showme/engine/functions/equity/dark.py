@@ -243,7 +243,8 @@ class DARKFunction(BaseFunction):
                 "symbol": sym,
                 "n_rows": int(len(df)),
                 # Only the weeks in the requested window, matching the KPI caption.
-                "total_shares_off_exchange": round(
+                # A stale latest week ships no rows, so it ships no total either.
+                "total_shares_off_exchange": 0 if stale else round(
                     float(sum(float(rec["ats_share_volume"] or 0.0) for rec in week_records))
                 ),
                 "top_venue_share_pct": None if stale else top_venue_share,
