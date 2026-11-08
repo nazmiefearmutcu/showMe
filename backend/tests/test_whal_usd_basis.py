@@ -86,8 +86,10 @@ def test_sec_filings_are_not_counted_as_threshold_tested(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(whal_mod, "_fetch_yahoo_bars", _no_bars)
-    whal_mod._SEC_TICKERS_CACHE["fetched_at"] = 0.0
-    whal_mod._SEC_TICKERS_CACHE["by_ticker"] = {}
+    # Route the module-level SEC cache through monkeypatch so the AAPL-only map
+    # this test stores is undone afterwards and cannot leak into later tests.
+    monkeypatch.setitem(whal_mod._SEC_TICKERS_CACHE, "fetched_at", 0.0)
+    monkeypatch.setitem(whal_mod._SEC_TICKERS_CACHE, "by_ticker", {})
 
     result = asyncio.run(WHALFunction(FunctionDeps()).execute(
         symbol="AAPL", market="EQUITY", threshold_usd=1_000_000))
