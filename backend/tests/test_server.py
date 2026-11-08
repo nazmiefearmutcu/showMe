@@ -677,6 +677,7 @@ def test_agent_fast_probe_returns_non_zero_candidate_scores(monkeypatch) -> None
         "_load_function_index",
         lambda: [
             server.FunctionIndexEntry(code="MLSIG", name="ML Signal", category="portfolio"),
+            server.FunctionIndexEntry(code="BTFW", name="Walk Forward", category="portfolio"),
             server.FunctionIndexEntry(code="PORT", name="Portfolio", category="portfolio"),
         ],
     )
@@ -704,6 +705,7 @@ def test_agent_fast_probe_exposes_multiple_evidence_rows_and_exclusions(monkeypa
             server.FunctionIndexEntry(code="BTFW", name="Walk Forward", category="portfolio"),
             server.FunctionIndexEntry(code="BTUNE", name="Backtest Tuner", category="portfolio"),
             server.FunctionIndexEntry(code="NALRT", name="News Alerts", category="news"),
+            server.FunctionIndexEntry(code="MOSS", name="Momentum Scan", category="portfolio"),
         ],
     )
 
@@ -719,7 +721,9 @@ def test_agent_fast_probe_exposes_multiple_evidence_rows_and_exclusions(monkeypa
     assert [row["code"] for row in out["excluded_functions"]] == ["AGENT", "ASK", "HOME"]
     assert out["best"]["signal_functions"] >= 4
     assert len(out["best"]["top_evidence"]) >= 4
-    assert {row["code"] for row in out["best"]["top_evidence"]} >= {"MLSIG", "BTFW", "BTUNE", "NALRT"}
+    assert {row["code"] for row in out["best"]["top_evidence"]} >= {"BTFW", "BTUNE", "NALRT", "MOSS"}
+    # MLSIG has no measured history in the probe, so it must not earn ranking evidence.
+    assert "MLSIG" not in {row["code"] for row in out["best"]["top_evidence"]}
 
 
 def test_screen_reference_screeners_apply_real_filters(monkeypatch) -> None:

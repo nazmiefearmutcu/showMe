@@ -148,14 +148,19 @@ AGENT_LOCAL_SIGNAL_CODES = {
     "BTFW",
     "BTUNE",
     "CN",
-    "MLSIG",
     "MOSS",
     "NALRT",
     "NI",
     "PORT_OPT",
     "PVAR",
-    "RPAR",
 }
+# These need measured return history. A local probe cannot supply it, so they
+# get the explicit missing-data state instead of profile-derived numbers.
+AGENT_UNMEASURED_PROBE_CODES = frozenset({"MLSIG", "RPAR"})
+AGENT_UNMEASURED_PROBE_REASON = (
+    "agent probe has no measured return history for this function; no accuracy, Sharpe, "
+    "importance, score or signal is invented. Run it with live inputs to measure it."
+)
 AGENT_EXCLUDED_FUNCTIONS = [
     {"code": "AGENT", "reason": "self-referential native ranker pane"},
     {"code": "ASK", "reason": "natural-language orchestration pane, not a symbol scoring function"},
@@ -914,30 +919,12 @@ def _agent_probe_data_for_code(
         "probe_mode": "agent_fast_probe",
         "methodology": "Deterministic local probe used only to rank candidates quickly before optional live function execution.",
     }
-    accuracy = float(profile["accuracy"])
     sharpe = float(profile["sharpe"])
     expected_return = float(profile["expected_return"])
     drawdown_pct = float(profile["drawdown_pct"])
     volatility_pct = float(profile["volatility_pct"])
     momentum_score = float(profile["momentum_score"])
     risk_score = float(profile["risk_score"])
-    if code == "MLSIG":
-        return {
-            **common,
-            "backend": profile["backend"],
-            "test_accuracy": accuracy,
-            "test_samples": 84,
-            "feature_importance": {
-                "ret_5": 0.24,
-                "ret_20": 0.21,
-                "volatility_20": 0.19,
-                "asset_class_bias": 0.11,
-            },
-            "strategy_sharpe": sharpe,
-            "momentum_score": momentum_score,
-            "signal": "long_bias" if accuracy >= 0.53 else "neutral",
-            "coverage": {"symbol": symbol, "asset_class": asset_class, "mode": "agent_fast_probe"},
-        }
     if code in {"BTFW", "BMTX"}:
         return {
             **common,
@@ -965,14 +952,6 @@ def _agent_probe_data_for_code(
             "volatility_pct": volatility_pct,
             "upside_score": momentum_score,
             "signal": "positive_optimizer_candidate" if sharpe > 0.2 else "neutral_optimizer_candidate",
-        }
-    if code == "RPAR":
-        return {
-            **common,
-            "diversification_score": _clamp(66 - risk_score * 0.7, 35, 80),
-            "portfolio_volatility_pct": volatility_pct,
-            "risk_balance_score": _clamp(62 - abs(risk_score - 12), 30, 76),
-            "signal": "positive_risk_balance" if risk_score < 16 else "risk_watch",
         }
     if code == "PVAR":
         return {
@@ -1036,7 +1015,11 @@ def _agent_probe_payload(
     native_asset_match: bool,
 ) -> dict[str, Any]:
     if entry.code.upper() not in AGENT_LOCAL_SIGNAL_CODES or not native_asset_match:
-        reason = "agent nonblocking probe"
+        reason = (
+            AGENT_UNMEASURED_PROBE_REASON
+            if entry.code.upper() in AGENT_UNMEASURED_PROBE_CODES
+            else "agent nonblocking probe"
+        )
         payload = fallback_function_payload(entry.code, params, reason, "agent_probe")
         payload["metadata"] = {
             **payload.get("metadata", {}),
