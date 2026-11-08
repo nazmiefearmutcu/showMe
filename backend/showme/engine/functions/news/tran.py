@@ -580,9 +580,6 @@ _QA_MARKERS = (
 _SPEAKER_RE = re.compile(
     r"^([A-Z][A-Za-z.\-' ]{1,48})\s*(?:--|—|–|:)\s*(.*)$"
 )
-# TRAN#2: "Label: 1.23 per share" is a table line, not a speaker header. Text that
-# opens with a figure (optionally signed or in a currency) cannot be a person's name.
-_FIGURE_TEXT_RE = re.compile(r"^[\$€£¥(+\-−]?\s*\d")
 
 
 def _parse_transcript_text(
@@ -615,13 +612,13 @@ def _parse_transcript_text(
             section = "qa"
             continue
         m = _SPEAKER_RE.match(block) if allow_speaker_headers else None
-        # A colon line is ambiguous (it may be a table label); an explicit "--" or dash
-        # line is the transcript's own header syntax and is trusted as written.
+        # A colon line is ambiguous: "Retail Sales: gains continue" is a table or outline
+        # label as often as a name. An explicit "--" or dash line is the transcript's own
+        # header syntax and is trusted as written; a colon line names a speaker only when
+        # its label is a role word such as "Operator".
         colon_line = bool(m) and block[m.end(1):].lstrip().startswith(":")
-        if m and colon_line and _FIGURE_TEXT_RE.match(m.group(2).strip()):
-            m = None  # a data label such as "Diluted EPS: 1.23", never a header
-        if m and colon_line and not _colon_label_is_person(m.group(1).strip()):
-            m = None  # a one-word label such as "Guidance: strong demand...", not a person
+        if m and colon_line and m.group(1).strip().lower() not in _ROLE_HINTS:
+            m = None
         if m and _looks_like_name(m.group(1).strip()):
             head = m.group(1).strip()
             rest = m.group(2).strip()
@@ -673,16 +670,6 @@ def _looks_like_name(head: str) -> bool:
         return False
     capish = sum(1 for p in parts if p[:1].isupper())
     return capish >= max(1, len(parts) - 1)
-
-
-def _colon_label_is_person(head: str) -> bool:
-    """A "Name:" line counts as a speaker only when the head is a person-shaped name.
-
-    One capitalised word followed by a colon is a table or outline label far more
-    often than a speaker ("Guidance: ...", "Outlook: ..."), so it needs two or more
-    tokens or a role word ("Operator:"). Explicit "--" headers are not checked here.
-    """
-    return len(head.split()) >= 2 or head.lower() in _ROLE_HINTS
 
 
 def _role_for(text: str) -> str:

@@ -94,3 +94,41 @@ def test_single_word_colon_header_is_not_a_speaker_but_role_word_is() -> None:
     speakers = [r["speaker"] for r in rows]
     assert "Outlook" not in speakers, rows
     assert "Operator" in speakers, rows
+
+
+# --------------------------------------------------------------------------- #
+# TRAN#2-RQ (second pass): a colon line is never a trusted speaker header.
+# Two-token table labels outside the statement-word denylist used to be minted
+# as speakers ("Retail Sales: gains continue" -> speaker "Retail Sales").
+# Only "--" / dash headers are trusted as written; a colon line names a speaker
+# only when its label is a role word such as "Operator".
+# --------------------------------------------------------------------------- #
+def test_two_token_colon_labels_outside_denylist_are_not_speakers() -> None:
+    text = (
+        "Retail Sales: gains continue here today.\n\n"
+        "Return Rate: 4 percent of units.\n\n"
+        "Store Traffic: up year over year.\n"
+    )
+    rows = _parse_transcript_text(text)
+    assert len(rows) == 3, rows
+    assert all(r["speaker"] is None for r in rows), rows
+    assert all(r["role"] == "" for r in rows), rows
+
+
+def test_person_name_with_colon_is_not_trusted_as_a_speaker() -> None:
+    rows = _parse_transcript_text("Tim Cook: Thank you all for joining today.\n")
+    assert len(rows) == 1, rows
+    assert rows[0]["speaker"] is None and rows[0]["role"] == "", rows
+
+
+def test_colon_role_word_header_still_names_operator() -> None:
+    rows = _parse_transcript_text("Operator: Please go ahead.\n")
+    assert rows and rows[0]["speaker"] == "Operator", rows
+    assert rows[0]["utterance"] == "Please go ahead.", rows
+
+
+def test_dash_header_for_two_token_name_still_names_speaker() -> None:
+    rows = _parse_transcript_text("Retail Sales -- Chief Financial Officer\n\nGains continue.\n")
+    body = [r for r in rows if r["utterance"] == "Gains continue."]
+    assert body and body[0]["speaker"] == "Retail Sales", rows
+    assert body[0]["role"] == "CFO", rows
