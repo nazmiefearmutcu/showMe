@@ -122,8 +122,8 @@ def debt() -> FunctionManifest:
             " non-null observation per country that is at most 5 years old. Countries with no current"
             " observation are excluded and named in warnings, never silently dropped. The average is an"
             " unweighted mean. Each row reports the observation ``year`` so the data vintage is distinct"
-            " from the fetch timestamp. local_currency_share is a hard-coded REFERENCE table without a"
-            " cited source (null where a country is not in it), NOT a live World Bank series. Without a portfolio"
+            " from the fetch timestamp. local_currency_share is null for every row: no free keyless sourced"
+            " series is wired, so no constant or substitute value is reported. Without a portfolio"
             " link the bundled baseline pins ``portfolio_weight_pct = 0`` for every country so it is"
             " never misread as actual operator exposure; ``summary.portfolio_linked`` reports the"
             " wiring state explicitly. Country rows can be restricted via the ``countries`` filter"
@@ -133,7 +133,7 @@ def debt() -> FunctionManifest:
         field_dict={
             "rows[].country": FieldDef(description="ISO-2 country code.", source="catalog"),
             "rows[].debt_to_gdp": FieldDef(unit="%", description="General government debt as percent of GDP (World Bank, latest annual).", source="worldbank"),
-            "rows[].local_currency_share": FieldDef(unit="%", description="Hard-coded REFERENCE share of sovereign debt issued in local currency (unsourced; null when absent; not a live World Bank series).", source="worldbank_reference"),
+            "rows[].local_currency_share": FieldDef(unit="%", description="Share of sovereign debt issued in local currency; always null because no free sourced series is wired.", source="unavailable"),
             "rows[].year": FieldDef(description="Year of the World Bank debt-to-GDP observation.", source="worldbank"),
             "rows[].portfolio_weight_pct": FieldDef(unit="%", description="Portfolio country weight; zero when no portfolio link.", source="portfolio_state"),
         },

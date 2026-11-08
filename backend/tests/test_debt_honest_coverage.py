@@ -107,11 +107,12 @@ def test_debt_unlisted_country_local_currency_share_is_null_not_zero(monkeypatch
     assert row["local_currency_share"] is None
 
 
-def test_debt_listed_country_keeps_its_reference_local_currency_share(monkeypatch):
+def test_debt_listed_country_local_currency_share_is_null_no_constant(monkeypatch):
+    # DEBT#3: the former hard-coded reference (US 99.0) is gone; no sourced value exists.
     client = _FakeWorldBankClient({"USA": [{"date": _fresh_year(), "value": 120.0}]})
     fn = _debt(monkeypatch, client)
     res = _run(fn.execute(countries="US"))
-    assert res.data["rows"][0]["local_currency_share"] == 99.0
+    assert res.data["rows"][0]["local_currency_share"] is None
 
 
 def test_debt_average_basis_is_labelled_unweighted(monkeypatch):

@@ -199,7 +199,8 @@ def test_debt_manifest_provider_is_honest_worldbank_not_fred():
     assert "world bank" in method
     assert "fred" not in method
     assert "imf sdds" not in method
-    assert "reference" in method  # local-ccy share honestly flagged as reference
+    # DEBT#3: local-ccy share is null (no sourced series), never a constant table.
+    assert "sourced series is wired" in method
 
 
 # ---- ALLQ -----------------------------------------------------------------

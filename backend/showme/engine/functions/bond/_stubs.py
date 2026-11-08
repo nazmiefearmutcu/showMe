@@ -764,27 +764,21 @@ class DEBTFunction(BaseFunction):
         "non-null annual observation that is at most 5 years old. Countries with no observation, "
         "or only older ones, are excluded from rows and the average and named in warnings and "
         "``summary.excluded_countries``. The average is an unweighted mean. local_currency_share is "
-        "a hard-coded reference table without a cited source (the World Bank exposes no keyless "
-        "series); it is null for countries not in that table. portfolio_weight_pct is 0 unless "
+        "null for every row: no free keyless sourced series is wired, and no constant is substituted. "
+        "portfolio_weight_pct is 0 unless "
         "portfolio holdings are wired (``summary.portfolio_linked`` reports the state). Supplying "
         "``exposures`` directly bypasses the World Bank fetch."
     )
     _FIELD_DICT = {
         "country": "ISO-2 country code.",
         "debt_to_gdp": "General government debt as percent of GDP (World Bank, latest annual, at most 5 years old).",
-        "local_currency_share": "Hard-coded reference share of sovereign debt in local currency (unsourced); null when the country has no reference value.",
+        "local_currency_share": "Share of sovereign debt in local currency; null because no free sourced series is wired.",
         "portfolio_weight_pct": "Portfolio country weight; zero when no portfolio link.",
         "year": "Year of the World Bank debt-to-GDP observation.",
     }
     # A country's latest World Bank value must be at most this many years old.
     _DEBT_MAX_OBS_AGE_YEARS = 5
     _AVG_BASIS = "unweighted mean of the listed countries (not GDP-weighted)"
-    # Hard-coded local-currency shares, unsourced reference values (not live data).
-    _LOCAL_CCY_REF = {
-        "US": 99.0, "JP": 92.0, "DE": 96.0, "GB": 97.0, "FR": 95.0,
-        "IT": 94.0, "TR": 56.0, "BR": 90.0, "MX": 80.0, "ZA": 89.0,
-        "IN": 96.0, "CN": 98.0, "ES": 95.0, "CA": 98.0, "AU": 97.0,
-    }
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         raw_countries = params.get("countries")
@@ -888,8 +882,9 @@ class DEBTFunction(BaseFunction):
                 return {
                     "country": iso2,
                     "debt_to_gdp": round(float(latest["value"]), 2),
-                    # None, not 0.0: a missing reference value is not a 0% local share.
-                    "local_currency_share": self._LOCAL_CCY_REF.get(iso2),
+                    # Always None: no free sourced local-currency series is wired, so
+                    # no value (constant or 0.0) is reported for any country.
+                    "local_currency_share": None,
                     "portfolio_weight_pct": 0.0,
                     "year": latest.get("date"),
                 }
@@ -955,7 +950,7 @@ class DEBTFunction(BaseFunction):
 
         avg = round(sum(r["debt_to_gdp"] for r in rows) / len(rows), 2)
         warnings = [
-            "local_currency_share is an unsourced hard-coded reference table, not a live World Bank series; null where no reference value is held.",
+            "local_currency_share is null for every row: no free sourced series is wired, so it is not reported.",
             *unsupported_warning,
             *excluded_warnings,
         ]
