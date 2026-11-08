@@ -142,8 +142,10 @@ def glco() -> FunctionManifest:
             "rows[].sector": FieldDef(description="energy | metals | ags | softs.", source="curated"),
             "rows[].last": FieldDef(unit="USD/unit", description="Last trade price in contract unit.", source="provider"),
             "rows[].change_pct": FieldDef(unit="%", description="Session change percent.", source="computed"),
-            "rows[].contract_month": FieldDef(description="Active delivery month.", source="provider"),
-            "rows[].open_interest": FieldDef(unit="contracts", description="Listed open interest.", source="provider"),
+            "rows[].contract_month": FieldDef(description="Delivery month of the front contract; null for the keyless continuous =F series (see contract_month_reason).", source="provider"),
+            "rows[].contract_month_reason": FieldDef(description="Why contract_month is null (continuous =F series; delivery month not published by the keyless feed).", source="curated"),
+            "rows[].open_interest": FieldDef(unit="contracts", description="Open interest; null when the keyless feed does not publish it (see open_interest_reason).", source="provider"),
+            "rows[].open_interest_reason": FieldDef(description="Why open_interest is null (not published by the keyless quote feed).", source="curated"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
