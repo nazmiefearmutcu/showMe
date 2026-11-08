@@ -46,7 +46,7 @@ function payload() {
             maturity: "10Y",
             tenor_years: 10.0,
             yield: 4.84,
-            duration: 8.14,
+            duration: 7.85,
             duration_basis: "par_bond_model_from_live_yield",
             duration_curated: 8.2,
             rating: "AA+",
