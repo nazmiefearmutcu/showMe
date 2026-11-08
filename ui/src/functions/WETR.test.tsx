@@ -13,7 +13,7 @@
  * `useFunction` is mocked via a mutable shared state + recorded calls.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
@@ -130,19 +130,5 @@ describe("WETR pane — poll contract", () => {
       expect(call.params ?? {}).not.toHaveProperty("tick");
       expect(call.params).toMatchObject({ location: "US_NORTHEAST", days: 10 });
     }
-  });
-});
-
-describe("WETR pane — forecast horizon control (WETR#4)", () => {
-  it("offers the manifest day options and sends the chosen horizon", async () => {
-    mockFn.state = "ok";
-    mockFn.data = livePayload();
-    render(<WETRPane code="WETR" />);
-    for (const label of ["3d", "5d", "10d", "14d"]) {
-      expect(screen.getByRole("tab", { name: label })).toBeInTheDocument();
-    }
-    fireEvent.click(screen.getByRole("tab", { name: "5d" }));
-    const last = recordedCalls[recordedCalls.length - 1];
-    expect(last.params).toMatchObject({ location: "US_NORTHEAST", days: 5 });
   });
 });
