@@ -6,9 +6,13 @@ from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.data_sources.reference.openfigi_adapter import OpenFIGIRateLimited
 
 
 _ID_TYPES = ("ID_ISIN", "ID_CUSIP", "ID_SEDOL", "TICKER", "ID_BB_GLOBAL")
+# Pacing budget for one call: the function timeout is 14 s, so the adapter
+# may wait at most this long before reporting the rest as rate-limited.
+_MAX_PACING_WAIT_SECONDS = 8.0
 
 
 def _isin_check_digit(s: str) -> bool:
@@ -70,6 +74,18 @@ def _detect_id_type(s: str) -> str:
     return "TICKER"
 
 
+def _next_actions(flat_rows: list[dict[str, Any]], unresolved: int, limited_reason: str | None) -> list[str]:
+    actions: list[str] = []
+    if unresolved:
+        actions.append(
+            "Re-run the unresolved identifiers after the OpenFIGI window resets, or set OPENFIGI_API_KEY."
+            if limited_reason else "Re-run the unresolved identifiers."
+        )
+    if not flat_rows:
+        actions.append("Try ID Type TICKER for common symbols such as AAPL, MSFT, or SPY.")
+    return actions
+
+
 @FunctionRegistry.register
 class ISINFunction(BaseFunction):
     code = "ISIN"
@@ -113,19 +129,50 @@ class ISINFunction(BaseFunction):
             limit = max(1, min(int(params.get("limit") or 25), 100))
         except Exception:
             limit = 25
+        jobs = [(id_type or _detect_id_type(v), v) for v in ids]
+        adapter = self.deps.openfigi
+        chunk_size = max(1, int(getattr(adapter, "max_jobs_per_request", 10) or 10))
+        resolved: dict[int, dict[str, Any]] = {}
+        failures: dict[int, str] = {}
+        warnings: list[str] = []
+        limited_reason: str | None = None
+        # OpenFIGI takes up to max_jobs_per_request identifiers per POST, so one
+        # call covers a whole batch. Anonymous budget: 10 jobs/request, 25 requests/min.
+        for start in range(0, len(jobs), chunk_size):
+            chunk = jobs[start:start + chunk_size]
+            idxs = range(start, start + len(chunk))
+            if limited_reason is not None:
+                for i in idxs:
+                    failures[i] = limited_reason
+                continue
+            try:
+                got = await adapter.lookup_batch(chunk, max_wait_seconds=_MAX_PACING_WAIT_SECONDS)
+            except OpenFIGIRateLimited as exc:
+                retry = f" Retry in about {exc.retry_after:.0f} s." if exc.retry_after else ""
+                limited_reason = (
+                    f"OpenFIGI rate limit reached ({exc}).{retry} "
+                    "Set OPENFIGI_API_KEY for the 250 requests/min budget."
+                )
+                warnings.append(limited_reason)
+                for i in idxs:
+                    failures[i] = limited_reason
+                continue
+            except Exception as e:  # noqa: BLE001 — per-batch, the rest still resolve
+                reason = f"lookup failed: {e}"
+                warnings.append(reason)
+                for i in idxs:
+                    failures[i] = reason
+                continue
+            for i, item in zip(idxs, got):
+                resolved[i] = item
+
         out: list[dict[str, Any]] = []
         flat_rows: list[dict[str, Any]] = []
-        warnings: list[str] = []
-        for v in ids:
-            t = id_type or _detect_id_type(v)
-            try:
-                rows = await self.deps.openfigi.lookup_by(id_type=t, id_value=v)
-            except Exception as e:
-                rows = []
-                warning = f"{v}: {e}"
-                warnings.append(warning)
-                out.append({"input": v, "id_type": t, "error": str(e), "matches": []})
+        for i, (t, v) in enumerate(jobs):
+            if i in failures:
+                out.append({"input": v, "id_type": t, "error": failures[i], "matches": []})
                 continue
+            rows = (resolved.get(i) or {}).get("data") or []
             match_rows = [
                 {
                     "input": v,
@@ -160,11 +207,23 @@ class ISINFunction(BaseFunction):
                     } for r in rows
                 ],
             })
-        status = "ok" if flat_rows else "empty"
+        unresolved = len(failures)
+        if flat_rows and unresolved:
+            status = "partial"
+        elif flat_rows:
+            status = "ok"
+        elif unresolved:
+            status = "provider_unavailable"
+        else:
+            status = "empty"
+        reason = None
+        if unresolved and not flat_rows:
+            reason = limited_reason or next(iter(failures.values()))
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
                 "status": status,
+                **({"reason": reason} if reason else {}),
                 "rows": flat_rows,
                 "match_groups": out,
                 "summary": {
@@ -172,6 +231,7 @@ class ISINFunction(BaseFunction):
                     "matches": len(flat_rows),
                     "id_type": id_type or "auto",
                     "limit_per_input": limit,
+                    "unresolved": unresolved,
                 },
                 "methodology": (
                     "ISIN maps the visible identifier to an OpenFIGI lookup type. "
@@ -187,7 +247,7 @@ class ISINFunction(BaseFunction):
                     "share_class_figi": "FIGI representing the issuer share class.",
                     "exchange": "OpenFIGI exchange code.",
                 },
-                "next_actions": [] if flat_rows else ["Try ID Type TICKER for common symbols such as AAPL, MSFT, or SPY."],
+                "next_actions": _next_actions(flat_rows, unresolved, limited_reason),
             },
             sources=["openfigi"],
             warnings=warnings,

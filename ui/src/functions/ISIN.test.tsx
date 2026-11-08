@@ -171,6 +171,23 @@ describe("ISIN pane — load states", () => {
     expect(screen.getByText(/OpenFIGI unavailable/i)).toBeInTheDocument();
   });
 
+  it("reports a rate-limited lookup as a rate limit, not as a missing adapter", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "provider_unavailable",
+          rows: [],
+          reason: "OpenFIGI rate limit reached (HTTP 429). Retry in about 17 s.",
+        },
+      },
+    });
+    render(<ISINPane code="ISIN" symbol="US0378331005" />);
+    expect(screen.getByText(/OpenFIGI unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/rate limit reached/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not configured/i)).toBeNull();
+  });
+
   it("renders the empty state with guidance when there are no matches", () => {
     setMockFn({
       state: "ok",
