@@ -648,6 +648,26 @@ class BOILFunction(BaseFunction):
             if "BZ=F" in by_symbol and "CL=F" in by_symbol:
                 spread = by_symbol["BZ=F"]["last"] - by_symbol["CL=F"]["last"]
 
+        # BOIL#5: describe the data actually served, not a fixed claim.
+        if source_mode == "live_yfinance":
+            legs_with_history = [sym for sym in symbols if history_by_symbol.get(sym)]
+            if legs_with_history:
+                history_clause = "history is daily OHLCV from Yahoo chart data per leg (history_by_symbol)"
+                if len(legs_with_history) < len(symbols):
+                    missing = [sym for sym in symbols if sym not in legs_with_history]
+                    history_clause += f"; no history returned for {', '.join(missing)}"
+            else:
+                history_clause = f"no daily history was returned for {', '.join(symbols)}"
+            boil_methodology = (
+                "BOIL reports front-month WTI (CL=F) and Brent (BZ=F) futures from live quotes. "
+                "Change % is (last / previous close - 1) * 100; " + history_clause + "."
+            )
+        else:
+            boil_methodology = (
+                "BOIL reference model: fixed reference levels dated "
+                f"{_MODEL_PRICES_VINTAGE} (reference_vintage), NOT live prices. "
+                "Change % is the reference change_pct; no daily history is served."
+            )
         data = {
             "status": "ok" if source_mode == "live_yfinance" else "reference_model",
             "market": "oil",
@@ -658,7 +678,7 @@ class BOILFunction(BaseFunction):
             "history_by_symbol": {sym: history_by_symbol.get(sym, []) for sym in symbols},
             "spread": spread,
             "show_spread": show_spread,
-            "methodology": "BOIL reports front-month WTI (CL=F) and Brent (BZ=F) futures. Change % is (last / previous close - 1) * 100; history is daily OHLCV from Yahoo chart data.",
+            "methodology": boil_methodology,
             "field_dictionary": _commodity_field_dictionary(),
         }
         return FunctionResult(
