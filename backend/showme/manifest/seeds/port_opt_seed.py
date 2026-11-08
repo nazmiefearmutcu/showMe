@@ -1,8 +1,9 @@
 """PORT_OPT — Mean-variance portfolio optimization with efficient frontier.
 
-Backed by PyPortfolioOpt / Riskfolio-Lib at the handler layer. The manifest
-locks the contract: frontier-grammar chart, weight + constraint inputs,
-exportable optimal-weights vector + frontier array.
+Solved by in-house mean-variance code (services/optimizer.py); no external
+optimizer library is used. The manifest locks the contract: frontier-grammar
+chart, weight + constraint inputs, exportable optimal-weights vector + frontier
+array. Inputs the handler does not apply are reported in ``unapplied_inputs``.
 """
 from __future__ import annotations
 
@@ -40,10 +41,10 @@ def port_opt() -> FunctionManifest:
         name="Portfolio Optimization",
         category=Category.PORTFOLIO,
         intent=(
-            "Compute the efficient frontier and recommend optimal weights "
-            "for a chosen universe under user-defined objectives and "
-            "constraints (long-only, weight caps, sector limits, target "
-            "return/vol). Backed by PyPortfolioOpt / Riskfolio-Lib."
+            "Compute the efficient frontier and the max-Sharpe, min-volatility "
+            "and risk-parity long-only weights for a chosen universe from "
+            "historical daily returns. Solvers are hand-written in-house "
+            "mean-variance code; no external optimizer library is used."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -221,18 +222,23 @@ def port_opt() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "PORT_OPT fetches per-symbol close prices at the chosen frequency "
-            "for the chosen window, then estimates expected returns µ via the "
-            "selected return_model and a covariance Σ via the selected "
-            "risk_model. PyPortfolioOpt's EfficientFrontier (or Riskfolio-Lib "
-            "for non-mean-variance objectives) solves the convex problem under "
-            "the active constraint set. The frontier is sampled at "
-            "`frontier_points` target returns between the min-vol and "
-            "max-return solutions. The recommended weights row is the "
-            "objective's solution; risk contributions are computed as "
-            "w_i (Σ w)_i / (w' Σ w). Solver failures (infeasibility, numeric "
-            "ill-conditioning) surface as warnings — never silently fall back "
-            "to equal-weight."
+            "PORT_OPT fetches daily close-to-close returns per symbol over the "
+            "lookback (a calendar-day window; the sample count is the number of "
+            "trading-day returns inside it). It estimates annualized mean returns "
+            "(252-day annualization) and the sample covariance, then solves "
+            "long-only mean-variance problems with in-house solvers. Max-Sharpe "
+            "starts from the analytical tangency portfolio and runs projected "
+            "gradient ascent. Min-volatility and the frontier use projected gradient "
+            "descent with a Lagrange multiplier for the return target. The frontier "
+            "samples targets between the lowest and highest single-asset annualized "
+            "mean; targets the solver cannot reach repeat one portfolio, so duplicate "
+            "points are removed. Risk parity uses cyclical coordinate descent and is "
+            "the only mode that reports a convergence flag and max_rc_error. Symbols "
+            "whose live returns cannot be fetched are listed in dropped_symbols with "
+            "status partial; with fewer than two survivors no weights are produced "
+            "(status provider_unavailable). Declared inputs this optimizer does not "
+            "apply, such as weight caps or non-sample covariance estimators, are "
+            "listed in unapplied_inputs and reported as warnings."
         ),
         formula_dict={
             "PortfolioReturn": Formula(
