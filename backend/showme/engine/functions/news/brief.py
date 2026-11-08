@@ -116,7 +116,7 @@ class BRIEFFunction(BaseFunction):
                 },
                 sources=["portfolio_state", "watchlist_store"],
                 warnings=[*base_warnings, "No portfolio positions or watchlist symbols to brief on."],
-                metadata={"format": "markdown", "live": False, "data_mode": "needs_input"},
+                metadata={"format": "markdown", "live": False, "data_mode": "explicit_unavailable"},
             )
 
         # ---- LIVE COMPOSITION (default) -------------------------------------
