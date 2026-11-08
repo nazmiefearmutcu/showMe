@@ -61,11 +61,13 @@ SEC_EDGAR_PRIMARY: frozenset[str] = frozenset(
     {"FORM4", "FTS", "HDS", "HFS", "CACT", "SPLC", "LITM", "PIB"}
 )
 YFINANCE_PRIMARY: frozenset[str] = frozenset(
-    {"APPL", "DVD", "ANR", "RV", "DARK", "ESG"}  # PIB -> SEC (PIB fix), DPF -> FINRA (DPF#4); ESG seed primary=yfinance
+    {"APPL", "DVD", "ANR", "RV", "ESG"}  # PIB -> SEC (PIB fix), DPF/DARK -> FINRA (DPF#4, DARK#3); ESG seed primary=yfinance
 )
 # DPF (dark pool / ATS volume) reads FINRA ATS weekly volume first; its seed
 # used to claim yfinance and describe delisted firms (DPF#4, p2a-g05).
-FINRA_PRIMARY: frozenset[str] = frozenset({"DPF"})
+# DARK#3: DARK reads FINRA ATS weekly volume first (yfinance is only the
+# weekly-total denominator), so its seed must declare FINRA as primary.
+FINRA_PRIMARY: frozenset[str] = frozenset({"DPF", "DARK"})
 # F14 seed-truth resync: EE (Finnhub historical earnings, Yahoo calendar as
 # fallback) and EREV (Finnhub recommendation buckets only) were listed under
 # YFINANCE_PRIMARY, but the shipped handlers read Finnhub as their primary
