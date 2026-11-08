@@ -445,17 +445,33 @@ class OSAFunction(BaseFunction):
         # debit must carry the financing cost net_debit * exp(+r * max_T).
         # The old PV discount (exp(-rT)) understated the cost and inflated
         # every pnl point by roughly r*T*net_debit.
-        max_T = max((float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25)
-                     for leg in legs), default=0.25)
-        fv_debit = net_debit * math.exp(r * max_T)
+        # OSA-1: legs with different expiries must share one valuation date.
+        # The position is marked at the FIRST expiry: legs that expire there
+        # pay intrinsic value, longer legs are marked at Black-Scholes with
+        # their remaining time and the same per-leg vol. Valuing every leg at
+        # intrinsic on the longest horizon zeroed out a calendar's time value.
+        leg_expiries = [float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25) for leg in legs]
+        t_eval = min(leg_expiries, default=0.25)
+        fv_debit = net_debit * math.exp(r * t_eval)
+        leg_terms: list[tuple[float, float, float, str, float, float]] = []
+        for leg, t_leg, prem in zip(legs, leg_expiries, initial_premiums):
+            leg_terms.append((
+                float(leg["strike"]),
+                float(leg.get("qty") or 0),
+                t_leg,
+                str(leg.get("type") or "CALL").upper(),
+                float(prem["vol"]),
+                float(q),
+            ))
         for s in spots:
             expiry_payoff = 0.0
-            for leg in legs:
-                strike = float(leg["strike"])
-                qty = float(leg.get("qty") or 0)
-                opt_type = str(leg.get("type") or "CALL").upper()
-                payoff = max(s - strike, 0.0) if opt_type == "CALL" else max(strike - s, 0.0)
-                expiry_payoff += qty * payoff
+            for strike, qty, t_leg, opt_type, vol_leg, q_leg in leg_terms:
+                if t_leg <= t_eval + 1e-12:
+                    value = max(s - strike, 0.0) if opt_type == "CALL" else max(strike - s, 0.0)
+                else:
+                    value = _bs_price(s, strike, t_leg - t_eval, r, vol_leg, q_leg,
+                                      opt_type == "CALL")["price"]
+                expiry_payoff += qty * value
             pnl_curve.append({
                 "spot": s,
                 "pnl": expiry_payoff - fv_debit,
@@ -477,6 +493,8 @@ class OSAFunction(BaseFunction):
                                   "pnl_curve": pnl_curve,
                                   "summary": {
                                       "net_debit": net_debit,
+                                      "evaluation_horizon_years": t_eval,
+                                      "multi_expiry": len(set(leg_expiries)) > 1,
                                       "max_gain_visible": max(pnls),
                                       "max_loss_visible": min(pnls),
                                       "breakeven_count_visible": sum(
@@ -485,7 +503,7 @@ class OSAFunction(BaseFunction):
                                           if (prev <= 0 <= cur) or (prev >= 0 >= cur)
                                       ),
                                   },
-                                  "methodology": "Expiration P&L = sum(qty * intrinsic payoff at spot) - fv_debit; fv_debit = net_debit * exp(+r * max_T) carries the initial debit forward to the expiry horizon so payoff and cost share the same time basis. Premiums use Black-Scholes-Merton with per-leg IV (solved from market_price if supplied, else input vol, else default 0.25).",
+                                  "methodology": "Horizon P&L at the first expiry = sum(qty * value at spot) - fv_debit. Legs expiring at the horizon are valued at intrinsic payoff; longer legs are valued with Black-Scholes-Merton at their remaining time and per-leg IV. fv_debit = net_debit * exp(+r * horizon) carries the initial debit to the same horizon. Premiums use Black-Scholes-Merton with per-leg IV (solved from market_price if supplied, else input vol, else default 0.25).",
                                   "field_dictionary": {
                                       "net_debit": "Positive value means the strategy costs premium up front; negative means a credit.",
                                       "curve.pnl": "Estimated expiration profit/loss at each underlying spot.",
