@@ -32,7 +32,7 @@ _SPOT_DEPTH_URL = "https://api.binance.com/api/v3/depth"
 _SPOT_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
 _FIELD_DICTIONARY: dict[str, str] = {
-    "as_of": "UTC timestamp of the depth snapshot.",
+    "as_of": "UTC time the depth request was sent. Binance depth has no server timestamp, so the snapshot was taken no earlier than this.",
     "symbol": "Canonical symbol with an L2 depth feed (Binance spot).",
     "bids[].price": "Bid level price (quote ccy), best first.",
     "bids[].size": "Bid level resting size (base ccy).",
@@ -106,6 +106,10 @@ class MICROFunction(BaseFunction):
         kline_limit = max(50, min(int(params.get("kline_limit", 200) or 200), 1000))
         timeout = float(params.get("timeout", 8) or 8)
 
+        # Binance depth carries no server timestamp: the snapshot is taken at or
+        # after the moment the request is sent, so that send time is the honest
+        # as_of (never the response-parse time, which lags by the network RTT).
+        request_started = datetime.now(timezone.utc)
         try:
             async with httpx.AsyncClient(
                 timeout=timeout, headers={"User-Agent": "showMe/1.0 (research; contact@example.com)"}
@@ -168,7 +172,7 @@ class MICROFunction(BaseFunction):
             )
 
         # Binance returns bids best->worst (desc price) and asks best->worst (asc price).
-        as_of = datetime.now(timezone.utc).isoformat()
+        as_of = request_started.isoformat()
         best_bid_p, best_bid_q = raw_bids[0]
         best_ask_p, best_ask_q = raw_asks[0]
         mid = (best_bid_p + best_ask_p) / 2
