@@ -6,6 +6,30 @@ All notable changes to showMe are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **D phase: function truth audit fixes (branch `fix/foundation-audit`).** 626
+  audited findings were fixed and verified across seven fix waves, and about 40
+  more were fixed by hand afterwards. The full write-up is in
+  `docs/audit/d-phase-delivery.md`. Main changes:
+  - **The `/api/fn` route no longer overrides function defaults.** The agent
+    probe profile (limit 6, 120 days, peer list, news query, 3 s fetch budget)
+    used to replace each function's own defaults. The route now reports what it
+    filled in as `routeDefaults`, and `inputEcho` shows only what the caller
+    sent.
+  - **No generated data anywhere.** CORR's reference series, WETR's
+    "seasonal model" and TRA's template history were generated price and
+    weather paths. They are gone, along with the panes' Ref, Modeled and MODEL
+    switches.
+  - **Honest states everywhere.**
+    - Quotes without an exchange time are refused.
+    - Previous-close checks use the exchange trade day.
+    - A yield below the same-month UST average is not treated as a credit
+      spread, so SRSK can no longer report a negative default probability.
+    - FINRA and EIA data carry their own dates.
+    - Error messages are never empty (about 250 sites).
+    - Provider links become clickable only when they are http(s) URLs.
+  - **New audit check and lower ratchets.** A new T10 offline-honesty audit is
+    ratcheted at 0 red findings over 142 functions. The truth-audit ratchet went
+    from 522 to 411.
 - **FinBERT bear-listed contrarian headlines ("cycle bottom may already be
   in at $56K").** FinBERT scores the tone of the words, not the direction a
   headline argues for, so completed-bottom calls and fear-pivot headlines
