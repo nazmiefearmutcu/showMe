@@ -128,9 +128,21 @@ class FSRCFunction(BaseFunction):
     category = "screen"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        query = str(params.get("query") or "expenseRatio < 0.01 AND aum_usd > 10000000000")
+        query = str(params.get("query") or "expenseRatio < 0.01")
         universe = _symbol_filter(params.get("universe"))
         rows = _filter_universe(_fund_reference_rows(), universe)
+        # FSRC#1: AUM and YTD are not served. A predicate on them cannot be
+        # evaluated honestly, so refuse it explicitly before any quote call.
+        unserved = _fund_unserved_predicate_columns(query)
+        if unserved:
+            return _fund_unserved_predicate_result(
+                self.code,
+                query,
+                unserved,
+                scanned=len(rows),
+                limit=_int_param(params, "limit", 50),
+                sources=["showme_fund_reference_universe"],
+            )
         # Default polarity (2026-09-11, L9): attempt keyless yfinance quotes by
         # default; an explicit falsy ``live``/``live_screen`` or
         # ``reference=true`` serves the curated reference universe only.
@@ -167,11 +179,10 @@ class FSRCFunction(BaseFunction):
                 sources = ["yfinance", "showme_fund_reference_universe"]
             else:
                 warnings = [*warnings, "quote provider returned no usable rows"]
-        # FSRC#1: AUM and YTD are curated reference values (no as-of date, never
-        # refreshed by the quote provider). Label them on every row and in the
-        # payload so they never read as current data beside a live price.
+        # FSRC#1: AUM and YTD are not served. Every row says so explicitly, and
+        # the payload warns, so no reader mistakes a missing value for a zero.
         rows = _label_fund_reference_rows(rows)
-        warnings = [*warnings, _FUND_REFERENCE_WARNING]
+        warnings = [*warnings, _FUND_UNSERVED_WARNING]
         return _screen_result(
             self.code,
             rows,
@@ -701,13 +712,12 @@ _COMMODITY_FIELDS = [
 _FUND_FIELDS = [
     {"field": "symbol", "meaning": "ETF or fund ticker."},
     {"field": "category", "meaning": "Fund exposure bucket."},
-    {"field": "aum_usd", "meaning": "Curated reference AUM in US dollars: not refreshed from a provider; no provider as-of date."},
-    {"field": "aum_as_of", "meaning": "Date the curated fund table was last verified (2026-09-15). The AUM figure itself is not dated by a provider."},
-    {"field": "aum_state", "meaning": "\"reference\" — aum_usd comes from the curated fund universe, never from a live quote."},
-    {"field": "ytd_state", "meaning": "\"reference\" — ytd_return_pct comes from the curated fund universe, never from a live quote."},
-    {"field": "expenseRatio", "meaning": "Annual expense ratio as a decimal."},
-    {"field": "ytd_return_pct", "meaning": "Curated reference year-to-date return in percent: not refreshed from a provider; no provider as-of date."},
-    {"field": "ytd_as_of", "meaning": "Date the curated fund table was last verified (2026-09-15). The YTD figure itself is not dated by a provider."},
+    {"field": "aum_usd", "meaning": "Not served: always null. No keyless provider supplies fund AUM, and the earlier curated figures were stale."},
+    {"field": "aum_state", "meaning": "\"unavailable\" — aum_usd is not served; no value is shown or implied."},
+    {"field": "ytd_state", "meaning": "\"unavailable\" — ytd_return_pct is not served; no value is shown or implied."},
+    {"field": "expenseRatio", "meaning": "Curated reference annual expense ratio as a decimal (0.0009 = 0.09%); no provider as-of date."},
+    {"field": "ytd_return_pct", "meaning": "Not served: always null. No keyless provider supplies fund YTD returns."},
+    {"field": "dividend_yield", "meaning": "Curated reference dividend yield as a decimal (0.012 = 1.2%); no provider as-of date."},
     {"field": "last", "meaning": "Latest available traded price when live quotes are available."},
 ]
 
@@ -767,26 +777,80 @@ def _extract_predicate_columns(rewritten: str) -> list[str]:
     return columns
 
 
-# FSRC#1: date stamp for the curated AUM / YTD table. It is the date the table
-# was last verified (the symbol and price probe recorded above the table). The
-# AUM and YTD figures have no provider as-of date of their own.
-_FUND_REFERENCE_AS_OF = "2026-09-15"
+# FSRC#1: AUM and YTD have no served source. The curated constants were removed
+# (they were stale or wrong against live data and no as-of date existed for
+# them), so every row states "unavailable" rather than a number or a date.
+_FUND_UNSERVED_COLUMNS = ("aum_usd", "ytd_return_pct")
 
-_FUND_REFERENCE_WARNING = (
-    f"AUM and YTD are curated reference values (table verified {_FUND_REFERENCE_AS_OF}); "
-    "they are not refreshed from a quote provider."
+_FUND_UNSERVED_WARNING = (
+    "AUM and YTD are not served: ShowMe has no keyless provider for fund AUM or YTD, "
+    "and the earlier curated figures were removed because they were stale or wrong "
+    "against live data. expenseRatio and dividend_yield are curated reference values "
+    "with no provider as-of date."
 )
 
 
+def _fund_unserved_predicate_columns(query: str) -> list[str]:
+    """Unserved columns (AUM / YTD) that a predicate filters on, after alias rewrite."""
+    used = _extract_predicate_columns(_rewrite_screen_query(query))
+    return sorted({column for column in used if column in _FUND_UNSERVED_COLUMNS})
+
+
+def _fund_unserved_predicate_result(
+    code: str,
+    query: str,
+    unserved: list[str],
+    *,
+    scanned: int,
+    limit: int,
+    sources: list[str],
+) -> FunctionResult:
+    """Explicit provider_unavailable state for a predicate on AUM / YTD (never a silent match)."""
+    rewritten = _rewrite_screen_query(query)
+    return FunctionResult(
+        code=code,
+        instrument=None,
+        data={
+            "status": "provider_unavailable",
+            "query": query,
+            "filter": rewritten,
+            "rows": [],
+            "field_dictionary": _FUND_FIELDS,
+            "scanned": scanned,
+            "matched": 0,
+            "limit": limit,
+            "reason": (
+                f"Filter references {', '.join(unserved)}, which ShowMe does not serve: "
+                "no provider supplies fund AUM or YTD."
+            ),
+            "next_actions": [
+                "Remove the aum_usd / ytd_return_pct clause and run the screen again.",
+                "Filter on expenseRatio, dividend_yield or category instead.",
+            ],
+            "unsupported_columns": unserved,
+        },
+        metadata={
+            "query": query,
+            "filter": rewritten,
+            "matched": 0,
+            "scanned": scanned,
+            "limit": limit,
+            "unsupported_columns": unserved,
+        },
+        sources=sources,
+        warnings=[_FUND_UNSERVED_WARNING],
+    )
+
+
 def _label_fund_reference_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """FSRC: tag curated AUM / YTD as reference, with the table as-of date, on every row (copies, not in place)."""
+    """FSRC: AUM / YTD are null and marked unavailable on every row (copies, not in place)."""
     return [
         {
             **row,
-            "aum_state": "reference",
-            "ytd_state": "reference",
-            "aum_as_of": _FUND_REFERENCE_AS_OF,
-            "ytd_as_of": _FUND_REFERENCE_AS_OF,
+            "aum_usd": None,
+            "ytd_return_pct": None,
+            "aum_state": "unavailable",
+            "ytd_state": "unavailable",
         }
         for row in rows
     ]
@@ -1447,10 +1511,13 @@ def _commodity_reference_symbols() -> list[str]:
 def _fund_reference_rows() -> list[dict[str, Any]]:
     """Curated fund/ETF reference universe (60+ liquid US vehicles).
 
-    AUM/expense/return fields are curated reference values (the same
-    legitimacy class as the original 10-row table); the live quote overlay
-    attaches real prices per row when the provider answers. Categories are
-    the values the FSRC pane composes into ``category = "…"`` predicates.
+    Carries identity, category, expense ratio, dividend yield and holdings as
+    curated reference values with no provider as-of date. AUM and YTD are NOT
+    in this table: no keyless provider is wired for them, and the earlier
+    curated figures were stale or wrong against live data (FSRC#1), so they
+    are not served. The live quote overlay attaches real prices per row when
+    the provider answers. Categories are the values the FSRC pane composes
+    into ``category = "…"`` predicates.
     """
     # Verified live on 2026-09-15: batch quote probe over this exact list
     # returned 68/68 symbols with a last price (0 rejects). The probe was run
@@ -1459,92 +1526,92 @@ def _fund_reference_rows() -> list[dict[str, Any]]:
     # long-running process could not resolve the Yahoo host at probe time.
     return [
         # US Large Blend
-        {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "issuer": "State Street", "category": "US Large Blend", "aum_usd": 500_000_000_000, "expenseRatio": 0.000945, "ytd_return_pct": 8.6, "dividend_yield": 0.012, "holdings": 503},
-        {"symbol": "VOO", "name": "Vanguard S&P 500 ETF", "issuer": "Vanguard", "category": "US Large Blend", "aum_usd": 470_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 8.5, "dividend_yield": 0.013, "holdings": 505},
-        {"symbol": "IVV", "name": "iShares Core S&P 500 ETF", "issuer": "BlackRock", "category": "US Large Blend", "aum_usd": 460_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 8.5, "dividend_yield": 0.013, "holdings": 505},
-        {"symbol": "SPLG", "name": "SPDR Portfolio S&P 500 ETF", "issuer": "State Street", "category": "US Large Blend", "aum_usd": 45_000_000_000, "expenseRatio": 0.0002, "ytd_return_pct": 8.5, "dividend_yield": 0.012, "holdings": 503},
-        {"symbol": "RSP", "name": "Invesco S&P 500 Equal Weight ETF", "issuer": "Invesco", "category": "US Large Blend", "aum_usd": 55_000_000_000, "expenseRatio": 0.002, "ytd_return_pct": 6.1, "dividend_yield": 0.017, "holdings": 503},
-        {"symbol": "SCHX", "name": "Schwab U.S. Large-Cap ETF", "issuer": "Charles Schwab", "category": "US Large Blend", "aum_usd": 42_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 8.4, "dividend_yield": 0.013, "holdings": 750},
+        {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "issuer": "State Street", "category": "US Large Blend", "expenseRatio": 0.000945, "dividend_yield": 0.012, "holdings": 503},
+        {"symbol": "VOO", "name": "Vanguard S&P 500 ETF", "issuer": "Vanguard", "category": "US Large Blend", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 505},
+        {"symbol": "IVV", "name": "iShares Core S&P 500 ETF", "issuer": "BlackRock", "category": "US Large Blend", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 505},
+        {"symbol": "SPLG", "name": "SPDR Portfolio S&P 500 ETF", "issuer": "State Street", "category": "US Large Blend", "expenseRatio": 0.0002, "dividend_yield": 0.012, "holdings": 503},
+        {"symbol": "RSP", "name": "Invesco S&P 500 Equal Weight ETF", "issuer": "Invesco", "category": "US Large Blend", "expenseRatio": 0.002, "dividend_yield": 0.017, "holdings": 503},
+        {"symbol": "SCHX", "name": "Schwab U.S. Large-Cap ETF", "issuer": "Charles Schwab", "category": "US Large Blend", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 750},
         # US Large Growth
-        {"symbol": "QQQ", "name": "Invesco QQQ Trust", "issuer": "Invesco", "category": "US Large Growth", "aum_usd": 250_000_000_000, "expenseRatio": 0.002, "ytd_return_pct": 10.4, "dividend_yield": 0.006, "holdings": 101},
-        {"symbol": "VUG", "name": "Vanguard Growth ETF", "issuer": "Vanguard", "category": "US Large Growth", "aum_usd": 120_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 10.1, "dividend_yield": 0.005, "holdings": 220},
-        {"symbol": "IWF", "name": "iShares Russell 1000 Growth ETF", "issuer": "BlackRock", "category": "US Large Growth", "aum_usd": 85_000_000_000, "expenseRatio": 0.0019, "ytd_return_pct": 10.3, "dividend_yield": 0.005, "holdings": 450},
-        {"symbol": "SCHG", "name": "Schwab U.S. Large-Cap Growth ETF", "issuer": "Charles Schwab", "category": "US Large Growth", "aum_usd": 28_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 10.2, "dividend_yield": 0.004, "holdings": 250},
-        {"symbol": "MGK", "name": "Vanguard Mega Cap Growth ETF", "issuer": "Vanguard", "category": "US Large Growth", "aum_usd": 18_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 11.0, "dividend_yield": 0.004, "holdings": 70},
+        {"symbol": "QQQ", "name": "Invesco QQQ Trust", "issuer": "Invesco", "category": "US Large Growth", "expenseRatio": 0.002, "dividend_yield": 0.006, "holdings": 101},
+        {"symbol": "VUG", "name": "Vanguard Growth ETF", "issuer": "Vanguard", "category": "US Large Growth", "expenseRatio": 0.0004, "dividend_yield": 0.005, "holdings": 220},
+        {"symbol": "IWF", "name": "iShares Russell 1000 Growth ETF", "issuer": "BlackRock", "category": "US Large Growth", "expenseRatio": 0.0019, "dividend_yield": 0.005, "holdings": 450},
+        {"symbol": "SCHG", "name": "Schwab U.S. Large-Cap Growth ETF", "issuer": "Charles Schwab", "category": "US Large Growth", "expenseRatio": 0.0004, "dividend_yield": 0.004, "holdings": 250},
+        {"symbol": "MGK", "name": "Vanguard Mega Cap Growth ETF", "issuer": "Vanguard", "category": "US Large Growth", "expenseRatio": 0.0007, "dividend_yield": 0.004, "holdings": 70},
         # US Large Value
-        {"symbol": "VTV", "name": "Vanguard Value ETF", "issuer": "Vanguard", "category": "US Large Value", "aum_usd": 130_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 5.2, "dividend_yield": 0.023, "holdings": 340},
-        {"symbol": "IWD", "name": "iShares Russell 1000 Value ETF", "issuer": "BlackRock", "category": "US Large Value", "aum_usd": 55_000_000_000, "expenseRatio": 0.0019, "ytd_return_pct": 5.4, "dividend_yield": 0.021, "holdings": 850},
-        {"symbol": "SCHD", "name": "Schwab U.S. Dividend Equity ETF", "issuer": "Charles Schwab", "category": "US Large Value", "aum_usd": 65_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": 4.8, "dividend_yield": 0.037, "holdings": 100},
-        {"symbol": "VYM", "name": "Vanguard High Dividend Yield ETF", "issuer": "Vanguard", "category": "US Large Value", "aum_usd": 60_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": 5.6, "dividend_yield": 0.026, "holdings": 550},
-        {"symbol": "DVY", "name": "iShares Select Dividend ETF", "issuer": "BlackRock", "category": "US Large Value", "aum_usd": 20_000_000_000, "expenseRatio": 0.0038, "ytd_return_pct": 4.2, "dividend_yield": 0.039, "holdings": 100},
+        {"symbol": "VTV", "name": "Vanguard Value ETF", "issuer": "Vanguard", "category": "US Large Value", "expenseRatio": 0.0004, "dividend_yield": 0.023, "holdings": 340},
+        {"symbol": "IWD", "name": "iShares Russell 1000 Value ETF", "issuer": "BlackRock", "category": "US Large Value", "expenseRatio": 0.0019, "dividend_yield": 0.021, "holdings": 850},
+        {"symbol": "SCHD", "name": "Schwab U.S. Dividend Equity ETF", "issuer": "Charles Schwab", "category": "US Large Value", "expenseRatio": 0.0006, "dividend_yield": 0.037, "holdings": 100},
+        {"symbol": "VYM", "name": "Vanguard High Dividend Yield ETF", "issuer": "Vanguard", "category": "US Large Value", "expenseRatio": 0.0006, "dividend_yield": 0.026, "holdings": 550},
+        {"symbol": "DVY", "name": "iShares Select Dividend ETF", "issuer": "BlackRock", "category": "US Large Value", "expenseRatio": 0.0038, "dividend_yield": 0.039, "holdings": 100},
         # US Total Market
-        {"symbol": "VTI", "name": "Vanguard Total Stock Market ETF", "issuer": "Vanguard", "category": "US Total Market", "aum_usd": 380_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 7.9, "dividend_yield": 0.014, "holdings": 3700},
-        {"symbol": "ITOT", "name": "iShares Core S&P Total U.S. Stock Market ETF", "issuer": "BlackRock", "category": "US Total Market", "aum_usd": 55_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 7.8, "dividend_yield": 0.014, "holdings": 3600},
-        {"symbol": "SCHB", "name": "Schwab U.S. Broad Market ETF", "issuer": "Charles Schwab", "category": "US Total Market", "aum_usd": 30_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 7.8, "dividend_yield": 0.013, "holdings": 2400},
+        {"symbol": "VTI", "name": "Vanguard Total Stock Market ETF", "issuer": "Vanguard", "category": "US Total Market", "expenseRatio": 0.0003, "dividend_yield": 0.014, "holdings": 3700},
+        {"symbol": "ITOT", "name": "iShares Core S&P Total U.S. Stock Market ETF", "issuer": "BlackRock", "category": "US Total Market", "expenseRatio": 0.0003, "dividend_yield": 0.014, "holdings": 3600},
+        {"symbol": "SCHB", "name": "Schwab U.S. Broad Market ETF", "issuer": "Charles Schwab", "category": "US Total Market", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 2400},
         # US Mid Blend
-        {"symbol": "IJH", "name": "iShares Core S&P Mid-Cap ETF", "issuer": "BlackRock", "category": "US Mid Blend", "aum_usd": 90_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 4.9, "dividend_yield": 0.015, "holdings": 400},
-        {"symbol": "VO", "name": "Vanguard Mid-Cap ETF", "issuer": "Vanguard", "category": "US Mid Blend", "aum_usd": 75_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 5.1, "dividend_yield": 0.015, "holdings": 340},
-        {"symbol": "SCHM", "name": "Schwab U.S. Mid-Cap ETF", "issuer": "Charles Schwab", "category": "US Mid Blend", "aum_usd": 12_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 4.7, "dividend_yield": 0.013, "holdings": 500},
+        {"symbol": "IJH", "name": "iShares Core S&P Mid-Cap ETF", "issuer": "BlackRock", "category": "US Mid Blend", "expenseRatio": 0.0005, "dividend_yield": 0.015, "holdings": 400},
+        {"symbol": "VO", "name": "Vanguard Mid-Cap ETF", "issuer": "Vanguard", "category": "US Mid Blend", "expenseRatio": 0.0004, "dividend_yield": 0.015, "holdings": 340},
+        {"symbol": "SCHM", "name": "Schwab U.S. Mid-Cap ETF", "issuer": "Charles Schwab", "category": "US Mid Blend", "expenseRatio": 0.0004, "dividend_yield": 0.013, "holdings": 500},
         # US Small Blend
-        {"symbol": "IWM", "name": "iShares Russell 2000 ETF", "issuer": "BlackRock", "category": "US Small Blend", "aum_usd": 70_000_000_000, "expenseRatio": 0.0019, "ytd_return_pct": 3.1, "dividend_yield": 0.012, "holdings": 1980},
-        {"symbol": "VB", "name": "Vanguard Small-Cap ETF", "issuer": "Vanguard", "category": "US Small Blend", "aum_usd": 65_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 3.6, "dividend_yield": 0.014, "holdings": 1400},
-        {"symbol": "IJR", "name": "iShares Core S&P Small-Cap ETF", "issuer": "BlackRock", "category": "US Small Blend", "aum_usd": 85_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": 2.4, "dividend_yield": 0.013, "holdings": 600},
-        {"symbol": "SPSM", "name": "SPDR Portfolio S&P 600 Small Cap ETF", "issuer": "State Street", "category": "US Small Blend", "aum_usd": 12_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 2.5, "dividend_yield": 0.013, "holdings": 600},
+        {"symbol": "IWM", "name": "iShares Russell 2000 ETF", "issuer": "BlackRock", "category": "US Small Blend", "expenseRatio": 0.0019, "dividend_yield": 0.012, "holdings": 1980},
+        {"symbol": "VB", "name": "Vanguard Small-Cap ETF", "issuer": "Vanguard", "category": "US Small Blend", "expenseRatio": 0.0005, "dividend_yield": 0.014, "holdings": 1400},
+        {"symbol": "IJR", "name": "iShares Core S&P Small-Cap ETF", "issuer": "BlackRock", "category": "US Small Blend", "expenseRatio": 0.0006, "dividend_yield": 0.013, "holdings": 600},
+        {"symbol": "SPSM", "name": "SPDR Portfolio S&P 600 Small Cap ETF", "issuer": "State Street", "category": "US Small Blend", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 600},
         # US Small Value
-        {"symbol": "VBR", "name": "Vanguard Small-Cap Value ETF", "issuer": "Vanguard", "category": "US Small Value", "aum_usd": 30_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 2.9, "dividend_yield": 0.021, "holdings": 850},
-        {"symbol": "AVUV", "name": "Avantis U.S. Small Cap Value ETF", "issuer": "Avantis", "category": "US Small Value", "aum_usd": 14_000_000_000, "expenseRatio": 0.0025, "ytd_return_pct": 1.8, "dividend_yield": 0.017, "holdings": 750},
+        {"symbol": "VBR", "name": "Vanguard Small-Cap Value ETF", "issuer": "Vanguard", "category": "US Small Value", "expenseRatio": 0.0007, "dividend_yield": 0.021, "holdings": 850},
+        {"symbol": "AVUV", "name": "Avantis U.S. Small Cap Value ETF", "issuer": "Avantis", "category": "US Small Value", "expenseRatio": 0.0025, "dividend_yield": 0.017, "holdings": 750},
         # Emerging Markets
-        {"symbol": "EEM", "name": "iShares MSCI Emerging Markets ETF", "issuer": "BlackRock", "category": "Emerging Markets", "aum_usd": 20_000_000_000, "expenseRatio": 0.0068, "ytd_return_pct": 5.2, "dividend_yield": 0.021, "holdings": 1200},
-        {"symbol": "VWO", "name": "Vanguard FTSE Emerging Markets ETF", "issuer": "Vanguard", "category": "Emerging Markets", "aum_usd": 85_000_000_000, "expenseRatio": 0.0008, "ytd_return_pct": 5.5, "dividend_yield": 0.027, "holdings": 4500},
-        {"symbol": "IEMG", "name": "iShares Core MSCI Emerging Markets ETF", "issuer": "BlackRock", "category": "Emerging Markets", "aum_usd": 80_000_000_000, "expenseRatio": 0.0009, "ytd_return_pct": 5.4, "dividend_yield": 0.025, "holdings": 2500},
-        {"symbol": "SCHE", "name": "Schwab Emerging Markets Equity ETF", "issuer": "Charles Schwab", "category": "Emerging Markets", "aum_usd": 9_000_000_000, "expenseRatio": 0.0011, "ytd_return_pct": 5.3, "dividend_yield": 0.027, "holdings": 1600},
+        {"symbol": "EEM", "name": "iShares MSCI Emerging Markets ETF", "issuer": "BlackRock", "category": "Emerging Markets", "expenseRatio": 0.0068, "dividend_yield": 0.021, "holdings": 1200},
+        {"symbol": "VWO", "name": "Vanguard FTSE Emerging Markets ETF", "issuer": "Vanguard", "category": "Emerging Markets", "expenseRatio": 0.0008, "dividend_yield": 0.027, "holdings": 4500},
+        {"symbol": "IEMG", "name": "iShares Core MSCI Emerging Markets ETF", "issuer": "BlackRock", "category": "Emerging Markets", "expenseRatio": 0.0009, "dividend_yield": 0.025, "holdings": 2500},
+        {"symbol": "SCHE", "name": "Schwab Emerging Markets Equity ETF", "issuer": "Charles Schwab", "category": "Emerging Markets", "expenseRatio": 0.0011, "dividend_yield": 0.027, "holdings": 1600},
         # International Developed
-        {"symbol": "EFA", "name": "iShares MSCI EAFE ETF", "issuer": "BlackRock", "category": "International Developed", "aum_usd": 55_000_000_000, "expenseRatio": 0.0033, "ytd_return_pct": 6.8, "dividend_yield": 0.028, "holdings": 750},
-        {"symbol": "VEA", "name": "Vanguard FTSE Developed Markets ETF", "issuer": "Vanguard", "category": "International Developed", "aum_usd": 140_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 6.9, "dividend_yield": 0.03, "holdings": 4000},
-        {"symbol": "IEFA", "name": "iShares Core MSCI EAFE ETF", "issuer": "BlackRock", "category": "International Developed", "aum_usd": 120_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 6.9, "dividend_yield": 0.028, "holdings": 2900},
-        {"symbol": "SCHF", "name": "Schwab International Equity ETF", "issuer": "Charles Schwab", "category": "International Developed", "aum_usd": 40_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": 6.9, "dividend_yield": 0.028, "holdings": 1500},
+        {"symbol": "EFA", "name": "iShares MSCI EAFE ETF", "issuer": "BlackRock", "category": "International Developed", "expenseRatio": 0.0033, "dividend_yield": 0.028, "holdings": 750},
+        {"symbol": "VEA", "name": "Vanguard FTSE Developed Markets ETF", "issuer": "Vanguard", "category": "International Developed", "expenseRatio": 0.0005, "dividend_yield": 0.03, "holdings": 4000},
+        {"symbol": "IEFA", "name": "iShares Core MSCI EAFE ETF", "issuer": "BlackRock", "category": "International Developed", "expenseRatio": 0.0007, "dividend_yield": 0.028, "holdings": 2900},
+        {"symbol": "SCHF", "name": "Schwab International Equity ETF", "issuer": "Charles Schwab", "category": "International Developed", "expenseRatio": 0.0006, "dividend_yield": 0.028, "holdings": 1500},
         # Commodity Precious Metals
-        {"symbol": "GLD", "name": "SPDR Gold Shares", "issuer": "State Street", "category": "Commodity Precious Metals", "aum_usd": 58_000_000_000, "expenseRatio": 0.004, "ytd_return_pct": 12.4, "dividend_yield": 0.0, "holdings": 1},
-        {"symbol": "IAU", "name": "iShares Gold Trust", "issuer": "BlackRock", "category": "Commodity Precious Metals", "aum_usd": 32_000_000_000, "expenseRatio": 0.0025, "ytd_return_pct": 12.5, "dividend_yield": 0.0, "holdings": 1},
-        {"symbol": "SLV", "name": "iShares Silver Trust", "issuer": "BlackRock", "category": "Commodity Precious Metals", "aum_usd": 13_000_000_000, "expenseRatio": 0.005, "ytd_return_pct": 14.8, "dividend_yield": 0.0, "holdings": 1},
-        {"symbol": "PPLT", "name": "abrdn Physical Platinum Shares ETF", "issuer": "abrdn", "category": "Commodity Precious Metals", "aum_usd": 1_200_000_000, "expenseRatio": 0.006, "ytd_return_pct": 9.1, "dividend_yield": 0.0, "holdings": 1},
+        {"symbol": "GLD", "name": "SPDR Gold Shares", "issuer": "State Street", "category": "Commodity Precious Metals", "expenseRatio": 0.004, "dividend_yield": 0.0, "holdings": 1},
+        {"symbol": "IAU", "name": "iShares Gold Trust", "issuer": "BlackRock", "category": "Commodity Precious Metals", "expenseRatio": 0.0025, "dividend_yield": 0.0, "holdings": 1},
+        {"symbol": "SLV", "name": "iShares Silver Trust", "issuer": "BlackRock", "category": "Commodity Precious Metals", "expenseRatio": 0.005, "dividend_yield": 0.0, "holdings": 1},
+        {"symbol": "PPLT", "name": "abrdn Physical Platinum Shares ETF", "issuer": "abrdn", "category": "Commodity Precious Metals", "expenseRatio": 0.006, "dividend_yield": 0.0, "holdings": 1},
         # Long Government
-        {"symbol": "TLT", "name": "iShares 20+ Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "aum_usd": 55_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": -2.8, "dividend_yield": 0.039, "holdings": 45},
-        {"symbol": "TLH", "name": "iShares 10-20 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "aum_usd": 7_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": -1.9, "dividend_yield": 0.04, "holdings": 30},
-        {"symbol": "VGLT", "name": "Vanguard Long-Term Treasury ETF", "issuer": "Vanguard", "category": "Long Government", "aum_usd": 15_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": -2.6, "dividend_yield": 0.045, "holdings": 90},
-        {"symbol": "EDV", "name": "Vanguard Extended Duration Treasury ETF", "issuer": "Vanguard", "category": "Long Government", "aum_usd": 4_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": -4.1, "dividend_yield": 0.047, "holdings": 80},
-        {"symbol": "GOVT", "name": "iShares U.S. Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "aum_usd": 30_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 1.2, "dividend_yield": 0.041, "holdings": 160},
+        {"symbol": "TLT", "name": "iShares 20+ Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "expenseRatio": 0.0015, "dividend_yield": 0.039, "holdings": 45},
+        {"symbol": "TLH", "name": "iShares 10-20 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "expenseRatio": 0.0015, "dividend_yield": 0.04, "holdings": 30},
+        {"symbol": "VGLT", "name": "Vanguard Long-Term Treasury ETF", "issuer": "Vanguard", "category": "Long Government", "expenseRatio": 0.0004, "dividend_yield": 0.045, "holdings": 90},
+        {"symbol": "EDV", "name": "Vanguard Extended Duration Treasury ETF", "issuer": "Vanguard", "category": "Long Government", "expenseRatio": 0.0006, "dividend_yield": 0.047, "holdings": 80},
+        {"symbol": "GOVT", "name": "iShares U.S. Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "expenseRatio": 0.0005, "dividend_yield": 0.041, "holdings": 160},
         # Intermediate Government
-        {"symbol": "IEF", "name": "iShares 7-10 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Intermediate Government", "aum_usd": 35_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": 0.9, "dividend_yield": 0.04, "holdings": 15},
-        {"symbol": "IEI", "name": "iShares 3-7 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Intermediate Government", "aum_usd": 14_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": 1.6, "dividend_yield": 0.041, "holdings": 15},
-        {"symbol": "VGIT", "name": "Vanguard Intermediate-Term Treasury ETF", "issuer": "Vanguard", "category": "Intermediate Government", "aum_usd": 25_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 1.5, "dividend_yield": 0.04, "holdings": 120},
+        {"symbol": "IEF", "name": "iShares 7-10 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Intermediate Government", "expenseRatio": 0.0015, "dividend_yield": 0.04, "holdings": 15},
+        {"symbol": "IEI", "name": "iShares 3-7 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Intermediate Government", "expenseRatio": 0.0015, "dividend_yield": 0.041, "holdings": 15},
+        {"symbol": "VGIT", "name": "Vanguard Intermediate-Term Treasury ETF", "issuer": "Vanguard", "category": "Intermediate Government", "expenseRatio": 0.0004, "dividend_yield": 0.04, "holdings": 120},
         # Short Government
-        {"symbol": "SHY", "name": "iShares 1-3 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Short Government", "aum_usd": 25_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": 2.4, "dividend_yield": 0.043, "holdings": 40},
-        {"symbol": "VGSH", "name": "Vanguard Short-Term Treasury ETF", "issuer": "Vanguard", "category": "Short Government", "aum_usd": 20_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 2.5, "dividend_yield": 0.043, "holdings": 100},
-        {"symbol": "BIL", "name": "SPDR Bloomberg 1-3 Month T-Bill ETF", "issuer": "State Street", "category": "Short Government", "aum_usd": 40_000_000_000, "expenseRatio": 0.001359, "ytd_return_pct": 2.9, "dividend_yield": 0.046, "holdings": 20},
+        {"symbol": "SHY", "name": "iShares 1-3 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Short Government", "expenseRatio": 0.0015, "dividend_yield": 0.043, "holdings": 40},
+        {"symbol": "VGSH", "name": "Vanguard Short-Term Treasury ETF", "issuer": "Vanguard", "category": "Short Government", "expenseRatio": 0.0004, "dividend_yield": 0.043, "holdings": 100},
+        {"symbol": "BIL", "name": "SPDR Bloomberg 1-3 Month T-Bill ETF", "issuer": "State Street", "category": "Short Government", "expenseRatio": 0.001359, "dividend_yield": 0.046, "holdings": 20},
         # High Yield Bond
-        {"symbol": "HYG", "name": "iShares iBoxx High Yield Corporate Bond ETF", "issuer": "BlackRock", "category": "High Yield Bond", "aum_usd": 16_000_000_000, "expenseRatio": 0.0049, "ytd_return_pct": 3.7, "dividend_yield": 0.058, "holdings": 1200},
-        {"symbol": "JNK", "name": "SPDR Bloomberg High Yield Bond ETF", "issuer": "State Street", "category": "High Yield Bond", "aum_usd": 8_000_000_000, "expenseRatio": 0.004, "ytd_return_pct": 3.6, "dividend_yield": 0.06, "holdings": 1000},
-        {"symbol": "USHY", "name": "iShares Broad USD High Yield Corporate Bond ETF", "issuer": "BlackRock", "category": "High Yield Bond", "aum_usd": 15_000_000_000, "expenseRatio": 0.0022, "ytd_return_pct": 3.8, "dividend_yield": 0.06, "holdings": 1900},
-        {"symbol": "SJNK", "name": "SPDR Bloomberg Short Term High Yield Bond ETF", "issuer": "State Street", "category": "High Yield Bond", "aum_usd": 4_000_000_000, "expenseRatio": 0.004, "ytd_return_pct": 3.4, "dividend_yield": 0.062, "holdings": 800},
+        {"symbol": "HYG", "name": "iShares iBoxx High Yield Corporate Bond ETF", "issuer": "BlackRock", "category": "High Yield Bond", "expenseRatio": 0.0049, "dividend_yield": 0.058, "holdings": 1200},
+        {"symbol": "JNK", "name": "SPDR Bloomberg High Yield Bond ETF", "issuer": "State Street", "category": "High Yield Bond", "expenseRatio": 0.004, "dividend_yield": 0.06, "holdings": 1000},
+        {"symbol": "USHY", "name": "iShares Broad USD High Yield Corporate Bond ETF", "issuer": "BlackRock", "category": "High Yield Bond", "expenseRatio": 0.0022, "dividend_yield": 0.06, "holdings": 1900},
+        {"symbol": "SJNK", "name": "SPDR Bloomberg Short Term High Yield Bond ETF", "issuer": "State Street", "category": "High Yield Bond", "expenseRatio": 0.004, "dividend_yield": 0.062, "holdings": 800},
         # Aggregate Bond
-        {"symbol": "AGG", "name": "iShares Core U.S. Aggregate Bond ETF", "issuer": "BlackRock", "category": "Aggregate Bond", "aum_usd": 110_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 2.1, "dividend_yield": 0.038, "holdings": 12000},
-        {"symbol": "BND", "name": "Vanguard Total Bond Market ETF", "issuer": "Vanguard", "category": "Aggregate Bond", "aum_usd": 130_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 2.0, "dividend_yield": 0.038, "holdings": 11000},
+        {"symbol": "AGG", "name": "iShares Core U.S. Aggregate Bond ETF", "issuer": "BlackRock", "category": "Aggregate Bond", "expenseRatio": 0.0003, "dividend_yield": 0.038, "holdings": 12000},
+        {"symbol": "BND", "name": "Vanguard Total Bond Market ETF", "issuer": "Vanguard", "category": "Aggregate Bond", "expenseRatio": 0.0003, "dividend_yield": 0.038, "holdings": 11000},
         # International Bond
-        {"symbol": "BNDX", "name": "Vanguard Total International Bond ETF", "issuer": "Vanguard", "category": "International Bond", "aum_usd": 60_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 1.4, "dividend_yield": 0.03, "holdings": 8000},
-        {"symbol": "IAGG", "name": "iShares Core International Aggregate Bond ETF", "issuer": "BlackRock", "category": "International Bond", "aum_usd": 5_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 1.3, "dividend_yield": 0.031, "holdings": 4000},
+        {"symbol": "BNDX", "name": "Vanguard Total International Bond ETF", "issuer": "Vanguard", "category": "International Bond", "expenseRatio": 0.0007, "dividend_yield": 0.03, "holdings": 8000},
+        {"symbol": "IAGG", "name": "iShares Core International Aggregate Bond ETF", "issuer": "BlackRock", "category": "International Bond", "expenseRatio": 0.0007, "dividend_yield": 0.031, "holdings": 4000},
         # TIPS
-        {"symbol": "SCHP", "name": "Schwab U.S. TIPS ETF", "issuer": "Charles Schwab", "category": "TIPS", "aum_usd": 14_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 3.2, "dividend_yield": 0.029, "holdings": 50},
-        {"symbol": "TIP", "name": "iShares TIPS Bond ETF", "issuer": "BlackRock", "category": "TIPS", "aum_usd": 20_000_000_000, "expenseRatio": 0.0018, "ytd_return_pct": 3.1, "dividend_yield": 0.032, "holdings": 50},
-        {"symbol": "VTIP", "name": "Vanguard Short-Term Inflation-Protected Securities ETF", "issuer": "Vanguard", "category": "TIPS", "aum_usd": 15_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 2.8, "dividend_yield": 0.03, "holdings": 30},
+        {"symbol": "SCHP", "name": "Schwab U.S. TIPS ETF", "issuer": "Charles Schwab", "category": "TIPS", "expenseRatio": 0.0003, "dividend_yield": 0.029, "holdings": 50},
+        {"symbol": "TIP", "name": "iShares TIPS Bond ETF", "issuer": "BlackRock", "category": "TIPS", "expenseRatio": 0.0018, "dividend_yield": 0.032, "holdings": 50},
+        {"symbol": "VTIP", "name": "Vanguard Short-Term Inflation-Protected Securities ETF", "issuer": "Vanguard", "category": "TIPS", "expenseRatio": 0.0004, "dividend_yield": 0.03, "holdings": 30},
         # Municipal Bond
-        {"symbol": "MUB", "name": "iShares National Muni Bond ETF", "issuer": "BlackRock", "category": "Municipal Bond", "aum_usd": 38_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 1.8, "dividend_yield": 0.028, "holdings": 6000},
-        {"symbol": "VTEB", "name": "Vanguard Tax-Exempt Bond ETF", "issuer": "Vanguard", "category": "Municipal Bond", "aum_usd": 35_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 1.7, "dividend_yield": 0.03, "holdings": 5500},
+        {"symbol": "MUB", "name": "iShares National Muni Bond ETF", "issuer": "BlackRock", "category": "Municipal Bond", "expenseRatio": 0.0007, "dividend_yield": 0.028, "holdings": 6000},
+        {"symbol": "VTEB", "name": "Vanguard Tax-Exempt Bond ETF", "issuer": "Vanguard", "category": "Municipal Bond", "expenseRatio": 0.0005, "dividend_yield": 0.03, "holdings": 5500},
         # Closed-End Fund
-        {"symbol": "ADX", "name": "Adams Diversified Equity Fund", "issuer": "Adams Funds", "category": "Closed-End Fund", "aum_usd": 2_700_000_000, "expenseRatio": 0.0057, "ytd_return_pct": 9.2, "dividend_yield": 0.062, "holdings": 100},
-        {"symbol": "GAB", "name": "Gabelli Equity Trust", "issuer": "GAMCO", "category": "Closed-End Fund", "aum_usd": 1_700_000_000, "expenseRatio": 0.0062, "ytd_return_pct": 7.8, "dividend_yield": 0.09, "holdings": 250},
-        {"symbol": "CET", "name": "Central Securities Corporation", "issuer": "Central Securities", "category": "Closed-End Fund", "aum_usd": 1_400_000_000, "expenseRatio": 0.0071, "ytd_return_pct": 8.1, "dividend_yield": 0.02, "holdings": 70},
-        {"symbol": "RVT", "name": "Royce Value Trust", "issuer": "Royce & Associates", "category": "Closed-End Fund", "aum_usd": 1_800_000_000, "expenseRatio": 0.011, "ytd_return_pct": 6.4, "dividend_yield": 0.08, "holdings": 350},
+        {"symbol": "ADX", "name": "Adams Diversified Equity Fund", "issuer": "Adams Funds", "category": "Closed-End Fund", "expenseRatio": 0.0057, "dividend_yield": 0.062, "holdings": 100},
+        {"symbol": "GAB", "name": "Gabelli Equity Trust", "issuer": "GAMCO", "category": "Closed-End Fund", "expenseRatio": 0.0062, "dividend_yield": 0.09, "holdings": 250},
+        {"symbol": "CET", "name": "Central Securities Corporation", "issuer": "Central Securities", "category": "Closed-End Fund", "expenseRatio": 0.0071, "dividend_yield": 0.02, "holdings": 70},
+        {"symbol": "RVT", "name": "Royce Value Trust", "issuer": "Royce & Associates", "category": "Closed-End Fund", "expenseRatio": 0.011, "dividend_yield": 0.08, "holdings": 350},
     ]
 
 

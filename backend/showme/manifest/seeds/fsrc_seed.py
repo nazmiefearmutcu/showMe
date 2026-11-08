@@ -1,11 +1,12 @@
 """FSRC — Fund Screener.
 
 Filter the fund / ETF reference universe (US equity, international, bond,
-commodity, closed-end) by category, expense ratio and AUM with a server-side
+commodity, closed-end) by category and expense ratio with a server-side
 predicate query. Backend handler is ``FSRCFunction`` in
 ``engine/functions/screen/_funcs.py``: it serves the curated fund reference
 universe and, when live is requested, overlays keyless yfinance last-price
-quotes per row. AUM, expense ratio and YTD are curated reference values.
+quotes per row. Expense ratio and dividend yield are curated reference values;
+AUM and YTD are not served (no provider), so predicates on them are refused.
 """
 from __future__ import annotations
 
@@ -39,9 +40,10 @@ def fsrc() -> FunctionManifest:
         name="Fund Screener",
         category=Category.SCREENING,
         intent=(
-            "Filter the fund and ETF universe by category, expense ratio and AUM with a predicate "
-            "query, returning matching funds with curated reference AUM, expense ratio and YTD, "
-            "and a live last-price overlay when the quote provider answers."
+            "Filter the fund and ETF universe by category and expense ratio with a predicate "
+            "query, returning matching funds with curated reference expense ratio and dividend "
+            "yield, and a live last-price overlay when the quote provider answers. AUM and YTD "
+            "are not served."
         ),
         asset_classes=[AssetClass.ETF],
         inputs=[
@@ -51,8 +53,9 @@ def fsrc() -> FunctionManifest:
                 control=ControlKind.TEXT,
                 required=False,
                 description=(
-                    "Predicate over fund columns, e.g. expenseRatio < 0.01 AND aum_usd > 10000000000 "
-                    "or category = \"Long Government\"."
+                    "Predicate over fund columns, e.g. expenseRatio < 0.01 AND dividend_yield > 0.03 "
+                    "or category = \"Long Government\". Predicates on aum_usd or ytd_return_pct are "
+                    "refused (not served)."
                 ),
             ),
             InputSpec(
@@ -89,7 +92,7 @@ def fsrc() -> FunctionManifest:
             ),
         ],
         defaults={
-            "query": "expenseRatio < 0.01 AND aum_usd > 10000000000",
+            "query": "expenseRatio < 0.01",
             "limit": 50,
             "live": True,
         },
@@ -116,9 +119,7 @@ def fsrc() -> FunctionManifest:
                 ColumnSpec(key="name", label="Fund", kind="text"),
                 ColumnSpec(key="issuer", label="Issuer", kind="text"),
                 ColumnSpec(key="category", label="Category", kind="tag"),
-                ColumnSpec(key="aum_usd", label="AUM (ref)", kind="currency", format="si"),
                 ColumnSpec(key="expenseRatio", label="Exp%", kind="percent", format="%.3f"),
-                ColumnSpec(key="ytd_return_pct", label="YTD% (ref)", kind="percent", format="%.2f"),
                 ColumnSpec(key="last", label="Last", kind="currency", format="%.2f"),
                 ColumnSpec(key="change_pct", label="Change %", kind="percent", format="%.2f"),
                 ColumnSpec(key="dividend_yield", label="Div%", kind="percent", format="%.2f"),
@@ -135,23 +136,25 @@ def fsrc() -> FunctionManifest:
         ),
         methodology=(
             "FSRC filters a curated fund and ETF reference universe with the predicate query. "
-            "AUM, expense ratio, YTD and dividend yield are curated reference values with no as-of "
-            "date; they are labelled aum_state / ytd_state reference on every row and are not "
-            "refreshed from a provider. When live is requested, each row gets a yfinance last price "
-            "and change percent (quote_state live) where the provider answers; rows without a quote "
-            "keep quote_state reference and no price. Predicates are applied after the overlay. "
-            "A query that matches no row returns status empty with next_actions, never filler rows."
+            "Expense ratio and dividend yield are curated reference values with no provider as-of "
+            "date. AUM and YTD are not served: no keyless provider supplies them, the earlier curated "
+            "figures were stale, so aum_usd and ytd_return_pct are null with aum_state / ytd_state "
+            "unavailable, and a predicate on either returns status provider_unavailable with no rows. "
+            "When live is requested, each row gets a yfinance last price and change percent "
+            "(quote_state live) where the provider answers; rows without a quote keep quote_state "
+            "reference and no price. Predicates are applied after the overlay. A query that matches "
+            "no row returns status empty with next_actions, never filler rows."
         ),
         field_dict={
             "rows[].symbol": FieldDef(description="Fund or ETF ticker.", source="curated"),
             "rows[].name": FieldDef(description="Fund display name.", source="curated"),
             "rows[].issuer": FieldDef(description="Fund sponsor.", source="curated"),
             "rows[].category": FieldDef(description="Fund exposure bucket.", source="curated"),
-            "rows[].aum_usd": FieldDef(unit="USD", description="Curated reference AUM; no as-of date.", source="curated_reference"),
-            "rows[].aum_state": FieldDef(description="\"reference\" for curated AUM.", source="derived"),
-            "rows[].expenseRatio": FieldDef(unit="fraction", description="Annual expense ratio as a decimal (0.0009 = 0.09%).", source="curated_reference"),
-            "rows[].ytd_return_pct": FieldDef(unit="%", description="Curated reference year-to-date return; no as-of date.", source="curated_reference"),
-            "rows[].ytd_state": FieldDef(description="\"reference\" for curated YTD.", source="derived"),
+            "rows[].aum_usd": FieldDef(unit="USD", description="Not served: always null (no provider supplies fund AUM).", source="derived"),
+            "rows[].aum_state": FieldDef(description="\"unavailable\" — aum_usd is not served.", source="derived"),
+            "rows[].expenseRatio": FieldDef(unit="fraction", description="Curated reference annual expense ratio as a decimal (0.0009 = 0.09%); no as-of date.", source="curated_reference"),
+            "rows[].ytd_return_pct": FieldDef(unit="%", description="Not served: always null (no provider supplies fund YTD returns).", source="derived"),
+            "rows[].ytd_state": FieldDef(description="\"unavailable\" — ytd_return_pct is not served.", source="derived"),
             "rows[].dividend_yield": FieldDef(unit="fraction", description="Curated reference dividend yield as a decimal.", source="curated_reference"),
             "rows[].last": FieldDef(unit="USD", description="Latest traded price when the live overlay answers.", source="yfinance"),
             "rows[].change_pct": FieldDef(unit="%", description="Percent move versus previous close when the live overlay answers.", source="yfinance"),
@@ -177,14 +180,22 @@ def fsrc() -> FunctionManifest:
                 assertions=["all_rows_expense_ratio_at_most_0_001"],
             ),
             SemanticTest(
-                name="fsrc_curated_aum_and_ytd_labelled_reference",
-                description="Every returned row carries aum_state and ytd_state reference, and the payload warns they are curated.",
-                inputs={},
+                name="fsrc_aum_and_ytd_not_served",
+                description="Every returned row has aum_usd and ytd_return_pct null with aum_state and ytd_state unavailable, and the payload warns AUM and YTD are not served.",
+                inputs={"query": "expenseRatio < 0.01"},
                 assertions=[
-                    "rows_aum_state_reference",
-                    "rows_ytd_state_reference",
-                    "warnings_mention_curated_reference",
+                    "rows_aum_usd_null",
+                    "rows_ytd_return_pct_null",
+                    "rows_aum_state_unavailable",
+                    "rows_ytd_state_unavailable",
+                    "warnings_mention_not_served",
                 ],
+            ),
+            SemanticTest(
+                name="fsrc_aum_predicate_refused",
+                description="A predicate on aum_usd returns status provider_unavailable with rows=[] instead of matching against nothing.",
+                inputs={"query": "aum_usd > 10000000000"},
+                assertions=["status_equals_provider_unavailable", "rows_is_empty_array", "next_actions_present"],
             ),
             SemanticTest(
                 name="fsrc_no_match_returns_empty_not_filler",

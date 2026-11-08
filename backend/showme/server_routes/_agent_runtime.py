@@ -347,7 +347,7 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code == "CSRC":
         params.update({"query": 'sector = "Energy"', "universe": _csrc_default_universe()})
     elif code == "FSRC":
-        params.update({"query": "expenseRatio < 0.01 AND aum_usd > 10000000000", "universe": ["SPY", "VOO", "IVV", "QQQ", "VTI", "IWM", "EEM", "GLD", "TLT", "HYG"]})
+        params.update({"query": "expenseRatio < 0.01", "universe": ["SPY", "VOO", "IVV", "QQQ", "VTI", "IWM", "EEM", "GLD", "TLT", "HYG"]})
     elif code == "SRCH":
         # Full reference-curve universe (session-17 expansion: complete US
         # nominal curve + TIPS 5/10/30 + foreign 2Y & 10Y). The pane sends its
