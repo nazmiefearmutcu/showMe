@@ -150,8 +150,8 @@ DAPI_CURATED_ROUTES: list[dict[str, str]] = [
 
 
 def _resolve_routes(provider: Any) -> list[dict[str, Any]] | None:
-    """If the sidecar wired in a live ``deps.dapi_route_provider`` callable
-    or list, prefer that over the curated table. The provider must yield
+    """If a live ``deps.dapi_route_provider`` callable or list is assigned
+    (none is in this build), prefer that over the curated table. The provider must yield
     rows in the same shape as ``DAPI_CURATED_ROUTES``."""
     if provider is None:
         return None

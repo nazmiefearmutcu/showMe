@@ -1,8 +1,9 @@
 """DAPI — ShowMe sidecar route inspector.
 
 Surfaces the mounted FastAPI routes either via the live router-introspection
-callable (when the sidecar publishes ``deps.dapi_route_provider``) or from
-the curated route manifest baked into the engine. Read-only.
+callable (only when one is assigned to ``deps.dapi_route_provider``; none is
+assigned in this build) or from the curated route manifest baked into the
+engine. Read-only.
 """
 from __future__ import annotations
 
