@@ -81,3 +81,29 @@ def test_forecast_month_end_clamps_to_last_day_of_month(monkeypatch) -> None:
     result = _run(horizon="6M")
     dates = [p["date"] for p in result.data["forecast"]]
     assert dates[:3] == ["2026-02-28", "2026-03-31", "2026-04-30"]
+
+
+# CPF#5 — show_actual_history=false must not break the forecast. The forecast is
+# built from the actual leg, so the leg is always fetched; the flag only hides it
+# from rows and the actual series.
+def test_hiding_actual_history_still_fetches_and_builds_the_forecast(monkeypatch) -> None:
+    calls: list[str] = []
+    _patch_history(monkeypatch, _history(), calls)
+    result = _run(horizon="1Y", show_actual_history=False)
+    assert calls == ["CL=F"], "the actual leg must be fetched even when it is not displayed"
+    assert result.data["status"] == "ok"
+    assert len(result.data["forecast"]) == 12
+    assert result.data["cards"]["latest_actual"] is not None
+    assert all(row["kind"] == "forecast" for row in result.data["rows"])
+    assert result.data["series"][0]["points"] == []
+
+
+def test_outage_reason_reports_the_real_failure_not_a_skipped_fetch(monkeypatch) -> None:
+    async def _boom(self, symbol, timeout):  # noqa: ARG001
+        raise RuntimeError("HTTP 503")
+
+    monkeypatch.setattr(CPFFunction, "_yahoo_history", _boom)
+    result = _run(horizon="1Y", show_actual_history=False)
+    assert result.data["status"] == "provider_unavailable"
+    assert "CL=F" in result.data["reason"]
+    assert "HTTP 503" in result.data["reason"]

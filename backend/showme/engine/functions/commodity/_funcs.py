@@ -886,31 +886,32 @@ class CPFFunction(BaseFunction):
         latest_actual: float | None = None
         actual_as_of: str | None = None
         futures = meta["futures"]
-        if show_actual:
+        # CPF#5: the actual leg is always fetched because the forecast is built
+        # from it. show_actual_history only decides whether it is displayed.
+        try:
+            actual_series = await self._yahoo_history(futures, timeout)
+        except Exception as exc:  # noqa: BLE001
+            provider_errors.append(f"{futures} yahoo: {exc}")
+        if not actual_series and self.deps.yfinance:
             try:
-                actual_series = await self._yahoo_history(futures, timeout)
+                _row, hist, snap_errors = await _contract_snapshot(
+                    self.deps.yfinance,
+                    futures,
+                    days=370,
+                    timeout=timeout,
+                    include_history=True,
+                )
+                provider_errors.extend(snap_errors)
+                for h in hist:
+                    close = _finite(h.get("close"))
+                    if close is None:
+                        continue
+                    actual_series.append({"date": h.get("date"), "value": close})
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"{futures} yahoo: {exc}")
-            if not actual_series and self.deps.yfinance:
-                try:
-                    _row, hist, snap_errors = await _contract_snapshot(
-                        self.deps.yfinance,
-                        futures,
-                        days=370,
-                        timeout=timeout,
-                        include_history=True,
-                    )
-                    provider_errors.extend(snap_errors)
-                    for h in hist:
-                        close = _finite(h.get("close"))
-                        if close is None:
-                            continue
-                        actual_series.append({"date": h.get("date"), "value": close})
-                except Exception as exc:  # noqa: BLE001
-                    provider_errors.append(f"{futures} adapter: {exc}")
-            if actual_series:
-                latest_actual = _finite(actual_series[-1].get("value"))
-                actual_as_of = actual_series[-1].get("date")
+                provider_errors.append(f"{futures} adapter: {exc}")
+        if actual_series:
+            latest_actual = _finite(actual_series[-1].get("value"))
+            actual_as_of = actual_series[-1].get("date")
 
         # --- FORECAST leg: forward projection from the live actual series ---
         # Built by extrapolating the trailing trend (log-linear CAGR over the
@@ -927,8 +928,15 @@ class CPFFunction(BaseFunction):
             except Exception as exc:  # noqa: BLE001
                 provider_errors.append(f"forecast: {exc}")
 
-        # Genuine outage on the live source -> honest provider_unavailable.
+        # Genuine outage on the live source -> honest provider_unavailable. The
+        # reason carries the errors that were really raised, never a guess.
         if not actual_series and not forecast_series:
+            outage_reason = (
+                f"No live price points were returned for {futures}, "
+                "the actual leg the forecast is built from."
+            )
+            if provider_errors:
+                outage_reason += " Errors: " + "; ".join(provider_errors)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -943,7 +951,7 @@ class CPFFunction(BaseFunction):
                     "rows": [],
                     "series": [],
                     "cards": {},
-                    "reason": "The live Yahoo futures feed for the actual price leg was unreachable.",
+                    "reason": outage_reason,
                     "methodology": _cpf_methodology(),
                     "field_dictionary": _cpf_field_dictionary(),
                     "next_actions": [
@@ -972,8 +980,11 @@ class CPFFunction(BaseFunction):
 
         # Build the flat table rows the manifest table_schema expects:
         # {date, kind, value, vintage}.
+        # The actual series is shown only when show_actual_history is on; it is
+        # always returned under ``actual`` because the forecast is built from it.
+        displayed_actual = actual_series if show_actual else []
         rows: list[dict[str, Any]] = []
-        for pt in actual_series:
+        for pt in displayed_actual:
             rows.append({
                 "date": pt.get("date"),
                 "kind": "actual",
@@ -1011,7 +1022,7 @@ class CPFFunction(BaseFunction):
                 "data_mode": data_mode,
                 "rows": rows,
                 "series": [
-                    {"name": "actual", "kind": "line", "points": actual_series},
+                    {"name": "actual", "kind": "line", "points": displayed_actual},
                     {"name": "forecast", "kind": "line", "points": forecast_series},
                 ],
                 "cards": {
@@ -1116,7 +1127,7 @@ def _cpf_methodology() -> str:
 def _cpf_field_dictionary() -> dict[str, str]:
     return {
         "series_id": "Benchmark commodity series identifier.",
-        "actual": "Array of {date, value} live historical futures observations from Yahoo.",
+        "actual": "Array of {date, value} live historical futures observations from Yahoo. Always returned, since the forecast is built from it; rows and series show it only when show_actual_history is true.",
         "forecast": "Array of {date, value} forward trend-extrapolated projections.",
         "forecast_vintage": "Last realized actual date the forecast is anchored to (iso8601).",
         "forecast_horizon": "User-selected forward window (6M/1Y/2Y/5Y).",
