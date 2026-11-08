@@ -131,6 +131,11 @@ def _market_cap_warnings(
             + ", ".join(proxied)
             + "; not a market capitalization"
         ]
+    if mcap_data_state == "user_supplied":
+        return [
+            "market caps include user-supplied overrides (market_caps input); "
+            "they are not provider market data"
+        ]
     return []
 
 
@@ -578,7 +583,8 @@ class BLAKFunction(BaseFunction):
                     ),
                     "view_active": "Whether the symbol participates in at least one submitted view row.",
                     "market_cap_data_state": (
-                        "'real' when every requested symbol has a market value (provider or user override), "
+                        "'real' when every requested symbol has a provider market value, "
+                        "'user_supplied' when the market values are caller overrides (not provider data), "
                         "'proxy' when every symbol has a value but an ETF or fund uses its totalAssets (AUM) as the "
                         "market-value proxy, 'partial' or 'approximate' when the equal-weight fallback fires."
                     ),
@@ -769,7 +775,8 @@ async def _resolve_market_caps_detail(
     """Resolve real market caps for the universe.
 
     Returns ``(symbol → mcap, data_state, extra_sources)`` where data_state is
-    ``"real"`` when every symbol resolved to a market cap, ``"proxy"`` when
+    ``"user_supplied"`` when any resolved value is a caller override (provenance
+    ``user_override``), ``"real"`` when every symbol resolved from a provider, ``"proxy"`` when
     every symbol resolved but at least one value is ETF / fund AUM (a proxy,
     not a market cap), ``"partial"`` when only some symbols resolved and
     ``"approximate"`` when none did (the equal-weight fallback fires).
@@ -778,17 +785,26 @@ async def _resolve_market_caps_detail(
     """
     lookup: dict[str, float] = {}
     extra_sources: list[str] = []
-    overrides = overrides or {}
+    # BLAK#5-RQ: the pane uppercases the override keys, but an API caller may
+    # send lower-case symbols. Overrides match case-insensitively, so a
+    # user-typed cap is never silently dropped.
+    override_map = {str(k).strip().upper(): v for k, v in (overrides or {}).items()}
+    user_supplied: list[str] = []
     for sym in symbols:
-        if sym in overrides:
+        key = str(sym).strip().upper()
+        if key in override_map:
             try:
-                value = float(overrides[sym])
+                value = float(override_map[key])
             except (TypeError, ValueError):
                 value = 0.0
             if value > 0:
                 lookup[sym] = value
+                user_supplied.append(sym)
+    if user_supplied:
+        # User-typed values are provenance "user_override", never provider data.
+        extra_sources.append("user_override")
     if lookup and len(lookup) == len(symbols):
-        return lookup, "real", extra_sources, []
+        return lookup, "user_supplied", extra_sources, []
 
     async def _resolve(sym: str) -> tuple[str, float, str | None]:
         if sym in lookup:
@@ -814,8 +830,12 @@ async def _resolve_market_caps_detail(
     resolved = sum(1 for s in symbols if lookup.get(s, 0.0) > 0)
     if symbols and resolved == len(symbols):
         # Fund AUM (ETF / mutual-fund totalAssets) is a proxy for market value,
-        # never a market cap, so it must not carry the "real" label.
-        data_state = "proxy" if proxied else "real"
+        # never a market cap, so it must not carry the "real" label. A
+        # user-typed value is not provider data either (BLAK#5-RQ).
+        if user_supplied:
+            data_state = "user_supplied"
+        else:
+            data_state = "proxy" if proxied else "real"
     elif resolved:
         data_state = "partial"
     else:
