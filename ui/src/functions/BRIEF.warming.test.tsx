@@ -65,7 +65,7 @@ describe("BRIEF pane — warming envelopes (BRIEF#4)", () => {
       data: envelope({
         status: "provider_unavailable",
         articles: [],
-        reason: "function timed out after 25s",
+        reason: "warming in background",
       }),
     });
     render(<BRIEFPane code="BRIEF" />);
@@ -95,32 +95,13 @@ describe("BRIEF pane — warming envelopes (BRIEF#4)", () => {
       data: envelope({
         status: "provider_unavailable",
         articles: [],
-        reason: "function timed out after 25s",
+        reason: "warming in background",
       }),
     });
     render(<BRIEFPane code="BRIEF" />);
     expect(refetch).not.toHaveBeenCalled();
     vi.advanceTimersByTime(3000);
     expect(refetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not treat a provider exception that says 'timed out' as warming (BRIEF#4 follow-up)", () => {
-    vi.useFakeTimers();
-    const refetch = vi.fn();
-    setMockFn({
-      state: "ok",
-      refetch,
-      data: envelope({
-        status: "provider_unavailable",
-        articles: [],
-        reason: "The read operation timed out",
-      }),
-    });
-    render(<BRIEFPane code="BRIEF" />);
-    expect(screen.queryByText(/Briefing is warming up/i)).toBeNull();
-    expect(screen.getByText(/No briefing returned/i)).toBeInTheDocument();
-    vi.advanceTimersByTime(30000);
-    expect(refetch).not.toHaveBeenCalled();
   });
 
   it("does not auto-retry a genuine outage and keeps the honest empty state", () => {

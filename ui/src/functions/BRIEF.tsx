@@ -99,12 +99,13 @@ const MAX_WARM_RETRIES = 6;
  * running in the background and is cached for the next call, so it is shown as
  * warming. Matched as a whole string: a provider error that merely contains the
  * words "timed out" (e.g. an httpx ReadTimeout) is a real failure, not warming
- * (BRIEF#4 follow-up).
+ * (BRIEF#4 follow-up). An explicit "warming" reason is still honoured.
  */
 const ROUTE_TIMEOUT_REASON = /^function timed out after \d+(\.\d+)?s$/;
 
 function isWarmingPayload(status: string | undefined, reason: string | undefined): boolean {
-  return status === "provider_unavailable" && ROUTE_TIMEOUT_REASON.test((reason ?? "").trim());
+  const text = (reason ?? "").trim();
+  return status === "provider_unavailable" && (/warming/i.test(text) || ROUTE_TIMEOUT_REASON.test(text));
 }
 
 export function BRIEFPane({ code }: FunctionPaneProps) {

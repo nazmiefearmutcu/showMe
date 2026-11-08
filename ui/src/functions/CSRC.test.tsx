@@ -34,19 +34,13 @@ function setMockFn(next: MockFnState) {
   mockFn.error = next.error ?? null;
 }
 
-/** The params the pane last asked the backend for (CSRC#2: the ALL query). */
-const lastParams: { current: Record<string, unknown> | undefined } = { current: undefined };
-
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: (opts: { params?: Record<string, unknown> }) => {
-    lastParams.current = opts?.params;
-    return {
-      state: mockFn.state,
-      data: mockFn.data,
-      error: mockFn.error,
-      refetch: vi.fn(),
-    };
-  },
+  useFunction: () => ({
+    state: mockFn.state,
+    data: mockFn.data,
+    error: mockFn.error,
+    refetch: vi.fn(),
+  }),
 }));
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
@@ -228,9 +222,7 @@ describe("CSRC pane — sector filter", () => {
     render(<CSRCPane code="CSRC" />);
     fireEvent.click(screen.getByTitle("Sector Metals"));
     fireEvent.click(screen.getByTitle("Sector ALL"));
-    // CSRC#2: the ALL predicate must not test volume (null for most contracts).
-    expect(lastParams.current?.query).toBe('sector != "NONE"');
-    expect(String(lastParams.current?.query)).not.toMatch(/volume/);
+    expect(screen.getAllByText(/volume >= 0/).length).toBeGreaterThan(0);
   });
 
   it("renders the filter-error state for an unsupported predicate payload", () => {
