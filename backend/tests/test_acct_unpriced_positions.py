@@ -100,8 +100,10 @@ def test_hanging_symbol_resolver_is_bounded_by_mark_timeout(monkeypatch: pytest.
             return None
 
     monkeypatch.setattr(acct_mod, "PortfolioState", _Book)
-    monkeypatch.setattr(acct_mod, "MARK_TIMEOUT_FLOOR_S", 0.05)
-    monkeypatch.setattr(acct_mod, "MARK_TIMEOUT_CEIL_S", 0.05)
+    # raising=False: the pre-fix module has no MARK_TIMEOUT_* constants, so the
+    # test must fail on the unbounded resolver (elapsed time), not on a missing name.
+    monkeypatch.setattr(acct_mod, "MARK_TIMEOUT_FLOOR_S", 0.05, raising=False)
+    monkeypatch.setattr(acct_mod, "MARK_TIMEOUT_CEIL_S", 0.05, raising=False)
     fn = acct_mod.ACCTFunction(FunctionDeps(
         yfinance=_Yf({"TLT": 81.92, "SPY": 735.29}),
         symbol_registry=_HangingForTLT(),
