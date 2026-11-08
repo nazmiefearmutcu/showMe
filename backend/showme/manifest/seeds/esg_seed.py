@@ -55,7 +55,11 @@ def esg() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred provider mode; the chain may downgrade and report it.",
+                description=(
+                    "Accepted for compatibility only: the ESG handler reads the symbol and not this "
+                    "input, so it has no effect on the source chain (Yahoo first, then the labelled "
+                    "EDGAR proxy)."
+                ),
                 options=[
                     DataMode.DELAYED_REFERENCE.value,
                     DataMode.CACHED_SNAPSHOT.value,
@@ -105,7 +109,8 @@ def esg() -> FunctionManifest:
         methodology=(
             "Primary: Yahoo Finance sustainability table (Sustainalytics-derived ESG risk scores: "
             "total, E, S, G and highest controversy 1-5; lower total = lower unmanaged ESG risk), "
-            "keyless, delayed reference, source_mode=live_yfinance. Fallback when Yahoo publishes "
+            "keyless, delayed reference (the handler tags these rows source_mode=live_yfinance, but "
+            "they are not real-time). Fallback when Yahoo publishes "
             "no sustainability table for the ticker: a DERIVED SEC EDGAR proxy counting "
             "environmental, social and governance phrases in recent 10-K filings via the keyless "
             "EDGAR full-text search (source_mode=sec_text_proxy). Proxy values are filing-mention "
