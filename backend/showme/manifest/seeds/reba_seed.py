@@ -90,7 +90,10 @@ def reba() -> FunctionManifest:
                 label="Min trade size",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Skip trades whose notional is below this amount (live and model previews).",
+                description=(
+                    "Live preview only: skip trades whose notional is below this amount. "
+                    "Model mode sizes no orders."
+                ),
                 min=0,
                 max=100000,
                 step=10,
@@ -133,7 +136,7 @@ def reba() -> FunctionManifest:
         # REBA#5: no cached-snapshot path exists in the handler, so none is advertised.
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=["ccxt_broker", "yfinance"],
+            fallbacks=["yfinance"],
             acceptable_modes=[
                 DataMode.LIVE_EXCHANGE,
                 DataMode.NOT_CONFIGURED,
@@ -185,7 +188,7 @@ def reba() -> FunctionManifest:
             "REBA computes the per-symbol weight drift = current_weight − target_weight. "
             "Current weights come from the local portfolio book (positions valued at live "
             "marks, plus USD cash in the NAV); credential_id is not applied yet. Symbols with "
-            "|drift| < min_drift_pct are suppressed (suppressed_reason='within_tolerance'). "
+            "|drift| < min_drift_pct produce no row. "
             "Remaining trades are sized as notional = target_weight × NAV − current_value, "
             "and quantity = notional / last_price on the live path. lot_rounding=whole floors "
             "equity and ETF quantities to whole shares. Trades below min_trade_size are "

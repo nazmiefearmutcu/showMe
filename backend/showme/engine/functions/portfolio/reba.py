@@ -195,8 +195,16 @@ class REBAFunction(BaseFunction):
                 metadata={"live": True, "empty": True},
                 warnings=["REBA: live portfolio is empty — no order preview."],
             )
-        if cash_cap:
-            total = min(total, float(cash_cap))
+        # REBA#4: max_notional is not a NAV cap. Live weights and targets use the
+        # real NAV, so a client-supplied capital (the UI sends a default when the
+        # field is blank) cannot shrink the account the orders are sized against.
+        # A cap that would have bound is named in the warnings instead.
+        cap = _positive_float(cash_cap)
+        if cap is not None and cap < total:
+            notes.append(
+                f"REBA: max_notional {cap:,.2f} is below the live NAV of {total:,.2f} and is "
+                "not applied; live targets use the full NAV. max_notional only sizes the model path."
+            )
         cur_weights = {s: v / total for s, v in cur_value.items()}
         cash_weight = cash_usd / total
         warnings: list[str] = list(notes)
