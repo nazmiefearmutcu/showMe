@@ -59,9 +59,11 @@ interface FSRCRow {
   quote_state?: string;
   aum_state?: string;
   ytd_state?: string;
+  aum_as_of?: string;
+  ytd_as_of?: string;
 }
 
-/** Small marker for curated reference values (AUM / YTD have no as-of date). */
+/** Small marker for curated reference values (AUM / YTD are not provider-dated). */
 function RefMark({ title }: { title: string }) {
   return (
     <span
@@ -269,7 +271,9 @@ export function FSRCPane({ code }: FunctionPaneProps) {
               {formatCurrency(r.aum_usd, { compact: true })}
             </span>
             {r.aum_state === "reference" ? (
-              <RefMark title="Curated reference AUM: no as-of date, not refreshed from a provider" />
+              <RefMark
+                title={`Curated reference AUM (table verified ${r.aum_as_of ?? "date unknown"}): not refreshed from a provider`}
+              />
             ) : null}
           </>
         ),
@@ -305,7 +309,9 @@ export function FSRCPane({ code }: FunctionPaneProps) {
                 {formatPercent(r.ytd_return_pct, { signed: true })}
               </span>
               {r.ytd_state === "reference" ? (
-                <RefMark title="Curated reference YTD: no as-of date, not refreshed from a provider" />
+                <RefMark
+                  title={`Curated reference YTD (table verified ${r.ytd_as_of ?? "date unknown"}): not refreshed from a provider`}
+                />
               ) : null}
             </>
           ),
