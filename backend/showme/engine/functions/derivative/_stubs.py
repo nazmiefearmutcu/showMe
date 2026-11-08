@@ -854,11 +854,16 @@ def _ivol_as_of(*row_sets: list[dict[str, Any]]) -> str | None:
     for rows in row_sets:
         for row in rows:
             raw = row.get("lastTradeDate")
-            if raw is None:
+            # IVOL#4-RQ: a missing trade time (None, NaN or pd.NaT) carries no stamp.
+            # NaT is a datetime subclass and compares False with ">", so it must be
+            # dropped here or it pins the as-of to the string 'NaT'.
+            if raw is None or raw != raw:
                 continue
             try:
                 ts = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
             except (TypeError, ValueError):
+                continue
+            if ts is None or ts != ts:
                 continue
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
