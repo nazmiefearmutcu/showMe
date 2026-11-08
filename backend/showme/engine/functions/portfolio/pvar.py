@@ -194,9 +194,20 @@ class PVARFunction(BaseFunction):
             warnings.append("live_risk=false: returns are simulated, not market data.")
         # Build current weights from positions × last close
         notional_map = {}
+        cost_basis_fallback: list[str] = []
         for p in eligible:
-            px = last_map.get(p.instrument.symbol) or p.avg_cost
+            px = last_map.get(p.instrument.symbol)
+            if not px:
+                # PVAR#6: without a live close the notional (and so the weight)
+                # is cost-basis. Disclose it rather than present it as market value.
+                px = p.avg_cost
+                cost_basis_fallback.append(p.instrument.symbol)
             notional_map[p.instrument.symbol] = p.quantity * px
+        if cost_basis_fallback:
+            warnings.append(
+                "PVAR: no live close for " + ", ".join(cost_basis_fallback)
+                + "; their notional and weight use avg cost, not market value."
+            )
         total = sum(abs(notional_map.get(s, 0.0)) for s in rets_df.columns) or 1.0
         weights = {s: notional_map.get(s, 0.0) / total for s in rets_df.columns}
         w_vec = np.array([weights[s] for s in rets_df.columns])
@@ -332,6 +343,7 @@ class PVARFunction(BaseFunction):
                 # subset VaR (from a cap or a failed download) is visible at a glance.
                 "positions_eligible": len(eligible_book),
                 "excluded_symbols": excluded_symbols,
+                "cost_basis_fallback_symbols": cost_basis_fallback,
                 "coverage_pct": round(len(rets_df.columns) / len(eligible_book), 4) if eligible_book else None,
                 "max_positions": max_positions,
                 "rows": rows,
@@ -374,6 +386,7 @@ class PVARFunction(BaseFunction):
                     "coverage_pct": "Share of the FULL eligible book analysed (max_positions cap and failed history downloads both reduce it; 1.0 = full book covered).",
                     "positions_eligible": "Eligible positions in the full book before the max_positions cap.",
                     "excluded_symbols": "Eligible positions dropped by the max_positions cap (not in VaR/ES).",
+                    "cost_basis_fallback_symbols": "Positions whose notional/weight used avg cost because no live close was available.",
                 },
             },
             sources=["yfinance"] if live else ["portfolio_state", "risk_model"],

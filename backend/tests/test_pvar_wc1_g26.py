@@ -152,3 +152,21 @@ def test_legacy_daily_var_fields_share_the_headline_sign(monkeypatch) -> None:
     # Red today: the legacy fields are the negated parametric VaR.
     assert d["portfolio_daily_var_dollar"] == pytest.approx(d["parametric_var_dollar"]), d["portfolio_daily_var_dollar"]
     assert d["portfolio_daily_var_pct"] == pytest.approx(d["parametric_var_dollar"] / d["portfolio_total_notional"])
+
+
+# ── PVAR#6: a cost-basis notional must be disclosed ───────────────────────
+
+
+def test_missing_live_close_falls_back_to_cost_with_a_warning(monkeypatch) -> None:
+    def _no_close_for_msft(symbol, days, timeout):
+        series, last = _fake_download(symbol, days, timeout)
+        return series, (None if symbol == "MSFT" else last)
+
+    monkeypatch.setattr(pvar_mod, "PortfolioState", _Book)
+    monkeypatch.setattr(pvar_mod, "_download_returns", _no_close_for_msft)
+    res = _run(pvar_mod.PVARFunction().execute(method="parametric", confidence=0.99))
+    d = res.data
+    assert d["status"] == "ok", d.get("reason")
+    # Red today: weights use MSFT avg_cost silently (no warning, no field).
+    assert d.get("cost_basis_fallback_symbols") == ["MSFT"], d.get("cost_basis_fallback_symbols")
+    assert any("MSFT" in w and "cost" in w.lower() for w in res.warnings), res.warnings
