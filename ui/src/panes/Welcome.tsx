@@ -120,6 +120,10 @@ interface BriefItem {
   tag: string;
   tone: "positive" | "negative" | "neutral" | "warn";
   text: string;
+  /** Publisher that reported the headline; every brief line names its source. */
+  source?: string;
+  /** Article link (http/https only). */
+  url?: string;
 }
 
 /**
@@ -234,24 +238,6 @@ const MARKET_STRIP_QUOTE_SYMBOLS = MARKET_STRIP_SEED.filter((t) => !!t.quoteSymb
  */
 const DEFAULT_WATCHLIST: WatchRow[] = [];
 
-const BRIEF_ITEMS: BriefItem[] = [
-  {
-    tag: "WATCH",
-    tone: "positive",
-    text: "NVDA breaking $940 puts $1T of derivatives notional in the money.",
-  },
-  {
-    tag: "RISK",
-    tone: "negative",
-    text: "JPY carry rebuild keeps USD/JPY 158 unwind risk back on the desk.",
-  },
-  {
-    tag: "EVENT",
-    tone: "warn",
-    text: "10Y auction at 17:00 UTC; last 5 tailed by 1.2bps average.",
-  },
-];
-
 /** BRIEF function payload (see backend/showme/engine/functions/news/brief.py). */
 interface BriefArticle {
   title?: string;
@@ -270,8 +256,22 @@ interface BriefArticle {
 
 interface BriefResponse {
   status?: string;
+  reason?: string | null;
   articles?: BriefArticle[];
   rows?: BriefArticle[];
+}
+
+/** Brief states that are a real answer, not a transient miss: never retried. */
+const BRIEF_ANSWERED_STATES = new Set(["needs_input", "empty"]);
+
+function safeBriefHref(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -366,7 +366,9 @@ export function buildBriefItems(
       if (!text) return null;
       const sym = String(a.matched_symbol ?? a.symbol ?? "").toUpperCase();
       const tag = !sym || sym === "MACRO" ? "MARKET" : sym;
-      return { tag, tone: briefArticleTone(a), text } as BriefItem;
+      const source = (a.publisher ?? a.source ?? "").trim() || undefined;
+      const url = safeBriefHref(a.url ?? a.link);
+      return { tag, tone: briefArticleTone(a), text, source, url } as BriefItem;
     })
     .filter((item): item is BriefItem => !!item)
     .slice(0, limit);
@@ -648,19 +650,22 @@ export function Welcome() {
   );
   const briefIsLive = briefItems.length > 0;
   const briefLoading = briefFn.state === "loading";
+  const briefStatus = briefFn.data?.data?.status;
+  const briefReason = briefFn.data?.data?.reason ?? null;
+  // needs_input (no positions / saved watchlists) and empty (Awareness answered,
+  // nothing matched) are real answers: they are shown as such, never retried.
+  const briefAnswered = briefStatus !== undefined && BRIEF_ANSWERED_STATES.has(briefStatus);
 
-  // DEMO is a last resort, not a first paint: a cold BRIEF key answers the
-  // 1 s SWR "warming" envelope while the real composition lands in cache
-  // ~6 s later. Retry a few times before settling on the demo banner —
-  // without this the banner stuck until remount even though live data was
-  // moments away.
+  // A cold BRIEF key can answer the 1 s SWR "warming" envelope while the real
+  // composition lands in cache seconds later, so a transient miss is retried a
+  // few times before the panel settles on the unavailable state.
   const BRIEF_RETRY_DELAYS_MS = useMemo(() => [7000, 15000, 30000], []);
   const briefRetryCount = useRef(0);
   const [briefRetryWait, setBriefRetryWait] = useState(false);
   const briefRefetchRef = useRef(briefFn.refetch);
   briefRefetchRef.current = briefFn.refetch;
   useEffect(() => {
-    if (briefIsLive) {
+    if (briefIsLive || briefAnswered) {
       briefRetryCount.current = 0;
       setBriefRetryWait(false);
       return;
@@ -676,7 +681,7 @@ export function Welcome() {
     }, delay);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [briefIsLive, briefLoading, briefAvailable, status]);
+  }, [briefIsLive, briefAnswered, briefLoading, briefAvailable, status]);
 
   const tz = useTimezone();
   const [now, setNow] = useState(() => new Date());
@@ -829,15 +834,35 @@ export function Welcome() {
             </span>
           </div>
           {briefIsLive ? (
-            // LIVE: ribbons composed from the BRIEF function's aggregated
-            // headlines (real RSS/GDELT via TOP — never fabricated prose).
+            // LIVE: ribbons composed from the BRIEF function's Awareness headlines
+            // (TOP macro leg + one CN leg per symbol). Every line names its publisher.
             <div className="terminal-brief-ribbons terminal-brief-ribbons--live">
               {briefItems.map((item) => (
-                <div key={`${item.tag}-${item.text}`} className="terminal-brief-ribbon">
+                <div
+                  key={`${item.tag}-${item.text}`}
+                  className="terminal-brief-ribbon terminal-brief-ribbon--sourced"
+                >
                   <span className={`terminal-tag terminal-tag--${item.tone}`}>
                     {item.tag}
                   </span>
-                  <span title={item.text}>{item.text}</span>
+                  {item.url ? (
+                    <a
+                      className="terminal-brief-ribbon__title"
+                      href={item.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={item.text}
+                    >
+                      {item.text}
+                    </a>
+                  ) : (
+                    <span className="terminal-brief-ribbon__title" title={item.text}>
+                      {item.text}
+                    </span>
+                  )}
+                  <span className="terminal-brief-ribbon__source">
+                    {item.source ?? "—"}
+                  </span>
                 </div>
               ))}
             </div>
@@ -854,48 +879,35 @@ export function Welcome() {
               <Skeleton height={16} width="90%" />
             </div>
           ) : (
-            // EMPTY / FAILED: honest demo banner — no fabricated narrative.
-            <>
-              <div
-                className="terminal-brief-demo-banner"
-                data-testid="brief-demo-banner"
-                role="status"
-                aria-live="polite"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 12px",
-                  borderBottom: "1px solid var(--terminal-border)",
-                  background: "var(--color-bg-warn-soft, rgba(255, 200, 0, 0.06))",
-                  fontSize: 12,
-                  letterSpacing: 0.4,
-                }}
-              >
-                <Pill tone="warn" variant="soft" withDot={false}>
-                  Demo data
-                </Pill>
-                <span>
-                  No live brief yet — BRIEF returned no headlines even after retries (start
-                  the sidecar / check the news provider). Copy below is illustrative only.
-                </span>
-              </div>
-              <p className="terminal-brief-copy">
-                Three weeks of cooling inflation prints left a still-resilient labor market,
-                and a Fed path has rediscovered patience. The tape is calm, but cross-asset
-                positioning underneath it is the most lopsided it has been since November.
-              </p>
-              <div className="terminal-brief-ribbons">
-                {BRIEF_ITEMS.map((item) => (
-                  <div key={`${item.tag}-${item.text}`} className="terminal-brief-ribbon">
-                    <span className={`terminal-tag terminal-tag--${item.tone}`}>
-                      {item.tag}
-                    </span>
-                    <span title={item.text}>{item.text}</span>
-                  </div>
-                ))}
-              </div>
-            </>
+            // NOT LIVE: say what is true. No illustrative or demo headlines are ever
+            // shown here — a brief line exists only when Awareness sourced it.
+            <div
+              className="terminal-brief-state"
+              data-testid={
+                briefStatus === "needs_input"
+                  ? "brief-needs-input"
+                  : briefStatus === "empty"
+                    ? "brief-empty"
+                    : "brief-unavailable"
+              }
+              role="status"
+              aria-live="polite"
+              title={briefReason ?? undefined}
+            >
+              {briefStatus === "needs_input" ? (
+                <>
+                  No portfolio positions or saved watchlist yet. Add positions in PORT or
+                  save a watchlist to get a sourced brief.
+                </>
+              ) : briefStatus === "empty" ? (
+                <>No standard-quality headline matched your symbols in the last 24 hours.</>
+              ) : (
+                <>
+                  Awareness news service unavailable
+                  {briefReason ? `: ${briefReason}` : ""}. Open /fn/BRIEF to retry.
+                </>
+              )}
+            </div>
           )}
         </div>
 

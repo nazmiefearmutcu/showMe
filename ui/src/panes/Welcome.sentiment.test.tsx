@@ -169,10 +169,13 @@ describe("Market mood card — refresh", () => {
   });
 });
 
-describe("Welcome — demo data banners on BRIEF + MOVERS", () => {
-  it("renders 'Demo data' banner on the BRIEF panel", () => {
-    const { getByTestId } = render(<Welcome />);
-    expect(getByTestId("brief-demo-banner").textContent).toMatch(/Demo data/i);
+describe("Welcome — BRIEF never shows demo headlines; MOVERS demo badge", () => {
+  it("shows an honest BRIEF state instead of demo headlines", () => {
+    const { getByTestId, queryByText } = render(<Welcome />);
+    expect(getByTestId("brief-unavailable").textContent).toMatch(
+      /Awareness news service unavailable/i,
+    );
+    expect(queryByText(/NVDA breaking/i)).toBeNull();
   });
 
   it("renders 'Demo data' badge on the MOVERS panel header", () => {

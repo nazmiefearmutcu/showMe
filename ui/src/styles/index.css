@@ -8324,6 +8324,41 @@ html[data-platform="linux"] .titlebar {
   padding: var(--space-2) 10px;
 }
 
+/* Sourced brief line: tag · headline (link) · publisher. */
+.terminal-brief-ribbon--sourced {
+  grid-template-columns: 50px minmax(0, 1fr) auto;
+}
+
+.terminal-brief-ribbon__title {
+  color: inherit;
+  overflow: hidden;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.terminal-brief-ribbon__title:hover,
+a.terminal-brief-ribbon__title:focus-visible {
+  color: var(--terminal-text, currentColor);
+  text-decoration: underline;
+}
+
+.terminal-brief-ribbon__source {
+  color: var(--terminal-muted);
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Brief panel when there is no sourced line to show. */
+.terminal-brief-state {
+  color: var(--terminal-muted);
+  font-size: var(--font-size-sm, 12px);
+  line-height: 1.5;
+  padding: var(--space-4) var(--space-5);
+}
+
 .terminal-tag {
   border: 1px solid currentColor;
   display: inline-flex;

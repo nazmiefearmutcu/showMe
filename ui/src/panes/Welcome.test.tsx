@@ -247,13 +247,16 @@ describe("Welcome movers — DOM", () => {
   });
 });
 
-describe("Welcome BRIEF panel — elevated demo banner", () => {
-  it("brief-demo-banner is now a status block with the Demo Data pill and prominent copy", async () => {
-    const { findByTestId } = render(<Welcome />);
-    const banner = await findByTestId("brief-demo-banner");
-    expect(banner.getAttribute("role")).toBe("status");
-    expect(banner.textContent).toMatch(/Demo data/i);
-    expect(banner.textContent).toMatch(/even after retries|illustrative/i);
+describe("Welcome BRIEF panel — honest states, never demo headlines", () => {
+  it("an unanswered brief is a status block naming the Awareness outage, with no illustrative copy", async () => {
+    const { findByTestId, queryByText } = render(<Welcome />);
+    const block = await findByTestId("brief-unavailable");
+    expect(block.getAttribute("role")).toBe("status");
+    expect(block.textContent).toMatch(/Awareness news service unavailable/i);
+    expect(queryByText(/Three weeks of cooling inflation/i)).toBeNull();
+    // Only the movers panel may carry a demo badge; the brief panel never does.
+    const panel = block.closest(".terminal-panel--brief");
+    expect(panel?.textContent ?? "").not.toMatch(/Demo data/i);
   });
 
   it("retries a non-live brief a few times instead of settling on demo", async () => {
@@ -285,12 +288,12 @@ describe("Welcome BRIEF panel — elevated demo banner", () => {
       await roundTrip(7000, 1);
       await roundTrip(15000, 2);
       await roundTrip(30000, 3);
-      // Budget exhausted: no further retries, demo banner stays.
+      // Budget exhausted: no further retries, the unavailable state stays.
       await act(async () => {
         vi.advanceTimersByTime(120000);
       });
       expect(fnMockState.refetch).toHaveBeenCalledTimes(3);
-      expect(getByTestId("brief-demo-banner")).toBeInTheDocument();
+      expect(getByTestId("brief-unavailable")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
