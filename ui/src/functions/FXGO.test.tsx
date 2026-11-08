@@ -2,7 +2,7 @@
  * FXGO pane — data-honesty + render-contract tests.
  *
  * The FXGO defect: the backend labels the dealing board
- * `data_mode=live_exchange` even when most pairs 404 at the provider and
+ * `data_mode=live_yfinance_quote` even when most pairs 404 at the provider and
  * only a fraction of the board survives. These tests pin the pane's
  * honesty recomputation:
  *
@@ -93,7 +93,7 @@ function fullLivePayload() {
       rows: FULL_PAIRS.map((p, i) =>
         boardRow(p, p === "USDJPY" ? 154.2 : 1.1 + i * 0.05, i % 2 ? 0.12 : -0.08),
       ),
-      data_mode: "live_exchange",
+      data_mode: "live_yfinance_quote",
       as_of: "2026-09-07T22:16:36+00:00",
     },
   };
@@ -101,7 +101,7 @@ function fullLivePayload() {
 
 function degradedPayload() {
   // The real-world defect: 9/10 pairs 404 → one survivor, yet the
-  // backend still stamps data_mode=live_exchange.
+  // backend still stamps data_mode=live_yfinance_quote.
   return {
     warnings: [
       "errors: ['GBPUSD=X: 404 Client Error: Not Found', 'USDJPY=X: 404 Client Error: Not Found']",
@@ -111,7 +111,7 @@ function degradedPayload() {
     data: {
       status: "ok",
       rows: [boardRow("EURUSD", 1.1628, 0.0861)],
-      data_mode: "live_exchange",
+      data_mode: "live_yfinance_quote",
       as_of: "2026-09-07T22:16:36+00:00",
     },
   };
@@ -160,13 +160,13 @@ describe("FXGO pane — load states", () => {
   });
 });
 
-describe("FXGO pane — data honesty (the live_exchange defect)", () => {
+describe("FXGO pane — data honesty (the live_yfinance_quote defect)", () => {
   it("shows the live mode WITHOUT the degraded banner for a full board", () => {
     setMockFn({ state: "ok", data: fullLivePayload() });
     render(<FXGOPane code="FXGO" />);
-    // Pill + footer both echo the mode — both may say live_exchange here.
+    // Pill + footer both echo the mode — both may say live_yfinance_quote here.
     expect(
-      screen.getAllByText("live_exchange").length,
+      screen.getAllByText("live_yfinance_quote").length,
     ).toBeGreaterThan(0);
     expect(screen.getByText("FULL BOARD")).toBeInTheDocument();
     expect(screen.queryByText(/DEGRADED BOARD/i)).toBeNull();
@@ -181,7 +181,7 @@ describe("FXGO pane — data honesty (the live_exchange defect)", () => {
     expect(screen.getByText(/DEGRADED BOARD/i)).toBeInTheDocument();
     expect(screen.getByText(/1 of 10 pairs returned/i)).toBeInTheDocument();
     // The honesty pill never repeats the backend's overclaimed mode.
-    expect(screen.queryByText("live_exchange")).toBeNull();
+    expect(screen.queryByText("live_yfinance_quote")).toBeNull();
     // Pill, footer and KPI caption all carry the downgraded mode.
     expect(
       screen.getAllByText(/reference · degraded/i).length,
