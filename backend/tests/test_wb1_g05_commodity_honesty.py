@@ -231,3 +231,33 @@ def test_wetr2_live_rows_carry_the_provider_mean_as_temp_c() -> None:
     result = asyncio.run(WETRFunction(FunctionDeps(open_meteo=_Fake())).execute(days=2))
     assert result.data["status"] == "ok"
     assert [row["temp_c"] for row in result.data["rows"]] == [16.5, 15.0]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# WETR#3 — one risk taxonomy for live and model rows
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_wetr3_live_path_flags_hot_dry_day_like_the_model_path() -> None:
+    from showme.engine.functions.commodity._funcs import _normalise_weather_rows, _wetr_risk_flag
+
+    # 25C mean with almost no rain: the model path flags dry_heat_watch.
+    assert _wetr_risk_flag(25.0, 0.4) == "dry_heat_watch"
+    data = {"daily": [{
+        "dt": datetime(2026, 11, 8, tzinfo=timezone.utc).timestamp(),
+        "temp": {"day": 25.0, "min": 20.0, "max": 30.0},
+        "precipitation": 0.4,
+    }]}
+    rows = _normalise_weather_rows(
+        data, 1, 0.0, 0.0, "US_GULF", "corn",
+        source_mode="live_open_meteo", allow_model_fallback=False,
+    )
+    assert rows[0]["risk_flag"] == "dry_heat_watch"
+
+
+def test_wetr3_model_rows_use_the_same_risk_helper() -> None:
+    from showme.engine.functions.commodity._funcs import _weather_model_rows, _wetr_risk_flag
+
+    for row in _weather_model_rows(16, 40.0, -74.0, "US_NORTHEAST", "corn"):
+        expected = _wetr_risk_flag(row["temp_c"], row["precip_mm"])
+        assert row["risk_flag"] == expected

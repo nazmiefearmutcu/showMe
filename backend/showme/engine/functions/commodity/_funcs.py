@@ -1832,6 +1832,21 @@ def _csv_lower(value: Any) -> list[str]:
     return [str(item).strip().lower() for item in items if str(item).strip()]
 
 
+def _wetr_risk_flag(temp: float, precip: float) -> str:
+    """Single WETR risk taxonomy for live and model rows (WETR#3)."""
+    hdd = max(18.0 - temp, 0.0)
+    cdd = max(temp - 18.0, 0.0)
+    if precip < 1 and temp > 22:
+        return "dry_heat_watch"
+    if hdd > 2:
+        return "heating_demand"
+    if cdd > 4:
+        return "cooling_demand"
+    if precip > 3:
+        return "wet_weather"
+    return "normal"
+
+
 def _weather_model_rows(
     days: int,
     lat: float,
@@ -1848,16 +1863,7 @@ def _weather_model_rows(
         precip = max(0.0, 2.4 - i * 0.12 + (0.8 if i % 5 == 0 else 0.0))
         hdd = max(18.0 - temp, 0.0)
         cdd = max(temp - 18.0, 0.0)
-        if precip < 1 and temp > 22:
-            risk = "dry_heat_watch"
-        elif hdd > 2:
-            risk = "heating_demand"
-        elif cdd > 4:
-            risk = "cooling_demand"
-        elif precip > 3:
-            risk = "wet_weather"
-        else:
-            risk = "normal"
+        risk = _wetr_risk_flag(temp, precip)
         rows.append({
             "date": date.isoformat(),
             "day": i + 1,
@@ -1910,7 +1916,7 @@ def _normalise_weather_rows(
         precip = _finite(item.get("rain")) or _finite(item.get("precipitation")) or 0.0
         hdd = max(18.0 - temp, 0.0)
         cdd = max(temp - 18.0, 0.0)
-        risk = "heating_demand" if hdd > 2 else "cooling_demand" if cdd > 4 else "wet_weather" if precip > 3 else "normal"
+        risk = _wetr_risk_flag(temp, precip)
         ts = item.get("dt")
         if isinstance(ts, (int, float)):
             date = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
