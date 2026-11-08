@@ -349,14 +349,20 @@ class EQSFunction(BaseFunction):
             warnings.append(
                 "Template mode: rows are model fixtures, not live market data."
             )
+        # EQS#1: the pane's row limit caps the returned rows; ``matched`` keeps
+        # the full count so the UI can say "N matched, showing M".
+        row_limit = _row_limit(params)
+        returned = filtered.head(row_limit) if row_limit is not None else filtered
         return FunctionResult(
             code=self.code, instrument=None,
-            data=filtered.reset_index(drop=True),
+            data=returned.reset_index(drop=True),
             sources=["yfinance"] if live else ["equity_screener_model"],
             warnings=warnings,
             metadata={
                 "query": query,
                 "matched": int(len(filtered)),
+                "returned": int(len(returned)),
+                "limit": row_limit,
                 "scanned": int(len(df)),
                 "live": live,
                 "template": template_mode,
@@ -756,6 +762,18 @@ def _resolve_universe(value: Any) -> tuple[list[str], str]:
         if token:
             return [token], f"single ({token})"
     return _UNIVERSE_PRESETS["MEGA15"], "MEGA15"
+
+
+def _row_limit(params: dict[str, Any]) -> int | None:
+    """Positive integer row cap from the pane's ``limit``; None means no cap."""
+    raw = params.get("limit")
+    if raw is None or isinstance(raw, bool) or raw == "":
+        return None
+    try:
+        number = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _truthy(value: Any) -> bool:
