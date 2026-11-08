@@ -532,3 +532,12 @@ def test_cact_exposes_decoded_8k_items_for_litm() -> None:
     events = _events_8k([row])
     assert [e["code"] for e in events] == ["5.02", "9.01"]
     assert events[0]["filing_date"] == "2026-11-05" and events[0]["accession"] == "0001-26-1"
+
+
+def test_routed_defaults_never_narrow_ern_to_a_peer_group() -> None:
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("ERN", {"days": 5})
+    assert "symbols" not in routed and routed["days"] == 5
+    explicit = _route_function_params("ERN", {"symbols": "NVDA,AAPL"})
+    assert explicit["symbols"] == "NVDA,AAPL"

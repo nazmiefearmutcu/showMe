@@ -947,6 +947,12 @@ def _canonical_route_symbol(symbol: Any, requested_asset_class: Any = None) -> s
     return raw.upper()
 
 
+AWARENESS_CODES = frozenset({
+    "TOP", "NI", "CN", "NALRT", "NSE", "SOSC", "MSENT",
+    "ECO", "MEET", "EVTS", "DVD", "CACT", "TRDH", "ERN", "IPO",
+})
+
+
 def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
     merged = dict(params)
     entry = _function_entry_for_code(code)
@@ -977,11 +983,12 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # MOSS must scan its FULL default cross-asset universe instead of
         # being silently restricted to the route's peer group.
         defaults.pop("symbols", None)
-    if code.upper() in {"TOP", "NI", "CN", "NALRT", "NSE"}:
-        # Awareness-backed news functions: the generic agent profile's query/limit/days
+    if code.upper() in AWARENESS_CODES:
+        # Awareness-backed functions: the generic agent profile's query/limit/days/symbols
         # defaults are not filters the user asked for (they silently narrowed TOP to six
-        # crypto headlines). Only caller-supplied values reach these handlers.
-        for key in ("query", "limit", "days", "news_timeout"):
+        # crypto headlines and ERN to a three-name peer group). Only caller-supplied values
+        # reach these handlers; the explicit ``symbol`` is still routed as before.
+        for key in ("query", "limit", "days", "symbols", "universe", "news_timeout"):
             if key not in merged:
                 defaults.pop(key, None)
     if code.upper() == "MEET" and not merged.get("symbols"):
