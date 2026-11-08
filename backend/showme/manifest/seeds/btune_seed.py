@@ -61,6 +61,7 @@ def btune() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Strategy spec being tuned.",
+                options=["sma_crossover", "rsi_meanrev"],
             ),
             InputSpec(
                 name="symbol",
@@ -104,7 +105,7 @@ def btune() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Metric to rank parameter sets by.",
-                options=["sharpe", "cagr", "calmar", "sortino", "profit_factor"],
+                options=["sharpe", "cagr", "calmar", "sortino"],
             ),
             InputSpec(
                 name="train_pct",
@@ -122,7 +123,7 @@ def btune() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Bar size.",
-                options=["5m", "15m", "1h", "4h", "1d", "1wk"],
+                options=["1d"],
             ),
             InputSpec(
                 name="top_n",
@@ -133,6 +134,16 @@ def btune() -> FunctionManifest:
                 min=1,
                 max=100,
                 step=1,
+            ),
+            InputSpec(
+                name="live_backtest",
+                label="Run live backtest",
+                control=ControlKind.BOOLEAN,
+                required=False,
+                description=(
+                    "When true the sweep runs on daily OHLCV history from yfinance. "
+                    "When false no metrics are computed and the planned grid is listed only."
+                ),
             ),
             InputSpec(
                 name="paper_mode",
@@ -155,6 +166,7 @@ def btune() -> FunctionManifest:
         ],
         defaults={
             "search_mode": "grid",
+            "live_backtest": False,
             "n_samples": 200,
             "metric": "sharpe",
             "train_pct": 0.7,
