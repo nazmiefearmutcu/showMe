@@ -137,17 +137,18 @@ describe("TOP display states", () => {
     expect(screen.getByTestId("pane-state-empty")).toBeInTheDocument();
     expect(screen.getByText("No stories match these filters")).toBeInTheDocument();
     expect(screen.getByText(/Window 24h, quality Standard and above/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Lower quality floor" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Lower quality floor" })).toBeNull();
     expect(screen.getByRole("button", { name: "Widen to 7d" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear filters" })).toBeInTheDocument();
   });
 
-  it("lowering the quality floor from the empty state sends min_quality low", () => {
+  it("offers no low-quality option anywhere on TOP", () => {
     useFunctionMock.mockReturnValue(result({ status: "empty", rows: [], count: 0 }));
     render(<TOPPane code="TOP" />);
-    fireEvent.click(screen.getByRole("button", { name: "Lower quality floor" }));
-    const last = paneCall();
-    expect(last.params).toMatchObject({ min_quality: "low" });
+    expect(screen.queryByRole("button", { name: /low/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /include low/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Premium" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Standard+" })).toBeInTheDocument();
   });
 
   it("renders story rows with publisher, tier and UTC time, and the footer summary", () => {
@@ -192,7 +193,7 @@ describe("TOP display states", () => {
     expect(strip).toHaveTextContent("google_news degraded: timeout after 10s");
   });
 
-  it("offers Show low quality when the backend hid items below the floor", () => {
+  it("shows a backend note in the footer with rows present, without a low opt-in", () => {
     useFunctionMock.mockReturnValue(
       result({
         status: "ok",
@@ -201,11 +202,45 @@ describe("TOP display states", () => {
       }),
     );
     render(<TOPPane code="TOP" />);
-    fireEvent.click(
-      screen.getByRole("button", { name: "3 items below the quality floor are hidden." }),
-    );
-    const last = paneCall();
-    expect(last.params).toMatchObject({ min_quality: "low" });
+    expect(
+      screen.getByText("3 items below the quality floor are hidden."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "3 items below the quality floor are hidden." }),
+    ).toBeNull();
+  });
+});
+
+describe("TOP asset classes and countries", () => {
+  it("sends the awareness asset-class tag spelling the seed uses", () => {
+    useFunctionMock.mockReturnValue(result({ status: "ok", rows: [ROW_A] }));
+    render(<TOPPane code="TOP" />);
+    fireEvent.click(screen.getByRole("button", { name: "Commodities" }));
+    expect(paneCall().params).toMatchObject({ asset_classes: "commodities" });
+    fireEvent.click(screen.getByRole("button", { name: "Credit" }));
+    expect(paneCall().params).toMatchObject({ asset_classes: "credit" });
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(paneCall().params).not.toHaveProperty("asset_classes");
+  });
+
+  it("a country chip filters by that country and its chip clears the filter", () => {
+    useFunctionMock.mockReturnValue(result({ status: "ok", rows: [ROW_A] }));
+    render(<TOPPane code="TOP" />);
+    fireEvent.click(screen.getByRole("button", { name: "country US" }));
+    expect(paneCall().params).toMatchObject({ countries: "US" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove country filter US" }));
+    expect(paneCall().params).not.toHaveProperty("countries");
+  });
+
+  it("clear filters also clears the country filter", () => {
+    useFunctionMock.mockReturnValue(result({ status: "ok", rows: [ROW_A] }));
+    const { rerender } = render(<TOPPane code="TOP" />);
+    fireEvent.click(screen.getByRole("button", { name: "country US" }));
+    expect(paneCall().params).toMatchObject({ countries: "US" });
+    useFunctionMock.mockReturnValue(result({ status: "empty", rows: [], count: 0 }));
+    rerender(<TOPPane code="TOP" />);
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(paneCall().params).not.toHaveProperty("countries");
   });
 });
 

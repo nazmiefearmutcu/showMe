@@ -15,7 +15,6 @@ from showme.engine.data_sources.awareness import AwarenessClient, AwarenessUnava
 from showme.engine.functions.news.awareness_news import (
     bounded_float,
     bounded_int,
-    choice,
     client_for,
     csv_list,
     fetch_news,
@@ -59,7 +58,7 @@ class TOPFunction(BaseFunction):
 
             hours = _hours(params)
             limit = bounded_int(params.get("limit"), 50, 1, 200)
-            min_quality = choice(params.get("min_quality"), ("premium", "standard", "low"), "standard")
+            min_quality, floor_warnings = _quality_floor(params.get("min_quality"))
             topics = csv_list(params.get("topics"), lower=True)
             asset_classes = csv_list(params.get("asset_classes"), lower=True)
             countries = csv_list(params.get("countries"), upper=True)
@@ -100,7 +99,24 @@ class TOPFunction(BaseFunction):
         }
         if not rows:
             data["next_actions"] = ["Widen the hours window or remove the topic, asset class or country filters."]
-        return ok_result(self.code, instrument, data, [response])
+        return ok_result(self.code, instrument, data, [response], extra_warnings=floor_warnings)
+
+
+# TOP never shows low-quality news: the floor is premium or standard only.
+TOP_QUALITY_FLOORS = ("premium", "standard")
+
+
+def _quality_floor(value: Any) -> tuple[str, list[str]]:
+    """``min_quality`` for TOP. Anything outside premium/standard (``low`` included) is clamped to standard and reported."""
+    requested = str(value or "").strip().lower()
+    if not requested:
+        return "standard", []
+    if requested in TOP_QUALITY_FLOORS:
+        return requested, []
+    return "standard", [
+        f"min_quality '{requested}' is not offered on TOP; showing standard and above "
+        "(TOP never shows low-quality news)."
+    ]
 
 
 def _hours(params: dict[str, Any]) -> int:

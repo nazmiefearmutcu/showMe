@@ -21,7 +21,8 @@ import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 const REFRESH_MS = 60_000;
-const HOUR_OPTIONS: readonly number[] = [168, 720, 2160];
+// 1440 h (60 d) is the awareness maximum; a longer window would be silently clamped.
+const HOUR_OPTIONS: readonly number[] = [168, 720, 1440];
 const FLOOR_OPTIONS: readonly string[] = ["premium", "standard", "low"];
 
 export function NSEPane({ code, symbol }: FunctionPaneProps) {
@@ -31,11 +32,12 @@ export function NSEPane({ code, symbol }: FunctionPaneProps) {
   const [q, setQ] = useState("");
   const pane = (symbol ?? "").trim().toUpperCase();
 
-  const params = useMemo(() => {
-    const p: Record<string, unknown> = { q, hours, min_quality: floor, limit: 50 };
-    if (pane) p.symbol = pane;
-    return p;
-  }, [q, hours, floor, pane]);
+  // A search is always text (q): the backend ignores symbol when q is set, so the pane
+  // does not send it. The pane symbol only scopes the chips shown on the results.
+  const params = useMemo(
+    () => ({ q, hours, min_quality: floor, limit: 50 }),
+    [q, hours, floor],
+  );
 
   const { state, data, error, refetch } = useFunction<NewsPayload>({
     code,
@@ -43,14 +45,18 @@ export function NSEPane({ code, symbol }: FunctionPaneProps) {
     enabled: q.length > 0,
   });
 
+  // Refresh once per tick. The query is read through a ref so a new search does not
+  // trigger a second, identical request on top of the one its params change already made.
   const tick = useVisibilityTick(REFRESH_MS);
   const refetchRef = useRef(refetch);
+  const qRef = useRef(q);
   useEffect(() => {
     refetchRef.current = refetch;
+    qRef.current = q;
   });
   useEffect(() => {
-    if (tick > 0 && q) refetchRef.current();
-  }, [tick, q]);
+    if (tick > 0 && qRef.current) refetchRef.current();
+  }, [tick]);
 
   const rows: NewsRow[] = data?.data?.rows ?? [];
   const onSubmit = (e: FormEvent) => {

@@ -134,10 +134,19 @@ export function NewsFrame({
             {summary}
             {publishers ? ` from ${publishers} publishers` : ""}
           </span>
-          {payload?.hidden_note && onShowLow ? (
-            <button type="button" className="aw-linkbtn aw-link" onClick={onShowLow}>
-              {payload.hidden_note}
-            </button>
+          {payload?.hidden_note ? (
+            // A fallback or floor note is shown whenever the backend sends one, with rows or
+            // without (without rows it is also in the empty state). With onShowLow the note
+            // is the labelled opt-in to reveal the hidden rows.
+            onShowLow ? (
+              <button type="button" className="aw-linkbtn aw-link" onClick={onShowLow}>
+                {payload.hidden_note}
+              </button>
+            ) : (
+              <span className="aw-footer__note" role="note">
+                {payload.hidden_note}
+              </span>
+            )
           ) : null}
           <span className="aw-mono">awareness /v1/markets/news</span>
         </footer>

@@ -3,8 +3,37 @@ import { Pill } from "@/design-system";
 import type { NewsQuality } from "./news-types";
 import { parseQualityReason } from "./format";
 
+export type QualityLabelValue = NewsQuality | null | undefined;
+
+/** Upper-case pill text for a quality label. A missing label is UNRATED, never STANDARD. */
+export function qualityText(label: QualityLabelValue): string {
+  switch (label) {
+    case "premium":
+      return "PREMIUM";
+    case "standard":
+      return "STANDARD";
+    case "low":
+      return "LOW";
+    case "rejected":
+      return "REJECTED";
+    default:
+      return "UNRATED";
+  }
+}
+
+/** The quality label as a pill, without the reasons button (used where per-item reasons are absent). */
+export function QualityTag({ label }: { label: QualityLabelValue }) {
+  const tone = label === "premium" ? "positive" : label === "low" ? "warn" : "muted";
+  const variant = label === "premium" ? "soft" : "ghost";
+  return (
+    <Pill tone={tone} variant={variant} withDot={false}>
+      {qualityText(label)}
+    </Pill>
+  );
+}
+
 export interface QualityPillProps {
-  label: NewsQuality;
+  label: QualityLabelValue;
   score: number;
   reasons: string[];
 }
@@ -13,26 +42,15 @@ export interface QualityPillProps {
 export function QualityPill({ label, score, reasons }: QualityPillProps) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement | null>(null);
-  const shown =
-    label === "premium"
-      ? "PREMIUM"
-      : label === "low"
-        ? "LOW"
-        : label === "rejected"
-          ? "REJECTED"
-          : "STANDARD";
-  const tone = label === "premium" ? "positive" : label === "low" ? "warn" : "muted";
-  const variant = label === "premium" ? "soft" : "ghost";
+  const word = qualityText(label).toLowerCase();
   return (
     <span className="aw-quality">
-      <Pill tone={tone} variant={variant} withDot={false}>
-        {shown}
-      </Pill>
+      <QualityTag label={label} />
       <button
         ref={btnRef}
         type="button"
         className="aw-quality__why"
-        aria-label={`Why ${label}: show quality reasons`}
+        aria-label={`Why ${word}: show quality reasons`}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
@@ -54,7 +72,7 @@ export function QualityPill({ label, score, reasons }: QualityPillProps) {
 }
 
 export interface QualityWhyPopoverProps {
-  label: NewsQuality;
+  label: QualityLabelValue;
   score: number;
   reasons: string[];
   onClose: () => void;
@@ -88,7 +106,7 @@ export function QualityWhyPopover({
       }}
     >
       <div id={titleId} className="aw-why__title">
-        Quality {label} · {score}/100
+        Quality {qualityText(label).toLowerCase()} · {score}/100
       </div>
       {parsed.length === 0 ? (
         <p className="aw-why__empty">No reasons supplied by Awareness.</p>

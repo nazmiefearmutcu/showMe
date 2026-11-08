@@ -9,7 +9,9 @@ Stale providers keep their data but mark the response ``cached_snapshot`` with
 
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable
+from urllib.parse import quote
 
 from showme.engine.core.base_function import FunctionResult
 from showme.engine.core.instrument import Instrument
@@ -34,12 +36,18 @@ def client_for(injected: AwarenessClient | None) -> AwarenessClient:
 
 
 def bounded_int(value: Any, default: int, lo: int, hi: int) -> int:
-    """Parse a GET string or number as an int inside [lo, hi]; bad input means default."""
+    """Parse a GET string or number as an int inside [lo, hi]; bad input means default.
+
+    Non-finite numbers (``inf``, ``1e309``) are bad input too: ``int(inf)`` raises
+    OverflowError, which is not a ValueError, so they are rejected before the conversion.
+    """
     try:
-        parsed = int(float(value))
+        number = float(value)
     except (TypeError, ValueError):
-        parsed = default
-    return max(lo, min(parsed, hi))
+        return max(lo, min(default, hi))
+    if not math.isfinite(number):
+        return max(lo, min(default, hi))
+    return max(lo, min(int(number), hi))
 
 
 def bounded_float(value: Any, default: float, lo: float, hi: float) -> float:
@@ -122,6 +130,7 @@ def ok_result(
     instrument: Instrument | None,
     data: dict[str, Any],
     responses: list[AwarenessResponse],
+    extra_warnings: Iterable[str] = (),
 ) -> FunctionResult:
     summary = _summary(responses)
     data["meta"] = meta_block(responses)
@@ -142,7 +151,7 @@ def ok_result(
         data=data,
         sources=[NEWS_SOURCE],
         metadata=metadata,
-        warnings=list(summary["notes"]),
+        warnings=[*extra_warnings, *summary["notes"]],
     )
 
 
@@ -217,7 +226,7 @@ async def story_detail(
     responses: list[AwarenessResponse] = []
     lead_id = story_id
     try:
-        detail = await client.get(f"/news/{story_id}")
+        detail = await client.get(f"/news/{quote(story_id, safe='')}")
     except AwarenessUnavailable as exc:
         if exc.status_code != 404:
             raise
@@ -232,7 +241,7 @@ async def story_detail(
         lead_id = str(match.get("lead_item_id") or "")
         if not lead_id:
             return None, responses
-        detail = await client.get(f"/news/{lead_id}")
+        detail = await client.get(f"/news/{quote(lead_id, safe='')}")
     responses.append(detail)
     story = detail.data.get("story") if isinstance(detail.data, dict) else None
     return normalise_story(story), responses

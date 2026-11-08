@@ -6,9 +6,13 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const useFunctionMock = vi.fn();
+const tickMock = vi.fn(() => 0);
 
 vi.mock("@/lib/useFunction", () => ({
   useFunction: (...args: unknown[]) => useFunctionMock(...args),
+}));
+vi.mock("@/lib/useVisibilityTick", () => ({
+  useVisibilityTick: () => tickMock(),
 }));
 vi.mock("@/lib/workspace", () => ({
   useWorkspace: (selector: (s: { setFocusedTarget: () => void }) => unknown) =>
@@ -69,6 +73,8 @@ function paneCalls() {
 beforeEach(() => {
   useFunctionMock.mockReset();
   useFunctionMock.mockReturnValue(ok({ status: "ok", rows: [] }));
+  tickMock.mockReset();
+  tickMock.mockReturnValue(0);
   window.localStorage.clear();
 });
 
@@ -144,5 +150,40 @@ describe("NSE news search", () => {
     render(<NSEPane code="NSE" />);
     fireEvent.click(screen.getByRole("button", { name: "7d" }));
     expect(window.localStorage.getItem("aw.nse.hours")).toBe("168");
+  });
+
+  it("offers the 60-day window and sends it, never a 90-day window the backend would clamp", () => {
+    render(<NSEPane code="NSE" />);
+    expect(screen.queryByRole("button", { name: "90d" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "60d" }));
+    search("NVIDIA");
+    expect(paneCalls().at(-1)?.params).toMatchObject({ hours: 1440 });
+    expect(window.localStorage.getItem("aw.nse.hours")).toBe("1440");
+  });
+
+  it("does not send the pane symbol with a search (the search text is the query)", () => {
+    render(<NSEPane code="NSE" symbol="NVDA" />);
+    search("NVIDIA");
+    expect(paneCalls().at(-1)?.params).not.toHaveProperty("symbol");
+  });
+
+  it("does not refetch a second time when a new search follows a refresh tick", () => {
+    tickMock.mockReturnValue(1);
+    const refetch = vi.fn();
+    useFunctionMock.mockReturnValue({ ...ok({ status: "ok", rows: [] }), refetch });
+    render(<NSEPane code="NSE" />);
+    search("NVIDIA");
+    expect(refetch).not.toHaveBeenCalled();
+  });
+
+  it("refreshes an active search once per visibility tick", () => {
+    const refetch = vi.fn();
+    useFunctionMock.mockReturnValue({ ...ok({ status: "ok", rows: [] }), refetch });
+    const { rerender } = render(<NSEPane code="NSE" />);
+    search("NVIDIA");
+    expect(refetch).not.toHaveBeenCalled();
+    tickMock.mockReturnValue(1);
+    rerender(<NSEPane code="NSE" />);
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 });

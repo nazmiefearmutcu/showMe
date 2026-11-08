@@ -36,7 +36,7 @@ def ni() -> FunctionManifest:
         category=Category.NEWS_INTEL,
         intent=(
             "Sourced news for one topic preset (banks, earnings, Fed, chips, oil, tech, macro, "
-            "war, M&A, IPO): one row per story from the awareness taxonomy, with publisher, "
+            "war, M&A, IPO, crypto): one row per story from the awareness taxonomy, with publisher, "
             "sentiment, importance and quality shown on every row."
         ),
         asset_classes=[
@@ -55,8 +55,8 @@ def ni() -> FunctionManifest:
                 label="Topic",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Topic preset: BANKS, EARN, FED, CHIPS, OIL, TECH, MACRO, WAR, M&A or IPO.",
-                options=["BANKS", "EARN", "FED", "CHIPS", "OIL", "TECH", "MACRO", "WAR", "M&A", "IPO"],
+                description="Topic preset: BANKS, EARN, FED, CHIPS, OIL, TECH, MACRO, WAR, M&A, IPO or CRYPTO.",
+                options=["BANKS", "EARN", "FED", "CHIPS", "OIL", "TECH", "MACRO", "WAR", "M&A", "IPO", "CRYPTO"],
             ),
             InputSpec(
                 name="hours",
@@ -128,16 +128,18 @@ def ni() -> FunctionManifest:
             "equities; TECH = product_launch, cyber_outage within equities (approximations: "
             "awareness has no bank or semiconductor tag); EARN = earnings, guidance; FED = "
             "central_bank; OIL = energy; MACRO = inflation, employment, growth_recession, "
-            "fiscal_policy; WAR = geopolitics, sanctions; M&A = m_and_a; IPO = ipo. Only quality "
-            "standard or better is kept. importance is the awareness 0-100 score; sentiment is "
-            "FinBERT (ProsusAI/finbert). An unknown topic shows MACRO and says so in hidden_note."
+            "fiscal_policy; WAR = geopolitics, sanctions; M&A = m_and_a; IPO = ipo; CRYPTO = "
+            "crypto_market within the crypto asset class. Only quality standard or better is kept. "
+            "importance is the awareness 0-100 score; sentiment is labelled by awareness per row "
+            "(the row's sentiment_model names the model: FinBERT ProsusAI/finbert, or the lexicon "
+            "fallback aw-fin-1). An unknown topic shows MACRO and says so in hidden_note."
         ),
         field_dict={
             "rows[].published_at": FieldDef(unit="iso8601", description="Publisher timestamp (UTC).", source="feed"),
             "rows[].publisher": FieldDef(description="Publisher name.", source="feed"),
             "rows[].title": FieldDef(description="Headline as published.", source="feed"),
             "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
-            "rows[].sentiment": FieldDef(description="positive, negative or neutral (FinBERT label).", source="finbert"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (awareness label; model named in sentiment_model).", source="finbert"),
             "rows[].importance": FieldDef(unit="0-100", description="Awareness importance score (a number, not a tag).", source="awareness"),
             "rows[].story_size": FieldDef(unit="count", description="Reports collapsed into this story.", source="awareness"),
         },

@@ -1,4 +1,4 @@
-"""NI — News by Topic (BANKS, EARN, FED, CHIPS, OIL, TECH, MACRO, WAR, M&A, IPO).
+"""NI — News by Topic (BANKS, EARN, FED, CHIPS, OIL, TECH, MACRO, WAR, M&A, IPO, CRYPTO).
 
 Each preset maps onto awareness taxonomy tags (``topics`` and ``asset_classes``
 filters, OR within a list, AND across the two). Awareness has no semiconductor or
@@ -38,6 +38,7 @@ TOPIC_PRESETS: dict[str, dict[str, list[str]]] = {
     "WAR": {"topics": ["geopolitics", "sanctions"]},
     "M&A": {"topics": ["m_and_a"]},
     "IPO": {"topics": ["ipo"]},
+    "CRYPTO": {"topics": ["crypto_market"], "asset_classes": ["crypto"]},
 }
 
 

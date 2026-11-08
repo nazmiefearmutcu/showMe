@@ -6,7 +6,8 @@ import { ImportanceMeter } from "./ImportanceMeter";
 import { SentimentChip } from "./SentimentChip";
 import { TierBadge } from "./TierBadge";
 import { hhmmUtc, parseQualityReason, prettyToken } from "./format";
-import { openArticle } from "./StoryRow";
+import { QualityTag, qualityText } from "./QualityPill";
+import { openArticle, safeArticleUrl } from "./StoryRow";
 import type { NewsPayload, NewsRow } from "./news-types";
 
 export interface StoryDrawerProps {
@@ -44,17 +45,18 @@ export function StoryDrawer({
   onClose,
 }: StoryDrawerProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  // Keyed by the row id (the lead item); see StoryRow for why a story hash is not used.
   const story = useFunction<NewsPayload>({
     code,
     symbol,
-    params: { story_id: row.story_id ?? "" },
+    params: { story_id: row.id },
     enabled: Boolean(row.story_id),
   });
   const detail = story.data?.data?.story ?? null;
   const items = detail?.items ?? [];
   const sorted = [...items].sort((a, b) => a.published_at.localeCompare(b.published_at));
   const firstSeen = detail?.first_seen_at ?? row.first_seen_at ?? row.published_at;
-  const url = row.url ?? row.link ?? null;
+  const url = safeArticleUrl(row.url) ?? safeArticleUrl(row.link);
 
   useEffect(() => {
     dialogRef.current?.querySelector<HTMLElement>("button")?.focus();
@@ -175,7 +177,7 @@ export function StoryDrawer({
 
         <section className="aw-drawer__section" aria-label="Quality reasons">
           <h4 className="aw-drawer__h">
-            Why this is {row.quality_label}{" "}
+            Why this is {qualityText(row.quality_label).toLowerCase()}{" "}
             <span className="aw-mono">{row.quality_score}/100</span>
           </h4>
           {row.quality_reasons.length === 0 ? (
@@ -234,7 +236,9 @@ export function StoryDrawer({
           aria-label="All sources"
         >
           <h4 className="aw-drawer__h">All sources, oldest first</h4>
-          {story.state === "loading" || story.state === "idle" ? (
+          {!row.story_id ? (
+            <div className="aw-corro__loading">No story group for this item.</div>
+          ) : story.state === "loading" || story.state === "idle" ? (
             <div className="aw-corro__loading">Loading sources</div>
           ) : story.state === "error" ? (
             <div className="aw-corro__loading">
@@ -245,28 +249,32 @@ export function StoryDrawer({
               No other sources returned for this story.
             </div>
           ) : (
-            sorted.map((it, i) => (
-              <div key={it.id} className="aw-corro__row">
-                <span className="aw-mono">{hhmmUtc(it.published_at)}</span>
-                <TierBadge tier={it.publisher_tier} />
-                <span className="aw-corro__pub">
-                  {it.publisher_name}
-                  {i === 0 ? " (lead)" : ""}
-                </span>
-                <span className="aw-corro__title" title={it.title}>
-                  {it.title}
-                </span>
-                <button
-                  type="button"
-                  className="aw-row__open"
-                  aria-label={`Open article at ${it.publisher_name}`}
-                  disabled={!it.url}
-                  onClick={() => openArticle(it.url)}
-                >
-                  {"↗"}
-                </button>
-              </div>
-            ))
+            sorted.map((it) => {
+              const itemUrl = safeArticleUrl(it.url);
+              return (
+                <div key={it.id} className="aw-corro__row">
+                  <span className="aw-mono">{hhmmUtc(it.published_at)}</span>
+                  <TierBadge tier={it.publisher_tier} />
+                  <span className="aw-corro__pub">
+                    {it.publisher_name}
+                    {it.id === row.id ? " (lead)" : ""}
+                  </span>
+                  <span className="aw-corro__title" title={it.title}>
+                    {it.title}
+                  </span>
+                  <QualityTag label={it.quality_label} />
+                  <button
+                    type="button"
+                    className="aw-row__open"
+                    aria-label={`Open article at ${it.publisher_name}`}
+                    disabled={!itemUrl}
+                    onClick={() => openArticle(itemUrl)}
+                  >
+                    {"↗"}
+                  </button>
+                </div>
+              );
+            })
           )}
         </section>
 
