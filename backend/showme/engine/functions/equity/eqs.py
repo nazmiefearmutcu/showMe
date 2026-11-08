@@ -478,15 +478,24 @@ class EQSFunction(BaseFunction):
     ) -> None:
         """Cache REFDATA-only fields (beta/industry/ps) in rotated slices.
 
-        The batch endpoint (Yahoo v7 quote) does not carry beta, priceToSales or
-        industry. They exist only in the per-symbol REFDATA payload, so every
-        live batch scan refreshes a bounded slice of uncached symbols into a
-        process-local cache. The slice used to run only when the query text
-        named one of those fields, which made the same universe show different
-        columns depending on the previous query. Coverage is reported by
-        ``_enrichment_coverage``; no value is ever invented. Calls use the shared
-        Yahoo token bucket, and the added wait per scan is bounded by
-        ``refdata_screen_timeout`` (default 3s, max 5s).
+        The batch endpoint documents marketCap, trailingPE, priceToBook and
+        dividendYield (``fetch_refdata_batch``). beta, P/S and industry are read
+        from the batch record when Yahoo returns them (``_compose_live_row``); the
+        per-symbol REFDATA payload fills what the batch does not carry. Nothing in
+        this repo has verified that the v7 quote returns beta, P/S or industry, so
+        their coverage is reported, not assumed. Every live batch scan refreshes a
+        bounded slice of uncached symbols into a process-local cache. The slice
+        used to run only when the query text named one of those fields, which made
+        the same universe show different columns depending on the previous query.
+        Coverage is reported by ``_enrichment_coverage``; no value is ever invented.
+
+        Throughput: the slice shares Yahoo's token bucket (2 calls/s, burst 5).
+        Within the default 3s slice about 5 + 2 * 3 = 11 calls finish; the rest are
+        cancelled and stay first in line for the next scan. ``refdata_screen_timeout``
+        may be raised to its 5s maximum (about 15 calls) at the cost of scan latency.
+        Commit 80d84d7a routed the slice through that bucket instead of bypassing
+        it, so REFDATA coverage per scan is lower than the earlier unthrottled slice.
+        That is the accepted trade-off against unthrottled public Yahoo requests.
         """
         budget = int(max(0.0, min(_param_float(params, "refdata_budget", 24.0), 64.0)))
         if budget <= 0:
@@ -647,9 +656,15 @@ def _compose_live_row(
     dividend_yield = _normalize_dividend_yield(batch.get("dividendYield"))
     if dividend_yield is None:
         dividend_yield = ref.get("dividend_yield")
+    # beta and P/S: REFDATA first, then the batch record when it carries them
+    # (EQS#2 follow-up). The batch adapter keeps the raw v7 record, so a field the
+    # quote carries is used; an absent field stays None, never an invented value.
     beta = ref.get("beta")
     if beta is None:
         beta = _to_float(batch.get("beta"))
+    ps = ref.get("ps")
+    if ps is None:
+        ps = _to_float(batch.get("priceToSalesTrailing12Months"))
     return {
         "symbol": symbol,
         "sector": (
@@ -661,7 +676,7 @@ def _compose_live_row(
         "marketCap": market_cap,
         "pe": pe,
         "pb": pb,
-        "ps": ref.get("ps"),
+        "ps": ps,
         "dividend_yield": dividend_yield,
         "beta": beta,
         "country": ref.get("country") or master.get("country") or batch.get("country"),
