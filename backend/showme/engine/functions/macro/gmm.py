@@ -16,6 +16,7 @@ text. This module fetches real, live data from a keyless source instead.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -107,21 +108,26 @@ class GMMFunction(BaseFunction):
         # Score = composite macro-stress proxy: high inflation + high
         # unemployment + high debt minus growth. Higher = more stressed /
         # bigger mover. Sort descending so the most extreme economies lead.
+        as_of = _as_of_year()
         for row in rows:
-            row["score"] = _composite_score(row)
-            row["score_missing"] = _score_missing(row)
+            row["score"] = _composite_score(row, as_of)
+            row["score_missing"] = _score_missing(row, as_of)
+            row["stale_fields"] = [
+                k for k in _SCORE_KEYS if row.get(k) is not None and _is_stale(row, k, as_of)
+            ]
         rows.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0.0)))
 
         limit = _coerce_int(params.get("top_n") or params.get("limit"), default=len(rows))
         rows = rows[:limit]
 
+        # Cards only rank fresh observations: a stale value must not win.
         hottest = max(
-            (r for r in rows if r.get("inflation") is not None),
+            (r for r in rows if _usable(r, "inflation", as_of) is not None),
             key=lambda r: r["inflation"],
             default=None,
         )
         fastest = max(
-            (r for r in rows if r.get("gdp_growth") is not None),
+            (r for r in rows if _usable(r, "gdp_growth", as_of) is not None),
             key=lambda r: r["gdp_growth"],
             default=None,
         )
@@ -170,8 +176,12 @@ class GMMFunction(BaseFunction):
                     "(SL.UEM.TOTL.ZS), and central-government debt-to-GDP (GC.DOD.TOTL.GD.ZS). "
                     "Rows are ranked by a composite macro-stress score = inflation + unemployment "
                     "+ 0.05·debt/GDP − GDP growth, so the economies running hottest/most stretched "
-                    "surface first. World Bank annual series are lagged, so each cell carries its "
-                    "own observation year. No value is fabricated: a missing cell stays null."
+                    "surface first. A row is scored only when all four indicators are present and "
+                    f"no observation is more than {_MAX_OBS_AGE_YEARS} years old; otherwise its "
+                    "score is null and score_missing lists the blocking indicators. World Bank "
+                    "annual series are lagged, so each cell carries its own observation year and "
+                    "stale_fields lists any observation too old to score. No value is fabricated: "
+                    "a missing cell stays null."
                 ),
                 "field_dictionary": {
                     "country": "Country name.",
@@ -184,7 +194,12 @@ class GMMFunction(BaseFunction):
                     "unemployment_year": "Year of the unemployment observation.",
                     "debt_gdp": "Central government debt, % of GDP (GC.DOD.TOTL.GD.ZS).",
                     "debt_gdp_year": "Year of the debt/GDP observation.",
-                    "score": "Composite macro-stress score (higher = hotter/more stretched).",
+                    "score": (
+                        "Composite macro-stress score (higher = hotter/more stretched). Null unless "
+                        "all four indicators are present and fresh."
+                    ),
+                    "score_missing": "Indicators that block the score (null or older than the age limit).",
+                    "stale_fields": "Indicators whose observation is older than the age limit; shown, not scored.",
                 },
                 "source_mode": "worldbank",
             },
@@ -325,26 +340,49 @@ def _iso3_to_iso2(iso3: str) -> str | None:
 
 _SCORE_KEYS: tuple[str, ...] = ("inflation", "unemployment", "debt_gdp", "gdp_growth")
 
+# An observation whose year is more than this many years before the current
+# year is shown (with its year) but does not feed the score or the cards.
+_MAX_OBS_AGE_YEARS = 5
 
-def _score_missing(row: dict[str, Any]) -> list[str]:
-    """Names of the score components a row lacks (null value)."""
-    return [k for k in _SCORE_KEYS if row.get(k) is None]
+
+def _as_of_year() -> int:
+    return datetime.now(timezone.utc).year
 
 
-def _composite_score(row: dict[str, Any]) -> float | None:
+def _is_stale(row: dict[str, Any], key: str, as_of_year: int) -> bool:
+    year = row.get(f"{key}_year")
+    return isinstance(year, int) and year < as_of_year - _MAX_OBS_AGE_YEARS
+
+
+def _usable(row: dict[str, Any], key: str, as_of_year: int) -> float | None:
+    """The indicator value if present and fresh enough to score, else None."""
+    value = row.get(key)
+    if value is None or _is_stale(row, key, as_of_year):
+        return None
+    return float(value)
+
+
+def _score_missing(row: dict[str, Any], as_of_year: int) -> list[str]:
+    """Components a row cannot be scored on: null or too old."""
+    return [k for k in _SCORE_KEYS if _usable(row, k, as_of_year) is None]
+
+
+def _composite_score(row: dict[str, Any], as_of_year: int | None = None) -> float | None:
     """Macro-stress proxy: inflation + unemployment + 0.05·debt/GDP − growth.
 
-    A row is scored only when all four components are present. A partial row
-    would otherwise rank as if its missing term were zero (e.g. a country with
-    no debt/GDP value looks less stressed than it is), so it gets no score.
+    A row is scored only when all four components are present and fresh. A
+    partial row would otherwise rank as if its missing term were zero (a
+    country with no debt/GDP value looks less stressed than it is), and a
+    stale value would be ranked as if it were current.
     """
-    if _score_missing(row):
+    as_of = _as_of_year() if as_of_year is None else as_of_year
+    vals = {k: _usable(row, k, as_of) for k in _SCORE_KEYS}
+    if any(v is None for v in vals.values()):
         return None
-    inflation = float(row["inflation"])
-    unemployment = float(row["unemployment"])
-    debt = float(row["debt_gdp"])
-    growth = float(row["gdp_growth"])
-    return round(inflation + unemployment + 0.05 * debt - growth, 4)
+    return round(
+        vals["inflation"] + vals["unemployment"] + 0.05 * vals["debt_gdp"] - vals["gdp_growth"],
+        4,
+    )
 
 
 def _coerce_int(value: Any, default: int) -> int:

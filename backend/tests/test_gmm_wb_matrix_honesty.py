@@ -167,3 +167,48 @@ def test_composite_score_requires_all_four_components() -> None:
     assert gmm_mod._composite_score(partial) is None
     full = {"inflation": 3.0, "unemployment": 4.0, "debt_gdp": 60.0, "gdp_growth": 1.0}
     assert gmm_mod._composite_score(full) == pytest.approx(3.0 + 4.0 + 3.0 - 1.0)
+
+
+# ── GMM#4: observations older than the age limit do not feed the score ──
+
+
+def test_stale_debt_observation_is_shown_but_not_scored(monkeypatch) -> None:
+    monkeypatch.setattr(gmm_mod, "_as_of_year", lambda: 2026)
+    table: dict[tuple[str, str], dict[str, Any]] = {}
+    # US: every indicator is recent. DE: debt/GDP is a 1990 observation.
+    for ind in ("NY.GDP.MKTP.KD.ZG", "FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS", "GC.DOD.TOTL.GD.ZS"):
+        table[("US", ind)] = _obs("US", "USA", ind, 2.0, 2025)
+    table[("DE", "NY.GDP.MKTP.KD.ZG")] = _obs("DE", "DEU", "NY.GDP.MKTP.KD.ZG", 0.5, 2025)
+    table[("DE", "FP.CPI.TOTL.ZG")] = _obs("DE", "DEU", "FP.CPI.TOTL.ZG", 2.5, 2025)
+    table[("DE", "SL.UEM.TOTL.ZS")] = _obs("DE", "DEU", "SL.UEM.TOTL.ZS", 3.5, 2025)
+    table[("DE", "GC.DOD.TOTL.GD.ZS")] = _obs("DE", "DEU", "GC.DOD.TOTL.GD.ZS", 20.85, 1990)
+    _patch_table(monkeypatch, table)
+
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["US", "DE"]))
+    rows = {r["country_code"]: r for r in result.data["rows"]}
+
+    de = rows["DE"]
+    # The value and its year stay visible so the staleness is auditable...
+    assert de["debt_gdp"] == 20.85
+    assert de["debt_gdp_year"] == 1990
+    # ...but it is flagged and kept out of the composite and the rank.
+    assert de["stale_fields"] == ["debt_gdp"]
+    assert de["score"] is None
+    assert de["score_missing"] == ["debt_gdp"]
+    assert rows["US"]["stale_fields"] == []
+    assert rows["US"]["score"] is not None
+
+
+def test_stale_value_never_wins_a_card(monkeypatch) -> None:
+    monkeypatch.setattr(gmm_mod, "_as_of_year", lambda: 2026)
+    table: dict[tuple[str, str], dict[str, Any]] = {}
+    for ind in ("NY.GDP.MKTP.KD.ZG", "FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS", "GC.DOD.TOTL.GD.ZS"):
+        table[("US", ind)] = _obs("US", "USA", ind, 2.0, 2025)
+    # DE's inflation figure is from 2010: it must not be the "Hottest CPI" card.
+    table[("DE", "FP.CPI.TOTL.ZG")] = _obs("DE", "DEU", "FP.CPI.TOTL.ZG", 50.0, 2010)
+    _patch_table(monkeypatch, table)
+
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["US", "DE"]))
+    hottest = next(c for c in result.data["cards"] if c["key"] == "hottest_inflation")
+    assert hottest["value"] is not None and "United States" in hottest["value"]
+    assert "Germany" not in hottest["value"]
