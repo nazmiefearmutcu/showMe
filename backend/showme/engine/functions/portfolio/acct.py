@@ -34,7 +34,15 @@ class ACCTFunction(BaseFunction):
                     data={
                         "status": "ready_no_positions",
                         "accounts": [],
-                        "cross": {"total_mv": 0.0, "by_asset_class": {}, "by_symbol": {}},
+                        "cross": {"total_mv": None, "by_asset_class": {}, "by_symbol": {},
+                                  "unpriced_symbols": []},
+                        "summary": {
+                            "accounts": 0,
+                            "positions": 0,
+                            "total_market_value": None,
+                            "unpriced_positions": 0,
+                            "total_market_value_complete": False,
+                        },
                         "rows": [],
                         "next_actions": [
                             "Add real positions through the portfolio state surface.",
@@ -58,6 +66,16 @@ class ACCTFunction(BaseFunction):
                     data={
                         "status": "input_error",
                         "reason": "positions must be a JSON array of position objects.",
+                        "accounts": [],
+                        "cross": {"total_mv": None, "by_asset_class": {}, "by_symbol": {},
+                                  "unpriced_symbols": []},
+                        "summary": {
+                            "accounts": 0,
+                            "positions": 0,
+                            "total_market_value": None,
+                            "unpriced_positions": 0,
+                            "total_market_value_complete": False,
+                        },
                         "rows": [],
                         "next_actions": [
                             "Pass positions=[{symbol, asset_class, quantity, avg_cost, last, account}, ...].",

@@ -60,3 +60,33 @@ def test_manifest_must_have_fields_are_returned_by_the_handler() -> None:
     assert res is not None
     missing = [key for key in entry.output_contract.must_have if key not in res.data]
     assert not missing, f"ACCT must_have fields not returned by the handler: {missing}"
+
+
+def _empty_book() -> type:
+    class _Empty:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            self.positions: list[Any] = []
+
+        def import_legacy_crypto(self, *_a: Any, **_k: Any) -> int:
+            return 0
+
+    return _Empty
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param({}, id="ready_no_positions"),
+        pytest.param({"positions": "not-a-list"}, id="input_error"),
+    ],
+)
+def test_empty_state_branches_return_every_must_have_field(
+    params: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ACCT#3 residual: the empty-state returns (no positions, bad input) must
+    # carry the same must_have contract as the supplied-positions branch.
+    entry = REGISTRY.get("ACCT")
+    monkeypatch.setattr(acct_mod, "PortfolioState", _empty_book())
+    res = asyncio.run(acct_mod.ACCTFunction(FunctionDeps()).execute(**params))
+    missing = [key for key in entry.output_contract.must_have if key not in res.data]
+    assert not missing, f"ACCT must_have fields missing from empty-state return: {missing}"
