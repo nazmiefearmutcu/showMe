@@ -131,3 +131,42 @@ def test_field_dictionary_total_does_not_call_proxy_count_a_risk_score():
     assert "filing" in text, text
     assert "proxy" in text, text
     assert "vendor" in _FIELD_DICTIONARY["totalEsg"].lower()
+
+
+def test_proxy_total_is_unique_filing_count_not_sum_of_pillars(monkeypatch):
+    # Pillar buckets overlap: one filing can match several buckets. Pillar counts
+    # 3 + 5 + 7 = 15, but the unique filings matching any term are 9.
+    def payload_for(q):
+        if "climate change" in q and "diversity" in q:
+            return _total(9)
+        if "climate change" in q:
+            return _total(3)
+        if "diversity" in q:
+            return _total(5)
+        return _total(7)
+
+    _patch(monkeypatch, payload_for)
+    result = _run(ESGFunction(FunctionDeps()).execute(instrument=_instrument()))
+    data = result.data
+    assert data["status"] == "ok"
+    pillar_sum = data["environmentScore"] + data["socialScore"] + data["governanceScore"]
+    assert pillar_sum == 15
+    assert data["totalEsg"] == 9, data["totalEsg"]
+    assert data["totalEsg"] != pillar_sum
+
+
+def test_manifest_total_esg_description_does_not_call_proxy_count_a_risk_score():
+    from showme.manifest.seeds.esg_seed import esg as esg_manifest
+
+    description = esg_manifest.field_dict["totalEsg"].description.lower()
+    assert "risk / opportunity" not in description, description
+    assert "filing" in description, description
+    assert "proxy" in description, description
+
+
+def test_manifest_data_mode_description_lists_live_official():
+    from showme.manifest.seeds.esg_seed import esg as esg_manifest
+
+    description = esg_manifest.field_dict["data_mode"].description
+    assert "live_official" in description, description
+    assert "delayed_reference" not in description, description
