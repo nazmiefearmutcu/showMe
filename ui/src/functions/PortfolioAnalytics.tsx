@@ -148,7 +148,10 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     subtitle: "Factor loadings, VaR, and residual risk",
     defaultSymbols: "SPY,TLT,GLD",
     usesUniverse: true,
-    supportsLive: true,
+    // MARS is live by default in the backend (ETF proxies). This pane's default
+    // live flag is false, so exposing the toggle here would silently serve the
+    // template; the MultiAssetRisk pane owns the MODEL toggle for MARS.
+    supportsLive: false,
   },
   MGN: {
     title: "Margin",
@@ -1273,7 +1276,8 @@ function buildParams(
         market_caps: state.blak.marketCaps,
       };
     case "MARS":
-      return { symbols, live: state.live };
+      // No live key: the backend defaults to live ETF proxies (see supportsLive above).
+      return { symbols };
     case "BMTX":
       // Live backtest matrix — without this the backend always served the
       // reference template (`_matrix_template`) and the live path was dead.
