@@ -84,20 +84,20 @@ def strs() -> FunctionManifest:
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
                 description=(
-                    "Named stress scenarios (hand-set shocks; bond funds in "
-                    "GFC 2008 and COVID 2020 take their measured window return) "
-                    "plus custom shocks. The user must explicitly pick at least one."
+                    "Named stress scenarios to run (hand-set shocks; bond funds in "
+                    "GFC_2008 and COVID_2020 take their measured window return). "
+                    "These keys are the only scenarios the engine runs; custom shocks "
+                    "use action=custom. The user must explicitly pick at least one."
                 ),
                 options=[
-                    "black_monday_1987",
-                    "asia_1997",
-                    "russia_ltcm_1998",
-                    "dotcom_2000",
-                    "lehman_2008",
-                    "eurozone_2011",
-                    "covid_2020",
-                    "rates_2022",
-                    "custom",
+                    "GFC_2008",
+                    "COVID_2020",
+                    "CHINA_2015",
+                    "RATE_SHOCK_300BP",
+                    "TECH_BUST_2022",
+                    "USD_STRENGTH",
+                    "OIL_SPIKE",
+                    "CRYPTO_WINTER",
                 ],
             ),
             InputSpec(
@@ -219,9 +219,10 @@ def strs() -> FunctionManifest:
             "shocks are calibrations to each scenario's narrative, not replays of "
             "the named windows. Each shock is multiplied by `scale` and floored at "
             "-100% per position; floored positions are listed in warnings. "
-            "Worst_case is the scenario with the largest loss. The `scenarios` and "
-            "`scenario_magnitudes` inputs are declared, but the engine applies a "
-            "single shock method."
+            "Worst_case is the scenario with the largest loss. `scenarios` selects "
+            "which engine scenarios run (a key the engine does not run is reported "
+            "in warnings, never dropped silently); `scenario_magnitudes` is the scale. "
+            "The engine applies a single shock method."
         ),
         formula_dict={
             "ParametricShock": Formula(

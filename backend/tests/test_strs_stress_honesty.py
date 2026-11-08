@@ -239,3 +239,41 @@ def test_apply_scenario_measured_none_marks_treasury_unavailable():
     assert row["shock_source"] == "unavailable"
     assert out["total_pnl"] == 0.0
     assert out["warnings"]
+
+
+# ── STRS#4: unknown keys are reported, not silently dropped ─────────────
+
+
+def test_strs4_compare_reports_unknown_scenario_keys(monkeypatch):
+    _use_positions(monkeypatch, [_Position("AAPL", AssetClass.EQUITY, 1.0, 100.0)])
+    res = _run(strs_mod.STRSFunction().execute(
+        action="compare", scenarios=["LEHMAN_2008", "gfc_2008"],
+    ))
+    assert [c["key"] for c in res.data["comparisons"]] == ["gfc_2008"]
+    assert any("LEHMAN_2008" in w for w in res.warnings), res.warnings
+
+
+def test_strs4_compare_accepts_a_comma_separated_scenario_string(monkeypatch):
+    _use_positions(monkeypatch, [_Position("AAPL", AssetClass.EQUITY, 1.0, 100.0)])
+    res = _run(strs_mod.STRSFunction().execute(
+        action="compare", scenarios="GFC_2008, COVID_2020",
+    ))
+    assert sorted(c["key"] for c in res.data["comparisons"]) == ["COVID_2020", "GFC_2008"]
+
+
+def test_strs4_unknown_single_scenario_is_an_explicit_input_error(monkeypatch):
+    _use_positions(monkeypatch, [_Position("AAPL", AssetClass.EQUITY, 1.0, 100.0)])
+    res = _run(strs_mod.STRSFunction().execute(action="scenario", scenario="BLACK_MONDAY_1987"))
+    assert res.data["status"] == "input_error", res.data
+    assert "GFC_2008" in res.data["scenarios"]
+    assert res.data["next_actions"]
+    assert any("BLACK_MONDAY_1987" in w for w in res.warnings), res.warnings
+
+
+def test_strs4_scenario_magnitudes_input_is_the_scale_factor(monkeypatch):
+    _use_positions(monkeypatch, [_Position("HYG", AssetClass.ETF, 100.0, 100.0)])
+    res = _run(strs_mod.STRSFunction().execute(
+        action="scenario", scenario="GFC_2008", scenario_magnitudes=1.5,
+    ))
+    assert res.data["scale"] == pytest.approx(1.5)
+    assert _row(res, "HYG")["shock"] == pytest.approx(-0.75)

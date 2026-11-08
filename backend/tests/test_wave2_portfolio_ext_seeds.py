@@ -182,11 +182,15 @@ def test_pvar_options_cover_standard_confidence_levels() -> None:
 
 
 def test_strs_scenarios_options_include_named_history() -> None:
-    """STRS scenarios option list must include canonical historical windows."""
+    """STRS scenarios option list must include the measured windows the engine runs.
+
+    The option keys are the engine's SCENARIOS keys (STRS#4: the manifest offered
+    historical names the engine could not run, so this now pins the real keys).
+    """
     strs = REGISTRY.get("STRS")
     scen_input = next(i for i in strs.inputs if i.name == "scenarios")
     assert scen_input.options is not None, "STRS scenarios must declare options"
-    required_scenarios = {"lehman_2008", "covid_2020"}
+    required_scenarios = {"GFC_2008", "COVID_2020"}
     options_set = set(scen_input.options)
     missing = required_scenarios - options_set
     assert not missing, (

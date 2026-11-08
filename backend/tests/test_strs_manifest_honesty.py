@@ -53,3 +53,20 @@ def test_methodology_names_the_measured_exception_and_its_fallback():
     assert "measured" in method, method
     assert "unavailable" in method, method
     assert "bond" in method, method
+
+
+def test_scenarios_options_are_engine_scenario_keys():
+    """STRS#4 — every selectable scenario must be one the engine can run."""
+    from showme.engine.services import stress_scenarios as stress
+
+    opts = _input(_strs(), "scenarios").options or []
+    assert opts, "scenarios must declare options"
+    unrunnable = [o for o in opts if o.upper() not in stress.SCENARIOS]
+    assert not unrunnable, unrunnable
+
+
+def test_scenarios_options_offer_no_historical_names_the_engine_lacks():
+    opts = {o.lower() for o in (_input(_strs(), "scenarios").options or [])}
+    for historical in ("black_monday_1987", "asia_1997", "russia_ltcm_1998", "dotcom_2000",
+                       "lehman_2008", "eurozone_2011", "rates_2022"):
+        assert historical not in opts, historical

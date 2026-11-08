@@ -54,7 +54,7 @@ class STRSFunction(BaseFunction):
                     "methodology": _methodology(),
                     "field_dictionary": _field_dictionary(),
                     "next_actions": [
-                        "Add positions in PORT or run the legacy-crypto import.",
+                        "Add positions in PORT.",
                         "Use action=list to inspect the predefined scenario catalog without a portfolio.",
                     ],
                 },
@@ -81,7 +81,12 @@ class STRSFunction(BaseFunction):
                 "market_value": mv,
                 "sector": sector_lookup.get(p.instrument.symbol),
             })
-        scale = float(params.get("scale", 1.0))
+        # The manifest's `scenario_magnitudes` input is the scale factor; `scale` is kept
+        # as the older spelling.
+        scale_raw = params.get("scale")
+        if scale_raw is None:
+            scale_raw = params.get("scenario_magnitudes", 1.0)
+        scale = float(scale_raw)
         sources = ["stress_scenarios", "portfolio_state"]
         if refresh_prices or include_sectors:
             sources.insert(0, "yfinance")
@@ -107,7 +112,12 @@ class STRSFunction(BaseFunction):
             if any(v is not None for win in measured_by_key.values() for v in win.values()):
                 sources.insert(0, "yfinance_history")
         if action == "compare":
-            keys = params.get("scenarios") or list(stress.SCENARIOS)
+            requested = _requested_scenarios(params.get("scenarios"))
+            keys = requested or list(stress.SCENARIOS)
+            # A key the engine does not run is reported, never silently dropped.
+            unknown_warnings = [
+                f"unknown scenario {k}: not run" for k in keys if k.upper() not in stress.SCENARIOS
+            ]
             data = stress.compare_scenarios(
                 positions_payload,
                 keys,
@@ -115,7 +125,9 @@ class STRSFunction(BaseFunction):
                 scale=scale,
                 measured_by_key=measured_by_key,
             )
-            compare_warnings = _unique_warnings(row.get("warnings", []) for row in data)
+            compare_warnings = _unique_warnings(
+                [unknown_warnings, *(row.get("warnings", []) for row in data)],
+            )
             return FunctionResult(code=self.code, instrument=None,
                                   warnings=compare_warnings,
                                   data={"comparisons": data,
@@ -152,8 +164,24 @@ class STRSFunction(BaseFunction):
         key = (params.get("scenario") or params.get("key") or "GFC_2008").upper()
         sc = stress.get_scenario(key)
         if not sc:
-            return FunctionResult(code=self.code, instrument=None, data={},
-                                  warnings=[f"unknown scenario {key}"])
+            # Explicit input error with the runnable keys, not an empty payload.
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"{key} is not a scenario the engine runs.",
+                    "rows": [],
+                    "scenarios": list(stress.SCENARIOS),
+                    "methodology": _methodology(),
+                    "field_dictionary": _field_dictionary(),
+                    "next_actions": [
+                        "Pass one of the listed scenario keys in `scenario`.",
+                        "Use action=compare to run every listed scenario at once.",
+                    ],
+                },
+                warnings=[f"unknown scenario {key}"],
+                sources=["stress_scenarios"],
+            )
         data = stress.apply_scenario(
             positions_payload, sc, sector_lookup=sector_lookup, scale=scale,
             measured=measured_by_key.get(key) if key in stress.MEASURED_WINDOWS else None,
@@ -265,6 +293,19 @@ def _unique_warnings(groups: Any) -> list[str]:
             if warning not in seen:
                 seen.append(warning)
     return seen
+
+
+def _requested_scenarios(value: Any) -> list[str]:
+    """Scenario keys from a list or a comma-separated string (iterating a str would split characters)."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items: list[Any] = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = [value]
+    return [str(v).strip() for v in items if str(v).strip()]
 
 
 def _truthy(value: Any) -> bool:
