@@ -151,3 +151,34 @@ def test_model_returns_are_labelled_when_live_is_off() -> None:
     assert result.sources == ["computed_return_model"]
     assert result.metadata["fallback"] is True
     assert any("not market data" in w for w in result.warnings), result.warnings
+
+
+# --- PORT_OPT#3 follow-up: inputs that were still silently ignored -------------
+
+def test_provider_mode_input_is_reported_as_unapplied() -> None:
+    result = _run(
+        _FakeYFinance(_VOLS), symbols=SYMBOLS, mode="frontier", live=True,
+        days=756, provider_mode="cached_snapshot",
+    )
+    assert "provider_mode" in result.data.get("unapplied_inputs", []), result.data.get("unapplied_inputs")
+    assert any("provider_mode" in w for w in result.warnings), result.warnings
+
+
+def test_window_is_reported_when_days_takes_precedence() -> None:
+    result = _run(
+        _FakeYFinance(_VOLS), symbols=SYMBOLS, mode="frontier", live=True,
+        days=756, window="2Y",
+    )
+    assert result.metadata["days"] == 756
+    assert "window" in result.data.get("unapplied_inputs", []), result.data.get("unapplied_inputs")
+
+
+def test_frontier_points_is_reported_when_mode_has_no_frontier() -> None:
+    result = _run(
+        _FakeYFinance(_VOLS), symbols=SYMBOLS, mode="max_sharpe", live=True,
+        days=756, frontier_points=20,
+    )
+    assert "efficient_frontier" not in result.data
+    assert "frontier_points" in result.data.get("unapplied_inputs", []), result.data.get("unapplied_inputs")
+
+

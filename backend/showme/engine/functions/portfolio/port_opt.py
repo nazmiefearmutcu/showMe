@@ -76,6 +76,10 @@ class PortOptFunction(BaseFunction):
         # --- lookback / rates / frontier size --------------------------------
         if params.get("days") is not None:
             days = int(params["days"])
+            if params.get("window") is not None:
+                # days wins over the window label; say so instead of silently
+                # choosing one lookback.
+                unapplied.append("window")
         elif params.get("window") is not None:
             window_key = str(params["window"]).strip().lower()
             if window_key not in _WINDOW_DAYS:
@@ -89,6 +93,13 @@ class PortOptFunction(BaseFunction):
         rate_key = "risk_free" if params.get("risk_free") is not None else "risk_free_rate"
         rf = float(params.get(rate_key, 0.04))
         points = max(10, min(200, int(params.get("frontier_points", 40))))
+        if params.get("frontier_points") is not None and mode not in ("frontier", "all"):
+            # The frontier size only matters when a frontier is computed.
+            unapplied.append("frontier_points")
+        if params.get("provider_mode") is not None:
+            # Declared in the manifest, but the handler always uses yfinance daily
+            # closes and does not switch data modes.
+            unapplied.append("provider_mode")
 
         risk_model = str(params.get("risk_model") or "sample_cov").lower()
         if risk_model not in _APPLIED_RISK_MODELS:
