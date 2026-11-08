@@ -58,10 +58,10 @@ WAVE2_EQUITIES_CODES: tuple[str, ...] = (
 
 
 SEC_EDGAR_PRIMARY: frozenset[str] = frozenset(
-    {"FORM4", "FTS", "HDS", "HFS", "CACT", "SPLC", "LITM"}
+    {"FORM4", "FTS", "HDS", "HFS", "CACT", "SPLC", "LITM", "PIB"}
 )
 YFINANCE_PRIMARY: frozenset[str] = frozenset(
-    {"APPL", "PIB", "DPF", "DVD", "ANR", "RV", "DARK"}
+    {"APPL", "DPF", "DVD", "ANR", "RV", "DARK"}
 )
 # F14 seed-truth resync: EE (Finnhub historical earnings, Yahoo calendar as
 # fallback) and EREV (Finnhub recommendation buckets only) were listed under
