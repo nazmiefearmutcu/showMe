@@ -64,3 +64,13 @@ def test_macos_host_reports_bridge_as_expected_not_verified(monkeypatch: pytest.
     assert result.data["status"] == "ready"
     assert result.sources == ["static_reference_documentation"]
     assert result.metadata.get("live") is False
+
+
+def test_non_macos_methodology_does_not_claim_bridge_in_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    result = _run()
+    # RED before fix: the methodology said BIO "uses the native macOS
+    # LocalAuthentication bridge" regardless of host.
+    methodology = result.data["methodology"]
+    assert "uses the native macOS" not in methodology
+    assert "win32" in methodology or "not available" in methodology

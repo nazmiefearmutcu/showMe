@@ -190,8 +190,13 @@ class BIOFunction(BaseFunction):
                 ],
                 "next_actions": next_actions,
                 "methodology": (
-                    "BIO uses the native macOS LocalAuthentication bridge exposed by the Tauri shell. "
-                    "The backend only documents the auth flow; the actual biometric prompt is initiated "
+                    (
+                        "BIO uses the native macOS LocalAuthentication bridge exposed by the Tauri shell. "
+                        if is_macos else
+                        f"The macOS LocalAuthentication bridge is not available on this host ({host}); "
+                        "every verify is denied. "
+                    )
+                    + "The backend only documents the auth flow; the actual biometric prompt is initiated "
                     "by the BIO pane after the user clicks Verify."
                 ),
                 "field_dictionary": {
