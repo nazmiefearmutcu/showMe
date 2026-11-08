@@ -1,6 +1,6 @@
 {
   "_doc": "Offline truth-gate ratchet (backend/showme/audit/gate.py). Per function: count per '<check>:<rule>'. Counts may only go down. Regenerate downward with SHOWME_UPDATE_TRUTH_BASELINE=1 pytest tests/test_function_truth_gate.py.",
-  "total": 365,
+  "total": 362,
   "counts": {
     "ACCT": {
       "T6:generic_inputs": 1
@@ -109,8 +109,7 @@
       "T9:pane_param_maybe_ignored": 1
     },
     "CORR": {
-      "T6:generic_inputs": 1,
-      "T9:pane_param_ignored": 1
+      "T6:generic_inputs": 1
     },
     "COUN": {
       "T6:empty_description": 1,
@@ -157,8 +156,7 @@
     },
     "DCFS": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "DDIS": {
       "T6:empty_description": 1,
@@ -488,8 +486,7 @@
       "T6:empty_description": 1,
       "T6:generic_inputs": 1,
       "T6:template_purpose": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "SAT": {
       "T6:generic_inputs": 1
