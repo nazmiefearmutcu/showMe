@@ -24,14 +24,14 @@ class COUNFunction(BaseFunction):
         baseline_warnings: list[str] = []
         if not country_is_known:
             baseline_warnings.append(
-                f"country '{country}' has no curated profile; using generic reference fallback"
+                f"country '{country}' has no curated profile; no reference values are served"
             )
         if not live:
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data=profile,
-                sources=["country_reference_profile"],
+                sources=["country_reference_profile"] if profile.get("rows") else [],
                 warnings=baseline_warnings,
                 metadata={"live": False, "country_known": country_is_known},
             )
@@ -76,7 +76,8 @@ class COUNFunction(BaseFunction):
         if policy_row:
             live_sources.append("btmm")
         live_sources.extend(str(row["source_mode"]) for row in live_indicator_rows)
-        live_sources.append("country_reference_profile")
+        if profile.get("rows"):
+            live_sources.append("country_reference_profile")
         has_live = bool(policy_row) or bool(live_indicator_rows)
         all_warnings = baseline_warnings + provider_errors + indicator_warnings
         return FunctionResult(
@@ -100,6 +101,7 @@ class COUNFunction(BaseFunction):
                 },
                 "source_mode": "live_macro" if has_live else "reference_country_profile",
                 "country_known": country_is_known,
+                **({} if country_is_known else _unknown_country_state(country)),
             },
             sources=_unique(live_sources),
             warnings=all_warnings,
@@ -115,6 +117,21 @@ class COUNFunction(BaseFunction):
 _KNOWN_PROFILE_COUNTRIES = frozenset({"US", "EU", "GB", "TR"})
 
 
+def _unknown_country_state(country: str) -> dict[str, Any]:
+    """Explicit no-profile state for a country outside the curated set."""
+    return {
+        "status": "needs_input",
+        "reason": (
+            f"no curated reference profile for country {country!r}; "
+            "no reference values are invented for it"
+        ),
+        "next_actions": [
+            "Choose a curated country: US, EU, GB or TR.",
+            "Use live_macro=true for the live BTMM and FRED rows that exist for this country.",
+        ],
+    }
+
+
 def _country_profile_model(country: str) -> dict[str, Any]:
     profiles = {
         "US": {"policy_rate": 0.0525, "inflation": 0.031, "unemployment": 0.039, "currency": "USD", "gdp_growth": 0.02, "debt_to_gdp": 1.21, "fiscal_balance": -0.058, "ten_year_yield": 0.043},
@@ -122,7 +139,18 @@ def _country_profile_model(country: str) -> dict[str, Any]:
         "GB": {"policy_rate": 0.0525, "inflation": 0.032, "unemployment": 0.043, "currency": "GBP", "gdp_growth": 0.011, "debt_to_gdp": 0.97, "fiscal_balance": -0.044, "ten_year_yield": 0.041},
         "TR": {"policy_rate": 0.50, "inflation": 0.55, "unemployment": 0.09, "currency": "TRY", "gdp_growth": 0.032, "debt_to_gdp": 0.30, "fiscal_balance": -0.045, "ten_year_yield": 0.275},
     }
-    profile = profiles.get(country, {"policy_rate": 0.04, "inflation": 0.03, "unemployment": 0.06, "currency": None, "gdp_growth": 0.015, "debt_to_gdp": None, "fiscal_balance": None, "ten_year_yield": None})
+    profile = profiles.get(country)
+    if profile is None:
+        # Data policy: an unknown country gets no invented reference numbers.
+        return {
+            "country": country,
+            "rows": [],
+            "cards": [],
+            "methodology": "No curated reference profile exists for this country.",
+            "field_dictionary": {},
+            "source_mode": "no_reference_profile",
+            **_unknown_country_state(country),
+        }
     rows = [
         {"section": "rates", "metric": "Policy rate", "value": profile["policy_rate"] * 100, "unit": "%", "source_mode": "country_reference_profile"},
         {"section": "prices", "metric": "Inflation", "value": profile["inflation"] * 100, "unit": "% y/y", "source_mode": "country_reference_profile"},
