@@ -213,3 +213,10 @@ def test_debt_to_equity_zero_long_term_debt_is_zero_not_liabilities() -> None:
         "total_equity": 100.0, "total_liabilities": 300.0, "long_term_debt": 0.0,
     })
     assert ratios["debt_to_equity"] == 0.0
+
+
+def test_quarterly_ratio_basis_says_not_annualized() -> None:
+    # FA#4 follow-on: quarterly flow ratios (ROA/ROE/margins) are single-quarter
+    # values; the payload must say so instead of reading like annual ratios.
+    assert "not annualized" in _run_fa("quarterly").data["ratio_basis"]
+    assert "fiscal-year" in _run_fa("annual").data["ratio_basis"]

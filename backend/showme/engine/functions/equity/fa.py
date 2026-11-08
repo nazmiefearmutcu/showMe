@@ -263,6 +263,13 @@ def _normalise_fa_payload(
             "ratios": len(ratios),
         },
         "methodology": "FA normalizes income statement, balance sheet, and cash-flow rows into canonical line items, then computes ratios from latest available values. Ratios tab is only meaningful when the ratios payload is non-empty.",
+        # Flow ratios (margins, ROA, ROE) use the period's own flows: a quarter for
+        # period=quarterly, so they are single-quarter values and not annualized.
+        "ratio_basis": (
+            "single quarter flows over period-end balances; not annualized"
+            if period == "quarterly"
+            else "fiscal-year flows over period-end balances"
+        ),
         "field_dictionary": {
             "gross_margin": "gross_profit / revenue.",
             "net_margin": "net_income / revenue.",
