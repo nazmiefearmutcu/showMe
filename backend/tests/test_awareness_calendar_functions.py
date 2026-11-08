@@ -518,3 +518,17 @@ def test_world_events_helpers_still_import_for_meet():
     rows, dropped = we.economic_rows([{"event": "CPI", "date": f"{_day(1)}T12:30:00Z", "country": "US",
                                        "importance": "high"}], now=datetime.now(UTC))
     assert rows and dropped == 0
+
+
+def test_cact_exposes_decoded_8k_items_for_litm() -> None:
+    from showme.engine.functions.equity.cact import _events_8k, _filing_row
+
+    row = _filing_row({
+        "date": "2026-11-05",
+        "fields": {"form": "8-K", "accession": "0001-26-1", "url": "https://www.sec.gov/x",
+                   "items": [{"code": "5.02", "label": "Departure/Election of Directors or Officers"},
+                             {"code": "9.01", "label": "Financial Statements and Exhibits"}]},
+    })
+    events = _events_8k([row])
+    assert [e["code"] for e in events] == ["5.02", "9.01"]
+    assert events[0]["filing_date"] == "2026-11-05" and events[0]["accession"] == "0001-26-1"

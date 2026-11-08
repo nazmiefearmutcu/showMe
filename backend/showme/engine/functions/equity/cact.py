@@ -85,8 +85,27 @@ def _filing_row(item: dict[str, Any]) -> dict[str, Any]:
         "form": fields.get("form"),
         "accession": fields.get("accession"),
         "url": fields.get("url"),
+        "items": [i for i in (fields.get("items") or []) if isinstance(i, dict)],
         "source": "awareness:filings",
     }
+
+
+def _events_8k(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One entry per decoded 8-K item (consumed by LITM's litigation/governance filter)."""
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("action_type") != "8-K":
+            continue
+        for item in row.get("items") or []:
+            out.append({
+                "code": item.get("code"),
+                "category": item.get("label"),
+                "filing_date": row.get("event_date"),
+                "accession": row.get("accession"),
+                "document": row.get("url"),
+                "source": "awareness:filings",
+            })
+    return out
 
 
 def _dedupe(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
@@ -194,6 +213,7 @@ class CACTFunction(BaseFunction):
                 "symbol": symbol,
                 "rows": unique,
                 "timeline": unique,
+                "events_8k": _events_8k(unique),
                 "counts": {
                     "dividend": sum(1 for r in unique if r["action_type"] == "dividend"),
                     "split": sum(1 for r in unique if r["action_type"] == "split"),
