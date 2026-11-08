@@ -250,6 +250,33 @@ describe("SRSK pane — ranked table", () => {
   });
 });
 
+describe("SRSK pane — FRED-priced rows without a score", () => {
+  const fredNote =
+    "no live World Bank macro for DE; no risk score computed (unranked); spread and PD come from the FRED 10Y differential";
+
+  it("counts a FRED-priced row with no score as unscored and shows its note", () => {
+    setMockFn({
+      state: "ok",
+      ...livePayload([
+        srskRow({
+          country: "DE",
+          risk_score: null,
+          proxy_spread_pct: 1.5,
+          pd_1y_pct: 2.5,
+          source_mode: "fred",
+          note: fredNote,
+        }),
+        ...CORE_ROWS,
+      ]),
+    });
+    const { container } = render(<SRSKPane code="SRSK" />);
+    // 4 requested, 3 ranked, so exactly 1 unscored.
+    expect(screen.getByText(/4 requested · 1 unscored/)).toBeInTheDocument();
+    const last = container.querySelectorAll("tbody tr")[3];
+    expect(last.textContent ?? "").toContain(fredNote);
+  });
+});
+
 describe("SRSK pane — controls + honesty", () => {
   it("sends the Core 4 universe by default", () => {
     setMockFn({ state: "ok", ...livePayload() });

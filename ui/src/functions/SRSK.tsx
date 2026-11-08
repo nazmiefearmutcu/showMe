@@ -313,7 +313,7 @@ export function SRSKPane({ code }: FunctionPaneProps) {
               >
                 {r.source_mode}
               </Pill>
-              {r.source_mode === "unavailable" && r.note ? (
+              {typeof r.risk_score !== "number" && r.note ? (
                 <span style={unscoredNoteStyle}>{r.note}</span>
               ) : null}
             </span>
@@ -509,8 +509,8 @@ function deriveStats(rows: RankedRow[], cards?: SRSKCards) {
     worstPd: worst?.pd_1y_pct ?? cards?.highest_pd ?? null,
     rankedCount: rows.filter((r) => typeof r.risk_score === "number").length,
     totalCount: rows.length,
-    // Rows with no live macro data: no score, spread or PD was computed.
-    unscoredCount: rows.filter((r) => r.source_mode === "unavailable").length,
+    // Rows with no risk score stay unranked, even when a FRED differential prices them.
+    unscoredCount: rows.filter((r) => typeof r.risk_score !== "number").length,
     recovery: cards?.recovery ?? rows[0]?.recovery ?? null,
     asOf: cards?.as_of ?? rows.find((r) => r.as_of)?.as_of ?? null,
   };
