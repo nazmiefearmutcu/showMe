@@ -83,7 +83,7 @@ def port_opt() -> FunctionManifest:
                 label="Risk model",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Covariance estimator passed through to PyPortfolioOpt.",
+                description="Covariance estimator. Only sample_cov is applied; other choices are reported in unapplied_inputs.",
                 options=[
                     "sample_cov",
                     "ledoit_wolf",
@@ -228,8 +228,10 @@ def port_opt() -> FunctionManifest:
             "(252-day annualization) and the sample covariance, then solves "
             "long-only mean-variance problems with in-house solvers. Max-Sharpe "
             "starts from the analytical tangency portfolio and runs projected "
-            "gradient ascent. Min-volatility and the frontier use projected gradient "
-            "descent with a Lagrange multiplier for the return target. The frontier "
+            "gradient ascent. Min-volatility uses projected gradient descent on the "
+            "simplex with no return target and no multiplier. The frontier uses "
+            "projected gradient descent with an adaptive Lagrange multiplier for the "
+            "return target. The frontier "
             "samples targets between the lowest and highest single-asset annualized "
             "mean; targets the solver cannot reach repeat one portfolio, so duplicate "
             "points are removed. Risk parity uses cyclical coordinate descent and is "

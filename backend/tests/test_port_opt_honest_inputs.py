@@ -182,3 +182,21 @@ def test_frontier_points_is_reported_when_mode_has_no_frontier() -> None:
     assert "frontier_points" in result.data.get("unapplied_inputs", []), result.data.get("unapplied_inputs")
 
 
+# --- PORT_OPT#6 follow-up: remaining external-solver claim and min-vol method ---
+
+def test_manifest_input_descriptions_do_not_claim_external_solvers() -> None:
+    load_seeds()
+    entry = REGISTRY.get("PORT_OPT")
+    texts = [entry.intent, entry.methodology] + [spec.description or "" for spec in entry.inputs]
+    for text in texts:
+        for claim in ("PyPortfolioOpt", "Riskfolio", "EfficientFrontier"):
+            assert claim not in text, (claim, text)
+
+
+def test_methodology_does_not_give_min_volatility_a_return_multiplier() -> None:
+    load_seeds()
+    entry = REGISTRY.get("PORT_OPT")
+    assert "Min-volatility and the frontier use" not in entry.methodology, entry.methodology
+    assert "Min-volatility uses projected gradient descent" in entry.methodology, entry.methodology
+
+
