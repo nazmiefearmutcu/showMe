@@ -108,6 +108,28 @@ def test_fxgo_user_pair_with_equals_x_reaches_yahoo_and_returns_board(monkeypatc
     assert row["ask"] >= row["bid"] > 0
 
 
+def test_fxgo_bid_ask_are_labelled_indicative_not_best_quotes(monkeypatch):
+    """Bid/ask come from a synthetic spread around a Yahoo mid, so they must
+    never be described as venue best bid/ask (data policy: honest provenance)."""
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    seen: list[str] = []
+    _install_fake_yahoo(monkeypatch, {"GBPUSD=X": 1.3356}, seen)
+
+    h = _mk_handler(FXGOFunction, deps=None)
+    data = _run(h.execute(pairs="GBPUSD=X")).data
+
+    row = data["rows"][0]
+    assert row["bid_ask_basis"] == "synthetic_indicative"
+    assert data["bid_ask_basis"] == "synthetic_indicative"
+    dictionary = data["field_dictionary"]
+    for key in ("bid", "ask"):
+        text = dictionary[key].lower()
+        assert "best" not in text, dictionary[key]
+        assert text.startswith("indicative"), dictionary[key]
+        assert "synthetic" in text, dictionary[key]
+
+
 # ---------------------------------------------------------------------------
 # TCA#1 — unfilled orders must not be booked as fills.
 # ---------------------------------------------------------------------------
