@@ -181,7 +181,8 @@ def _lookback_months(value: Any) -> int:
     """LITM#2: the seed's months input (3-60, default 24), clamped to that range."""
     try:
         parsed = int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: float('inf') parses but cannot be converted to int.
         parsed = _LITM_LOOKBACK_DEFAULT
     return max(_LITM_LOOKBACK_RANGE[0], min(_LITM_LOOKBACK_RANGE[1], parsed))
 

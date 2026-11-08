@@ -135,3 +135,15 @@ def test_item_codes_unavailable_row_is_severity_unknown() -> None:
     result = asyncio.run(LITMFunction(deps).execute(instrument=AAPL, months=60))
     assert result.data["status"] == "provider_unavailable", result.data
     assert {row["severity"] for row in result.data["rows"]} == {"unknown"}, result.data["rows"]
+
+
+# ------------------------------------------------- LITM#2 non-finite months input
+
+
+def test_non_finite_months_do_not_crash_and_fall_back_to_default() -> None:
+    # float('inf') is accepted by float() but int() raises OverflowError; the live
+    # path must clamp or default instead of raising.
+    for raw in ("inf", "-inf", float("inf"), float("-inf"), "nan", float("nan")):
+        result = _run(months=raw)
+        assert result.data["lookback_months"] == 24, (raw, result.data["lookback_months"])
+        assert result.data["scanned_8k"] == 3, (raw, result.data)
