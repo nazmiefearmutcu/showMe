@@ -10,7 +10,7 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.functions.fx._frankfurter import fetch_frankfurter_rate, fetch_frankfurter_rates
+from showme.engine.functions.fx._frankfurter import fetch_frankfurter_rate, fetch_frankfurter_rates_dated
 
 
 _MAJOR_PAIRS = [
@@ -255,7 +255,7 @@ class WCRSFunction(BaseFunction):
             # The per-currency history legs run concurrently with the matrix
             # fetch so the bounded history budget (max 3s) cannot stack on
             # top of the matrix latency.
-            (matrix, source_mode, sources), (legs, leg_sources) = await asyncio.gather(
+            (matrix, source_mode, sources, as_of), (legs, leg_sources) = await asyncio.gather(
                 _cross_matrix(self, bases, quotes, params),
                 _usd_history_legs(
                     self,
@@ -265,7 +265,7 @@ class WCRSFunction(BaseFunction):
                 ),
             )
         else:
-            matrix, source_mode, sources = await _cross_matrix(self, bases, quotes, params)
+            matrix, source_mode, sources, as_of = await _cross_matrix(self, bases, quotes, params)
             legs, leg_sources = {}, {}
         rows = []
         heatmap = []
@@ -297,6 +297,7 @@ class WCRSFunction(BaseFunction):
                     "spread_pips": round((ask - bid) * pip_factor, 3),
                     "change_pct": change_pct,
                     "source_mode": source_mode,
+                    "as_of": as_of,
                 }
                 if history:
                     # UI convention (WCRS/GLCO panes): per-row ``history`` is
@@ -315,10 +316,12 @@ class WCRSFunction(BaseFunction):
             "rows": rows,
             "surface": heatmap,
             "source_mode": source_mode,
+            "as_of": as_of,
             "methodology": (
                 "WCRS builds a cross-rate matrix from live exchangerate.host quotes when available, "
-                "else from keyless ECB reference rates (Frankfurter). "
-                "If both fail, it falls back to a labelled reference matrix; bid/ask are display spreads around the mid. "
+                "else from the keyless ECB daily reference fix (Frankfurter), which is delayed to the "
+                "fix date in as_of and is never presented as live. "
+                "If both fail, it falls back to a labelled reference matrix (vintage in as_of). "
                 "The daily change % and the per-row history are derived from keyless daily history legs "
                 "(one USD leg per currency, cross = leg(quote)/leg(base)); when history is unavailable the "
                 "change is null, never a placeholder 0.00%."
@@ -331,25 +334,29 @@ class WCRSFunction(BaseFunction):
                 "change_pct": "Real daily percent change of the cross rate from the last two daily closes; null when no history is available.",
                 "history": "Numeric daily cross-close series (ascending) for the sparkline; absent when history is unavailable.",
                 "history_source": "Provider tier(s) the daily history legs came from (yfinance / ecb).",
-                "source_mode": "live_exchangerate_host, live_official (Frankfurter/ECB), or reference_cross_rate_matrix.",
+                "source_mode": "live_exchangerate_host, official_daily_fix (ECB daily reference fix, dated by as_of), or reference_cross_rate_matrix.",
+                "as_of": "Date of the rates: the ECB fix date for official_daily_fix, the stamped vintage for the reference matrix, null for live quotes without a provider timestamp.",
             },
         }
-        warnings = (
-            []
-            if source_mode.startswith("live_")
-            else [f"live cross-rate provider unavailable; using labelled reference matrix (vintage {_REFERENCE_AS_OF})"]
-        )
+        if source_mode.startswith("live_"):
+            warnings: list[str] = []
+            metadata: dict[str, Any] = {"data_mode": source_mode}
+        elif source_mode == "official_daily_fix":
+            warnings = [
+                "live cross-rate provider unavailable; showing the ECB daily reference fix "
+                f"dated {as_of or 'unknown'} (delayed, not live)"
+            ]
+            metadata = {"data_mode": "delayed_reference", "as_of": as_of, "reference_as_of": as_of}
+        else:
+            warnings = [f"live cross-rate provider unavailable; using labelled reference matrix (vintage {_REFERENCE_AS_OF})"]
+            metadata = {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
         return FunctionResult(
             code=self.code,
             instrument=None,
             data=data,
             sources=sources,
             warnings=warnings,
-            metadata=(
-                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
-                if not source_mode.startswith("live_")
-                else {"data_mode": source_mode}
-            ),
+            metadata=metadata,
         )
 
 
@@ -1129,7 +1136,9 @@ async def _cross_matrix(
     bases: list[str],
     quotes: list[str],
     params: dict[str, Any],
-) -> tuple[dict[str, dict[str, float]], str, list[str]]:
+) -> tuple[dict[str, dict[str, float]], str, list[str], str | None]:
+    """Returns ``(matrix, source_mode, sources, as_of)``; ``as_of`` is the date
+    the rates belong to (None when the provider gives no timestamp)."""
     if _truthy(params.get("live", True)) and _wcrs_fx_live(params) and fn.deps.exchangerate_host:
         timeout = float(params.get("timeout", 4))
 
@@ -1150,7 +1159,7 @@ async def _cross_matrix(
         results = await asyncio.gather(*(fetch_base(base) for base in bases))
         live_rows = {base: row for base, row in results if row}
         if len(live_rows) == len(bases):
-            return live_rows, "live_exchangerate_host", ["exchangerate_host"]
+            return live_rows, "live_exchangerate_host", ["exchangerate_host"], None
     # H-4 de-staling (2026-09-09): keyless ECB reference rates (Frankfurter)
     # bridge the gap between the keyed exchangerate.host tier and the
     # stamped reference matrix. All-or-nothing across bases AND quotes — a
@@ -1162,10 +1171,12 @@ async def _cross_matrix(
     if _wcrs_fx_live(params):
         timeout = float(params.get("timeout", 4))
 
-        async def fetch_base_frankfurter(base: str) -> tuple[str, dict[str, float] | None]:
+        async def fetch_base_frankfurter(
+            base: str,
+        ) -> tuple[str, dict[str, float] | None, str | None]:
             try:
-                rates = await asyncio.wait_for(
-                    fetch_frankfurter_rates(
+                rates, as_of = await asyncio.wait_for(
+                    fetch_frankfurter_rates_dated(
                         base,
                         quotes,
                         timeout=timeout,
@@ -1174,19 +1185,24 @@ async def _cross_matrix(
                     timeout=timeout + 1,
                 )
             except Exception:
-                return base, None
+                return base, None, None
             if not rates:
-                return base, None
+                return base, None, None
             if any(q != base and q not in rates for q in quotes):
-                return base, None  # partial coverage is not live coverage
+                return base, None, None  # partial coverage is not live coverage
             row = {q: float(rates[q]) for q in quotes if q != base}
             row[base] = 1.0
-            return base, row
+            return base, row, as_of
 
         results = await asyncio.gather(*(fetch_base_frankfurter(base) for base in bases))
-        live_rows = {base: row for base, row in results if row}
+        live_rows = {base: row for base, row, _ in results if row}
         if len(live_rows) == len(bases):
-            return live_rows, "live_official", ["frankfurter_ecb"]
+            # One ECB fix per day: the legs should share a date. If they ever
+            # differ, report the oldest so the label never overstates freshness.
+            fix_dates = sorted({as_of for _, _, as_of in results if as_of})
+            fix_date = fix_dates[0] if fix_dates else None
+            # Not "live_": a daily ECB fix is delayed, not a live quote.
+            return live_rows, "official_daily_fix", ["frankfurter_ecb"], fix_date
     seed = {ccy: _seed_usd_value(ccy) for ccy in _unique([*bases, *quotes])}
     matrix = {
         base: {
@@ -1195,7 +1211,7 @@ async def _cross_matrix(
         }
         for base in bases
     }
-    return matrix, "reference_cross_rate_matrix", ["reference_cross_rate_matrix"]
+    return matrix, "reference_cross_rate_matrix", ["reference_cross_rate_matrix"], _REFERENCE_AS_OF
 
 
 def _seed_usd_value(currency: str) -> float:

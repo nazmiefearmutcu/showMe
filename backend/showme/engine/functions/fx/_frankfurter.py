@@ -31,7 +31,8 @@ _CACHE_TTL_S = 900.0
 # Frankfurter is a free public API: cap concurrent keyless GETs.
 _MAX_CONCURRENT_FETCHES = 2
 
-_cache: dict[tuple[str, tuple[str, ...]], tuple[float, dict[str, float]]] = {}
+# Value: (monotonic fetch time, rates, ECB fix date reported by Frankfurter).
+_cache: dict[tuple[str, tuple[str, ...]], tuple[float, dict[str, float], str | None]] = {}
 _semaphore: asyncio.Semaphore | None = None
 _semaphore_loop: asyncio.AbstractEventLoop | None = None
 
@@ -74,6 +75,16 @@ def _parse_rates(payload: Any, quotes: list[str]) -> dict[str, float] | None:
     return out or None
 
 
+def _parse_date(payload: Any) -> str | None:
+    """The ECB fix date Frankfurter reports (``YYYY-MM-DD``), or None."""
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("date")
+    if isinstance(raw, str) and len(raw) >= 10 and raw[4:5] == "-" and raw[7:8] == "-":
+        return raw[:10]
+    return None
+
+
 async def fetch_frankfurter_rates(
     base: str,
     quotes: list[str],
@@ -87,16 +98,35 @@ async def fetch_frankfurter_rates(
     otherwise the shared keyless pool is used. The result is cached briefly
     (TTL) keyed by ``(base, quotes)``.
     """
+    rates, _as_of = await fetch_frankfurter_rates_dated(
+        base, quotes, client=client, timeout=timeout
+    )
+    return rates
+
+
+async def fetch_frankfurter_rates_dated(
+    base: str,
+    quotes: list[str],
+    *,
+    client: Any = None,
+    timeout: float = _DEFAULT_TIMEOUT_S,
+) -> tuple[dict[str, float] | None, str | None]:
+    """Like :func:`fetch_frankfurter_rates`, also returning the ECB fix date.
+
+    The date is the daily fix the rates belong to (``YYYY-MM-DD``); it is None
+    when the provider omits it. Callers that present these rates must show
+    that date, because a daily fix is delayed, not live.
+    """
     base = str(base or "").strip().upper()
     wanted = [str(q).strip().upper() for q in quotes if str(q).strip()]
     wanted = [q for q in wanted if q != base]
     if not base or len(base) != 3 or not wanted:
-        return None
+        return None, None
     cache_key = (base, tuple(sorted(wanted)))
     now = time.monotonic()
     cached = _cache.get(cache_key)
     if cached is not None and (now - cached[0]) < _CACHE_TTL_S:
-        return dict(cached[1])
+        return dict(cached[1]), cached[2]
 
     if client is None:
         from showme.providers._http import get_client
@@ -113,12 +143,13 @@ async def fetch_frankfurter_rates(
         resp.raise_for_status()
         payload = resp.json()
         rates = _parse_rates(payload, wanted)
+        as_of = _parse_date(payload)
     except Exception:  # noqa: BLE001 - any fetch/parse failure means 'no live data'
-        return None
+        return None, None
     if not rates:
-        return None
-    _cache[cache_key] = (now, dict(rates))
-    return dict(rates)
+        return None, None
+    _cache[cache_key] = (now, dict(rates), as_of)
+    return dict(rates), as_of
 
 
 async def fetch_frankfurter_rate(

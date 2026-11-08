@@ -57,6 +57,8 @@ interface WCRSPayload {
   surface?: CrossRate[];
   matrix?: Record<string, Record<string, number>>;
   source_mode?: string;
+  /** Date the rates belong to (ECB fix date, or the reference vintage). */
+  as_of?: string | null;
   methodology?: string;
   field_dictionary?: Record<string, string>;
 }
@@ -130,11 +132,16 @@ export function WCRSPane({ code }: FunctionPaneProps) {
   const warnings = data?.warnings ?? [];
   const sourceMode = payload.source_mode ?? "";
   const isLive = state === "ok" && sourceMode.startsWith("live_");
+  // The ECB daily fix is a delayed official reference (dated by payload.as_of),
+  // never a live quote, so it gets its own non-live label.
+  const isOfficialFix = state === "ok" && sourceMode === "official_daily_fix";
   const liveLabel = isLive
     ? "live"
-    : state === "ok" && sourceMode.startsWith("reference")
-      ? "reference"
-      : state;
+    : isOfficialFix
+      ? "ecb fix"
+      : state === "ok" && sourceMode.startsWith("reference")
+        ? "reference"
+        : state;
 
   const cols = useMemo<DataGridColumn<CrossRate>[]>(
     () => [
@@ -363,6 +370,8 @@ export function WCRSPane({ code }: FunctionPaneProps) {
               "showMe engine"
             }
           />
+          <StatusDivider />
+          <StatusSection label="as of" value={payload.as_of ?? "—"} />
           <StatusDivider />
           <StatusSection label="poll" value={`${REFRESH_MS / 1000}s`} />
           <StatusDivider />

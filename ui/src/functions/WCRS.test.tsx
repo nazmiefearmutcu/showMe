@@ -181,6 +181,35 @@ describe("WCRS pane — change honesty", () => {
   });
 });
 
+describe("WCRS pane — ECB daily fix is delayed, never live", () => {
+  it("labels the ECB daily fix 'ecb fix' (not live) and shows its date", () => {
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: {
+        status: "ok",
+        source_mode: "official_daily_fix",
+        as_of: "2026-11-06",
+        rows: [
+          { base: "USD", quote: "EUR", pair: "USDEUR", rate: 0.9, change_pct: null, as_of: "2026-11-06" },
+        ],
+        methodology: "test",
+      },
+      sources: ["frankfurter_ecb"],
+      warnings: [
+        "live cross-rate provider unavailable; showing the ECB daily reference fix dated 2026-11-06 (delayed, not live)",
+      ],
+      elapsed_ms: 3,
+    };
+    render(<WCRSPane code="WCRS" />);
+    expect(screen.queryByText("live")).toBeNull();
+    expect(screen.getByText("ecb fix")).toBeInTheDocument();
+    expect(screen.getByText("2026-11-06")).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: /data quality warning/i }),
+    ).toHaveTextContent(/delayed, not live/);
+  });
+});
+
 describe("WCRS pane — honesty + terminal fixes", () => {
   it("shows a reference pill (never live) on the reference fallback + renders warnings", () => {
     mockFn.state = "ok";
