@@ -821,6 +821,13 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # MOSS must scan its FULL default cross-asset universe instead of
         # being silently restricted to the route's peer group.
         defaults.pop("symbols", None)
+    if code.upper() in {"TOP", "NI", "CN", "NALRT", "NSE"}:
+        # Awareness-backed news functions: the generic agent profile's query/limit/days
+        # defaults are not filters the user asked for (they silently narrowed TOP to six
+        # crypto headlines). Only caller-supplied values reach these handlers.
+        for key in ("query", "limit", "days", "news_timeout"):
+            if key not in merged:
+                defaults.pop(key, None)
     if code.upper() == "MEET" and not merged.get("symbols"):
         # MEET's ``symbols`` means user-followed tickers (own UI section +
         # symbol feeds). The agent peer default (BTC/ETH/SOL) would fan out
