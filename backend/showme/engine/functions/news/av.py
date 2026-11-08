@@ -222,9 +222,10 @@ class AVFunction(BaseFunction):
 
         days, _err = _date_window(params)
         cutoff = _window_start(days)
+        wanted = _media_filter(params)
         for f in filings:
             row = self._filing_row(symbol, f)
-            if row and _matches_query(row, query):
+            if row and _matches_query(row, query) and _matches_media(row, wanted):
                 rows.append(row)
 
         rows = [r for r in _dedupe(rows) if _in_window(r.get("event_date"), cutoff)][:limit]
@@ -424,6 +425,7 @@ class AVFunction(BaseFunction):
         windowed_out = 0
         days, _err = _date_window(params)
         cutoff = _window_start(days)
+        wanted = _media_filter(params)
         try:
             import asyncio
 
@@ -455,7 +457,7 @@ class AVFunction(BaseFunction):
                     row = _media_row(feed.feed, entry)
                     # _media_row returns {} for entries with no openable
                     # play_url — skip them so every emitted row has a real link.
-                    if row and _matches_query(row, query):
+                    if row and _matches_query(row, query) and _matches_media(row, wanted):
                         if _in_window(row.get("event_date"), cutoff):
                             items.append(row)
                         else:
@@ -756,6 +758,24 @@ def _parse_event_date(value: Any) -> date | None:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(timezone.utc)
     return parsed.date()
+
+
+def _media_filter(params: dict[str, Any]) -> set[str]:
+    """Lower-cased media_type filter values; empty set means no filter."""
+    raw = params.get("media_type")
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        values: list[Any] = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = []
+    return {str(v).strip().lower() for v in values if str(v).strip()}
+
+
+def _matches_media(row: dict[str, Any], wanted: set[str]) -> bool:
+    return not wanted or str(row.get("media_type") or "").lower() in wanted
 
 
 def _in_window(value: Any, cutoff: date | None) -> bool:
