@@ -974,6 +974,24 @@ class BBGTFunction(EMSXFunction):
         return default
 
     @staticmethod
+    def _ticket_field(params: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+        """Normalised ticket text, or None when absent or blank. Never defaulted."""
+        for key in keys:
+            value = params.get(key)
+            if value not in (None, ""):
+                text = str(value).strip().upper()
+                if text:
+                    return text
+        return None
+
+    @staticmethod
+    def _fx_quote_currency(symbol: str) -> str | None:
+        """Quote (second) leg of an FX pair such as EURUSD, EUR/USD or EURUSD=X; None if not parseable."""
+        text = str(symbol or "").strip().upper().removesuffix("=X")
+        match = re.fullmatch(r"([A-Z]{3})[/_\-]?([A-Z]{3})", text)
+        return match.group(2) if match else None
+
+    @staticmethod
     def _limit_price(params: dict[str, Any]) -> float | None:
         raw = params.get("price")
         if raw in (None, ""):
@@ -1019,8 +1037,27 @@ class BBGTFunction(EMSXFunction):
         self, instrument: Instrument, quantity: float, limit_price: float | None,
     ) -> dict[str, Any]:
         """Pre-trade notional = quantity x (limit price, else indicative last), never a fabricated value."""
-        currency = str(instrument.currency or "USD")
         fee_note = "No commission or fee estimate: no free fee source is wired."
+        if instrument.asset_class == AssetClass.FX:
+            # An FX notional is denominated in the pair's quote leg, which is not
+            # always instrument.currency (that field defaults to USD).
+            quote_ccy = self._fx_quote_currency(instrument.symbol)
+            if quote_ccy is None:
+                return {
+                    "reference_price": None,
+                    "reference_price_basis": None,
+                    "notional": None,
+                    "notional_currency": None,
+                    "notional_basis": "unavailable",
+                    "notional_indicative": None,
+                    "notional_as_of": None,
+                    "notional_source": None,
+                    "notional_reason": "FX quote currency could not be derived from the symbol; notional not computed.",
+                    "notional_note": fee_note,
+                }
+            currency = quote_ccy
+        else:
+            currency = str(instrument.currency or "USD")
         if limit_price is not None:
             return {
                 "reference_price": limit_price,
@@ -1064,7 +1101,9 @@ class BBGTFunction(EMSXFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             return await super().execute(instrument=None, **params)
-        side = self._ticket_text(params, ("side",), "BUY")
+        # Side has no default: a missing or blank side must never reach a broker
+        # as BUY (data policy: no silent substitution on the armed path).
+        side = self._ticket_field(params, ("side",))
         order_type = self._ticket_text(params, ("type", "order_type"), "MARKET")
         tif = self._ticket_text(params, ("tif", "time_in_force"), "GTC")
         quantity = _float_param(params.get("quantity"))
@@ -1078,6 +1117,20 @@ class BBGTFunction(EMSXFunction):
             "time_in_force": tif,
             "tif": tif,
         }
+        if side is None:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    **common,
+                    "status": "input_required",
+                    "field": "side",
+                    "reason": "Side is required: choose BUY or SELL before previewing or submitting.",
+                    "next_actions": ["Pick BUY or SELL in the ticket controls."],
+                },
+                sources=["paper_ticket"],
+                metadata={"preview_only": True},
+            )
         # Reject unknown enum values before anything is previewed or armed:
         # previously "HOLD" / "FOO" were echoed back as a valid preview.
         for field_name, value, allowed in (
@@ -1121,7 +1174,19 @@ class BBGTFunction(EMSXFunction):
                 sources=["paper_ticket"],
                 metadata={"preview_only": True},
             )
-        result = await super().execute(instrument=instrument, **params)
+        # EMSX reads the raw params (str(...).upper() with no strip, and the
+        # price passed straight to the broker order), so hand it the validated
+        # ticket values instead of what the caller typed.
+        ticket_params = {
+            **params,
+            "side": side,
+            "type": order_type,
+            "order_type": order_type,
+            "tif": tif,
+            "time_in_force": tif,
+            "price": limit_price,
+        }
+        result = await super().execute(instrument=instrument, **ticket_params)
         if isinstance(result.data, dict) and result.data.get("status") in {"preview", "submitted"}:
             result.data.update(await self._notional_fields(instrument, quantity, limit_price))
         return result

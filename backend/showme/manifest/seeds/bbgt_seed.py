@@ -144,6 +144,7 @@ def bbgt() -> FunctionManifest:
                 CardSlot(key="order_type", label="Type", kind="badge"),
                 CardSlot(key="tif", label="TIF", kind="badge"),
                 CardSlot(key="price", label="Price", kind="kpi", unit="quote"),
+                CardSlot(key="notional", label="Notional", kind="kpi", unit="quote"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),

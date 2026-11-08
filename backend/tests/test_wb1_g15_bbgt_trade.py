@@ -164,3 +164,98 @@ def test_bbgt_market_notional_is_null_when_quote_fetch_fails() -> None:
     assert data["notional"] is None
     assert data["notional_basis"] == "unavailable"
     assert "unavailable" in data["notional_reason"].lower()
+
+
+# ── BBGT#2 (round 2): side must be explicit; normalised values reach EMSX ───
+
+
+@pytest.mark.parametrize("side", [None, "", "   "])
+def test_bbgt_missing_side_is_input_required_not_defaulted(side: Any) -> None:
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    res = _run(fn.execute(instrument=MSFT, quantity=7, side=side, type="MARKET", tif="DAY"))
+    assert res.data["status"] == "input_required", res.data
+    assert res.data["field"] == "side"
+    assert "BUY or SELL" in res.data["reason"]
+    assert res.data.get("side") != "NONE"
+
+
+def test_bbgt_absent_side_armed_never_reaches_broker() -> None:
+    fn, broker = _armed_bbgt()
+    res = _run(fn.execute(instrument=AAPL, quantity=1, type="MARKET", tif="DAY", submit=True, paper_mode=False))
+    assert broker.placed == []
+    assert res.data["status"] == "input_required"
+    assert res.data["field"] == "side"
+
+
+@pytest.mark.parametrize("side", ["", None])
+def test_bbgt_blank_side_armed_returns_structured_state_not_exception(side: Any) -> None:
+    fn, broker = _armed_bbgt()
+    res = _run(fn.execute(instrument=AAPL, quantity=1, side=side, type="MARKET", tif="DAY", submit=True, paper_mode=False))
+    assert broker.placed == []
+    assert res.data["status"] == "input_required"
+
+
+def test_bbgt_lowercase_side_is_normalised_before_emsx_and_broker() -> None:
+    fn, broker = _armed_bbgt()
+    res = _run(fn.execute(instrument=AAPL, quantity=1, side=" sell ", type="market", tif="day", submit=True, paper_mode=False))
+    assert res.data["status"] == "submitted", res.data
+    assert res.data["side"] == "SELL"
+    assert len(broker.placed) == 1
+    assert broker.placed[0].side.value == "SELL"
+    assert broker.placed[0].order_type.value == "MARKET"
+
+
+def test_bbgt_preview_echoes_normalised_side_not_raw_string() -> None:
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    res = _run(fn.execute(instrument=AAPL, quantity=1, side="buy", type="MARKET", tif="gtc"))
+    assert res.data["status"] == "preview"
+    assert res.data["side"] == "BUY"
+    assert res.data["time_in_force"] == "GTC"
+
+
+# ── BBGT#4 (round 2): FX notional currency is the quote leg, or honest null ─
+
+
+def test_bbgt_fx_notional_uses_quote_leg_currency() -> None:
+    fx = Instrument(symbol="EURUSD", asset_class=AssetClass.FX)
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    res = _run(fn.execute(instrument=fx, quantity=100000, side="BUY", type="LIMIT", price=1.08, tif="DAY"))
+    assert res.data["status"] == "preview"
+    assert res.data["notional"] == pytest.approx(108000.0)
+    assert res.data["notional_currency"] == "USD"
+
+
+def test_bbgt_fx_notional_quote_leg_for_slash_format() -> None:
+    fx = Instrument(symbol="EUR/GBP", asset_class=AssetClass.FX)
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    res = _run(fn.execute(instrument=fx, quantity=1000, side="BUY", type="LIMIT", price=0.85, tif="DAY"))
+    assert res.data["notional_currency"] == "GBP"
+
+
+def test_bbgt_fx_notional_is_null_when_quote_leg_unknown() -> None:
+    fx = Instrument(symbol="EURXYZW", asset_class=AssetClass.FX)
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    res = _run(fn.execute(instrument=fx, quantity=1000, side="BUY", type="LIMIT", price=1.0, tif="DAY"))
+    assert res.data["status"] == "preview"
+    assert res.data["notional"] is None
+    assert res.data["notional_currency"] is None
+    assert "currency" in res.data["notional_reason"].lower()
+
+
+# ── BBGT#4 (round 2): the seed card and field dict expose the notional ──────
+
+
+def test_bbgt_seed_card_and_field_declare_notional() -> None:
+    from showme.manifest.registry import REGISTRY
+    from showme.manifest.seeds import load_seeds
+
+    load_seeds()
+    entry = REGISTRY.get("BBGT")
+    slot_keys = {slot.key for slot in entry.card_schema.slots}
+    assert "notional" in slot_keys
+    assert "notional" in entry.field_dict
