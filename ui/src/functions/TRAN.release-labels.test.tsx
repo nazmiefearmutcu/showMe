@@ -75,3 +75,14 @@ describe("TRAN pane — release view never says transcript", () => {
     expect(screen.queryByPlaceholderText(/transcript/i)).toBeNull();
   });
 });
+
+describe("TRAN pane — release title and speaker placeholder (TRAN#1)", () => {
+  it("titles the SEC default path as an earnings release, not a call transcript", () => {
+    setMockFn({ state: "ok", data: releasePayload() });
+    render(<TRANPane code="TRAN" symbol="AAPL" />);
+    expect(screen.getByText(/Earnings Release — AAPL/)).toBeInTheDocument();
+    expect(screen.queryByText(/Earnings Call Transcript/)).toBeNull();
+    // A release row without a speaker is shown as Unknown, never a named speaker.
+    expect(screen.getByText("Unknown")).toBeInTheDocument();
+  });
+});
