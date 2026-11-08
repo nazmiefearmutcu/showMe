@@ -141,6 +141,15 @@ def isin() -> FunctionManifest:
             "are cacheable for 24h because OpenFIGI's master records are stable."
         ),
         field_dict={
+            "data_mode": FieldDef(
+                description=(
+                    "Provenance of the lookup: live_official when OpenFIGI answered; "
+                    "provider_unavailable when every lookup failed; not_configured when no "
+                    "OpenFIGI adapter is set; explicit_unavailable when no identifier reached a provider "
+                    "(nothing was looked up, so no live state is claimed)."
+                ),
+                source="isin",
+            ),
             "rows[].input": FieldDef(description="Echo of the caller-supplied identifier.", source="isin"),
             "rows[].id_type": FieldDef(description="Resolved identifier flavour (auto-detected or forced).", source="isin"),
             "rows[].rank": FieldDef(description="#1 / #2 / ... — rank within the per-input matches.", source="isin"),
