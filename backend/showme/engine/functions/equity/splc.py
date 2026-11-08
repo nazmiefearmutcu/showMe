@@ -288,10 +288,11 @@ def _extract_concentration(
             for item in _concentration_items(window):
                 candidates.append((match.start(), item))
 
-    # One row per counterparty: the disclosure for the latest fiscal year wins, so a
-    # prior-year share listed earlier in the filing is not presented as current.
-    # Ties keep the first disclosure in document order, and the row keeps the
-    # position of that first mention.
+    # One row per counterparty. Between two disclosures that both name a fiscal year,
+    # the later year wins, so a prior-year share listed earlier in the filing is not
+    # presented as current. A disclosure that names no year is not compared with a
+    # dated one (its year is unknown, so it may be the current share): the first
+    # disclosure in document order is kept, and the row keeps that mention's position.
     chosen: dict[str, dict[str, Any]] = {}
     for _, item in sorted(candidates, key=lambda c: c[0]):
         name = _clean_counterparty(item.get("name"))
@@ -299,7 +300,13 @@ def _extract_concentration(
             continue
         row = {"name": name, "pct": float(item["pct"]), "fiscal_year": item["fiscal_year"]}
         prior = chosen.get(name.lower())
-        if prior is None or (row["fiscal_year"] or 0) > (prior["fiscal_year"] or 0):
+        if prior is None:
+            chosen[name.lower()] = row
+        elif (
+            prior["fiscal_year"] is not None
+            and row["fiscal_year"] is not None
+            and row["fiscal_year"] > prior["fiscal_year"]
+        ):
             chosen[name.lower()] = row
     return list(chosen.values())
 
