@@ -109,6 +109,7 @@ class GMMFunction(BaseFunction):
         # bigger mover. Sort descending so the most extreme economies lead.
         for row in rows:
             row["score"] = _composite_score(row)
+            row["score_missing"] = _score_missing(row)
         rows.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0.0)))
 
         limit = _coerce_int(params.get("top_n") or params.get("limit"), default=len(rows))
@@ -322,24 +323,28 @@ def _iso3_to_iso2(iso3: str) -> str | None:
     return _ISO3_ISO2.get((iso3 or "").upper())
 
 
+_SCORE_KEYS: tuple[str, ...] = ("inflation", "unemployment", "debt_gdp", "gdp_growth")
+
+
+def _score_missing(row: dict[str, Any]) -> list[str]:
+    """Names of the score components a row lacks (null value)."""
+    return [k for k in _SCORE_KEYS if row.get(k) is None]
+
+
 def _composite_score(row: dict[str, Any]) -> float | None:
-    """Macro-stress proxy: inflation + unemployment + 0.05·debt/GDP − growth."""
-    inflation = row.get("inflation")
-    unemployment = row.get("unemployment")
-    debt = row.get("debt_gdp")
-    growth = row.get("gdp_growth")
-    if inflation is None and unemployment is None and debt is None and growth is None:
+    """Macro-stress proxy: inflation + unemployment + 0.05·debt/GDP − growth.
+
+    A row is scored only when all four components are present. A partial row
+    would otherwise rank as if its missing term were zero (e.g. a country with
+    no debt/GDP value looks less stressed than it is), so it gets no score.
+    """
+    if _score_missing(row):
         return None
-    parts: list[float] = []
-    if inflation is not None:
-        parts.append(float(inflation))
-    if unemployment is not None:
-        parts.append(float(unemployment))
-    if debt is not None:
-        parts.append(0.05 * float(debt))
-    if growth is not None:
-        parts.append(-float(growth))
-    return round(sum(parts), 4) if parts else None
+    inflation = float(row["inflation"])
+    unemployment = float(row["unemployment"])
+    debt = float(row["debt_gdp"])
+    growth = float(row["gdp_growth"])
+    return round(inflation + unemployment + 0.05 * debt - growth, 4)
 
 
 def _coerce_int(value: Any, default: int) -> int:

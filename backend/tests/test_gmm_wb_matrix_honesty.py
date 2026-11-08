@@ -118,3 +118,52 @@ def test_eu_resolves_to_european_union_aggregate() -> None:
     resolved = gmm_mod._resolve_countries(["EU"])
     assert resolved == {"EU": "European Union"}
     assert gmm_mod._WB_REQUEST_CODE["EU"] == "EUU"
+
+
+# ── GMM#3: a row missing any component gets no score, not a partial one ──
+
+
+def _patch_table(monkeypatch, table: dict[tuple[str, str], dict[str, Any]]) -> _FakeWorldBank:
+    fake = _FakeWorldBank(table)
+
+    async def _get_client() -> _FakeWorldBank:
+        return fake
+
+    import showme.providers._http as http_mod
+
+    monkeypatch.setattr(http_mod, "get_client", _get_client)
+    return fake
+
+
+def test_row_missing_debt_gets_null_score_and_sorts_last(monkeypatch) -> None:
+    table: dict[tuple[str, str], dict[str, Any]] = {}
+    # US has all four indicators; JP has no debt/GDP observation at all.
+    values = {
+        "NY.GDP.MKTP.KD.ZG": 2.0,
+        "FP.CPI.TOTL.ZG": 5.0,
+        "SL.UEM.TOTL.ZS": 4.0,
+        "GC.DOD.TOTL.GD.ZS": 100.0,
+    }
+    for ind, val in values.items():
+        table[("US", ind)] = _obs("US", "USA", ind, val, 2025)
+    for ind in ("NY.GDP.MKTP.KD.ZG", "FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"):
+        table[("JP", ind)] = _obs("JP", "JPN", ind, 1.0, 2025)
+    _patch_table(monkeypatch, table)
+
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["JP", "US"]))
+    rows = {r["country_code"]: r for r in result.data["rows"]}
+
+    # 5 + 4 + 0.05*100 - 2 = 12.0 ; the JP row must not be scored as if debt were 0.
+    assert rows["US"]["score"] == pytest.approx(12.0)
+    assert rows["JP"]["score"] is None
+    assert rows["JP"]["score_missing"] == ["debt_gdp"]
+    assert rows["US"]["score_missing"] == []
+    assert result.data["rows"][0]["country_code"] == "US"
+    assert result.data["rows"][-1]["country_code"] == "JP"
+
+
+def test_composite_score_requires_all_four_components() -> None:
+    partial = {"inflation": 3.0, "unemployment": 4.0, "debt_gdp": None, "gdp_growth": 1.0}
+    assert gmm_mod._composite_score(partial) is None
+    full = {"inflation": 3.0, "unemployment": 4.0, "debt_gdp": 60.0, "gdp_growth": 1.0}
+    assert gmm_mod._composite_score(full) == pytest.approx(3.0 + 4.0 + 3.0 - 1.0)
