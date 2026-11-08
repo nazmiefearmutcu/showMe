@@ -143,3 +143,13 @@ def test_book_value_never_sums_currencies(monkeypatch):
     value, other = psc._portfolio_book_value()
     assert value == pytest.approx(1500.0)
     assert other == ["EUR"]
+
+
+def test_router_default_symbol_is_never_used_as_entry():
+    """B2 PSC#1: with no symbol chosen the router injects BTCUSDT and flags it."""
+    btc = Instrument(symbol="BTCUSDT", asset_class=AssetClass.CRYPTO)
+    res = _run(_fn(last=95_000.0), instrument=btc, account=10_000, stop=190, __explicit_symbol=False)
+    assert res.data["status"] == "input_error"
+    assert "no symbol selected" in res.data["reason"]
+    chosen = _run(_fn(last=271.5), instrument=AAPL, account=10_000, stop=260, __explicit_symbol=True)
+    assert chosen.data["entry"] == pytest.approx(271.5)

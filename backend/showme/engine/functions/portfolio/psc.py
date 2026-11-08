@@ -134,13 +134,20 @@ class PSCFunction(BaseFunction):
             problems.append("win_rate must be a probability in [0, 1] (0.55 = 55%)")
 
         entry, entry_source = values["entry"], "input"
+        # The router injects a default symbol (e.g. BTCUSDT) when the caller
+        # chose none and flags it __explicit_symbol=False; that symbol must
+        # never become the trade's entry price (B2 finding PSC#1).
+        user_symbol = params.get("__explicit_symbol", True) is not False
         if entry is None and "entry" not in {p.split(" ")[0] for p in problems}:
-            entry = await self._live_last(instrument, params.get("symbol"))
-            entry_source = "live_quote"
-            if entry is None:
-                problems.append("entry (no live quote for the symbol)")
+            if not user_symbol:
+                problems.append("entry (no symbol selected, so there is no live price to use)")
             else:
-                sources.append("yfinance")
+                entry = await self._live_last(instrument, params.get("symbol"))
+                entry_source = "live_quote"
+                if entry is None:
+                    problems.append("entry (no live quote for the symbol)")
+                else:
+                    sources.append("yfinance")
         if entry is not None and entry <= 0:
             problems.append("entry must be positive")
 
