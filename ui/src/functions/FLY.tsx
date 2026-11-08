@@ -18,8 +18,9 @@
  * stale ADS-B contact. Rules never fire on missing fields; see
  * `fly-alerts.ts` for the per-rule data requirements. Fired alerts land in
  * the app toast host AND the pane's alert-history list; dedupe/cooldown is
- * per callsign+rule. The pane auto-refreshes every 60 s while visible (the
- * OpenSky public quota is 4000 requests/day, well above 1/min).
+ * per callsign+rule. The pane auto-refreshes every 60 s while visible; each
+ * poll is an unfiltered /states/all request. The OpenSky quota is not
+ * verified here.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
@@ -94,7 +95,12 @@ const LIMIT_OPTIONS = [
   { value: 100, label: "100", title: "LIMIT 100 (OpenSky backend cap)" },
 ] as const;
 const LIMIT_IDS = LIMIT_OPTIONS.map((o) => o.value);
-/** Visibility-paused auto-refresh. OpenSky public quota: 4000 req/day. */
+/**
+ * Visibility-paused auto-refresh. Each poll is an unfiltered OpenSky
+ * /states/all request (no bounding box). The OpenSky quota for anonymous
+ * and registered use was NOT verified against current documentation, so
+ * no quota figure is asserted here.
+ */
 const REFRESH_MS = 60_000;
 const ALERT_HISTORY_MAX = 50;
 const ALERT_HISTORY_SHOWN = 10;
