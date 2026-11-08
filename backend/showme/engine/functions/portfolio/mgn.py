@@ -115,7 +115,9 @@ class MGNFunction(BaseFunction):
                 warnings=([f"Marked at average cost (no 'last' price supplied): {', '.join(at_cost)}."]
                           if at_cost else [])
                 + ([] if "cash" in params else _cash_warnings({"paper": "none"}, 0.0)),
-                metadata={"live": False, "positions_source": "supplied", "marked_at_cost": at_cost},
+                # MGN#1: same rule as the saved-book branch; an at-cost line makes the book degraded.
+                metadata={"live": False, "positions_source": "supplied", "marked_at_cost": at_cost,
+                          "degraded": bool(at_cost)},
             )
 
         from showme.engine.portfolio.state import PortfolioState
