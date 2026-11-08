@@ -174,6 +174,13 @@ describe("YAS pane — headline cards", () => {
     expect(screen.getByText("78.6")).toBeInTheDocument();
   });
 
+  it("labels convexity with its years-squared unit", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<YASPane code="YAS" />);
+    expect(container.textContent).toContain("YEARS²");
+    expect(container.textContent).not.toContain("PRICE SENS.");
+  });
+
   it("renders the ±100bp shock ladder with price deltas", () => {
     setMockFn({ state: "ok", ...livePayload() });
     const { container } = render(<YASPane code="YAS" />);

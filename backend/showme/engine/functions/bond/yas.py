@@ -60,7 +60,8 @@ def _ytm_macaulay_modified_duration(face: float, price: float, coupon: float,
         the (1+y)^(k+2) discounting was already per-period but the freq
         scaling at the end double-counted.
       H14: convexity normalization stays inside the formula (no extra
-        0.5 scaling). 30y 4% bond convexity → ~200, not ~700.
+        0.5 scaling). 30y 4% quarterly par bond convexity is ~421 years^2
+        (annual-yield convention), not the inflated ~700.
     """
     c = coupon / freq
     # Initial guess: coupon yield if reasonable, else 5%.
@@ -97,9 +98,9 @@ def _ytm_macaulay_modified_duration(face: float, price: float, coupon: float,
     modified = macaulay / (1 + ytm / freq)
     # H13+H14: convexity. Per-period cashflow PV weighted by k*(k+1), then
     # discounted by an extra (1+y)^2 (i.e. k+2 in the denominator), then
-    # normalized by PV. Final freq^2 makes the result an annualized
-    # second-derivative; the 30y 4% bond now yields convexity ≈ 200 instead
-    # of the inflated ~700.
+    # normalized by PV. Final freq^2 makes the result (1/P) d²P/dy² in
+    # years^2 for an annual yield; the 30y 4% quarterly par bond gives
+    # ≈ 421 (checked by finite difference), not the inflated ~700.
     convexity = sum(k * (k + 1) * c * face / (1 + y) ** (k + 2)
                     for k in range(1, n_periods + 1))
     convexity += n_periods * (n_periods + 1) * face / (1 + y) ** (n_periods + 2)
@@ -231,6 +232,7 @@ class YASFunction(BaseFunction):
         metadata: dict[str, Any] = {}
         generic = generic_treasury(symbol)
         cmt_date = None
+        cmt_used = False  # the bond's terms came from a live FRED CMT yield
         if generic and (price is None or coupon_raw is None or maturity is None):
             series_id, tenor_years = generic
             cmt = await self._cmt(series_id, timeout)
@@ -245,6 +247,7 @@ class YASFunction(BaseFunction):
                 )
             par_yield, cmt_date = cmt
             sources.append("fred")
+            cmt_used = True
             metadata.update({"cmt_series": series_id, "cmt_date": cmt_date,
                              "construction": "par bond at the constant-maturity yield"})
             # Quotes are per 100 of face: a par bond is priced at 100, whatever face is.
@@ -312,13 +315,18 @@ class YASFunction(BaseFunction):
              "spread_bps": None if spread is None else spread * 10_000, "unit": "decimal"},
             {"metric": "macaulay_duration", "value": metrics["macaulay_duration"], "unit": "years"},
             {"metric": "modified_duration", "value": metrics["modified_duration"], "unit": "years"},
-            {"metric": "convexity", "value": metrics["convexity"], "unit": "price convexity"},
+            {"metric": "convexity", "value": metrics["convexity"], "unit": "years^2"},
         ]
+        # YAS#5: the mode follows the data path. A bond built from a live CMT
+        # yield is modeled; one priced from user-supplied terms is user_input.
+        data_mode = "modeled" if cmt_used else "user_input"
+        metadata["data_mode"] = data_mode
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
                 "rows": rows,
                 "curve": curve,
+                "data_mode": data_mode,
                 "summary": {
                     "bond": symbol,
                     "price": price,
@@ -349,7 +357,8 @@ class YASFunction(BaseFunction):
                     "spread_vs_benchmark": "YTM minus benchmark rate (null when no benchmark is available).",
                     "spread_bps": "Spread versus benchmark in basis points.",
                     "modified_duration": "Approximate percent price sensitivity to a 100 bp yield move.",
-                    "convexity": "Second-order price sensitivity to yield changes.",
+                    "convexity": "Second-order yield sensitivity (1/P)·d²P/dy² for an annual yield, in years^2 (about 421 for a 30y 4% quarterly par bond).",
+                    "data_mode": "modeled when the bond is a par bond at a live FRED constant-maturity yield; user_input when price, coupon and maturity were supplied.",
                     "ytm_pct": "Yield used on the sensitivity-curve x-axis.",
                     "price": "Observed or model price per 100 face (100 for a par CMT bond).",
                     "as_of": "Observation date of the constant-maturity yield, when used.",

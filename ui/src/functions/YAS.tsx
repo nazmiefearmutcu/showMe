@@ -306,7 +306,7 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
           <StatCard
             label="Convexity"
             value={fmtFixed(stats.convexity, 1)}
-            caption="2ND-ORDER PRICE SENS."
+            caption="2ND-ORDER · YEARS²"
             tone="neutral"
           />
         </section>
