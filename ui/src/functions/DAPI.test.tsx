@@ -38,13 +38,6 @@ vi.mock("@/lib/useFunction", () => ({
   }),
 }));
 
-// The backend returns base_url: null; the pane falls back to the sidecar
-// address it is connected to (pinned here so the curl assertions are exact).
-vi.mock("@/lib/sidecar", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/sidecar")>()),
-  sidecarBaseUrl: () => "http://127.0.0.1:9911",
-}));
-
 /* ── fixtures ──────────────────────────────────────────────────────── */
 
 function okPayload() {
@@ -92,7 +85,7 @@ function okPayload() {
           },
         ],
         summary: {
-          base_url: null,
+          base_url: "http://127.0.0.1:<sidecar-port>",
           endpoints: 4,
           total_routes: 46,
           state_changing: 2,
@@ -228,7 +221,7 @@ describe("DAPI pane — grid upgrade (L7)", () => {
     fireEvent.click(screen.getByLabelText("Copy PUT /api/watchlists/{name} as cURL"));
     expect(writeText).toHaveBeenCalledTimes(1);
     const curl = writeText.mock.calls[0][0] as string;
-    expect(curl).toContain('curl -X PUT "http://127.0.0.1:9911/api/watchlists/{name}"');
+    expect(curl).toContain('curl -X PUT "http://127.0.0.1:<sidecar-port>/api/watchlists/{name}"');
     expect(curl).toContain("-d '{ symbols, meta? }'");
     Reflect.deleteProperty(navigator, "clipboard");
   });
@@ -279,7 +272,7 @@ describe("DAPI pane — combined-verb routes (F9/M)", () => {
             },
           ],
           summary: {
-            base_url: null,
+            base_url: "http://127.0.0.1:<sidecar-port>",
             endpoints: 3,
             total_routes: 46,
             state_changing: 2,
@@ -322,7 +315,7 @@ describe("DAPI pane — combined-verb routes (F9/M)", () => {
     const curl = writeText.mock.calls[0][0] as string;
     // Valid single-verb curl — the old code emitted `curl -X GET/POST` which
     // no shell can run.
-    expect(curl).toContain('curl -X GET "http://127.0.0.1:9911/api/fn/{code}"');
+    expect(curl).toContain('curl -X GET "http://127.0.0.1:<sidecar-port>/api/fn/{code}"');
     expect(curl).not.toContain("GET/POST");
     Reflect.deleteProperty(navigator, "clipboard");
   });
