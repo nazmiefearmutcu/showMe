@@ -38,6 +38,10 @@ DEFAULT_WINDOW = "3Y"
 DEFAULT_WALK_STEPS = 5
 
 
+# BTFW#1 sample floor for the headline out-of-sample Sharpe/CAGR.
+_MIN_OOS_BARS = 126  # about half a trading year of daily bars
+_MIN_OOS_TRADES = 5
+
 def _template_history(days: int) -> pd.DataFrame:
     periods = max(240, min(days, 756))
     index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
@@ -267,6 +271,32 @@ class BTFWFunction(BaseFunction):
         eq = res.oos_equity_curve
         idx_strs = [str(i) for i in eq.index]
         step = max(1, len(eq) // 500)
+        # BTFW#1: a headline OOS Sharpe from a few months of bars and a handful
+        # of trades is noise (a 3-month history gave Sharpe 2.36 from 3 trades
+        # with a -22 worst fold). Below the sample floor the headline is nulled
+        # and the reason is stated; the curve and per-fold figures stay visible.
+        summary = dict(res.summary)
+        oos_bars = sum(int(f.test_bars or 0) for f in res.folds)
+        fold_trades = [f.metrics.get("trades") for f in res.folds]
+        oos_trades = (sum(int(t) for t in fold_trades if isinstance(t, (int, float)))
+                      if any(isinstance(t, (int, float)) for t in fold_trades) else len(res.trades))
+        sample_warnings: list[str] = []
+        thin: list[str] = []
+        if oos_bars < _MIN_OOS_BARS:
+            thin.append(f"{oos_bars} out-of-sample bars (< {_MIN_OOS_BARS})")
+        if oos_trades < _MIN_OOS_TRADES:
+            thin.append(f"{oos_trades} trades (< {_MIN_OOS_TRADES})")
+        summary["oos_bars"] = oos_bars
+        summary["oos_trades"] = oos_trades
+        summary["sample_sufficient"] = not thin
+        if thin:
+            for key in ("oos_sharpe", "oos_cagr"):
+                if key in summary:
+                    summary[key] = None
+            sample_warnings.append(
+                "Sample too small for a headline out-of-sample Sharpe/CAGR: " + "; ".join(thin)
+                + ". Use a longer history (for example 1Y+) or more walk steps."
+            )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -303,7 +333,7 @@ class BTFWFunction(BaseFunction):
                 ],
                 "final_equity": float(eq.iloc[-1]),
                 "trades": res.trades[:200],
-                "summary": res.summary,
+                "summary": summary,
                 "methodology": (
                     "Single-symbol walk-forward backtest. The history is cut into "
                     f"{res.summary['n_splits']} successive folds; in each fold the first "
@@ -319,7 +349,12 @@ class BTFWFunction(BaseFunction):
                 "field_dictionary": {
                     "oos_equity_curve": "Stitched out-of-sample equity: only test-slice bars contribute.",
                     "per_step_metrics": "Per-fold train/test boundaries, fitted parameters and local metrics.",
-                    "summary.oos_sharpe": "Annualized Sharpe of the stitched out-of-sample curve.",
+                    "summary.oos_sharpe": ("Annualized Sharpe of the stitched out-of-sample curve; null when "
+                                           "the sample is below the floor (summary.sample_sufficient)."),
+                    "summary.oos_bars": "Out-of-sample bars across all folds.",
+                    "summary.oos_trades": "Out-of-sample trades across all folds.",
+                    "summary.sample_sufficient": (f"True when there are at least {_MIN_OOS_BARS} out-of-sample "
+                                                  f"bars and {_MIN_OOS_TRADES} trades."),
                     "summary.positive_steps_pct": "Fraction of folds with a positive out-of-sample return.",
                     "summary.worst_fold": "The weakest fold, always reported to prevent cherry-picking.",
                     "equity": "Account equity after marking the position on each bar, net of fees.",
@@ -331,7 +366,7 @@ class BTFWFunction(BaseFunction):
                 },
             },
             sources=sources,
-            warnings=[],
+            warnings=sample_warnings,
             metadata={"days": days, "fee_bps": fee_bps, "allow_short": allow_short,
                       "walk_steps": res.summary["n_splits"], "walk_mode": walk_mode,
                       "in_sample": False, "synthetic_history": False},
