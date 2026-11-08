@@ -195,7 +195,7 @@ export function simpleParamSpecsForFunction(code: string): SimpleParamSpec[] {
     case "ONCH":
       return [
         { key: "symbol", label: "Asset", hint: "BTCUSDT/ETHUSDT" },
-        { key: "chain", label: "Chain", hint: "BTC/ETH" },
+        { key: "chain", label: "Chain", hint: "BTC" },
       ];
     case "POLY":
       return [{ key: "include_closed", label: "Closed", hint: "false/true" }];
