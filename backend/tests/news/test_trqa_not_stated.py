@@ -71,6 +71,14 @@ def test_unsupported_question_is_not_answered_with_unrelated_sentence(press_rele
     assert answer["stated"] is False
 
 
+def test_not_stated_answer_returns_no_evidence_rows(press_release_offline) -> None:
+    """The unrelated passages must not be shown as evidence for a not-stated answer."""
+    result = _run_sec("Did the company announce a spin-off?")
+    assert result.data["answer"] == "not stated in the document"
+    assert result.data["rows"] == []
+    assert result.data["evidence"] == []
+
+
 def test_supported_question_still_returns_evidence_with_real_confidence(press_release_offline) -> None:
     result = _run_sec("What was the quarterly revenue?")
     answer = result.data["answers"][0]

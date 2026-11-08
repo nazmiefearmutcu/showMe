@@ -333,10 +333,15 @@ def test_trqa_extractive_confidence_real_signal_yields_real_number() -> None:
         "Management raised full-year guidance citing strong demand. "
         "Margins expanded by 80 basis points."
     )
-    # TRQA#1: "growth" and "change" never appear in the text, so the old
-    # question is no longer supported (coverage < 50%). The question below is
-    # answerable from the text, which is what this confidence test needs.
-    result = _extractive_answer(text, "What was the revenue and guidance?")
+    # TRQA#1: the text never mentions "growth" or "change", so this question is
+    # not supported (best sentence covers 1 of 4 terms, below the 50% bar). It
+    # must be reported as not stated, not given a confident-looking answer.
+    unsupported = _extractive_answer(text, "What was the revenue growth and guidance change?")
+    assert unsupported["stated"] is False
+    assert unsupported["confidence"] is None
+    # A question the text does support must still yield a real confidence.
+    result = _extractive_answer(text, "Did management raise full-year guidance?")
+    assert result["stated"] is True
     assert isinstance(result["confidence"], float)
     assert 0.0 < result["confidence"] <= 0.95
     # It must NOT be the legacy fake constant 0.59.

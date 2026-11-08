@@ -237,7 +237,12 @@ class TRQAFunction(BaseFunction):
 
         primary = answers[0] if answers else {"a": "", "evidence": ""}
         primary_answer = str(primary.get("a") or "")
-        evidence_rows = _evidence_rows(transcript, questions[0] if questions else "")
+        # TRQA#1: a not-stated answer has no supporting evidence. Passages that
+        # merely share one word with the question must not be shown as proof.
+        if primary.get("stated") is False:
+            evidence_rows: list[dict[str, Any]] = []
+        else:
+            evidence_rows = _evidence_rows(transcript, questions[0] if questions else "")
 
         return FunctionResult(
             code=self.code,
