@@ -143,7 +143,8 @@ class REGMFunction(BaseFunction):
                     "status": "ok",
                     "current": current,
                     "data_state": current.get("data_state", "ok"),
-                    "confidence": current.get("confidence", 0.0),
+                    # REGM#3: share of the 4 components resolved, not a probability.
+                    "input_coverage": current.get("input_coverage", 0.0),
                     "rows": _component_rows(sym, current, sources),
                     "history": history,
                     "cards": [

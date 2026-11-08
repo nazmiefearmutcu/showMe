@@ -63,11 +63,12 @@ interface REGMData {
     vol?: string | null;
     drawdown?: string | null;
     curve?: string | null;
-    confidence?: number | null;
+    input_coverage?: number | null;
     data_state?: string | null;
   };
   data_state?: string;
-  confidence?: number | null;
+  /** Share of the four components that resolved (0..1) — not a probability. */
+  input_coverage?: number | null;
   rows?: REGMComponentRow[];
   cards?: REGMCard[];
   methodology?: string;
@@ -154,7 +155,10 @@ export function REGMPane({ code, symbol }: FunctionPaneProps) {
   const cards = Array.isArray(payload?.cards) ? payload.cards : [];
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   const dataState = payload?.data_state ?? payload?.current?.data_state;
-  const confidence = payload?.confidence ?? payload?.current?.confidence ?? null;
+  // REGM#3: the backend reports how many of the 4 inputs resolved, not the
+  // probability of the chosen regime, so it is shown under that name only.
+  const inputCoverage =
+    payload?.input_coverage ?? payload?.current?.input_coverage ?? null;
   const warnings = data?.warnings ?? [];
 
   const body =
@@ -327,12 +331,13 @@ export function REGMPane({ code, symbol }: FunctionPaneProps) {
           <StatusSection label="data_state" value={dataState ?? "—"} />
           <StatusDivider />
           <StatusSection
-            label="confidence"
+            label="input coverage"
             value={
-              confidence != null && Number.isFinite(confidence)
-                ? confidence.toFixed(2)
+              inputCoverage != null && Number.isFinite(inputCoverage)
+                ? `${inputCoverage.toFixed(2)} (${Math.round(inputCoverage * 4)}/4)`
                 : "—"
             }
+            title="Share of the four regime components that resolved. This is not the probability of the regime."
           />
           <StatusDivider />
           <StatusSection
