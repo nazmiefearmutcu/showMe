@@ -726,6 +726,8 @@ _FUND_FIELDS = [
     {"field": "aum_state", "meaning": "\"unavailable\" — aum_usd is not served; no value is shown or implied."},
     {"field": "ytd_state", "meaning": "\"unavailable\" — ytd_return_pct is not served; no value is shown or implied."},
     {"field": "expenseRatio", "meaning": "Curated reference annual expense ratio as a decimal (0.0009 = 0.09%); no provider as-of date."},
+    {"field": "expense_state", "meaning": "\"reference\" - expenseRatio is a curated reference value, not a provider reading; no as-of date."},
+    {"field": "dividend_state", "meaning": "\"reference\" - dividend_yield is a curated reference value, not a provider reading; no as-of date."},
     {"field": "ytd_return_pct", "meaning": "Not served: always null. No keyless provider supplies fund YTD returns."},
     {"field": "dividend_yield", "meaning": "Curated reference dividend yield as a decimal (0.012 = 1.2%); no provider as-of date."},
     {"field": "last", "meaning": "Latest available traded price when live quotes are available."},
@@ -861,6 +863,10 @@ def _label_fund_reference_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
             "ytd_return_pct": None,
             "aum_state": "unavailable",
             "ytd_state": "unavailable",
+            # expenseRatio and dividend_yield are curated values with no provider
+            # as-of date: the row says so, so the pane can mark them.
+            "expense_state": "reference",
+            "dividend_state": "reference",
         }
         for row in rows
     ]

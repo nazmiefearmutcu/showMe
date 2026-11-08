@@ -69,3 +69,21 @@ def test_tauc_reference_model_invents_no_offering_sizes() -> None:
     for row in res.data["rows"]:
         assert row["offering_amount"] is None, row
     assert all(slot["total_offering"] is None for slot in res.data["by_type"])
+
+
+# ---------------------------------------------------------------- FSRC#1-RQ
+from showme.engine.functions.screen._funcs import FSRCFunction  # noqa: E402
+
+
+def test_fsrc_rows_mark_expense_and_dividend_as_curated_reference() -> None:
+    out = asyncio.run(FSRCFunction(deps=FunctionDeps()).execute(query="expenseRatio <= 0.001"))
+    assert out.data["rows"]
+    for row in out.data["rows"]:
+        assert row.get("expense_state") == "reference", row["symbol"]
+        assert row.get("dividend_state") == "reference", row["symbol"]
+
+
+def test_fsrc_field_dictionary_documents_reference_states() -> None:
+    out = asyncio.run(FSRCFunction(deps=FunctionDeps()).execute(query="expenseRatio <= 0.001"))
+    fields = {entry["field"] for entry in out.data["field_dictionary"]}
+    assert {"expense_state", "dividend_state"} <= fields

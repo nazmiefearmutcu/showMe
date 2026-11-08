@@ -303,6 +303,9 @@ export function FSRCPane({ code }: FunctionPaneProps) {
         render: (r) => (
           <span style={monoMutedStyle}>
             {formatPercent(r.expenseRatio, { fromFraction: true })}
+            {r.expense_state === "reference" ? (
+              <RefMark title="Curated reference expense ratio: no provider as-of date" />
+            ) : null}
           </span>
         ),
       },
@@ -344,6 +347,9 @@ export function FSRCPane({ code }: FunctionPaneProps) {
         render: (r) => (
           <span style={monoMutedStyle}>
             {formatPercent(r.dividend_yield, { fromFraction: true })}
+            {r.dividend_state === "reference" ? (
+              <RefMark title="Curated reference dividend yield: no provider as-of date" />
+            ) : null}
           </span>
         ),
       },

@@ -200,13 +200,13 @@ describe("FSRC pane — data honesty", () => {
   });
 });
 
-describe("FSRC pane — curated AUM / YTD are marked as reference (FSRC#1)", () => {
-  it("marks AUM and YTD cells as curated reference values", () => {
+describe("FSRC pane — curated values are marked as reference (FSRC#1)", () => {
+  it("marks expense ratio and dividend yield cells as curated reference values", () => {
     const payload = okPayload();
     const rows = payload.data.data.rows.map((row) => ({
       ...row,
-      aum_state: "reference",
-      ytd_state: "reference",
+      expense_state: "reference",
+      dividend_state: "reference",
     }));
     setMockFn({
       state: "ok",
@@ -216,6 +216,25 @@ describe("FSRC pane — curated AUM / YTD are marked as reference (FSRC#1)", () 
     expect(
       screen.getAllByLabelText("curated reference value").length,
     ).toBeGreaterThanOrEqual(rows.length * 2);
+  });
+
+  it("shows AUM and YTD as unserved dashes with no reference mark", () => {
+    const payload = okPayload();
+    const rows = payload.data.data.rows.map((row) => ({
+      ...row,
+      aum_usd: null,
+      ytd_return_pct: null,
+      aum_state: "unavailable",
+      ytd_state: "unavailable",
+      expense_state: undefined,
+      dividend_state: undefined,
+    }));
+    setMockFn({
+      state: "ok",
+      data: { ...payload.data, data: { ...payload.data.data, rows } },
+    });
+    render(<FSRCPane code="FSRC" />);
+    expect(screen.queryAllByLabelText("curated reference value")).toHaveLength(0);
   });
 });
 
