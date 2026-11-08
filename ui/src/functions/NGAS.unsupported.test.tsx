@@ -25,13 +25,18 @@ function setMockFn(next: MockFnState) {
   mockFn.error = next.error ?? null;
 }
 
+let lastFunctionArgs: { enabled?: boolean; symbol?: string } | undefined;
+
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: { enabled?: boolean; symbol?: string }) => {
+    lastFunctionArgs = args;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
 function unsupportedPayload() {
@@ -66,6 +71,19 @@ describe("NGAS pane — unsupported contract", () => {
     render(<NGASPane code="NGAS" symbol="TTF=F" />);
     expect(screen.getByText("Contract not served")).toBeInTheDocument();
     expect(screen.getByText(/TTF=F is not served by NGAS/i)).toBeInTheDocument();
+  });
+
+  it("does not send a TTF request to the backend at all", () => {
+    setMockFn({ state: "idle", data: undefined });
+    render(<NGASPane code="NGAS" symbol="TTF=F" />);
+    expect(lastFunctionArgs?.enabled).toBe(false);
+    expect(screen.getByText("Contract not served")).toBeInTheDocument();
+  });
+
+  it("still requests the served NG=F contract", () => {
+    setMockFn({ state: "loading", data: undefined });
+    render(<NGASPane code="NGAS" symbol="NG=F" />);
+    expect(lastFunctionArgs?.enabled).toBe(true);
   });
 
   it("renders no Henry Hub price card for the unsupported request", () => {

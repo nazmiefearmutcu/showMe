@@ -119,11 +119,18 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
   );
   const effectiveSymbol =
     symbol || defaultSymbolForFunction(code, ["COMMODITY"]);
+  // NGAS#1: NGAS serves only Henry Hub (NG=F). The route's compatibility guard
+  // rejects a TTF=F symbol as unsupported_asset before NGAS can name the
+  // contract, so the pane does not send it and shows the explicit state itself.
+  const unservedContract =
+    code.toUpperCase() === "NGAS" &&
+    !!effectiveSymbol &&
+    effectiveSymbol.trim().toUpperCase() !== "NG=F";
   const { state, data, error, refetch } = useFunction<SpotData>({
     code,
     symbol: effectiveSymbol,
     params: isRangeWindow ? { range, live: true } : { days, live: true },
-    enabled: !!effectiveSymbol,
+    enabled: !!effectiveSymbol && !unservedContract,
   });
 
   const payload = data?.data;
@@ -172,6 +179,12 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
       title="Pick a contract"
       body={`${title} needs a commodity futures symbol (e.g. NG=F, CL=F).`}
       icon="⌖"
+    />
+  ) : unservedContract ? (
+    <Empty
+      title="Contract not served"
+      body={`${effectiveSymbol} is not served by NGAS. NGAS only serves the Henry Hub contract (NG=F, USD/MMBtu); no other contract's rows are substituted.`}
+      icon="∅"
     />
   ) : state === "loading" || state === "idle" ? (
     <div className="u-grid-gap-8">
