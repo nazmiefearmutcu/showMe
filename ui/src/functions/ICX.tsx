@@ -80,6 +80,37 @@ const INDEX_OPTIONS = INDEX_CODES.map((value) => ({
   title: `Index ${value}`,
 }));
 
+// GICS sectors the backend resolves (screen/icx.py _SECTOR_CONSTITUENTS).
+// ICX#3: the sector path is reachable from the pane, not only through the API.
+const SECTORS = [
+  "Information Technology",
+  "Health Care",
+  "Financials",
+  "Consumer Discretionary",
+  "Communication Services",
+  "Consumer Staples",
+  "Industrials",
+  "Energy",
+  "Materials",
+  "Utilities",
+  "Real Estate",
+] as const;
+
+const MODE_OPTIONS = [
+  { value: "index", label: "INDEX", title: "Members of an index" },
+  { value: "sector", label: "SECTOR", title: "S&P 500 members of a GICS sector" },
+] as const;
+
+const selectStyle: CSSProperties = {
+  font: "inherit",
+  fontSize: 11,
+  background: "transparent",
+  color: "inherit",
+  border: "1px solid var(--color-border, #444)",
+  borderRadius: 3,
+  padding: "1px 4px",
+};
+
 const SORT_OPTIONS = [
   { value: "change", label: "CHG%", title: "Sort by day change" },
   { value: "az", label: "A-Z", title: "Sort by ticker" },
@@ -97,6 +128,16 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
     INDEX_CODES,
     "SPX",
   );
+  const [mode, setMode] = usePersistentOption<string>(
+    "showme.icx.mode",
+    MODE_OPTIONS.map((o) => o.value),
+    "index",
+  );
+  const [sector, setSector] = usePersistentOption<string>(
+    "showme.icx.sector",
+    SECTORS,
+    "Information Technology",
+  );
   const [sortKey, setSortKey] = usePersistentOption<string>(
     "showme.icx.sort",
     SORT_OPTIONS.map((o) => o.value),
@@ -112,10 +153,17 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
       ? symbol.toUpperCase()
       : null;
   const effectiveIndex = propIndex ?? persistedIndex;
+  // An index symbol handed to the pane always selects index mode.
+  const sectorMode = propIndex == null && mode === "sector";
+  const params = useMemo<Record<string, unknown>>(
+    () => (sectorMode ? { sector } : { index: effectiveIndex }),
+    [sectorMode, sector, effectiveIndex],
+  );
+  const scopeLabel = sectorMode ? `sector ${sector}` : `index ${effectiveIndex}`;
 
   const { state, data, error, refetch } = useFunction<ICXData>({
     code,
-    params: { index: effectiveIndex },
+    params,
   });
 
   // Audit A3 ICX M: the quote snapshot used to be fetched once per
@@ -285,7 +333,8 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
           ariaLabel="Index constituents"
         />
         <p style={noteStyle} aria-label="Result count note">
-          {rows.length} constituents · index {payload?.index ?? effectiveIndex}
+          {rows.length} constituents ·{" "}
+          {sectorMode ? scopeLabel : `index ${payload?.index ?? effectiveIndex}`}
           {" · "}
           {missingQuotes === 0
             ? `quote snapshot refreshed every ${REFRESH_MS / 1000}s`
@@ -309,16 +358,44 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
               ? payload.coverage.official != null
                 ? `${payload.coverage.listed ?? rows.length} of ${payload.coverage.official} constituents · ${payload?.index ?? effectiveIndex} · partial`
                 : `${payload.coverage.listed ?? rows.length} listed · ${payload?.index ?? effectiveIndex} · partial`
-              : `${payload?.constituents ?? 0} constituents · ${payload?.index ?? effectiveIndex}`
+              : sectorMode
+                ? `${rows.length} constituents · ${sector}`
+                : `${payload?.constituents ?? 0} constituents · ${payload?.index ?? effectiveIndex}`
           }
           trailing={
             <FunctionControlGroup>
-              <SegmentedControl
-                label="INDEX"
-                value={effectiveIndex}
-                options={INDEX_OPTIONS}
-                onChange={setIndex}
-              />
+              {propIndex == null ? (
+                <SegmentedControl
+                  label="BY"
+                  value={mode}
+                  options={MODE_OPTIONS}
+                  onChange={setMode}
+                />
+              ) : null}
+              {sectorMode ? (
+                <label style={{ fontSize: 11 }}>
+                  SECTOR{" "}
+                  <select
+                    aria-label="GICS sector"
+                    value={sector}
+                    onChange={(e) => setSector(e.target.value)}
+                    style={selectStyle}
+                  >
+                    {SECTORS.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <SegmentedControl
+                  label="INDEX"
+                  value={effectiveIndex}
+                  options={INDEX_OPTIONS}
+                  onChange={setIndex}
+                />
+              )}
               <SegmentedControl
                 label="SORT"
                 value={sortKey}
@@ -353,7 +430,11 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
           <StatusDivider />
-          <StatusSection label="index" value={effectiveIndex} tone="accent" />
+          <StatusSection
+            label={sectorMode ? "sector" : "index"}
+            value={sectorMode ? sector : effectiveIndex}
+            tone="accent"
+          />
         </PaneFooter>
       </Pane>
     </div>

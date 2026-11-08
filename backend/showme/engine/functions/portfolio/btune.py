@@ -91,14 +91,20 @@ class BTUNEFunction(BaseFunction):
                 self.code, instrument, reason=error,
                 requested_strategy=params.get("strategy_id") or params.get("strategy"),
             )
-        live = _truthy(params.get("live_backtest") or params.get("live"))
+        # BTUNE#2: an explicit live_backtest (the pane's LIVE/MODEL toggle) wins;
+        # the generic live flag is only a fallback when it was not sent, so
+        # live_backtest=false is never overruled by live=true.
+        if params.get("live_backtest") not in (None, ""):
+            live = _truthy(params.get("live_backtest"))
+        else:
+            live = _truthy(params.get("live"))
         try:
             return await asyncio.wait_for(
                 self._execute_inner(instrument, spec, live),
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"BTUNE execution timed out: {exc}; no backtest metrics are reported"
+            reason = f"BTUNE execution timed out after 9 s ({type(exc).__name__}); no backtest metrics are reported"
             return _unavailable_result(
                 self.code, instrument, spec,
                 status="provider_unavailable", reason=reason,

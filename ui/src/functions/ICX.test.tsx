@@ -175,6 +175,24 @@ describe("ICX pane — index code addressing", () => {
     fireEvent.click(screen.getByTitle("Index DAX"));
     expect(screen.getAllByText("DAX").length).toBeGreaterThan(0);
   });
+
+  it("ICX#3: sector mode sends the chosen GICS sector, not an index", () => {
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<ICXPane code="ICX" />);
+    expect(lastFnArgs?.params).toEqual({ index: "SPX" });
+    fireEvent.click(screen.getByTitle("S&P 500 members of a GICS sector"));
+    expect(lastFnArgs?.params).toEqual({ sector: "Information Technology" });
+    fireEvent.change(screen.getByLabelText("GICS sector"), { target: { value: "Energy" } });
+    expect(lastFnArgs?.params).toEqual({ sector: "Energy" });
+    expect(screen.queryByTitle("Index DAX")).toBeNull();
+  });
+
+  it("an index symbol prop keeps index mode even when sector mode is persisted", () => {
+    window.localStorage.setItem("showme.icx.mode", "sector");
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<ICXPane code="ICX" symbol="NDX" />);
+    expect(lastFnArgs?.params).toEqual({ index: "NDX" });
+  });
 });
 
 describe("ICX pane — quote honesty", () => {

@@ -338,3 +338,43 @@ def test_partial_worldbank_response_stays_ok(monkeypatch) -> None:
 
     result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["US", "EZ"]))
     assert result.data["status"] == "ok"
+
+
+# ── GMM#1: cards rank the whole universe, not the trimmed board ──
+
+
+def test_cards_rank_the_full_universe_before_top_n_trims(monkeypatch) -> None:
+    monkeypatch.setattr(gmm_mod, "_as_of_year", lambda: 2026)
+    table: dict[tuple[str, str], dict[str, Any]] = {}
+    # US is the most stressed (sorts first); IN grows fastest but scores lowest.
+    rows = {
+        ("US", "USA"): {"NY.GDP.MKTP.KD.ZG": 1.0, "FP.CPI.TOTL.ZG": 8.0, "SL.UEM.TOTL.ZS": 6.0, "GC.DOD.TOTL.GD.ZS": 120.0},
+        ("JP", "JPN"): {"NY.GDP.MKTP.KD.ZG": 0.5, "FP.CPI.TOTL.ZG": 3.0, "SL.UEM.TOTL.ZS": 3.0, "GC.DOD.TOTL.GD.ZS": 200.0},
+        ("IN", "IND"): {"NY.GDP.MKTP.KD.ZG": 7.5, "FP.CPI.TOTL.ZG": 4.0, "SL.UEM.TOTL.ZS": 4.0, "GC.DOD.TOTL.GD.ZS": 50.0},
+    }
+    for (code, iso3), values in rows.items():
+        for ind, val in values.items():
+            table[(code, ind)] = _obs(code, iso3, ind, val, 2025)
+    _patch_table(monkeypatch, table)
+
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(countries=["US", "JP", "IN"], top_n=1))
+    assert [r["country_code"] for r in result.data["rows"]] == ["US"]
+    assert result.data["rows_shown"] == 1 and result.data["rows_total"] == 3
+    cards = {c["key"]: c["value"] for c in result.data["cards"]}
+    assert cards["economies"] == 3
+    assert cards["fastest_growth"].startswith("India")
+
+
+def test_no_route_limit_means_the_whole_universe(monkeypatch) -> None:
+    table: dict[tuple[str, str], dict[str, Any]] = {}
+    for code, iso3 in (("US", "USA"), ("JP", "JPN"), ("IN", "IND")):
+        for ind in INDICATORS:
+            table[(code, ind)] = _obs(code, iso3, ind, 2.0, 2025)
+    _patch_table(monkeypatch, table)
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("GMM", {"countries": ["US", "JP", "IN"]})
+    assert "limit" not in routed and "timeout" not in routed
+    params = {k: v for k, v in routed.items() if k not in ("symbol", "asset_class")}
+    result = _run(GMMFunction(deps=FunctionDeps()).execute(**params))
+    assert len(result.data["rows"]) == 3

@@ -20,6 +20,8 @@ export interface FunctionCallResult<TData = unknown> {
   status?: "ok" | "empty" | "input_error" | "provider_unavailable" | "calc_error";
   asOf?: string;
   inputEcho?: Record<string, unknown>;
+  /** Inputs the /api/fn route filled in that the caller did not send. */
+  routeDefaults?: Record<string, unknown>;
   payload?: unknown;
   rows?: Record<string, unknown>[];
   series?: Record<string, unknown>[];

@@ -105,7 +105,7 @@ class GMMFunction(BaseFunction):
                 _fetch_worldbank_matrix(countries), timeout=timeout
             )
         except Exception as exc:  # noqa: BLE001 - honest outage path
-            return _provider_unavailable(f"worldbank: {exc}")
+            return _provider_unavailable(f"worldbank: {str(exc) or type(exc).__name__}")
 
         if not rows:
             return _provider_unavailable(
@@ -132,23 +132,27 @@ class GMMFunction(BaseFunction):
             ]
         rows.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0.0)))
 
+        # GMM#1: the cards describe the whole requested universe, so they are
+        # ranked before top_n trims the table (a trimmed board must not make
+        # the sixth-most-stressed economy the "fastest growth").
+        universe_rows = rows
         limit = _coerce_int(params.get("top_n") or params.get("limit"), default=len(rows))
         rows = rows[:limit]
 
         # Cards only rank fresh observations: a stale value must not win.
         hottest = max(
-            (r for r in rows if _usable(r, "inflation", as_of) is not None),
+            (r for r in universe_rows if _usable(r, "inflation", as_of) is not None),
             key=lambda r: r["inflation"],
             default=None,
         )
         fastest = max(
-            (r for r in rows if _usable(r, "gdp_growth", as_of) is not None),
+            (r for r in universe_rows if _usable(r, "gdp_growth", as_of) is not None),
             key=lambda r: r["gdp_growth"],
             default=None,
         )
 
         cards = [
-            {"key": "economies", "label": "Economies", "value": len(rows)},
+            {"key": "economies", "label": "Economies", "value": len(universe_rows)},
             {
                 "key": "hottest_inflation",
                 "label": "Hottest CPI",
@@ -168,6 +172,8 @@ class GMMFunction(BaseFunction):
             data={
                 "status": "ok",
                 "rows": rows,
+                "rows_shown": len(rows),
+                "rows_total": len(universe_rows),
                 "cards": cards,
                 "surface": [
                     {"country": r["country"], "code": r["country_code"], "score": r["score"]}

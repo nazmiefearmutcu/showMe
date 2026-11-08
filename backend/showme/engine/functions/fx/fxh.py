@@ -20,6 +20,7 @@ from showme.engine.services.fx_hedge import (
 # Illustrative-book defaults. The pane exposes explicit inputs for all three;
 # these remain for API callers and are echoed as ``assumed_defaults`` so a
 # synthetic $1M book is never presented as the caller's own exposure.
+DEFAULT_DAYS = 90  # maturity used when neither days nor tenor is given (FXH#4)
 DEFAULT_NOTIONAL = 1_000_000.0
 DEFAULT_BASE_RATE = 0.035
 DEFAULT_HOME_RATE = 0.045
@@ -73,7 +74,9 @@ class FXHFunction(BaseFunction):
                 )
             days = TENOR_DAYS[tenor_key]
         else:
-            days = int(params.get("days", 90))
+            days = int(params.get("days", DEFAULT_DAYS))
+        # FXH#4: a maturity nobody chose is an assumption and is echoed as one.
+        days_assumed = _missing(params.get("days")) and _missing(params.get("tenor"))
         # Manifest exposure_side (long_foreign | short_foreign). Per-exposure
         # ``side`` overrides it; an unknown side is an explicit input error.
         exposure_side = str(params.get("exposure_side") or "long_foreign").strip().lower()
@@ -97,7 +100,7 @@ class FXHFunction(BaseFunction):
         else:
             shock = 0.05
         source_mode = "manual_exposure"
-        assumed_defaults: list[str] = []
+        assumed_defaults: list[str] = ["days"] if days_assumed else []
         # explicit exposures override manual defaults; portfolio state is only
         # used when explicitly requested so crypto/stablecoin positions do not
         # masquerade as an FX hedge book.
@@ -403,6 +406,8 @@ def _attach_assumed_values(
         values["home_rate"] = DEFAULT_HOME_RATE
     if "bid_ask_pips" in assumed_defaults:
         values["bid_ask_pips"] = DEFAULT_BID_ASK_PIPS
+    if "days" in assumed_defaults:
+        values["days"] = DEFAULT_DAYS
     data["assumed_values"] = values
 
 

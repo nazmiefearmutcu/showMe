@@ -65,3 +65,11 @@ def test_btune_live_without_ohlcv_never_substitutes_synthetic_history(equity):
     assert any("live OHLCV" in w or "yfinance" in w for w in res.warnings)
 
 
+
+
+def test_btune_explicit_model_toggle_wins_over_generic_live(equity):
+    """BTUNE#2: live_backtest=false (the pane's MODEL toggle) must not be
+    overruled by a generic live=true."""
+    res = _run(BTUNEFunction(FunctionDeps()).execute(instrument=equity, live_backtest=False, live=True))
+    assert res.data["status"] == "needs_input"
+    assert res.data["combos_tested"] == 0
