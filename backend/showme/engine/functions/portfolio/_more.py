@@ -424,7 +424,7 @@ def _tra_unavailable(
         sources=[],
         warnings=[reason],
         metadata={"live": False,
-                  "data_mode": "provider_unavailable" if status == "provider_unavailable" else "input_error"},
+                  "data_mode": "provider_unavailable" if status == "provider_unavailable" else "empty"},
     )
 
 
