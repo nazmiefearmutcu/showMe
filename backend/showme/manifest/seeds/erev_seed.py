@@ -1,4 +1,4 @@
-"""EREV — Earnings Revisions.
+"""EREV — Analyst Recommendation Momentum.
 
 Converts Finnhub analyst recommendation buckets (`/stock/recommendation`)
 into a weighted per-period score (Strong Buy=+2 … Strong Sell=−2),
@@ -38,7 +38,7 @@ from ..spec import (
 def erev() -> FunctionManifest:
     return FunctionManifest(
         code="EREV",
-        name="Earnings Revisions",
+        name="Analyst Recommendation Momentum",
         category=Category.EQUITIES,
         intent=(
             "Score analyst recommendation buckets per period and compute the revision "

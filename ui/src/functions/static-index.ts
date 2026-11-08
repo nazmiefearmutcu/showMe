@@ -291,7 +291,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "EREV",
-    "name": "Earnings Revisions",
+    "name": "Analyst Recommendation Momentum",
     "category": "equity",
     "description": "Analyst recommendation buckets month-over-month + revision velocity."
   },

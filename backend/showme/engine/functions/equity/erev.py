@@ -22,7 +22,7 @@ _BUCKET_WEIGHTS = {
 @FunctionRegistry.register
 class EREVFunction(BaseFunction):
     code = "EREV"
-    name = "Earnings Revisions"
+    name = "Analyst Recommendation Momentum"
     asset_classes = (AssetClass.EQUITY,)
     category = "equity"
     description = "Analyst recommendation buckets month-over-month + momentum (no EPS estimate data)."
