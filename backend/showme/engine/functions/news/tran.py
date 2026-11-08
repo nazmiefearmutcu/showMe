@@ -168,6 +168,13 @@ class TRANFunction(BaseFunction):
                 sources.append("user_supplied")
                 event.setdefault("title", f"{symbol} pasted transcript")
                 event["source"] = "user_supplied"
+                if requested_quarter:
+                    # TRAN#3: the pasted text is never matched to a filing, so the
+                    # requested label is what the user said, not a derived fiscal quarter.
+                    event["quarter_basis"] = (
+                        "user-stated quarter label, not verified: the pasted text was not "
+                        "matched to any filing or fiscal calendar"
+                    )
 
         # 2) Local archive (previously ingested verbatim transcript).
         if not utterances:
@@ -573,6 +580,9 @@ _QA_MARKERS = (
 _SPEAKER_RE = re.compile(
     r"^([A-Z][A-Za-z.\-' ]{1,48})\s*(?:--|—|–|:)\s*(.*)$"
 )
+# TRAN#2: "Label: 1.23 per share" is a table line, not a speaker header. Text that
+# opens with a figure (optionally signed or in a currency) cannot be a person's name.
+_FIGURE_TEXT_RE = re.compile(r"^[\$€£¥(+\-−]?\s*\d")
 
 
 def _parse_transcript_text(
@@ -605,6 +615,8 @@ def _parse_transcript_text(
             section = "qa"
             continue
         m = _SPEAKER_RE.match(block) if allow_speaker_headers else None
+        if m and _FIGURE_TEXT_RE.match(m.group(2).strip()):
+            m = None  # a data label such as "Diluted EPS: 1.23", never a header
         if m and _looks_like_name(m.group(1).strip()):
             head = m.group(1).strip()
             rest = m.group(2).strip()
@@ -649,6 +661,9 @@ def _looks_like_name(head: str) -> bool:
     if head.lower() in _ROLE_HINTS:
         return True
     if any(p.lower().strip(".,:;") in _NON_NAME_TOKENS for p in parts):
+        return False
+    # Financial acronyms (EPS, EBITDA, GAAP, FCF) are metrics, not name tokens.
+    if any(len(p) >= 2 and p.isalpha() and p.isupper() for p in parts):
         return False
     capish = sum(1 for p in parts if p[:1].isupper())
     return capish >= max(1, len(parts) - 1)
