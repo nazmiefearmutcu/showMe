@@ -234,11 +234,11 @@ def whal() -> FunctionManifest:
             ),
             SemanticTest(
                 name="whal_explicit_unavailable_when_all_providers_down",
-                description="If every public proxy errors and no native key is configured, rows=[] with data_mode='not_configured' and a warning naming each failed provider — no synthetic placeholders.",
+                description="If every public proxy errors and no native key is configured, rows=[] with status 'provider_unavailable' and a warning naming each failed provider — no synthetic placeholders.",
                 inputs={"_env": "all_providers_down"},
                 assertions=[
                     "rows_is_empty_array",
-                    "data_mode_equals_not_configured",
+                    "status_equals_provider_unavailable",
                     "warning_lists_failed_providers",
                     "no_synthetic_rows",
                 ],

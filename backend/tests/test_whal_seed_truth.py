@@ -78,3 +78,49 @@ def test_seed_states_the_crypto_lookback_limit() -> None:
     assert "latest 1000" in manifest.methodology, manifest.methodology
     lookback = next(inp for inp in manifest.inputs if inp.name == "lookback_hours")
     assert "latest" in (lookback.description or "").lower(), lookback.description
+
+
+def test_all_providers_down_semantics_name_the_status_the_handler_emits() -> None:
+    # The handler returns status "provider_unavailable" with rows []; it emits no
+    # data_mode, so the seed must not describe a data_mode of "not_configured".
+    test = next(t for t in whal.semantic_tests if t.name == "whal_explicit_unavailable_when_all_providers_down")
+    text = "\n".join([test.description, *test.assertions])
+    assert "data_mode" not in text, text
+    assert "status_equals_provider_unavailable" in test.assertions
+    assert "provider_unavailable" in test.description
+
+
+def test_all_providers_down_returns_provider_unavailable_with_no_rows() -> None:
+    import asyncio
+
+    import httpx
+
+    import showme.engine.functions.misc.whal as whal_mod
+
+    class _Down:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc) -> None:
+            return None
+
+        async def get(self, url, params=None, **_k):
+            return httpx.Response(503, text="down", request=httpx.Request("GET", url))
+
+    original = whal_mod.httpx.AsyncClient
+    whal_mod.httpx.AsyncClient = _Down  # type: ignore[assignment]
+    try:
+        payload, _sources, warnings = asyncio.run(
+            whal_mod._crypto_whales(
+                symbol="BTCUSDT", threshold_usd=1_000_000.0, row_limit=25,
+                trade_limit=1000, lookback_hours=24, timeout=3.0,
+            )
+        )
+    finally:
+        whal_mod.httpx.AsyncClient = original  # type: ignore[assignment]
+    assert payload["status"] == "provider_unavailable"
+    assert payload["rows"] == []
+    assert any("binance" in w.lower() for w in warnings), warnings
