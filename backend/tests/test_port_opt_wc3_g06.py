@@ -43,3 +43,56 @@ def test_live_off_is_never_reported_as_ok() -> None:
     result = _run(None, symbols=SYMBOLS, mode="max_sharpe", live=False, days=756)
     assert result.data.get("status") != "ok", result.data
     assert result.metadata.get("fallback") is False, result.metadata
+
+
+# --- PORT_OPT#3 follow-up: constraints.max_weight is enforced, not just reported ---
+
+_CAP = 0.2
+
+
+def test_max_weight_is_enforced_for_max_sharpe() -> None:
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, mode="max_sharpe", live=True,
+                  days=756, constraints={"max_weight": _CAP})
+    weights = result.data["max_sharpe"]["weights"]
+    assert max(weights.values()) <= _CAP + 1e-6, weights
+    assert abs(sum(weights.values()) - 1.0) < 1e-6, sum(weights.values())
+    assert "constraints" not in result.data["unapplied_inputs"], result.data["unapplied_inputs"]
+
+
+def test_max_weight_is_enforced_for_min_volatility_and_frontier() -> None:
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, mode="all", live=True,
+                  days=756, constraints={"max_weight": _CAP})
+    mv = result.data["min_volatility"]["weights"]
+    assert max(mv.values()) <= _CAP + 1e-6, mv
+    for point in result.data["efficient_frontier"]:
+        assert max(point["weights"].values()) <= _CAP + 1e-6, point["weights"]
+
+
+def test_infeasible_max_weight_is_an_input_error() -> None:
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, mode="max_sharpe", live=True,
+                  days=756, constraints={"max_weight": 0.1})
+    assert result.data["status"] == "input_error", result.data
+    assert "max_sharpe" not in result.data
+
+
+def test_unsupported_constraint_key_is_still_reported() -> None:
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, mode="max_sharpe", live=True,
+                  days=756, constraints={"max_weight": 0.4, "sector_caps": {"Tech": 0.3}})
+    assert "constraints" in result.data["unapplied_inputs"], result.data["unapplied_inputs"]
+    weights = result.data["max_sharpe"]["weights"]
+    assert max(weights.values()) <= 0.4 + 1e-6, weights
+
+
+def test_risk_parity_section_says_it_ignores_max_weight() -> None:
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, mode="all", live=True,
+                  days=756, constraints={"max_weight": _CAP})
+    assert "constraints" in result.data["unapplied_inputs"], result.data["unapplied_inputs"]
+    assert any("risk_parity" in w and "max_weight" in w for w in result.warnings), result.warnings
+
+
+def test_manifest_constraints_input_does_not_claim_unapplied_caps() -> None:
+    load_seeds()
+    spec = next(s for s in REGISTRY.get("PORT_OPT").inputs if s.name == "constraints")
+    text = spec.description or ""
+    assert "max_weight" in text, text
+    assert "sector" in text.lower() and "not applied" in text, text

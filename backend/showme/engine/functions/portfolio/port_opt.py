@@ -110,7 +110,17 @@ class PortOptFunction(BaseFunction):
         frequency = str(params.get("frequency") or "1d").lower()
         if frequency not in _APPLIED_FREQUENCIES:
             unapplied.append("frequency")
-        if params.get("constraints"):
+        max_weight, constraints_unapplied, constraint_error = _parse_constraints(params.get("constraints"))
+        if constraint_error is not None:
+            return _input_error(
+                constraint_error,
+                next_actions=['Pass constraints as {"max_weight": 0.2} with a value in (0, 1].'],
+            )
+        if max_weight is not None and allow_short:
+            # Caps are a long-only feature; the closed-form short solutions ignore them.
+            max_weight = None
+            constraints_unapplied = True
+        if constraints_unapplied:
             unapplied.append("constraints")
 
         # --- live returns -----------------------------------------------------
@@ -202,6 +212,19 @@ class PortOptFunction(BaseFunction):
                     f"Symbols with no live returns were dropped: {', '.join(dropped)}. "
                     f"The optimum covers only {', '.join(str(c) for c in rets.columns)}."
                 )
+        if max_weight is not None and mode in ("risk_parity", "all"):
+            # The ERC solver has no per-asset cap: its section is unconstrained.
+            warnings.append(
+                "risk_parity does not apply constraints.max_weight: its weights are unconstrained."
+            )
+            if "constraints" not in unapplied:
+                unapplied.append("constraints")
+        if max_weight is not None and max_weight * len(rets.columns) < 1.0 - 1e-9:
+            return _input_error(
+                f"constraints.max_weight {max_weight} cannot sum to 1 across "
+                f"{len(rets.columns)} symbols.",
+                next_actions=["Raise max_weight or add symbols to the universe."],
+            )
         warnings.extend(_unapplied_warning(unapplied))
         status = "partial" if dropped else "ok"
 
@@ -214,13 +237,14 @@ class PortOptFunction(BaseFunction):
             "unapplied_inputs": unapplied,
         }
         if mode in ("frontier", "all"):
-            ef = efficient_frontier(rets, points=points, allow_short=allow_short, risk_free=rf)
+            ef = efficient_frontier(rets, points=points, allow_short=allow_short, risk_free=rf,
+                                    max_weight=max_weight)
             out["efficient_frontier"] = [
                 {"label": f"vol {p.volatility:.2%}", "return": p.expected_return, "vol": p.volatility,
                  "sharpe": p.sharpe, "weights": p.weights} for p in ef
             ]
         if mode in ("max_sharpe", "all"):
-            ms = max_sharpe(rets, risk_free=rf, allow_short=allow_short)
+            ms = max_sharpe(rets, risk_free=rf, allow_short=allow_short, max_weight=max_weight)
             out["max_sharpe"] = {
                 "weights": ms.weights, "return": ms.expected_return,
                 "vol": ms.volatility, "sharpe": ms.sharpe,
@@ -232,7 +256,7 @@ class PortOptFunction(BaseFunction):
                     f"(last step moved weights by {ms.solver_residual:.2e}); weights may not be optimal."
                 )
         if mode in ("min_vol", "all"):
-            mv = min_volatility(rets, allow_short=allow_short, risk_free=rf)
+            mv = min_volatility(rets, allow_short=allow_short, risk_free=rf, max_weight=max_weight)
             out["min_volatility"] = {
                 "weights": mv.weights, "return": mv.expected_return,
                 "vol": mv.volatility, "sharpe": mv.sharpe,
@@ -339,6 +363,29 @@ def _input_error(reason: str, *, next_actions: list[str]) -> FunctionResult:
         sources=[],
         warnings=[f"PORT_OPT was not computed: {reason}"],
     )
+
+
+def _parse_constraints(value: Any) -> tuple[float | None, bool, str | None]:
+    """Return (max_weight, has_unapplied_keys, error) for the ``constraints`` input.
+
+    Only the per-asset cap ``max_weight`` is enforced (long-only solvers). Any
+    other key or a non-mapping value is reported as unapplied, never dropped.
+    """
+    if value in (None, "", [], {}):
+        return None, False, None
+    if not isinstance(value, dict):
+        return None, True, None
+    max_weight: float | None = None
+    raw = value.get("max_weight")
+    if raw is not None:
+        try:
+            max_weight = float(raw)
+        except (TypeError, ValueError):
+            return None, False, f"constraints.max_weight {raw!r} is not a number."
+        if not 0.0 < max_weight <= 1.0:
+            return None, False, f"constraints.max_weight {max_weight} must be in (0, 1]."
+    unapplied = any(key != "max_weight" and value[key] not in (None, "", [], {}) for key in value)
+    return max_weight, unapplied, None
 
 
 def _truthy(value: Any) -> bool:

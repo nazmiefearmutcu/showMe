@@ -121,7 +121,12 @@ def port_opt() -> FunctionManifest:
                 label="Constraints",
                 control=ControlKind.CONSTRAINT_SET,
                 required=False,
-                description="Long-only, per-asset weight caps, sector/group caps.",
+                description=(
+                    "Mapping such as {\"max_weight\": 0.2}. max_weight is a long-only per-asset cap "
+                    "enforced in min-volatility, max-Sharpe and the frontier (not in risk parity or "
+                    "short solutions). Sector/group caps are not applied; any unapplied key is "
+                    "reported in unapplied_inputs."
+                ),
             ),
             InputSpec(
                 name="risk_free_rate",
@@ -240,7 +245,7 @@ def port_opt() -> FunctionManifest:
             "whose live returns cannot be fetched are listed in dropped_symbols with "
             "status partial; with fewer than two survivors no weights are produced "
             "(status provider_unavailable). Declared inputs this optimizer does not "
-            "apply, such as weight caps or non-sample covariance estimators, are "
+            "apply, such as sector/group caps or non-sample covariance estimators, are "
             "listed in unapplied_inputs and reported as warnings."
         ),
         formula_dict={

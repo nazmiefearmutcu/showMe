@@ -60,9 +60,11 @@ def test_frontier_points_input_is_applied() -> None:
 
 
 def test_unapplied_constraints_are_reported_not_silently_ignored() -> None:
+    """Originally asserted that a max_weight cap was only reported. The cap is now
+    enforced (see test_port_opt_wc3_g06); an unsupported key is still reported."""
     result = _run(
         _FakeYFinance(_VOLS), symbols=SYMBOLS, mode="max_sharpe", live=True,
-        days=756, constraints={"max_weight": 0.2},
+        days=756, constraints={"max_weight": 0.2, "sector_caps": {"Tech": 0.3}},
     )
     assert "constraints" in result.data.get("unapplied_inputs", []), result.data.get("unapplied_inputs")
     assert any("constraints" in w for w in result.warnings), result.warnings
@@ -306,7 +308,7 @@ def test_non_stationary_solver_output_is_reported(monkeypatch) -> None:
 
     import showme.engine.services.optimizer as optimizer
 
-    def _unsettled(mu, cov, target_return=None, iters=4000, lr=0.05, seed=0):  # noqa: ANN001
+    def _unsettled(mu, cov, target_return=None, iters=4000, lr=0.05, seed=0, cap=None):  # noqa: ANN001
         return np.full(len(mu), 1.0 / len(mu))
 
     monkeypatch.setattr(optimizer, "_solve_long_only", _unsettled)
