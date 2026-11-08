@@ -127,3 +127,31 @@ def test_wcrs_reference_matrix_carries_its_vintage(monkeypatch) -> None:
     assert result.data["source_mode"] == "reference_cross_rate_matrix"
     assert result.data["as_of"] == fx._REFERENCE_AS_OF
     assert result.metadata["reference_as_of"] == fx._REFERENCE_AS_OF
+
+
+# ── WCRS#2: no constructed bid/ask/spread without a real bid/ask source ──
+
+
+def test_wcrs_never_constructs_a_bid_ask_spread(monkeypatch) -> None:
+    """bid = mid*0.9999 / ask = mid*1.0001 made every pair's spread the same
+    0.02% of the rate (EURTRY 111.991 pips). No keyless bid/ask source is
+    wired, so bid, ask and spread_pips must be null, not invented."""
+
+    async def _none(base, quotes, **kwargs):  # noqa: ARG001
+        return None, None
+
+    async def _no_history(fn, symbol, params):  # noqa: ARG001
+        return [], None
+
+    monkeypatch.setattr(fx, "fetch_frankfurter_rates_dated", _none)
+    monkeypatch.setattr(fx, "_history_rows", _no_history)
+
+    result = _run(WCRSFunction(deps=FunctionDeps()).execute(bases="EUR", quotes="USD,TRY"))
+    rows = result.data["rows"]
+    assert rows
+    for row in rows:
+        assert row["bid"] is None, row
+        assert row["ask"] is None, row
+        assert row["spread_pips"] is None, row
+        assert row["rate"] > 0
+    assert "spread" in result.data["field_dictionary"]["spread_pips"].lower()

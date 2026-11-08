@@ -661,12 +661,12 @@ function fmtRate(v: number | undefined): string {
 
 function fmtPips(r: CrossRate): string {
   // Backend ships JPY-aware spread_pips (JPY quote = pip factor 100, else
-  // 10000). Render that field when present; the local fallback mirrors the
-  // same pip factor so USDJPY is never shown 100x wide.
+  // 10000) only from a real bid/ask; it is null when no bid/ask source exists.
+  // The local fallback mirrors the same pip factor for real bid/ask only.
   if (typeof r.spread_pips === "number" && Number.isFinite(r.spread_pips)) {
     return r.spread_pips.toFixed(1);
   }
-  if (r.bid == null || r.ask == null) return "—";
+  if (r.bid == null || r.ask == null) return "n/a";
   const spread = r.ask - r.bid;
   const pipFactor = (r.quote ?? "").toUpperCase() === "JPY" ? 100 : 10000;
   return Math.abs(spread * pipFactor).toFixed(1);

@@ -275,9 +275,9 @@ class WCRSFunction(BaseFunction):
                 heatmap.append({"base": base, "quote": quote, "pair": f"{base}{quote}", "rate": rate})
                 if base == quote or rate <= 0:
                     continue
-                pip_factor = 100 if quote == "JPY" else 10000
-                bid = rate * 0.9999
-                ask = rate * 1.0001
+                # No keyless bid/ask source is wired, so bid, ask and spread are
+                # null. A constructed spread (mid * 0.9999 / 1.0001) is the same
+                # 0.02% for every pair and must never be shown as a market spread.
                 # Real daily change from the derived cross history; null when
                 # no usable history exists — never the old placeholder 0.0.
                 change_pct: float | None = None
@@ -292,9 +292,9 @@ class WCRSFunction(BaseFunction):
                     "quote": quote,
                     "pair": f"{base}{quote}",
                     "rate": round(rate, 8),
-                    "bid": round(bid, 8),
-                    "ask": round(ask, 8),
-                    "spread_pips": round((ask - bid) * pip_factor, 3),
+                    "bid": None,
+                    "ask": None,
+                    "spread_pips": None,
                     "change_pct": change_pct,
                     "source_mode": source_mode,
                     "as_of": as_of,
@@ -328,9 +328,9 @@ class WCRSFunction(BaseFunction):
             ),
             "field_dictionary": {
                 "rate": "Mid cross rate: quote currency units per one base currency unit.",
-                "bid": "Display bid calculated as mid * 0.9999.",
-                "ask": "Display ask calculated as mid * 1.0001.",
-                "spread_pips": "Ask-bid spread converted to pips using JPY-aware pip sizing.",
+                "bid": "Real bid is null: no keyless bid/ask source is wired, so no bid is invented.",
+                "ask": "Real ask is null: no keyless bid/ask source is wired, so no ask is invented.",
+                "spread_pips": "Real spread in pips is null for the same reason; it is never constructed from the mid.",
                 "change_pct": "Real daily percent change of the cross rate from the last two daily closes; null when no history is available.",
                 "history": "Numeric daily cross-close series (ascending) for the sparkline; absent when history is unavailable.",
                 "history_source": "Provider tier(s) the daily history legs came from (yfinance / ecb).",

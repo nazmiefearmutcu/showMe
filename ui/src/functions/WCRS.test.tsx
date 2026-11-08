@@ -276,6 +276,16 @@ describe("WCRS pane — honesty + terminal fixes", () => {
     expect(within(rows[1] as HTMLElement).getByText("2.0")).toBeInTheDocument();
   });
 
+  it("shows n/a for spread when the payload has no real bid/ask (no invented spread)", () => {
+    mockFn.state = "ok";
+    mockFn.data = okData([
+      { base: "USD", quote: "TRY", pair: "USDTRY", rate: 32.2, bid: null, ask: null, spread_pips: null, change_pct: null },
+    ]);
+    render(<WCRSPane code="WCRS" />);
+    const row = screen.getByRole("table").querySelector("tbody tr")!;
+    expect(within(row as HTMLElement).getByText("n/a")).toBeInTheDocument();
+  });
+
   it("names the cross-rate grid for assistive tech", () => {
     mockFn.state = "ok";
     mockFn.data = okData([
