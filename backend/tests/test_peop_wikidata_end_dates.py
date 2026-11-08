@@ -275,3 +275,79 @@ def test_claim_starting_in_the_future_is_not_current(monkeypatch: pytest.MonkeyP
     item = ps.search_people("Tim Cook", limit=5)["items"][0]
 
     assert item["role"] != "executive chairman", item
+
+
+def _this_year() -> int:
+    return datetime.now(timezone.utc).year
+
+
+def test_year_precision_end_in_current_year_is_not_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P582 '+YYYY-00-00' (month and day unknown) in the current year: the claim ended this year.
+
+    The earliest possible end (1 January) has already passed, so the claim is
+    ended and must not be reported as the current role.
+    """
+    claim = _qualified_claim(_CEO, start="2011-08-24", end=f"{_this_year():04d}-00-00")
+    entity = _timcook_entity(p39=[claim])
+    _install(monkeypatch, _FakeWiki(title="Tim Cook", qid="Q265852", entity=entity, labels=_LABELS))
+
+    item = ps.search_people("Tim Cook", limit=5)["items"][0]
+
+    assert item["role"] != "chief executive officer", item
+    assert item["role"] == "businessperson", item
+
+
+def test_month_precision_end_in_current_month_is_not_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P582 '+YYYY-MM-00' (day unknown) in the current month: the earliest end (the 1st) has passed."""
+    now = datetime.now(timezone.utc)
+    claim = _qualified_claim(_CEO, start="2011-08-24", end=f"{now.year:04d}-{now.month:02d}-00")
+    entity = _timcook_entity(p39=[claim])
+    _install(monkeypatch, _FakeWiki(title="Tim Cook", qid="Q265852", entity=entity, labels=_LABELS))
+
+    item = ps.search_people("Tim Cook", limit=5)["items"][0]
+
+    assert item["role"] != "chief executive officer", item
+
+
+def test_year_precision_end_in_past_year_is_not_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    claim = _qualified_claim(_CEO, start="2011-08-24", end="2020-00-00")
+    entity = _timcook_entity(p39=[claim])
+    _install(monkeypatch, _FakeWiki(title="Tim Cook", qid="Q265852", entity=entity, labels=_LABELS))
+
+    item = ps.search_people("Tim Cook", limit=5)["items"][0]
+
+    assert item["role"] != "chief executive officer", item
+
+
+def test_year_precision_start_in_future_year_is_not_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P580 '+YYYY-00-00' in the next year: even the latest possible start is still ahead."""
+    claim = _qualified_claim(_CHAIRMAN, start=f"{_this_year() + 1:04d}-00-00")
+    entity = _timcook_entity(p39=[claim])
+    _install(monkeypatch, _FakeWiki(title="Tim Cook", qid="Q265852", entity=entity, labels=_LABELS))
+
+    item = ps.search_people("Tim Cook", limit=5)["items"][0]
+
+    assert item["role"] != "executive chairman", item
+
+
+def test_year_precision_start_in_past_year_is_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P580 '+2015-00-00': the latest possible start (31 December 2015) has passed, so the claim is current."""
+    claim = _qualified_claim(_CHAIRMAN, start="2015-00-00")
+    entity = _timcook_entity(p39=[claim])
+    _install(monkeypatch, _FakeWiki(title="Tim Cook", qid="Q265852", entity=entity, labels=_LABELS))
+
+    item = ps.search_people("Tim Cook", limit=5)["items"][0]
+
+    assert item["role"] == "executive chairman", item
+
+
+def test_uncertain_boundary_parse_direction() -> None:
+    """Uncertain end takes the earliest date; uncertain start takes the latest date."""
+    end = ps._parse_wikidata_time("+2026-00-00T00:00:00Z", end=True)
+    start = ps._parse_wikidata_time("+2026-00-00T00:00:00Z", end=False)
+    assert end == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert start == datetime(2026, 12, 31, tzinfo=timezone.utc)
+    end_day = ps._parse_wikidata_time("+2026-11-00T00:00:00Z", end=True)
+    start_day = ps._parse_wikidata_time("+2026-11-00T00:00:00Z", end=False)
+    assert end_day == datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert start_day == datetime(2026, 11, 30, tzinfo=timezone.utc)

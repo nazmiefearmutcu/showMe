@@ -263,9 +263,14 @@ _TIME_RE = re.compile(r"^([+-]?)(\d{4,})-(\d{2})-(\d{2})")
 def _parse_wikidata_time(raw: Any, *, end: bool) -> datetime | None:
     """Parse a Wikidata time value such as ``+2026-08-31T00:00:00Z``.
 
-    Wikidata writes ``00`` for an unknown month or day. An end time is then
-    taken as the latest possible date and a start time as the earliest, so
-    that an uncertain boundary never makes a claim look current by accident.
+    Wikidata writes ``00`` for an unknown month or day. A claim is current only
+    when it is provably current, so an uncertain boundary is resolved in the
+    direction that makes the claim look ended or not yet started:
+
+    * ``end=True`` (P582): the earliest possible end (1 January / the 1st).
+      If even that has passed, the claim is ended.
+    * ``end=False`` (P580): the latest possible start (31 December / the last
+      day). If even that is still ahead, the claim has not started.
     """
     match = _TIME_RE.match(str(raw or "").strip())
     if not match:
@@ -277,9 +282,9 @@ def _parse_wikidata_time(raw: Any, *, end: bool) -> datetime | None:
     if year < 1:
         return None
     if month == 0:
-        month = 12 if end else 1
+        month = 1 if end else 12
     if day == 0:
-        day = calendar.monthrange(year, month)[1] if end else 1
+        day = 1 if end else calendar.monthrange(year, month)[1]
     try:
         return datetime(year, month, day, tzinfo=timezone.utc)
     except ValueError:
