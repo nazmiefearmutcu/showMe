@@ -103,7 +103,10 @@ class TLDRFunction(BaseFunction):
         sources.append("yfinance")
 
         # Top news
+        # TOP answers a {status, rows, ...} dict from Awareness; only a usable
+        # answer (status ok or empty, not provider_unavailable) counts as news.
         news_summary: list[str] = []
+        news_ok = False
         try:
             news_timeout = _remaining(float(params.get("news_timeout", 3)), floor=0.75)
             if news_timeout <= 0:
@@ -113,23 +116,38 @@ class TLDRFunction(BaseFunction):
                 TOPFunction(self.deps).execute(limit=12),
                 timeout=news_timeout,
             )
-            news_summary = [str(a.get("title", "")) for a in (top.data or [])[:8]]
+            top_data = top.data if isinstance(top.data, dict) else {}
+            if top_data.get("status") in {"ok", "empty"}:
+                news_ok = True
+                news_summary = [
+                    str(row.get("title", ""))
+                    for row in (top_data.get("rows") or [])[:8]
+                    if isinstance(row, dict) and row.get("title")
+                ]
+            else:
+                warnings.append(f"top: {top_data.get('reason') or top_data.get('status') or 'no usable answer'}")
             sources += list(top.sources or [])
         except Exception as e:
             warnings.append(f"top: {e}")
 
-        # Today's economic events
+        # Today's economic events (ECO answers a {status, rows, ...} dict)
         events: list[dict[str, Any]] = []
+        calendar_ok = False
         try:
             eco_timeout = _remaining(float(params.get("eco_timeout", 2)), floor=0.75)
             if eco_timeout <= 0:
                 raise TimeoutError("no time remaining for economic calendar")
             from showme.engine.functions.macro.eco import ECOFunction
             eco = await asyncio.wait_for(
-                ECOFunction(self.deps).execute(),
+                ECOFunction(self.deps).execute(days=1),
                 timeout=eco_timeout,
             )
-            events = ((eco.data or [])[:10])
+            eco_data = eco.data if isinstance(eco.data, dict) else {}
+            if eco_data.get("status") in {"ok", "empty"}:
+                calendar_ok = True
+                events = [row for row in (eco_data.get("rows") or [])[:10] if isinstance(row, dict)]
+            else:
+                warnings.append(f"eco: {eco_data.get('reason') or eco_data.get('status') or 'no usable answer'}")
             sources += list(eco.sources or [])
         except Exception as e:
             warnings.append(f"eco: {e}")
@@ -150,7 +168,7 @@ class TLDRFunction(BaseFunction):
                 ) +
                 "\nNews:\n" + "\n".join(f"  - {h}" for h in news_summary[:6]) +
                 "\nUpcoming events:\n" + "\n".join(
-                    f"  - {e.get('Country','')} {e.get('Event','')}" for e in events[:6]
+                    f"  - {e.get('country') or ''} {e.get('event') or ''}" for e in events[:6]
                 )
             )
             req = LLMRequest(
@@ -207,8 +225,17 @@ class TLDRFunction(BaseFunction):
                 f"# ShowMe TL;DR — {datetime.now(timezone.utc):%Y-%m-%d}\n\n"
                 f"- **Top movers up:** {ups_line}"
                 f"\n- **Top movers down:** {downs_line}"
-                + "\n- **News themes:** " + "; ".join(news_summary[:3])
-                + f"\n- **Calendar items:** {len(events)} scheduled."
+                + "\n- **News themes:** "
+                + (
+                    ("; ".join(news_summary[:3]) or "no headlines matched")
+                    if news_ok
+                    else "unavailable (Awareness news service)"
+                )
+                + (
+                    f"\n- **Calendar items:** {len(events)} scheduled."
+                    if calendar_ok
+                    else "\n- **Calendar items:** unavailable (Awareness calendar)."
+                )
                 + "\n- **Summary engine:** local deterministic template; no LLM response was available in the latency budget."
                 + "\n- **Action items:** review portfolio positions, scan ALRT log."
             )

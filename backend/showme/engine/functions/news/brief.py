@@ -1,19 +1,23 @@
-"""BRIEF — Daily Research Briefing composed from live ShowMe surfaces.
+"""BRIEF — Daily Research Briefing composed from the Awareness news functions.
 
-Per the manifest, BRIEF composes a portfolio-aware briefing from existing
-surfaces (TOP cross-asset top stories + TOP symbol-scoped headlines per
-watchlist symbol) and emits markdown + a structured payload where every bullet
-cites the evidence row it came from. It does NOT call an LLM and NEVER
-fabricates prose or quotes.
+BRIEF builds a watchlist-aware briefing from two kinds of leg, both answered by
+the Awareness news service through the functions that own it:
 
-The previous implementation returned a hardcoded ``_brief_template`` with
-invented bullets ("Market monitor is online…") whenever ``live`` was falsy.
-That violated the manifest claim ("No synthetic summaries, no fabricated
-quotes"). The default path now always composes from real, keyless live data via
-TOP (which ranks live RSS/GDELT headlines). A clearly-labelled
-``provider_unavailable`` fallback is kept ONLY for a genuine outage where every
-adapter fails — and even then the body names the failure instead of inventing a
-"no news today, all quiet" summary.
+* MACRO leg: TOP — cross-asset top stories (default 24h window, standard
+  quality floor).
+* Watchlist leg: CN — one call per watchlist symbol, which Awareness filters by
+  its ``symbols`` field (BTCUSDT is read as BTC, BRK.B as BRK-B). Symbol-scoped
+  news is never a full-text TOP query.
+
+Every row keeps its Awareness evidence (publisher, publisher tier, quality
+verdict, sentiment label and model, story id, url), so every markdown bullet
+cites the row it came from. BRIEF never re-scores sentiment: Awareness already
+scored each row, and a row without a sentiment label keeps none. BRIEF does not
+call an LLM and never fabricates prose.
+
+Honest state: every leg unavailable -> ``provider_unavailable`` with Awareness's
+reason; any leg served from a cached snapshot -> ``cached_snapshot`` with
+``live`` false; otherwise ``live_official``.
 """
 
 from __future__ import annotations
@@ -21,11 +25,34 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.data_sources.awareness import AwarenessClient
+from showme.engine.functions.news.awareness_news import PROVIDER, UNAVAILABLE_ACTIONS
+from showme.engine.functions.news.cn import CNFunction, normalise_symbol
+from showme.engine.functions.news.top import TOPFunction
+
+MACRO_TAG = "MACRO"
+MACRO_LIMIT_CAP = 15
+WATCHLIST_HOURS = 24
+MAX_WATCHLIST_SYMBOLS = 6
+
+
+@dataclass
+class _Leg:
+    """One Awareness-backed call: the macro TOP call or one watchlist CN call."""
+
+    tag: str
+    section: str
+    status: str = "provider_unavailable"  # ok | empty | provider_unavailable
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    reason: str | None = None
+    stale: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @FunctionRegistry.register
@@ -34,6 +61,8 @@ class BRIEFFunction(BaseFunction):
     name = "Daily Brief"
     category = "news"
 
+    _awareness: AwarenessClient | None = None  # test seam, handed to the TOP and CN legs
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         watchlist = params.get("watchlist") or ["AAPL", "MSFT", "BTCUSDT"]
         if isinstance(watchlist, str):
@@ -41,180 +70,255 @@ class BRIEFFunction(BaseFunction):
         watchlist = [str(s).upper() for s in watchlist if str(s).strip()]
         if instrument and instrument.symbol and instrument.symbol.upper() not in watchlist:
             watchlist = [instrument.symbol.upper(), *watchlist]
-        # ``live`` defaults to True (manifest default). It is now an OPT-OUT
-        # toggle, not an opt-in: the brief composes from real surfaces by
-        # default. Passing live=false explicitly is the only way to skip the
-        # network composition — and even that returns an honest empty shape, not
-        # the old fabricated template.
+        # ``live`` defaults to True. It is an OPT-OUT: live=false returns an honest
+        # empty shape with no headlines fetched, never the old fabricated template.
         live = _truthy(params.get("live_news"), params.get("live"), default=True)
         limit = _clamp_int(params.get("limit"), default=25, min_value=1, max_value=50)
-        timeout = params.get("news_timeout", params.get("timeout", 8))
 
         if not live:
-            markdown = _no_compose_markdown(watchlist)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
                     "status": "empty",
-                    "markdown": markdown,
+                    "markdown": _no_compose_markdown(watchlist),
                     "articles": [],
+                    "rows": [],
                     "watchlist": watchlist,
                     "article_count": 0,
+                    "legs": [],
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards(watchlist, 0, "off"),
                     "next_actions": [
-                        "Pass live=true (default) to compose the brief from real watchlist headlines.",
+                        "Pass live=true (default) to compose the brief from Awareness headlines.",
                     ],
+                    "meta": {"providers": [], "generated_at": None, "notes": [], "feed_health": None},
                 },
                 sources=["watchlist_brief_builder"],
                 warnings=["Live composition disabled (live=false); no headlines fetched."],
                 metadata={"format": "markdown", "live": False, "data_mode": "off"},
             )
 
-        # ---- LIVE COMPOSITION (default) -------------------------------------
-        # De-garbage 2026-06-01: the brief used to source its "watchlist news"
-        # from ``READFunction`` — but READ is the saved-articles *reading-list*
-        # CRUD store, not a live news fetcher, so a fresh user got zero stories.
-        # It also read the cross-asset TOP leg via ``.get("articles"/"rows")``
-        # while TOP actually emits its ranked headlines under ``items`` — so
-        # even the working top-stories leg was dropped and the brief reported a
-        # false ``provider_unavailable``. We now compose entirely from TOP, the
-        # function that genuinely ranks live RSS/GDELT headlines: one general
-        # macro pass plus one symbol-scoped pass per watchlist symbol (capped,
-        # concurrent, best-effort), all read from the correct ``items`` key.
-        from showme.engine.functions.news.top import TOPFunction  # local: avoid cycle
-        from showme.finbert_analyzer import stamp_items
-
-        articles: list[dict[str, Any]] = []
-        sources: list[str] = []
-        provider_errors: list[Any] = []
-        warnings: list[str] = []
-
-        def _items_of(res: Any) -> list[dict[str, Any]]:
-            data = getattr(res, "data", None)
-            if isinstance(data, dict):
-                raw = data.get("items") or data.get("articles") or data.get("rows") or []
-            else:
-                raw = data or []
-            return [item for item in raw if isinstance(item, dict)]
-
-        top_fn = TOPFunction(self.deps)
-        # General macro headlines + per-symbol watchlist headlines, concurrently.
-        wl_symbols = watchlist[:6]
+        wl_symbols = watchlist[:MAX_WATCHLIST_SYMBOLS]
         per_symbol = max(3, min(limit // max(1, len(wl_symbols) + 1), 10))
-
-        async def _macro() -> tuple[str, Any]:
-            return "MACRO", await top_fn.execute(
-                live=True, limit=min(limit, 15), timeout=timeout, stamp_sentiment=False,
-            )
-
-        async def _sym(sym: str) -> tuple[str, Any]:
-            return sym, await top_fn.execute(
-                symbol=sym, query=sym, live=True, limit=per_symbol, timeout=timeout, stamp_sentiment=False,
-            )
-
-        tasks = [_macro(), *[_sym(s) for s in wl_symbols]]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        existing: set[str] = set()
-        for res in results:
-            if isinstance(res, BaseException):
-                provider_errors.append(f"top: {type(res).__name__}: {res}")
-                continue
-            tag, top_res = res
-            for item in _items_of(top_res):
-                cleaned = _clean_article(item)
-                key = _dedupe_key(cleaned)
-                if key and key in existing:
-                    continue
-                cleaned["matched_symbol"] = tag
-                cleaned["section"] = "top_stories" if tag == "MACRO" else "watchlist"
-                articles.append(cleaned)
-                if key:
-                    existing.add(key)
-            for src in getattr(top_res, "sources", []) or []:
-                if src not in sources:
-                    sources.append(src)
-            for err in (getattr(top_res, "metadata", {}) or {}).get("provider_errors", []) or []:
-                provider_errors.append(err)
-
-        # Surface watchlist-tagged stories first, then macro top stories.
-        articles.sort(key=lambda a: 0 if a.get("section") == "watchlist" else 1)
-
-        articles = articles[:limit]
-        
-        # Stamp sentiment on the final merged list of articles once!
-        _, finbert_warning = await stamp_items(articles)
-        if finbert_warning:
-            warnings.append(finbert_warning)
-
-        markdown = _compose_markdown(watchlist, articles)
-        status = "ok" if articles else "provider_unavailable"
-        if not sources:
-            sources = ["watchlist_brief_builder"]
-
-        next_actions: list[str] = []
-        if not articles:
-            next_actions = [
-                "Check RSS/news provider availability.",
-                "Add watchlist symbols or broaden the query before generating a brief.",
-            ]
-            warnings.append("No live headlines returned from any news adapter.")
-
-        return FunctionResult(
-            code=self.code,
-            instrument=None,
-            data={
-                "status": status,
-                "markdown": markdown,
-                "articles": articles,
-                "rows": articles,
-                "watchlist": watchlist,
-                "article_count": len(articles),
-                "methodology": _METHODOLOGY,
-                "field_dictionary": _FIELD_DICTIONARY,
-                "cards": _cards(watchlist, len(articles), "live_official" if articles else "provider_unavailable"),
-                "next_actions": next_actions,
-            },
-            sources=sources,
-            warnings=warnings,
-            metadata={
-                "format": "markdown",
-                "provider_errors": provider_errors,
-                # R2 H-1: the live claim follows the payload — an empty
-                # provider_unavailable envelope must not voucher live.
-                "live": bool(articles),
-                "data_mode": "live_official" if articles else "provider_unavailable",
-                "as_of": datetime.now(timezone.utc).isoformat(),
-            },
+        legs = await asyncio.gather(
+            self._macro_leg(min(limit, MACRO_LIMIT_CAP)),
+            *[self._symbol_leg(sym, per_symbol) for sym in wl_symbols],
         )
+        return _assemble(self.code, instrument, watchlist, list(legs), limit)
+
+    def _child(self, cls: type) -> Any:
+        fn = cls(self.deps)
+        fn._awareness = self._awareness  # None uses the process-wide awareness client
+        return fn
+
+    async def _macro_leg(self, limit: int) -> _Leg:
+        try:
+            res = await self._child(TOPFunction).execute(limit=limit)
+        except Exception as exc:  # a leg must never sink the whole brief
+            return _Leg(MACRO_TAG, "top_stories", reason=f"TOP: {type(exc).__name__}: {exc}")
+        return _leg_from_result(MACRO_TAG, "top_stories", res)
+
+    async def _symbol_leg(self, symbol: str, limit: int) -> _Leg:
+        tag = normalise_symbol(symbol) or symbol
+        try:
+            res = await self._child(CNFunction).execute(symbol=symbol, hours=WATCHLIST_HOURS, limit=limit)
+        except Exception as exc:
+            return _Leg(tag, "watchlist", reason=f"CN: {type(exc).__name__}: {exc}")
+        return _leg_from_result(tag, "watchlist", res)
+
+
+def _leg_from_result(tag: str, section: str, res: FunctionResult) -> _Leg:
+    data = res.data if isinstance(res.data, dict) else {}
+    meta = res.metadata if isinstance(res.metadata, dict) else {}
+    status = str(data.get("status") or "")
+    if status not in {"ok", "empty"}:
+        reason = str(data.get("reason") or "awareness returned no usable answer")
+        return _Leg(tag, section, reason=reason, metadata=meta)
+    rows = [row for row in (data.get("rows") or []) if isinstance(row, dict)]
+    stale = meta.get("live") is False or meta.get("data_mode") == "cached_snapshot"
+    return _Leg(
+        tag,
+        section,
+        status="ok" if rows else "empty",
+        rows=rows,
+        stale=stale,
+        metadata=meta,
+    )
+
+
+def _assemble(
+    code: str,
+    instrument: Instrument | None,
+    watchlist: list[str],
+    legs: list[_Leg],
+    limit: int,
+) -> FunctionResult:
+    # Watchlist legs go first so a story that matches both a symbol and the macro
+    # list keeps the symbol tag.
+    ordered = sorted(legs, key=lambda leg: 0 if leg.section == "watchlist" else 1)
+    articles: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for leg in ordered:
+        for row in leg.rows:
+            cleaned = _clean_article(row)
+            key = _dedupe_key(cleaned)
+            if key and key in seen:
+                continue
+            cleaned["matched_symbol"] = leg.tag
+            cleaned["section"] = leg.section
+            articles.append(cleaned)
+            if key:
+                seen.add(key)
+    articles.sort(key=lambda a: 0 if a.get("section") == "watchlist" else 1)
+    articles = articles[:limit]
+
+    answered = [leg for leg in legs if leg.reason is None]
+    unavailable = [leg for leg in legs if leg.reason is not None]
+    stale_legs = [leg for leg in answered if leg.stale]
+
+    if not articles and unavailable:
+        status = "provider_unavailable"
+    elif articles:
+        status = "ok"
+    else:
+        status = "empty"
+
+    if status == "provider_unavailable":
+        data_mode = "provider_unavailable"
+        live = False
+    elif stale_legs:
+        data_mode = "cached_snapshot"
+        live = False
+    else:
+        data_mode = "live_official"
+        live = True
+
+    reason = None
+    if status == "provider_unavailable":
+        reason = "; ".join(dict.fromkeys(leg.reason or "" for leg in unavailable)) or "awareness unavailable"
+
+    providers = _merge_providers(answered)
+    notes = list(dict.fromkeys(note for leg in answered for note in _as_list(leg.metadata.get("notes"))))
+    feed_health = next((leg.metadata.get("feed_health") for leg in answered if leg.metadata.get("feed_health")), None)
+    generated_at = next((leg.metadata.get("generated_at") for leg in answered if leg.metadata.get("generated_at")), None)
+    provider_errors = [f"{leg.tag}: {leg.reason}" for leg in unavailable]
+    for leg in stale_legs:
+        provider_errors.extend(f"{leg.tag}: {err}" for err in _as_list(leg.metadata.get("provider_errors")))
+
+    leg_summary = [
+        {
+            "leg": leg.tag,
+            "section": leg.section,
+            "status": "provider_unavailable" if leg.reason is not None else leg.status,
+            "count": len(leg.rows),
+            "stale": leg.stale,
+            "reason": leg.reason,
+        }
+        for leg in legs
+    ]
+
+    if status == "provider_unavailable":
+        next_actions = list(UNAVAILABLE_ACTIONS)
+    elif status == "empty":
+        next_actions = ["Add watchlist symbols or check the Awareness news service."]
+    else:
+        next_actions = []
+
+    markdown = _compose_markdown(watchlist, articles, status, reason, leg_summary, data_mode)
+    data = {
+        "status": status,
+        "markdown": markdown,
+        "articles": articles,
+        "rows": articles,
+        "watchlist": watchlist,
+        "article_count": len(articles),
+        "legs": leg_summary,
+        "methodology": _METHODOLOGY,
+        "field_dictionary": _FIELD_DICTIONARY,
+        "cards": _cards(watchlist, len(articles), data_mode),
+        "next_actions": next_actions,
+        "meta": {
+            "providers": providers,
+            "generated_at": generated_at,
+            "notes": notes,
+            "feed_health": feed_health,
+        },
+    }
+    if reason is not None:
+        data["reason"] = reason
+
+    sources = [src for leg in answered for src in _as_list(leg.metadata.get("sources"))]
+    sources = list(dict.fromkeys(sources)) or ["no_live_source" if status == "provider_unavailable" else "awareness:news"]
+    warnings = list(notes)
+    warnings.extend(provider_errors)
+    return FunctionResult(
+        code=code,
+        instrument=None,
+        data=data,
+        sources=sources,
+        warnings=warnings,
+        metadata={
+            "format": "markdown",
+            "provider": PROVIDER,
+            "providers": providers,
+            "feed_health": feed_health,
+            "generated_at": generated_at,
+            "notes": notes,
+            "provider_errors": provider_errors,
+            "live": live,
+            "data_mode": data_mode,
+            "fallback": status == "provider_unavailable",
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+def _merge_providers(legs: list[_Leg]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for leg in legs:
+        for provider in _as_list(leg.metadata.get("providers")):
+            if isinstance(provider, dict):
+                merged.setdefault(str(provider.get("provider", "?")), provider)
+    return list(merged.values())
+
+
+def _as_list(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, (list, tuple)) else []
 
 
 _METHODOLOGY = (
-    "BRIEF composes the briefing from existing surfaces — it does NOT call an LLM "
-    "and does NOT fabricate prose. It merges the input watchlist (or the default "
-    "set), then calls TOP() once for cross-asset top news and once per watchlist "
-    "symbol for symbol-scoped headlines (both reading TOP's ranked live RSS/GDELT "
-    "items), de-duplicates by URL/title, and renders each headline as a markdown "
-    "bullet whose link is the evidence cite. The structured `articles` array "
-    "carries the same rows. When every news adapter is down, status is "
-    "'provider_unavailable' and the body names the failure — the brief never "
-    "invents a 'no news today, all quiet' summary."
+    "BRIEF composes the briefing from the Awareness news service only. It does NOT call an LLM and "
+    "does NOT fabricate prose. Two kinds of leg run concurrently: MACRO is TOP (cross-asset top stories, "
+    "24h window, quality standard or better), and each watchlist symbol is one CN call (Awareness "
+    "symbols filter; BTCUSDT is read as BTC). Rows are de-duplicated by URL and title, with watchlist "
+    "stories first. Each bullet links to its row, and every row carries publisher, publisher tier, the "
+    "quality verdict, the sentiment label and model Awareness assigned, and the story id. BRIEF never "
+    "re-scores sentiment and shows none for a row that has none. If every leg is unavailable the status "
+    "is provider_unavailable with Awareness's reason. A leg served from a cached snapshot marks the brief "
+    "cached_snapshot with live false. An empty brief means Awareness answered and no headline matched."
 )
 
 _FIELD_DICTIONARY: dict[str, str] = {
     "status": "ok / empty / provider_unavailable.",
-    "markdown": "Markdown rendering of the brief — every bullet links to its evidence row.",
-    "articles": "Structured rows of the headlines cited in the markdown body.",
-    "articles[].title": "Headline text quoted from the source.",
-    "articles[].url": "Direct HTTPS link to the source article — the evidence cite.",
-    "articles[].source": "Publisher / source name.",
-    "articles[].matched_symbol": "Symbol this article was tagged to (MACRO for cross-asset TOP news).",
+    "markdown": "Markdown rendering of the brief; every bullet links to its evidence row.",
+    "articles": "Structured rows of the headlines cited in the markdown body (Awareness news rows).",
+    "articles[].title": "Headline text as published.",
+    "articles[].url": "Source article link; the evidence cite.",
+    "articles[].publisher": "Publisher name as Awareness reports it.",
+    "articles[].publisher_tier": "Publisher tier 1-5 (1 is the most trusted).",
+    "articles[].quality_label": "Awareness quality verdict: premium, standard, low or rejected.",
+    "articles[].sentiment": "Awareness sentiment label (positive, negative, neutral); absent when Awareness gave none.",
+    "articles[].sentiment_model": "Model that produced the sentiment label (e.g. finbert:ProsusAI/finbert).",
+    "articles[].story_id": "Awareness story id; rows sharing it cover the same story.",
+    "articles[].matched_symbol": "Awareness entity the row was fetched for (MACRO for cross-asset TOP stories).",
+    "articles[].section": "top_stories (macro leg) or watchlist (symbol leg).",
     "watchlist": "Effective watchlist used (input + instrument).",
     "article_count": "Number of cited articles.",
-    "next_actions": "Suggested follow-up actions when no live headlines were returned.",
+    "legs": "One entry per Awareness call: status, row count, stale flag and reason when unavailable.",
+    "meta": "Awareness provider health (providers, generated_at, notes, feed_health) for the provider strip.",
+    "next_actions": "Suggested follow-up actions when Awareness is unavailable or no headline matched.",
 }
 
 
@@ -229,12 +333,7 @@ def _cards(watchlist: list[str], article_count: int, data_mode: str) -> list[dic
 
 
 def _clamp_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
-    """Coerce ``value`` to an int and clamp to [min_value, max_value].
-
-    Mirrors the local ``_int_param`` helpers in read.py / top.py — kept inline
-    so BRIEF has no dependency on a shared coercion module that may not exist
-    in every checkout.
-    """
+    """Coerce ``value`` to an int and clamp to [min_value, max_value]."""
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -261,61 +360,85 @@ def _dedupe_key(article: dict[str, Any]) -> str:
 
 def _clean_article(article: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(article)
-    for key in ("summary", "description", "snippet"):
+    for key in ("summary", "excerpt"):
         if isinstance(cleaned.get(key), str):
             cleaned[key] = _strip_html(cleaned[key])
     return cleaned
 
 
 def _strip_html(value: str) -> str:
-    # Unescape entities BEFORE stripping tags so an entity-encoded tag
-    # (``&lt;script&gt;``) is not re-injected as live markup by a later
-    # unescape. Matches cn._clean_html / news_intelligence.strip_markup order.
+    # Unescape entities BEFORE stripping tags so an entity-encoded tag is not
+    # re-injected as live markup by a later unescape.
     text = html.unescape(str(value or ""))
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _compose_markdown(watchlist: list[str], articles: list[dict[str, Any]]) -> str:
+def _compose_markdown(
+    watchlist: list[str],
+    articles: list[dict[str, Any]],
+    status: str,
+    reason: str | None,
+    legs: list[dict[str, Any]],
+    data_mode: str,
+) -> str:
     lines = [
         f"# ShowMe Daily Brief — {datetime.now(timezone.utc):%Y-%m-%d}",
         "",
         f"**Watchlist:** {', '.join(watchlist)}",
         "",
-        "## Top Stories",
-        "",
     ]
-    if articles:
-        top_symbols = sorted(
-            {
-                str(a.get("matched_symbol") or a.get("symbol") or "")
-                for a in articles
-                if a.get("matched_symbol") or a.get("symbol")
-            }
-        )
-        if top_symbols:
-            lines.extend([f"**Matched symbols:** {', '.join(top_symbols[:10])}", ""])
-        for a in articles:
-            title = a.get("title", "")
-            link = a.get("url") or a.get("link") or ""
-            sym = a.get("matched_symbol") or a.get("symbol") or ""
-            source = a.get("source") or a.get("publisher") or ""
-            suffix = f" — {source}" if source else ""
-            if link:
-                lines.append(f"- ({sym}) [{title}]({link}){suffix}")
-            else:
-                lines.append(f"- ({sym}) {title}{suffix}")
-    else:
+    if status == "provider_unavailable":
         lines.extend(
             [
-                "- No live watchlist headlines were returned.",
+                "## Top Stories",
+                "",
+                f"- Awareness news service unavailable: {reason}.",
                 "",
                 "## Next actions",
                 "",
-                "- Check RSS/news provider availability.",
-                "- Add watchlist symbols or broaden the query before generating a brief.",
+                f"- {UNAVAILABLE_ACTIONS[0]}",
             ]
         )
+        return "\n".join(lines)
+    if data_mode == "cached_snapshot":
+        lines.extend(["**Cached snapshot:** an Awareness provider is down or degraded; these rows are cached.", ""])
+    gaps = [leg for leg in legs if leg["reason"] is not None or leg["stale"]]
+    if gaps:
+        parts = [f"{leg['leg']} ({'unavailable' if leg['reason'] is not None else 'cached'})" for leg in gaps]
+        lines.extend([f"**Coverage gaps:** {', '.join(parts)}", ""])
+    lines.extend(["## Top Stories", ""])
+    if not articles:
+        lines.extend(
+            [
+                "- No Awareness headlines matched the last 24 hours at standard quality.",
+                "",
+                "## Next actions",
+                "",
+                "- Add watchlist symbols or check the Awareness news service.",
+            ]
+        )
+        return "\n".join(lines)
+
+    top_symbols = sorted({str(a.get("matched_symbol") or "") for a in articles if a.get("matched_symbol")})
+    if top_symbols:
+        lines.extend([f"**Matched symbols:** {', '.join(top_symbols[:10])}", ""])
+    for a in articles:
+        title = a.get("title", "")
+        link = a.get("url") or a.get("link") or ""
+        sym = a.get("matched_symbol") or ""
+        evidence = [str(a.get("publisher") or a.get("source") or "")]
+        if a.get("publisher_tier") is not None:
+            evidence.append(f"tier {a.get('publisher_tier')}")
+        if a.get("quality_label"):
+            evidence.append(str(a.get("quality_label")))
+        if a.get("sentiment"):
+            evidence.append(str(a.get("sentiment")))
+        suffix = " — " + " · ".join(part for part in evidence if part)
+        if link:
+            lines.append(f"- ({sym}) [{title}]({link}){suffix}")
+        else:
+            lines.append(f"- ({sym}) {title}{suffix}")
     return "\n".join(lines)
 
 
@@ -333,6 +456,6 @@ def _no_compose_markdown(watchlist: list[str]) -> str:
             "",
             "## Next actions",
             "",
-            "- Pass live=true (the default) to compose the brief from real headlines.",
+            "- Pass live=true (the default) to compose the brief from Awareness headlines.",
         ]
     )

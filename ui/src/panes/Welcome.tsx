@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Pill, Skeleton, Sparkline } from "@/design-system";
+import { TierBadge } from "@/functions/awareness/TierBadge";
 import { navigate } from "@/lib/router";
 import { toast } from "@/lib/toast";
 import { useSentimentStore, isGaugeStale, type MarketGauge } from "@/lib/sentiment-store";
@@ -112,13 +113,6 @@ interface WatchRow {
    * Replaces the QA-flagged "negative market cap" column. "—" when missing.
    */
   notional: string;
-}
-
-interface NewsItem {
-  time: string;
-  source: string;
-  title: string;
-  tone: "positive" | "negative" | "neutral" | "warn";
 }
 
 interface BriefItem {
@@ -279,64 +273,59 @@ interface BriefResponse {
   rows?: BriefArticle[];
 }
 
-interface TopArticle {
-  title?: string;
-  headline?: string;
-  source?: string;
-  url?: string;
-  link?: string;
-  publishedAt?: string;
-  published_at?: string;
-  published_on?: string;
-  published?: string;
-  date?: string;
-  datetime?: string;
-  time?: string;
-  ts?: string;
-  sentiment?: string;
-  severity?: string;
-  importance_score?: number;
+/**
+ * One Awareness news row as TOP returns it (`data.rows`, the backend's news_row
+ * shape). Only the fields the newsflow renders are typed here.
+ */
+interface NewsRow {
+  id?: string | null;
+  title?: string | null;
+  url?: string | null;
+  publisher?: string | null;
+  source?: string | null;
+  publisher_tier?: number | null;
+  published_at?: string | null;
+  sentiment?: string | null;
+  quality_label?: string | null;
 }
 
-interface TopResponse {
-  items?: TopArticle[];
+/** TOP's `data` dict: status, rows and, on an Awareness outage, a reason. */
+interface TopPayload {
   status?: string;
+  reason?: string | null;
+  rows?: NewsRow[];
 }
 
-function pickArticleTimestamp(a: TopArticle): string | undefined {
-  return (
-    a.published_at ??
-    a.publishedAt ??
-    a.published_on ??
-    a.published ??
-    a.datetime ??
-    a.date ??
-    a.time ??
-    a.ts
-  );
+type NewsTone = "positive" | "negative" | "neutral";
+
+/** Tone comes only from the Awareness sentiment label; no label means neutral. */
+function newsRowTone(row: NewsRow): NewsTone {
+  const sent = String(row.sentiment ?? "").toLowerCase();
+  if (sent === "positive") return "positive";
+  if (sent === "negative") return "negative";
+  return "neutral";
 }
 
-function pickArticleSource(a: TopArticle): string {
-  if (a.source && a.source.trim()) return a.source.trim().toUpperCase();
+/** Only http(s) links are opened; anything else is not rendered as a link. */
+function safeNewsHref(raw: string | null | undefined): string | undefined {
+  if (!raw) return undefined;
   try {
-    const href = a.url ?? a.link;
-    if (!href) return "NEWS";
-    const host = new URL(href).hostname.replace(/^www\./, "");
-    return host.split(".")[0]!.toUpperCase();
+    const url = new URL(raw);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
   } catch {
-    return "NEWS";
+    return undefined;
   }
 }
 
-function articleTone(a: TopArticle): NewsItem["tone"] {
-  const sent = String(a.sentiment ?? "").toLowerCase();
-  if (sent.includes("pos") || sent === "bullish") return "positive";
-  if (sent.includes("neg") || sent === "bearish") return "negative";
-  const sev = String(a.severity ?? "").toLowerCase();
-  if (sev === "high" || sev === "critical") return "warn";
-  const score = Number(a.importance_score);
-  if (Number.isFinite(score) && score >= 80) return "warn";
-  return "neutral";
+function newsRowSource(row: NewsRow): string {
+  const named = (row.publisher ?? row.source ?? "").trim();
+  if (named) return named;
+  try {
+    const host = new URL(row.url ?? "").hostname.replace(/^www\./, "");
+    return host || "Awareness";
+  } catch {
+    return "Awareness";
+  }
 }
 
 function briefArticleTone(a: BriefArticle): BriefItem["tone"] {
@@ -1982,19 +1971,20 @@ function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
   // visibility-tick into params so the fetch identity rotates and the
   // useFunction cache key invalidates on tab refocus + every 5min anyway.
   const epochKey = useVisibilityTick(5 * 60 * 1000);
-  const top = useFunction<TopResponse>({
+  const top = useFunction<TopPayload>({
     code: "TOP",
     params: { hours: 48, limit: 24, _epoch: epochKey },
     enabled: ready,
   });
-  const items: TopArticle[] = useMemo(() => {
-    const payload = top.data?.data;
-    if (Array.isArray(payload)) return payload as TopArticle[];
-    if (payload && Array.isArray((payload as TopResponse).items)) {
-      return (payload as TopResponse).items ?? [];
-    }
-    return [];
-  }, [top.data]);
+  // TOP answers a {status, rows} dict from the Awareness news service.
+  const payload = top.data?.data;
+  const rows: NewsRow[] = payload && Array.isArray(payload.rows) ? payload.rows : [];
+  const outage = payload?.status === "provider_unavailable";
+  const cached =
+    rows.length > 0 &&
+    !outage &&
+    (top.data?.metadata?.data_mode === "cached_snapshot" ||
+      top.data?.metadata?.live === false);
 
   return (
     <div className="terminal-panel terminal-panel--news">
@@ -2003,9 +1993,17 @@ function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
         <span>
           {top.state === "loading"
             ? "loading…"
-            : items.length
-              ? `${items.length} headlines`
-              : "live RSS"}
+            : rows.length
+              ? `${rows.length} headlines · Awareness`
+              : "Awareness"}
+          {cached && (
+            <>
+              {" · "}
+              <span className="terminal-newsflow__time" role="note">
+                cached
+              </span>
+            </>
+          )}
         </span>
       </div>
       <div
@@ -2019,70 +2017,79 @@ function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
             Engine offline — start the sidecar to stream live headlines.
           </div>
         )}
-        {top.state === "loading" && !items.length && (
+        {top.state === "loading" && !rows.length && (
           <div className="terminal-newsflow__placeholder" role="status">
             Fetching headlines…
           </div>
         )}
-        {top.state === "error" && (
-          <div className="terminal-newsflow__placeholder terminal-newsflow__placeholder--error">
-            Couldn't reach the news provider. Retry from /fn/TOP.
+        {(top.state === "error" || outage) && (
+          <div
+            className="terminal-newsflow__placeholder terminal-newsflow__placeholder--error"
+            role="status"
+            title={payload?.reason ?? undefined}
+          >
+            Awareness news service unavailable. Retry from /fn/TOP.
           </div>
         )}
-        {top.state === "ok" && !items.length && (
-          <div className="terminal-newsflow__placeholder">
-            No headlines yet — adjust filters in /fn/TOP.
+        {top.state === "ok" && !outage && !rows.length && (
+          <div className="terminal-newsflow__placeholder" role="status">
+            No Awareness headlines in the last 48 hours. Widen the filters in /fn/TOP.
           </div>
         )}
-        {items.map((item, idx) => {
-          const title = item.title ?? item.headline ?? "(untitled)";
-          const href = item.url ?? item.link;
-          const tone = articleTone(item);
-          const source = pickArticleSource(item);
-          const ts = pickArticleTimestamp(item);
-          const stamp = ts ? formatNewsTimestamp(ts, tz) : "";
-          const key = `${href ?? title}-${idx}`;
-          const content = (
-            <>
-              <span className={`terminal-newsflow__dot terminal-newsflow__dot--${tone}`} />
-              <span className="terminal-newsflow__time">{stamp || "—"}</span>
-              <span className="terminal-newsflow__body">
-                <strong>{source}</strong>
-                <span className="terminal-newsflow__title">{title}</span>
-              </span>
-            </>
-          );
-          // role="listitem" must wrap the interactive element, not sit on it
-          // — putting it on the <a>/<button> overrides their link/button
-          // semantics. Keep the list item as a div and nest the control.
-          if (href) {
+        {!outage &&
+          rows.map((row, idx) => {
+            const title = row.title?.trim() || "(untitled)";
+            const href = safeNewsHref(row.url);
+            const tone = newsRowTone(row);
+            const source = newsRowSource(row);
+            const stamp = row.published_at ? formatNewsTimestamp(row.published_at, tz) : "";
+            const key = `${row.id ?? href ?? title}-${idx}`;
+            const content = (
+              <>
+                <span
+                  className={`terminal-newsflow__dot terminal-newsflow__dot--${tone}`}
+                />
+                <span className="terminal-newsflow__time">{stamp || "—"}</span>
+                <span className="terminal-newsflow__body">
+                  <strong>{source}</strong>
+                  {typeof row.publisher_tier === "number" && (
+                    <TierBadge tier={row.publisher_tier} />
+                  )}
+                  <span className="terminal-newsflow__title">{title}</span>
+                </span>
+              </>
+            );
+            // role="listitem" must wrap the interactive element, not sit on it
+            // — putting it on the <a>/<button> overrides their link/button
+            // semantics. Keep the list item as a div and nest the control.
+            if (href) {
+              return (
+                <div key={key} role="listitem" className="terminal-newsflow__listitem">
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="terminal-newsflow__item"
+                    title={title}
+                  >
+                    {content}
+                  </a>
+                </div>
+              );
+            }
             return (
               <div key={key} role="listitem" className="terminal-newsflow__listitem">
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
                   className="terminal-newsflow__item"
+                  onClick={() => navigate("/fn/TOP")}
                   title={title}
                 >
                   {content}
-                </a>
+                </button>
               </div>
             );
-          }
-          return (
-            <div key={key} role="listitem" className="terminal-newsflow__listitem">
-              <button
-                type="button"
-                className="terminal-newsflow__item"
-                onClick={() => navigate("/fn/TOP")}
-                title={title}
-              >
-                {content}
-              </button>
-            </div>
-          );
-        })}
+          })}
       </div>
     </div>
   );

@@ -96,42 +96,37 @@ def test_finra_ats_weekly_posts_summary_type_filter() -> None:
     assert captured["url"].endswith("/name/weeklySummary")
 
 
-# ── BRIEF: composes from TOP's ``items`` key, not articles/rows ──────────────
-def test_brief_reads_top_items_key(monkeypatch) -> None:
-    from showme.engine.core.base_function import FunctionDeps, FunctionResult
-    from showme.engine.functions.news import top as top_mod
+# ── BRIEF: composes from Awareness rows (TOP macro + CN watchlist) ───────────
+def test_brief_reads_awareness_rows_for_both_legs() -> None:
+    import httpx
+
+    from showme.engine.data_sources.awareness import AwarenessClient
     from showme.engine.functions.news.brief import BRIEFFunction
 
-    class _FakeTOP:
-        def __init__(self, deps: Any) -> None:
-            self.deps = deps
+    def handler(request: httpx.Request) -> httpx.Response:
+        symbols = request.url.params.get("symbols")
+        sym = symbols or "MACRO"
+        row = {
+            "id": f"{sym}-1",
+            "title": f"{sym} headline",
+            "url": f"https://x/{sym}",
+            "publisher_name": "Reuters",
+            "symbols": [symbols] if symbols else [],
+        }
+        body = {"data": [row], "meta": {"providers": [], "notes": [], "generated_at": None}}
+        return httpx.Response(200, json=body)
 
-        async def execute(self, **params: Any) -> FunctionResult:
-            sym = params.get("symbol") or "MACRO"
-            return FunctionResult(
-                code="TOP",
-                instrument=None,
-                # Headlines live under ``items`` — the exact key BRIEF used to
-                # ignore. If BRIEF only reads articles/rows this stays empty.
-                data={"items": [
-                    {"title": f"{sym} headline", "url": f"https://x/{sym}",
-                     "source": "rss", "summary": "real story"},
-                ], "status": "ok"},
-                sources=["rss"],
-            )
-
-    # BRIEF imports TOPFunction lazily inside execute() from news.top, so the
-    # patch must land on the source module, not on brief's namespace.
-    monkeypatch.setattr(top_mod, "TOPFunction", _FakeTOP)
-
-    res = asyncio.run(BRIEFFunction(FunctionDeps()).execute(watchlist=["AAPL"]))
+    client = AwarenessClient("http://aw.test", transport=httpx.MockTransport(handler), autostart=False)
+    fn = BRIEFFunction()
+    fn._awareness = client
+    res = asyncio.run(fn.execute(watchlist=["AAPL"]))
     data = res.data
     assert data["status"] == "ok"
-    assert data["article_count"] >= 1
+    assert data["article_count"] == 2
     assert "placeholder" not in str(data).lower()
     # both a macro story and the watchlist story should appear
     sections = {a.get("section") for a in data["articles"]}
-    assert "top_stories" in sections or "watchlist" in sections
+    assert sections == {"top_stories", "watchlist"}
 
 
 if __name__ == "__main__":  # pragma: no cover
