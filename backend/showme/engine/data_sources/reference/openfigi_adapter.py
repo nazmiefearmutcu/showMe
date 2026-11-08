@@ -138,8 +138,10 @@ class OpenFIGIAdapter(BaseDataSource):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
                 self._record_failure(exc)
-                await asyncio.sleep(1)
-                return []
+                raise OpenFIGIRateLimited(
+                    "OpenFIGI rate limit reached (HTTP 429)",
+                    retry_after=_retry_after(exc.response),
+                ) from exc
             raise
         if not results:
             return []
@@ -160,8 +162,10 @@ class OpenFIGIAdapter(BaseDataSource):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
                 self._record_failure(exc)
-                await asyncio.sleep(1)
-                return None
+                raise OpenFIGIRateLimited(
+                    "OpenFIGI rate limit reached (HTTP 429)",
+                    retry_after=_retry_after(exc.response),
+                ) from exc
             raise
         if not results:
             return None
