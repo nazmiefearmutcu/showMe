@@ -26,8 +26,12 @@ import {
 } from "../function-controls";
 import type { FunctionPaneProps } from "../registry-types";
 import {
+  PortfolioDataBadge,
+  type PortfolioDataQuality,
+  portfolioDataMode,
+} from "../PortfolioAnalytics";
+import {
   asRows,
-  DataQualityBadge,
   emptyCopy,
   fmtNum,
   fmtPct,
@@ -170,13 +174,18 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
       )
     : [];
 
-  const badge = (
-    <DataQualityBadge
-      payload={payload as Row | undefined}
-      metadata={data?.metadata}
-      sources={data?.sources}
-    />
+  // MARS#3-RQ: a partial_live result mixes live series with a dropped or
+  // template leg or factor proxy. It is a partial-live state, not a model;
+  // the warning strip names what was dropped. data_mode sits in the metadata
+  // envelope, which the generic classifier does not read for MARS.
+  const quality = useMemo<PortfolioDataQuality>(
+    () =>
+      String(data?.metadata?.data_mode ?? "").toLowerCase() === "partial_live"
+        ? { mode: "degraded", reason: "a leg or factor proxy was not live" }
+        : portfolioDataMode(payload as Row | undefined, data?.metadata, data?.sources),
+    [payload, data?.metadata, data?.sources],
   );
+  const badge = <PortfolioDataBadge quality={quality} />;
   const empty = emptyCopy(payload as Row | undefined);
 
   const body = (
