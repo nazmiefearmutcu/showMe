@@ -61,8 +61,11 @@ SEC_EDGAR_PRIMARY: frozenset[str] = frozenset(
     {"FORM4", "FTS", "HDS", "HFS", "CACT", "SPLC", "LITM", "PIB"}
 )
 YFINANCE_PRIMARY: frozenset[str] = frozenset(
-    {"APPL", "DPF", "DVD", "ANR", "RV", "DARK"}
+    {"APPL", "DVD", "ANR", "RV", "DARK"}  # PIB -> SEC (PIB fix), DPF -> FINRA (DPF#4)
 )
+# DPF (dark pool / ATS volume) reads FINRA ATS weekly volume first; its seed
+# used to claim yfinance and describe delisted firms (DPF#4, p2a-g05).
+FINRA_PRIMARY: frozenset[str] = frozenset({"DPF"})
 # F14 seed-truth resync: EE (Finnhub historical earnings, Yahoo calendar as
 # fallback) and EREV (Finnhub recommendation buckets only) were listed under
 # YFINANCE_PRIMARY, but the shipped handlers read Finnhub as their primary
@@ -145,6 +148,16 @@ def test_finnhub_primary_chain(code: str) -> None:
     entry = REGISTRY.get(code)
     assert entry.provider_chain.primary == "finnhub", (
         f"{code} must declare primary=finnhub (handler reads Finnhub first), "
+        f"got primary={entry.provider_chain.primary!r}"
+    )
+
+
+@pytest.mark.parametrize("code", sorted(FINRA_PRIMARY))
+def test_finra_primary_chain(code: str) -> None:
+    """DPF reads FINRA ATS weekly volume first (handler dpf.py)."""
+    entry = REGISTRY.get(code)
+    assert entry.provider_chain.primary == "finra", (
+        f"{code} must declare primary=finra (handler reads FINRA ATS first), "
         f"got primary={entry.provider_chain.primary!r}"
     )
 
