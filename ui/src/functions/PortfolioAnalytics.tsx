@@ -1392,7 +1392,8 @@ function buildParams(
     case "REBA":
       return {
         targets: parseTargets(state.targetText),
-        max_notional: num(state.capital, 100000),
+        // A blank or invalid capital is omitted, never replaced by a silent 100000.
+        max_notional: optionalNumber(state.capital),
         // G3: wire the MODEL/LIVE toggle to reba.py's live_portfolio mode.
         // Explicit `false` keeps the model path (unchanged default).
         live_portfolio: state.live,

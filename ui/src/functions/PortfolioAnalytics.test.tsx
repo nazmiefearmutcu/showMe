@@ -531,6 +531,13 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
     expect(mockArgs.current?.params?.max_notional).toBe(100000);
   });
 
+  it("sends no capital when the field is blank instead of a silent 100000", () => {
+    mockOk({ status: "needs_input", rows: [] });
+    render(<PortfolioAnalyticsPane code="REBA" symbol="" />);
+    fireEvent.change(screen.getByLabelText("Capital"), { target: { value: "" } });
+    expect(mockArgs.current?.params?.max_notional).toBeUndefined();
+  });
+
   it("builds the order-list CSV from the broker-shaped fields", () => {
     const csv = buildRebaOrdersCsv([
       {
