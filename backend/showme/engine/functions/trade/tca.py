@@ -355,7 +355,11 @@ class TCAFunction(BaseFunction):
                         # No fabricated default size — a fill without a size
                         # cannot contribute honest notional/cost numbers.
                         continue
-                    fill_px = entry.fill_price if entry.fill_price else entry.price
+                    # Only a broker-confirmed execution price is a fill. The
+                    # signal price (entry.price) is the arrival benchmark, not
+                    # an execution: a placed order with no fill_price stays
+                    # unfilled and is excluded instead of booked at signal px.
+                    fill_px = entry.fill_price
                     if not fill_px or fill_px <= 0:
                         continue
                     side = "BUY" if entry.kind == "entry" else "SELL"
@@ -383,8 +387,11 @@ class TCAFunction(BaseFunction):
                 md = o.get("metadata") or {}
                 if isinstance(md, str):
                     md = {}
-                avg_fill, filled_qty = self._avg_fill(md, o.get("price"))
+                avg_fill, filled_qty = self._avg_fill(md)
                 if avg_fill is None:
+                    # No recorded execution (submitted / open / cancelled):
+                    # not a fill. Never fall back to the limit price or the
+                    # ordered quantity here.
                     continue
                 arrival = md.get("arrival_price")
                 if arrival is None and o.get("price"):
@@ -395,7 +402,7 @@ class TCAFunction(BaseFunction):
                     "symbol": (o.get("symbol") or "").upper() or None,
                     "broker": o.get("broker") or "manual",
                     "side": (o.get("side") or "BUY").upper(),
-                    "quantity": float(filled_qty or o.get("quantity") or 0),
+                    "quantity": float(filled_qty),
                     "avg_fill_px": float(avg_fill),
                     "arrival_px": float(arrival) if arrival is not None else None,
                     "filled_at": (datetime.fromtimestamp(ts, timezone.utc).isoformat()
@@ -407,7 +414,15 @@ class TCAFunction(BaseFunction):
         return out[:limit]
 
     @staticmethod
-    def _avg_fill(metadata: dict[str, Any], book_px: float | None) -> tuple[float | None, float]:
+    def _avg_fill(metadata: dict[str, Any]) -> tuple[float | None, float]:
+        """Return (avg_fill_px, executed_qty) or (None, 0.0) when unfilled.
+
+        An order is filled only when its metadata records an execution: either
+        a ``fills`` list with positive quantity, or an explicit ``avg_fill``
+        together with a positive ``filled_qty``. The order's book/limit price
+        is deliberately NOT used as a fill price (that booked unfilled limit
+        orders as full-size fills with fabricated slippage).
+        """
         fills = metadata.get("fills") or []
         if fills:
             notional = 0.0
@@ -422,14 +437,14 @@ class TCAFunction(BaseFunction):
                 qty += q
             if qty > 0:
                 return notional / qty, qty
-        av = metadata.get("avg_fill")
-        if av is None:
-            av = book_px
         try:
             filled_qty = float(metadata.get("filled_qty") or 0)
         except (TypeError, ValueError):
             filled_qty = 0.0
-        return (float(av) if av is not None else None), filled_qty
+        av = metadata.get("avg_fill")
+        if av is None or filled_qty <= 0:
+            return None, 0.0
+        return float(av), filled_qty
 
     async def _live_vwap(
         self, symbol: str, instrument: Instrument | None,
