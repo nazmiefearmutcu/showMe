@@ -89,18 +89,32 @@ def _is_crypto_perpetual(symbol: str) -> bool:
     return s.endswith(("-PERP", "-SWAP", "PERP")) or ":" in s
 
 
+def _book_class(position: dict[str, Any]) -> str:
+    """Asset class used for account inference: a crypto perpetual is its own token.
+
+    A perpetual is held as asset_class CRYPTO (MGN#2-RQ), so it is told apart from spot
+    CRYPTO by its symbol suffix, not by its class label.
+    """
+    cls = str(position.get("asset_class") or "").upper()
+    if cls == "CRYPTO" and _is_crypto_perpetual(str(position.get("symbol") or "")):
+        return "CRYPTO_PERP"
+    return cls
+
+
 def infer_margin_type(positions: list[dict[str, Any]]) -> str:
     """Account-level margin type implied by the products an account holds.
 
     Only an account made purely of spot crypto is crypto_spot. A crypto account that
-    also holds derivatives (CRYPTO and DERIVATIVE both present) is crypto_futures. A
-    DERIVATIVE-only book is futures: a DERIVATIVE is non-crypto futures/options, so it
-    must not take the crypto 10% rule. Each position is still priced under its own
-    class rule in calc_account.
+    also holds derivatives (CRYPTO and DERIVATIVE both present) is crypto_futures, and so
+    is any book holding a crypto perpetual (CRYPTO_PERP). A DERIVATIVE-only book is
+    futures: a DERIVATIVE is non-crypto futures/options, so it must not take the crypto
+    10% rule. Each position is still priced under its own class rule in calc_account.
     """
-    classes = {str(p.get("asset_class") or "").upper() for p in positions}
+    classes = {_book_class(p) for p in positions}
     if classes and classes <= {"CRYPTO"}:
         return "crypto_spot"
+    if "CRYPTO_PERP" in classes and classes <= {"CRYPTO", "CRYPTO_PERP", "DERIVATIVE"}:
+        return "crypto_futures"
     if classes and classes <= {"CRYPTO", "DERIVATIVE"} and {"CRYPTO", "DERIVATIVE"} <= classes:
         return "crypto_futures"
     if classes & {"FX"}:
@@ -129,6 +143,10 @@ def _position_rule(
     if (cls == "DERIVATIVE" and margin_type == "crypto_futures" and not explicit
             and not _is_crypto_perpetual(symbol)):
         return dict(DEFAULT_RULES["futures"])
+    # MGN#2-RQ: a crypto perpetual held as CRYPTO keeps the crypto_futures rate; only the
+    # spot CRYPTO lines of the same book are priced at the crypto_spot rate.
+    if cls == "CRYPTO" and _is_crypto_perpetual(symbol):
+        return account_rule if margin_type == "crypto_futures" else dict(DEFAULT_RULES["crypto_futures"])
     mapped = _CLASS_RULE.get(cls)
     if mapped is None or mapped == margin_type:
         return account_rule
