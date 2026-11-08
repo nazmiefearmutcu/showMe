@@ -12,10 +12,13 @@ from typing import Any
 
 import pandas as pd
 
+from showme.engine.core.base_data_source import DataKind
 from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.equity.anr import (
+    TREND_MONTHS_DEFAULT,
     ANRFunction,
+    _clamp_months,
     _consensus_label,
     _rsi,
     _signal_bucket_rows,
@@ -161,3 +164,48 @@ def test_signal_bucket_agrees_with_consensus_label_for_every_score() -> None:
         rows = _signal_bucket_rows([{"score": score}])
         filled = [row["bucket"] for row in rows if row["count"] == 1]
         assert filled == [_LABEL_TO_BUCKET[_consensus_label(score)]], score
+
+
+# ── ANR#2 review: non-finite months must not escape execute() ───────────────
+
+def test_non_finite_months_falls_back_to_default_window() -> None:
+    assert _clamp_months(float("inf")) == TREND_MONTHS_DEFAULT
+    assert _clamp_months("inf") == TREND_MONTHS_DEFAULT
+    assert _clamp_months("1e400") == TREND_MONTHS_DEFAULT
+    assert _clamp_months(float("nan")) == TREND_MONTHS_DEFAULT
+
+
+def test_months_infinity_returns_ok_not_provider_unavailable() -> None:
+    result = _run(_raw_with_targets(), months=float("inf"))
+    assert result.data["status"] == "ok"
+    assert result.data["trend_months"] == TREND_MONTHS_DEFAULT
+
+
+# ── ANR#2 review: crypto payload honours the declared trend/current_score ───
+
+class _FakeCryptoProvider:
+    """Offline crypto adapter: a quote for QUOTE requests, daily closes for OHLCV."""
+
+    async def fetch(self, request: Any) -> Any:
+        if request.kind == DataKind.QUOTE:
+            return SimpleNamespace(
+                last=100.0,
+                close_prev=99.0,
+                source="fake_quote",
+                timestamp=datetime(2026, 11, 7, 12, 0, tzinfo=timezone.utc),
+            )
+        closes = [100.0 + ((i * 7) % 11) - 5.0 + i * 0.1 for i in range(60)]
+        index = pd.date_range("2026-09-08", periods=len(closes), freq="D", tz="UTC")
+        return pd.DataFrame({"close": closes, "volume": [1000.0 + i for i in range(len(closes))]}, index=index)
+
+
+def test_crypto_payload_declares_trend_and_current_score() -> None:
+    deps = FunctionDeps(ccxt_failover=_FakeCryptoProvider(), yfinance=_FakeCryptoProvider())
+    fn = ANRFunction(deps=deps)
+    instrument = Instrument(symbol="BTC-USD", asset_class=AssetClass.CRYPTO)
+    result = asyncio.run(fn.execute(instrument=instrument))
+    assert result.data["status"] == "ok"
+    assert result.data["trend"] == []
+    assert result.data["trend_status"] == "not_applicable_crypto"
+    assert result.data["current_score"] == result.data["metrics"]["consensus_score"]
+    assert result.data["current_score"] is not None

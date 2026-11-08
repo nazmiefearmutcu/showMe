@@ -116,7 +116,8 @@ def _clamp_months(value: Any) -> int:
     """Lookback window for the trend table, bounded to the manifest range (ANR#2)."""
     try:
         months = int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: inf / 1e400 cannot become an int; treat as invalid input.
         return TREND_MONTHS_DEFAULT
     return max(TREND_MONTHS_MIN, min(months, TREND_MONTHS_MAX))
 
@@ -950,6 +951,12 @@ class ANRFunction(BaseFunction):
                     "date",
                     "last_update",
                 ],
+                # The sell-side trend is not applicable; the declared output keys
+                # are still present so the contract holds (ANR#2).
+                "trend": [],
+                "trend_status": "not_applicable_crypto",
+                "trend_reason": "Crypto ANR has no broker recommendation history; the signal table is the current snapshot.",
+                "current_score": consensus_score,
                 "analyst_detail_status": "not_applicable_crypto",
                 "analyst_detail_reason": "Crypto pairs do not have a Bloomberg-style sell-side ANR feed in the configured providers. ShowMe uses a labelled market-consensus proxy instead.",
                 "bucket_rows": bucket_rows,
