@@ -487,7 +487,7 @@ async def _contract_snapshot(
             )
         except Exception as exc:
             # GLCO#1-RQ: a timeout has an empty message; name the exception type.
-            errors.append(f"{symbol} quote: {exc or type(exc).__name__}")
+            errors.append(f"{symbol} quote: {str(exc) or type(exc).__name__}")
         if include_history:
             history, history_errors = await _symbol_history(
                 yfinance, symbol, days=days, timeout=timeout,

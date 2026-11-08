@@ -76,3 +76,23 @@ def test_glco_complete_board_stays_ok_with_no_missing(monkeypatch) -> None:
     assert data["status"] == "ok"
     assert data["missing"] == []
     assert len(data["rows"]) == 14
+
+
+class _EmptyMessageTimeouts(_PartialQuotes):
+    async def fetch(self, request: Any) -> Any:
+        symbol = str(getattr(getattr(request, "instrument", None), "symbol", "") or "")
+        if symbol in self.failing:
+            raise asyncio.TimeoutError()  # empty message, as a real timeout has
+        return await super().fetch(request)
+
+
+def test_glco_empty_message_timeout_names_the_exception_type(monkeypatch) -> None:
+    """f'{exc or type(exc).__name__}' never fell back (an exception is always
+    truthy), so a bare timeout left an empty reason; it must name the type."""
+    from showme.engine.functions.commodity import _funcs as mod
+
+    monkeypatch.setattr(mod, "_yahoo_chart_ohlcv", _no_history)
+    fn = mod.GLCOFunction(deps=FunctionDeps(yfinance=_EmptyMessageTimeouts(FAILING)))
+    data = _run(fn.execute()).data
+    for entry in data["missing"]:
+        assert "TimeoutError" in entry["reason"], entry

@@ -128,7 +128,7 @@ class BTUNEFunction(BaseFunction):
                     extra={"timeout": 3.0},
                 ))
         except Exception as exc:
-            warnings.append(f"yfinance: {exc or type(exc).__name__}")
+            warnings.append(f"yfinance: {str(exc) or type(exc).__name__}")
         if df is None or df.empty or "close" not in df.columns:
             reason = "live OHLCV unavailable; no backtest was run and no metrics are reported"
             warnings.append(reason)
