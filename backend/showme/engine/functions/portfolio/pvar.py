@@ -80,9 +80,19 @@ class PVARFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         days = int(params.get("days", params.get("lookback_days", 252)))
-        confidence = float(params.get("confidence", params.get("confidence_level", 0.95)))
+        # PVAR#2: the default matches the manifest default (pvar_seed defaults
+        # confidence_level=0.99). An out-of-range value is an explicit input
+        # error, never a silent substitution.
+        raw_confidence = params.get("confidence", params.get("confidence_level", _DEFAULT_CONFIDENCE))
+        try:
+            confidence = float(raw_confidence)
+        except (TypeError, ValueError):
+            confidence = float("nan")
         if not (0.0 < confidence < 1.0):
-            confidence = 0.95
+            return _input_error(
+                self.code, params, instrument,
+                f"confidence must be strictly between 0 and 1 (got {raw_confidence!r}).",
+            )
         horizon_days = _horizon_days(params.get("horizon", "1d"))
         method = str(params.get("method", "parametric")).strip().lower()
         if method not in {"parametric", "historical"}:
@@ -356,6 +366,8 @@ class PVARFunction(BaseFunction):
 
 
 _HORIZON_MAP = {"1d": 1, "5d": 5, "10d": 10, "20d": 20}
+# Must equal pvar_seed defaults["confidence_level"].
+_DEFAULT_CONFIDENCE = 0.99
 
 
 def _horizon_days(value: Any) -> int:
@@ -484,6 +496,49 @@ def _empty_pvar(
             "requires_positions": no_positions,
             "live": _truthy(params.get("live_risk", True)),
         },
+    )
+
+
+def _input_error(
+    code: str,
+    params: dict[str, Any],
+    instrument: Instrument | None,
+    reason: str,
+) -> FunctionResult:
+    """Explicit input_error envelope: no numbers, the rejected input is named."""
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": reason,
+            "as_of": _utcnow_iso(),
+            "data_mode": "unavailable",
+            "method": str(params.get("method", "parametric")),
+            "horizon": params.get("horizon", "1d"),
+            "confidence_level": None,
+            "confidence": None,
+            "var": None,
+            "expected_shortfall": None,
+            "portfolio_total_notional": 0.0,
+            "portfolio_annualized_vol": None,
+            "portfolio_daily_var_pct": None,
+            "portfolio_daily_var_dollar": None,
+            "rows": [],
+            "series": [],
+            "cards": {},
+            "next_actions": ["Pass a confidence strictly between 0 and 1, for example 0.95 or 0.99."],
+            "methodology": (
+                "VaR/ES needs an explicit confidence level in (0, 1); none is substituted silently."
+            ),
+            "field_dictionary": {
+                "var": "Loss at the requested confidence; positive number = loss.",
+                "expected_shortfall": "Conditional expected loss beyond VaR.",
+            },
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"empty": False, "requires_positions": False, "live": _truthy(params.get("live_risk", True))},
     )
 
 
