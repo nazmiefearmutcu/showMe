@@ -104,12 +104,27 @@ class FORM4Function(BaseFunction):
         if have_yfin:
             yfin_rows = _filter_rows(yfin_rows, months=months, transaction_types=transaction_types)
         parsed_rows = yfin_rows if have_yfin else _filing_rows(sym, rows)
+        # FORM4#4: without yfinance the SEC rows are filing metadata only (no filer,
+        # shares, price or transaction). They are not live parsed trades.
+        metadata_only = bool(parsed_rows) and not have_yfin
+        if metadata_only:
+            status = "metadata_only"
+        elif parsed_rows:
+            status = "ok"
+        else:
+            status = "empty" if have_yfin else "provider_unavailable"
         summary = _form4_summary_rows(parsed_rows)
+        extra: dict[str, Any] = {}
+        if metadata_only:
+            extra["next_actions"] = [
+                "Enable yfinance holdings to get per-trade insider rows (filer, shares, price).",
+                "Parsing the Form 4 XML ownership documents is needed for per-trade SEC values.",
+            ]
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok" if parsed_rows else ("empty" if have_yfin else "provider_unavailable"),
-                "data_mode": "live_official" if parsed_rows and not have_yfin else "delayed_reference" if have_yfin else "provider_unavailable",
+                "status": status,
+                "data_mode": "delayed_reference" if (parsed_rows or have_yfin) else "provider_unavailable",
                 "symbol": sym,
                 "n": len(parsed_rows),
                 "rows": parsed_rows,
@@ -120,6 +135,7 @@ class FORM4Function(BaseFunction):
                     for k, v in sorted(by_month.items(), reverse=True)
                 ],
                 "methodology": "FORM4 prefers parsed insider-transaction tables from Yahoo holdings data and keeps SEC Form 4 filing links as evidence. If XML transaction parsing is unavailable, rows are labelled as filing metadata instead of pretending to be parsed trades.",
+                **extra,
                 "field_dictionary": {
                     "insider": "Reporting owner or insider name.",
                     "transaction": "Transaction description/code when parsed.",
@@ -214,6 +230,7 @@ def _filing_rows(symbol: str, filings: list[dict[str, Any]]) -> list[dict[str, A
         filer = item.get("reportingOwner") or item.get("ownerName")
         filing_date = item.get("filingDate") or item.get("filing_date") or item.get("date")
         transaction_type = _normalize_transaction_type(item.get("transactionType") or item.get("acquiredDisposedCode") or item.get("type"))
+        url = item.get("url")
         rows.append({
             "symbol": symbol,
             "filingDate": filing_date,
@@ -222,15 +239,19 @@ def _filing_rows(symbol: str, filings: list[dict[str, Any]]) -> list[dict[str, A
             "filer": filer,
             "insider": filer,
             "role": item.get("directorOfficerTitle") or item.get("officerTitle") or item.get("position") or item.get("positionTitle"),
-            "transaction": _readable_transaction(item),
+            # FORM4#4: no description in the filing list means no transaction text; do not
+            # invent a "Form 4 filing document" label for it.
+            "transaction": _readable_transaction(item) if _has_description(item) else None,
             "transaction_type": transaction_type,
             "side": transaction_type,
             "acquiredDisposedCode": item.get("acquiredDisposedCode"),
             "shares": finite(item.get("transactionShares")),
             "value": finite(item.get("transactionValue")),
             "price": finite(item.get("transactionPricePerShare")),
-            "filing_url": item.get("primaryDocument") or item.get("url"),
-            "accession": item.get("accessionNumber"),
+            # Only an absolute link is a usable filing URL (a relative XSL stub is not).
+            "filing_url": url if isinstance(url, str) and url.startswith(("http://", "https://")) else None,
+            # The SEC adapter returns ``accession``; accept the raw EDGAR key too.
+            "accession": item.get("accessionNumber") or item.get("accession"),
             "source_mode": "sec_form4_filing_metadata",
         })
     return rows
@@ -289,6 +310,13 @@ def _normalize_transaction_type(raw: Any) -> str:
     if "other" in text:
         return "other"
     return text.replace(" ", "_")
+
+
+def _has_description(item: dict[str, Any]) -> bool:
+    return any(
+        str(item.get(key) or "").strip()
+        for key in ("transactionDescription", "transaction", "acquiredDisposedCode", "type")
+    )
 
 
 def _readable_transaction(item: dict[str, Any]) -> str:

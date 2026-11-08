@@ -151,3 +151,53 @@ def test_form4_6_transaction_types_filter_yfinance_rows() -> None:
     res = _execute_yf_and_sec(_yf_frame_relative(), months=24, transaction_types=["buy"])
     assert res.data["rows"] == []
     assert res.data["status"] == "empty"
+
+
+# ─── FORM4#4: SEC-only filing metadata must not be labelled live_official ─
+
+
+def _sec_adapter_row(days_ago: int) -> dict[str, Any]:
+    """Shape the SEC adapter actually returns (``accession``, not ``accessionNumber``)."""
+    filed = (datetime.now(timezone.utc) - timedelta(days=days_ago)).date().isoformat()
+    return {
+        "accession": "0001140361-26-042149",
+        "filingDate": filed,
+        "reportDate": filed,
+        "form": "4",
+        "primaryDocument": "xslF345X06/form4.xml",
+        "primaryDocDescription": "FORM 4",
+        "size": 1234,
+        "isXBRL": 1,
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000114036126042149/xslF345X06/form4.xml",
+    }
+
+
+def _execute_sec_only(rows: list[dict[str, Any]], **params: Any) -> Any:
+    deps = FunctionDeps()
+    deps.yfinance = None
+    deps.sec_edgar = _SEC(rows)
+    fn = FORM4Function(deps)
+    return asyncio.run(fn.execute(
+        instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY), **params,
+    ))
+
+
+def test_form4_4_sec_only_rows_are_metadata_not_live_official() -> None:
+    res = _execute_sec_only([_sec_adapter_row(10)])
+    assert res.data["data_mode"] != "live_official"
+    assert res.data["status"] == "metadata_only"
+    row = res.data["rows"][0]
+    assert row["source_mode"] == "sec_form4_filing_metadata"
+    assert row["accession"] == "0001140361-26-042149"
+    assert row["filing_url"].startswith("https://www.sec.gov/Archives/")
+    # Fields the filing list does not carry stay empty rather than being invented.
+    assert row["filer"] is None
+    assert row["shares"] is None
+    assert row["transaction"] is None
+    assert res.data["next_actions"]
+
+
+def test_form4_4_sec_only_summary_does_not_report_a_net_flow() -> None:
+    res = _execute_sec_only([_sec_adapter_row(10)])
+    assert res.data.get("net_shares") is None
+    assert res.data.get("net_notional") is None
