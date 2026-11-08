@@ -363,9 +363,11 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code == "FRH":
         params["exchange"] = profile["exchange"]
     elif code == "SAT":
+        # No routed bbox: a fixed box here overrode every AOI preset (the pane
+        # sends ``aoi``), so each selection rendered San Francisco. The AOI
+        # preset in sat.py drives the bbox unless the caller sends its own.
         today = datetime.now(timezone.utc).date()
         params.update({
-            "bbox": "-122.55,37.70,-122.30,37.85",
             "days": 7,
             "date_from": (today - timedelta(days=7)).isoformat(),
             "date_to": today.isoformat(),

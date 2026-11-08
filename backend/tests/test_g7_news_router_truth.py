@@ -182,3 +182,96 @@ def test_tldr_unavailable_news_is_labelled_not_blank(monkeypatch) -> None:
     result = asyncio.run(TLDRFunction(deps=FunctionDeps()).execute(symbols=["MSFT"]))
     assert result.data["news_status"] == "unavailable"
     assert "**News themes:** unavailable" in result.data["markdown"]
+
+
+# ── SAT ─────────────────────────────────────────────────────────────────────
+
+
+def _png(width: int, height: int, rgb: tuple[int, int, int] | None) -> bytes:
+    """Build an 8-bit RGBA PNG with filter-0 rows. rgb=None gives an all-black tile."""
+    import struct
+    import zlib
+
+    r, g, b = rgb or (0, 0, 0)
+    row = b"\x00" + bytes([r, g, b, 255]) * width
+    raw = row * height
+
+    def _chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+            + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b""))
+
+
+def _imagery_png() -> bytes:
+    return _png(768, 768, (200, 180, 120))
+
+
+def _blank_png() -> bytes:
+    return _png(768, 768, None)
+
+
+class _Resp:
+    def __init__(self, status: int = 200, content: bytes = b"", payload=None, ctype: str = "image/png") -> None:
+        self.status_code = status
+        self.content = content
+        self._payload = payload
+        self.headers = {"content-type": ctype}
+        self.text = ""
+
+    def json(self):
+        return self._payload
+
+
+def _tile_index(monkeypatch) -> None:
+    monkeypatch.setattr(
+        server,
+        "_load_function_index",
+        lambda: [server.FunctionIndexEntry(code="SAT", name="Satellite Imagery", category="misc", asset_classes=[])],
+    )
+
+
+def _patch_sat_http(monkeypatch, tile_for) -> list[str]:
+    """Fake GIBS (tile_for(date) -> PNG bytes) and Open-Meteo. Returns the GIBS URLs requested."""
+    import re
+
+    import showme.engine.functions.misc.sat as sat_mod
+
+    requested: list[str] = []
+
+    async def _get(url, params=None):
+        if "gibs.earthdata" in url:
+            requested.append(url)
+            day = re.search(r"TIME=([0-9-]+)", url).group(1)
+            return _Resp(content=tile_for(day))
+        return _Resp(payload={
+            "current": {"temperature_2m": 12.0, "cloud_cover": 40.0, "wind_speed_10m": 3.0, "weather_code": 1},
+            "daily": {"cloud_cover_mean": [35.0], "temperature_2m_max": [15.0],
+                      "temperature_2m_min": [5.0], "precipitation_sum": [0.0]},
+        })
+
+    monkeypatch.setattr(sat_mod, "_http_get_raw", _get)
+    return requested
+
+
+def test_sat_routed_default_does_not_pin_san_francisco_bbox(monkeypatch) -> None:
+    """SAT#1: the routed layer must not inject the SF Bay bbox for every AOI."""
+    _tile_index(monkeypatch)
+    routed = server._route_function_params("SAT", {"aoi": "singapore_strait"})
+    assert not routed.get("bbox"), f"routed bbox pinned: {routed.get('bbox')}"
+
+
+def test_sat_selected_aoi_is_rendered_not_san_francisco(monkeypatch) -> None:
+    """SAT#1 end to end: the selected AOI must drive the bbox, label and tile."""
+    import showme.engine.functions.misc.sat as sat_mod
+
+    _patch_sat_http(monkeypatch, lambda day: _imagery_png())
+    _tile_index(monkeypatch)
+    routed = server._route_function_params("SAT", {"aoi": "singapore_strait"})
+    result = asyncio.run(sat_mod.SATFunction().execute(**routed))
+    data = result.data
+    assert data["aoi"] == "singapore_strait"
+    assert data["aoi_label"] == "Singapore Strait"
+    assert data["bbox"] == pytest.approx([103.5198, 0.95, 104.1198, 1.55])
+    assert "BBOX=0.950000,103.519800,1.550000,104.119800" in data["tile_url"]
