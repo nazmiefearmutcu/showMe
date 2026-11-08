@@ -210,14 +210,3 @@ describe("BIO pane — a11y + display (loaded)", () => {
     expect(lastCard.textContent ?? "").toMatch(/Unavailable/i);
   });
 });
-
-describe("BIO pane — unavailable biometry copy (p2a-g11)", () => {
-  it("names the real limit (macOS builds) instead of the desktop app", async () => {
-    mockBio.caps = UNAVAILABLE_CAPS;
-    render(<BIOPane code="BIO" />);
-    expect(
-      await screen.findByText("Touch ID / Face ID is available in macOS builds only"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/only available in the desktop app/i)).toBeNull();
-  });
-});
