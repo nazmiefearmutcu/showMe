@@ -22,11 +22,13 @@ from showme.engine.core.base_function import (
 )
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.derivative.ovme import _bs_price
+from showme.engine.functions.portfolio.greeks import _risk_free_rate
 from showme.engine.services import greeks as greeks_svc
 
-# Default continuously-compounded risk-free rate for the greeks, used only when
-# the caller gives no ``risk_free``/``rate``. Same default as OVME and the OMON
-# manifest (4.5%). The value actually used is echoed as risk_free_rate.
+# Fallback continuously-compounded risk-free rate, used only when the caller gives no
+# ``risk_free``/``rate`` AND the live 3-month T-bill (FRED DGS3MO, as GREEKS uses) is
+# unavailable (XCON-3). Same value as the OVME and OMON manifest defaults (4.5%).
+# The value actually used is echoed as risk_free_rate with its source.
 _RISK_FREE_RATE = 0.045
 # Default dividend yield (0 = none supplied). Echoed as dividend_yield with
 # dividend_yield_source "default_0", so a missing q is never silent.
@@ -383,6 +385,11 @@ class OMONFunction(BaseFunction):
         risk_free, risk_free_source = _rate_param(
             params, ("risk_free", "rate"), _RISK_FREE_RATE, "default"
         )
+        if risk_free_source == "default" and getattr(self.deps, "fred", None) is not None:
+            # XCON-3: the same live DGS3MO yield GREEKS prices with, so the two panes agree.
+            live_rf = await _risk_free_rate(self.deps, client=getattr(self, "_http_client", None))
+            if live_rf is not None:
+                risk_free, risk_free_source = live_rf[0], f"fred_DGS3MO_{live_rf[1]}"
         div_yield, div_yield_source = _rate_param(
             params, ("dividend_yield", "div_yield"), _DIVIDEND_YIELD, "default_0"
         )
@@ -506,9 +513,9 @@ class OMONFunction(BaseFunction):
             # XCON-3: GREEKS prices with the live 3M T-bill (FRED DGS3MO); OMON's rate is
             # a fixed assumption, so the same option can differ between the two panes.
             warnings.append(
-                f"Risk-free rate {risk_free * 100:g}% is a fixed assumption, not a live yield; "
-                "GREEKS uses the live 3-month T-bill (FRED DGS3MO), so theta and rho can differ "
-                "between the two panes. Pass risk_free (decimal) to set the rate."
+                f"Risk-free rate {risk_free * 100:g}% is a fixed fallback, not a live yield: the live "
+                "3-month T-bill (FRED DGS3MO) was not available, while GREEKS prices with it, so theta "
+                "and rho can differ between the two panes. Pass risk_free (decimal) to set the rate."
             )
         if spot_unavailable:
             warnings.append(
