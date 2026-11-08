@@ -100,7 +100,10 @@ def test_symbols_that_finished_are_not_refetched_while_others_remain() -> None:
 
 
 def test_industry_reaches_every_row_once_the_slow_call_recovers() -> None:
-    """EQS#3 at scale: a symbol that is slow once must not leave industry empty forever."""
+    """Regression guard on a 30-symbol universe: a symbol that is slow once must
+    not leave industry empty forever. This is NOT a scale test and it passes on
+    the base snapshot too; the cold 300-symbol ceiling (industry, beta and P/S
+    empty for most rows) is disclosed by test_eqs_cold_universe_coverage.py."""
     provider = _SlowSomeYF()
     provider.hang_once = True
     _scan(provider)
