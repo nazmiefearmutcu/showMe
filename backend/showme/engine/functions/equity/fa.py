@@ -63,7 +63,9 @@ class FAFunction(BaseFunction):
                         )),
                         timeout=float(params.get("yfinance_timeout", 8)),
                     )
-                    sources_used.append("yfinance")
+                    # Listed only when yfinance actually supplied statements.
+                    if _has_statement_payload(yfin_data):
+                        sources_used.append("yfinance")
             except Exception as e:
                 warnings.append(f"yfinance: {e}")
 

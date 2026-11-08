@@ -101,3 +101,18 @@ def test_sec_statements_still_preferred_when_present() -> None:
     assert result.data["source"] == "sec_edgar"
     assert yf.calls == 0, "yfinance must not be fetched when SEC has statements"
     assert result.sources == ["sec_edgar"]
+
+
+def test_empty_sec_and_empty_yfinance_does_not_list_yfinance() -> None:
+    """FA#3: yfinance returned no statements, so it must not be listed as a source."""
+
+    class _EmptyYf:
+        async def fetch(self, request: Any) -> dict[str, pd.DataFrame]:
+            return {}
+
+    fn = FAFunction(deps=FunctionDeps(sec_edgar=_EmptySec(), yfinance=_EmptyYf()))
+    result = _run(fn.execute(instrument=_instrument(), period="annual"))
+
+    assert result.data["status"] == "provider_unavailable"
+    assert "yfinance" not in result.sources, result.sources
+    assert "sec_edgar" not in result.sources, result.sources
