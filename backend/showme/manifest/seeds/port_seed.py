@@ -8,18 +8,15 @@ from __future__ import annotations
 from ..enums import (
     AssetClass,
     Category,
-    ChartKind,
     ControlKind,
     DataMode,
 )
 from ..registry import manifest
 from ..spec import (
     AlertingSpec,
-    AxisSpec,
     CachingPolicy,
     CardSchema,
     CardSlot,
-    ChartGrammar,
     ColumnSpec,
     FieldDef,
     Formula,
@@ -130,19 +127,14 @@ def port() -> FunctionManifest:
         output_contract=OutputContract(
             must_have=["as_of", "ccy", "totals", "groups", "positions", "data_mode"],
             rows=False,
-            series=True,
+            # No equity curve is produced (see methodology), so no series is promised.
+            series=False,
             cards=True,
             warnings=True,
             next_actions=True,
         ),
-        chart_grammar=ChartGrammar(
-            kind=ChartKind.TIME_SERIES_LINE,
-            x_axis=AxisSpec(type="time", unit="ms", label=""),
-            y_axis=AxisSpec(type="numeric", unit="ccy", label="Equity"),
-            panes=[],
-            overlay_support=False,
-            compare_support=True,
-        ),
+        # No chart grammar: PORT returns a book snapshot, not an equity time series.
+        chart_grammar=None,
         table_schema=TableSchema(
             columns=[
                 ColumnSpec(key="symbol", label="Symbol", kind="text"),
@@ -229,7 +221,6 @@ def port() -> FunctionManifest:
         ),
         alerting=AlertingSpec(
             conditions=[
-                "equity_drawdown_pct",
                 "position_unrealized_loss_pct",
                 "cash_below",
                 "concentration_above",
