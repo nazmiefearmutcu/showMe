@@ -789,9 +789,9 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "TRQA",
-    "name": "Transcript Q&A",
+    "name": "Transcript & Press Release Q&A",
     "category": "news",
-    "description": "Run a list of questions against an earnings call transcript / audio."
+    "description": "Run a list of questions against an earnings transcript, an audio transcript, or the latest 8-K earnings press release (labelled by document_type)."
   },
   {
     "code": "TSAR",
