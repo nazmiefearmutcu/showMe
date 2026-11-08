@@ -80,6 +80,88 @@ def _template_returns(symbols: list[str], days: int) -> pd.DataFrame:
     return pd.DataFrame(rows, index=index)
 
 
+_COVARIANCE_MODELS = ("sample_cov", "ledoit_wolf", "exp_cov", "oracle_approximating")
+_DEFAULT_COVARIANCE_MODEL = "ledoit_wolf"  # manifest default
+_DEFAULT_RISK_TARGET = 0.10  # manifest default, annualized decimal
+_EXP_COV_HALFLIFE_DAYS = 63  # about one quarter of trading days
+_MIN_COMPLETE_ROWS = 10
+
+
+def _shrink_to_identity(sample: np.ndarray, alpha: float) -> np.ndarray:
+    p = sample.shape[0]
+    mu = float(np.trace(sample)) / p
+    return (1.0 - alpha) * sample + alpha * mu * np.eye(p)
+
+
+def _ledoit_wolf(centred: np.ndarray) -> np.ndarray:
+    """Ledoit & Wolf (2004) shrinkage of the sample covariance toward a scaled identity."""
+    n, p = centred.shape
+    sample = centred.T @ centred / n
+    mu = float(np.trace(sample)) / p
+    delta2 = float(np.sum((sample - mu * np.eye(p)) ** 2))
+    if delta2 <= 0.0:
+        return sample
+    sq_norm = np.sum(centred * centred, axis=1)
+    quad = np.sum((centred @ sample) * centred, axis=1)
+    beta_bar = float(np.sum(sq_norm**2) - 2.0 * np.sum(quad) + n * np.sum(sample * sample)) / (n * n)
+    return _shrink_to_identity(sample, min(beta_bar, delta2) / delta2)
+
+
+def _oracle_approximating(centred: np.ndarray) -> np.ndarray:
+    """Chen, Wiesel, Eldar & Hero (2010) oracle approximating shrinkage toward a scaled identity."""
+    n, p = centred.shape
+    sample = centred.T @ centred / n
+    trace = float(np.trace(sample))
+    trace_sq = float(np.sum(sample * sample))
+    numerator = (1.0 - 2.0 / p) * trace_sq + trace * trace
+    denominator = (n + 1.0 - 2.0 / p) * (trace_sq - trace * trace / p)
+    rho = 1.0 if denominator <= 0.0 else min(1.0, max(0.0, numerator / denominator))
+    return _shrink_to_identity(sample, rho)
+
+
+def _exp_weighted(raw: np.ndarray, halflife: int) -> np.ndarray:
+    t = raw.shape[0]
+    decay = 0.5 ** (1.0 / halflife)
+    weights = decay ** np.arange(t - 1, -1, -1, dtype=float)
+    weights /= weights.sum()
+    centred = raw - weights @ raw
+    return (centred * weights[:, None]).T @ centred
+
+
+def estimate_covariance(returns: pd.DataFrame, model: str) -> tuple[np.ndarray, str, list[str]]:
+    """Daily covariance for the requested estimator.
+
+    Returns ``(matrix, effective_model, notes)``. Shrinkage estimators use complete
+    rows; too few of them, or an unknown model name, falls back to sample_cov and
+    says so in ``notes``.
+    """
+    notes: list[str] = []
+    requested = (model or _DEFAULT_COVARIANCE_MODEL).lower()
+    if requested not in _COVARIANCE_MODELS:
+        notes.append(f"Unknown covariance_model {requested!r}; used sample_cov.")
+        requested = "sample_cov"
+    if requested == "sample_cov":
+        return returns.cov().to_numpy(dtype=float), "sample_cov", notes
+    complete = returns.dropna().to_numpy(dtype=float)
+    if complete.shape[0] < _MIN_COMPLETE_ROWS:
+        notes.append(f"{requested} needs {_MIN_COMPLETE_ROWS}+ complete return rows; used sample_cov.")
+        return returns.cov().to_numpy(dtype=float), "sample_cov", notes
+    if requested == "exp_cov":
+        return _exp_weighted(complete, _EXP_COV_HALFLIFE_DAYS), requested, notes
+    centred = complete - complete.mean(axis=0)
+    if requested == "ledoit_wolf":
+        return _ledoit_wolf(centred), requested, notes
+    return _oracle_approximating(centred), requested, notes
+
+
+def _scale_to_risk_target(weights: np.ndarray, cov: np.ndarray, risk_target: float) -> tuple[float, str | None]:
+    """Scale factor that makes the portfolio volatility equal risk_target."""
+    port_vol = float(np.sqrt(max(float(weights @ cov @ weights), 0.0)))
+    if port_vol <= 1e-12:
+        return 1.0, "Portfolio volatility is zero; weights were not scaled to risk_target."
+    return risk_target / port_vol, None
+
+
 @FunctionRegistry.register
 class RPARFunction(BaseFunction):
     code = "RPAR"
@@ -97,6 +179,24 @@ class RPARFunction(BaseFunction):
         days = int(params.get("days", 504))
         target = params.get("target")  # optional list of weights
         method = (params.get("method") or "inverse_vol").lower()
+        covariance_model = str(params.get("covariance_model") or _DEFAULT_COVARIANCE_MODEL).lower()
+        raw_risk_target = params.get("risk_target")
+        try:
+            risk_target = _DEFAULT_RISK_TARGET if raw_risk_target is None else float(raw_risk_target)
+        except (TypeError, ValueError):
+            risk_target = float("nan")
+        if not np.isfinite(risk_target) or risk_target <= 0.0:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"risk_target must be a positive annualized volatility decimal, got {raw_risk_target!r}.",
+                    "next_actions": ["Pass risk_target as a decimal such as 0.10 for 10% annualized volatility."],
+                },
+                sources=[],
+                warnings=["RPAR was not computed: invalid risk_target."],
+            )
         # S12 BugHunt: default flipped to LIVE when yfinance is available.
         # Previous behavior silently returned a deterministic template (with
         # source `risk_parity_model`) on every call that did not explicitly
@@ -172,7 +272,8 @@ class RPARFunction(BaseFunction):
             fallback_reason = "yfinance_returned_insufficient_history"
             df = _template_returns(symbols, days)
             sources = ["computed_return_model"]
-        cov = df.cov().values * 252
+        cov_daily, cov_effective, cov_notes = estimate_covariance(df, covariance_model)
+        cov = cov_daily * 252
         if method == "inverse_vol":
             w = naive_inverse_vol(cov)
             info = {"method": "inverse_vol"}
@@ -186,6 +287,9 @@ class RPARFunction(BaseFunction):
                 max_iter=int(params.get("max_iter", 500)),
             )
             info["method"] = "erc"
+        scale, scale_warning = _scale_to_risk_target(w, cov, risk_target)
+        w = w * scale
+        info = {**info, "risk_target": risk_target, "scale_factor": scale}
         rc = risk_contributions(w, cov)
         rows = [
             {
@@ -198,7 +302,9 @@ class RPARFunction(BaseFunction):
             }
             for i, symbol in enumerate(df.columns)
         ]
-        warnings: list[str] = []
+        warnings: list[str] = list(cov_notes)
+        if scale_warning:
+            warnings.append(scale_warning)
         if fallback_used:
             warnings.append(
                 f"RPAR live mode fell through to deterministic returns: {fallback_reason}"
@@ -221,21 +327,31 @@ class RPARFunction(BaseFunction):
                 "rows": rows,
                 "fallback": fallback_used,
                 "fallback_reason": fallback_reason,
+                "covariance_model": cov_effective,
+                "covariance_model_requested": covariance_model,
+                "risk_target": risk_target,
+                "gross_exposure": float(w.sum()),
                 "summary": {
                     "method": info.get("method"),
                     "symbols": len(rows),
                     "portfolio_vol": rc["portfolio_vol"],
+                    "risk_target": risk_target,
                 },
                 "methodology": (
-                    "Estimate the annualized covariance matrix from daily returns. ERC mode solves for "
-                    "weights whose percentage risk contributions match the target; inverse-vol mode is "
-                    "shown explicitly as a faster approximation, not true ERC."
+                    f"Estimate the annualized covariance matrix with {cov_effective} from daily returns. "
+                    "ERC mode solves for weights whose risk contributions are equal (or match the target "
+                    "shares) with a damped multiplicative fixed-point iteration; inverse-vol mode is a faster "
+                    "approximation, not true ERC. Weights are then scaled so portfolio volatility equals "
+                    "risk_target, so they sum to gross exposure rather than 1. The lookback is the days "
+                    "parameter; lookback_window is not applied."
                 ),
                 "field_dictionary": {
-                    "weight_pct": "Portfolio allocation weight in percent.",
+                    "weight_pct": "Portfolio allocation weight in percent (of the risk-target-scaled book).",
                     "risk_contribution_pct": "Share of total portfolio variance contribution.",
                     "annualized_vol": "Single-asset annualized volatility from the covariance diagonal.",
-                    "portfolio_vol": "Annualized portfolio volatility sqrt(w' covariance w).",
+                    "portfolio_vol": "Annualized portfolio volatility sqrt(w' covariance w); equals risk_target when scaled.",
+                    "gross_exposure": "Sum of the scaled weights; above 1 means leverage to reach risk_target.",
+                    "covariance_model": "Estimator actually used (may differ from the request when a fallback applied).",
                 },
             },
             sources=sources,
