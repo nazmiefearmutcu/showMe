@@ -804,6 +804,12 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         # MOSS must scan its FULL default cross-asset universe instead of
         # being silently restricted to the route's peer group.
         defaults.pop("symbols", None)
+    if code.upper() == "FXGO" and not merged.get("symbols"):
+        # The FX agent peer group (EURUSD/GBPUSD/USDJPY) is injected into
+        # ``symbols`` for every FX route. FXGO must not read it as a board
+        # request (it would shrink the 10-pair default board to three rows),
+        # so only a caller-supplied ``symbols`` reaches the function.
+        defaults.pop("symbols", None)
     if code.upper() == "MEET" and not merged.get("symbols"):
         # MEET's ``symbols`` means user-followed tickers (own UI section +
         # symbol feeds). The agent peer default (BTC/ETH/SOL) would fan out

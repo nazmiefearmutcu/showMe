@@ -49,6 +49,59 @@ def test_fxgo_router_injected_fx_peers_do_not_shrink_default_board(monkeypatch):
     assert len(seen) == 10
 
 
+def test_fxgo_caller_supplied_symbols_string_is_the_board(monkeypatch):
+    """FXGO#5 follow-up: a caller's ``symbols`` is a board request, not dropped."""
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    monkeypatch.setattr(FXGOFunction, "_fetch_fx_spot", lambda self, pair: (1.1, 1.09))
+    res = _run(_mk_fxgo().execute(symbols="EURUSD,AUDUSD"))
+    assert [r["pair"] for r in res.data["rows"]] == ["EURUSD", "AUDUSD"]
+    assert res.data["requested_pairs"] == ["EURUSD", "AUDUSD"]
+    assert res.data["board_source"] == "explicit_symbols"
+
+
+def test_fxgo_caller_supplied_symbols_list_is_the_board(monkeypatch):
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    monkeypatch.setattr(FXGOFunction, "_fetch_fx_spot", lambda self, pair: (150.0, 149.5))
+    res = _run(_mk_fxgo().execute(symbols=["usdjpy", " GBPJPY "]))
+    assert [r["pair"] for r in res.data["rows"]] == ["USDJPY", "GBPJPY"]
+    assert res.data["board_source"] == "explicit_symbols"
+
+
+def test_fxgo_pairs_take_precedence_over_symbols(monkeypatch):
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    monkeypatch.setattr(FXGOFunction, "_fetch_fx_spot", lambda self, pair: (1.1, 1.09))
+    res = _run(_mk_fxgo().execute(pairs="EURUSD", symbols="AUDUSD"))
+    assert [r["pair"] for r in res.data["rows"]] == ["EURUSD"]
+    assert res.data["board_source"] == "explicit_pairs"
+
+
+def test_router_keeps_caller_supplied_symbols_for_fxgo():
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("FXGO", {"symbols": ["EURUSD", "AUDUSD"]})
+    assert routed["symbols"] == ["EURUSD", "AUDUSD"]
+
+
+def test_router_drops_injected_fx_peer_symbols_for_fxgo():
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    assert "symbols" not in _route_function_params("FXGO", {})
+
+
+def test_fxgo_routed_caller_symbols_reach_the_board(monkeypatch):
+    from showme.engine.functions.trade._funcs import FXGOFunction
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    monkeypatch.setattr(FXGOFunction, "_fetch_fx_spot", lambda self, pair: (1.1, 1.09))
+    routed = _route_function_params("FXGO", {"symbols": "EURUSD,AUDUSD"})
+    res = _run(_mk_fxgo().execute(**routed))
+    assert [r["pair"] for r in res.data["rows"]] == ["EURUSD", "AUDUSD"]
+    assert res.data["board_source"] == "explicit_symbols"
+
+
 def test_fxgo_explicit_symbol_board_is_that_single_pair(monkeypatch):
     from showme.engine.functions.trade._funcs import FXGOFunction
 

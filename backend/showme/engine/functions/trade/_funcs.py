@@ -732,14 +732,23 @@ class FXGOFunction(EMSXFunction):
             return await super().execute(instrument=instrument, **params)
 
         # Default path: live FX dealing board (keyless spot grid w/ bid/ask/spread).
-        # ``pairs`` is the board's own input. ``symbols`` is deliberately NOT
-        # read here: the router injects the FX agent peer group
-        # (EURUSD/GBPUSD/USDJPY) into ``symbols`` for every FX route, which
-        # would silently shrink the default 10-pair board to three rows.
+        # ``pairs`` is the board's own input. ``symbols`` is read only when the
+        # caller supplied it: the router drops the injected FX agent peer group
+        # (EURUSD/GBPUSD/USDJPY) for FXGO (_agent_runtime._route_function_params),
+        # so a surviving ``symbols`` list is a caller's board request (FXGO#5).
         pairs = params.get("pairs")
         board_source = "explicit_pairs"
         if isinstance(pairs, str):
             pairs = [p.strip() for p in pairs.split(",") if p.strip()]
+        if not pairs:
+            symbols = params.get("symbols")
+            if isinstance(symbols, str):
+                symbols = symbols.split(",")
+            if isinstance(symbols, (list, tuple)):
+                cleaned = [str(s).strip() for s in symbols if str(s).strip()]
+                if cleaned:
+                    pairs = cleaned
+                    board_source = "explicit_symbols"
         if not pairs:
             # A symbol is only a board request when the caller supplied it;
             # the router sets __explicit_symbol=False when it injected one.
