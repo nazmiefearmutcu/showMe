@@ -210,21 +210,41 @@ class RPARFunction(BaseFunction):
             live = bool(self.deps.yfinance) and not force_model
         else:
             live = _truthy(live_param)
-        if (force_model or not live) and "method" not in params and not target:
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data=_fast_template(symbols, days),
-                sources=["risk_parity_model"],
-                metadata={
-                    "live": False,
-                    "method": "inverse_vol_model",
-                    "fallback": True,
-                    "fallback_reason": "model_requested" if force_model else "yfinance_unavailable",
-                },
-                warnings=["RPAR served a deterministic risk-parity_model template; pass live_risk=true for yfinance-derived weights"],
+        # Data policy: without measured return history there are no weights. The
+        # declared controls are echoed back so the caller can see what was requested.
+        if force_model:
+            return _unavailable_allocation(
+                symbols,
+                risk_target,
+                covariance_model,
+                status="needs_input",
+                reason="model=true requests a reference template, which has no measured volatilities or weights.",
+                next_actions=[
+                    "Remove model=true to build weights from return history.",
+                    "Pass live_risk=true with a configured yfinance provider.",
+                ],
+                fallback_reason="model_requested",
             )
-        sources = ["yfinance"] if live else ["computed_return_model"]
+        if not live or not self.deps.yfinance:
+            no_provider = not self.deps.yfinance
+            return _unavailable_allocation(
+                symbols,
+                risk_target,
+                covariance_model,
+                status="provider_unavailable" if no_provider else "needs_input",
+                reason=(
+                    "yfinance is not configured, so no return history is available."
+                    if no_provider
+                    else "live_risk=false: no return history was requested."
+                ),
+                next_actions=(
+                    ["Configure the yfinance provider, then retry with live_risk=true."]
+                    if no_provider
+                    else ["Pass live_risk=true to build weights from return history."]
+                ),
+                fallback_reason="yfinance_unavailable" if no_provider else "live_disabled",
+            )
+        sources = ["yfinance"]
         async def _ret(sym: str) -> tuple[str, pd.Series]:
             try:
                 inst = Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
@@ -254,24 +274,25 @@ class RPARFunction(BaseFunction):
                     return sym, await _yahoo_daily_returns(sym, days)
                 except Exception:  # noqa: BLE001
                     return sym, pd.Series(dtype=float)
-        if live and self.deps.yfinance:
-            rs = await asyncio.gather(*(_ret(s) for s in symbols))
-            # Audit Q3 #7: pairwise policy keeps crypto+equity covariance
-            # honest. Legacy intersection-only dropna threw away 70%+ of
-            # rows for mixed universes and tilted weights to crypto.
-            df = align_return_series(rs, policy="pairwise")
-        else:
-            df = pd.DataFrame()
-        fallback_used = False
-        fallback_reason: str | None = None
+        rs = await asyncio.gather(*(_ret(s) for s in symbols))
+        # Audit Q3 #7: pairwise policy keeps crypto+equity covariance
+        # honest. Legacy intersection-only dropna threw away 70%+ of
+        # rows for mixed universes and tilted weights to crypto.
+        df = align_return_series(rs, policy="pairwise")
         if df.shape[0] < 10:
-            # S12 BugHunt: when live mode falls through to the synthetic
-            # return series, surface it via metadata + warnings so the UI
-            # can render a visible badge instead of trusting the table.
-            fallback_used = True
-            fallback_reason = "yfinance_returned_insufficient_history"
-            df = _template_returns(symbols, days)
-            sources = ["computed_return_model"]
+            # No synthetic return series: that would turn a cosine into a risk model.
+            return _unavailable_allocation(
+                symbols,
+                risk_target,
+                covariance_model,
+                status="provider_unavailable",
+                reason=(
+                    "yfinance and the Yahoo fallback returned insufficient return history "
+                    f"(fewer than 10 aligned rows, got {int(df.shape[0])}); no weights were built."
+                ),
+                next_actions=["Choose symbols with a shared trading calendar and longer history, or retry the provider."],
+                fallback_reason="yfinance_returned_insufficient_history",
+            )
         cov_daily, cov_effective, cov_notes = estimate_covariance(df, covariance_model)
         cov = cov_daily * 252
         if method == "inverse_vol":
@@ -305,10 +326,6 @@ class RPARFunction(BaseFunction):
         warnings: list[str] = list(cov_notes)
         if scale_warning:
             warnings.append(scale_warning)
-        if fallback_used:
-            warnings.append(
-                f"RPAR live mode fell through to deterministic returns: {fallback_reason}"
-            )
         if info.get("converged") is False:
             warnings.append(
                 f"RPAR ERC did not converge after {info.get('iterations')} iterations "
@@ -325,8 +342,8 @@ class RPARFunction(BaseFunction):
                 "samples": int(df.shape[0]),
                 "info": info,
                 "rows": rows,
-                "fallback": fallback_used,
-                "fallback_reason": fallback_reason,
+                "fallback": False,
+                "fallback_reason": None,
                 "covariance_model": cov_effective,
                 "covariance_model_requested": covariance_model,
                 "risk_target": risk_target,
@@ -356,7 +373,7 @@ class RPARFunction(BaseFunction):
             },
             sources=sources,
             warnings=warnings,
-            metadata={"live": bool(live and not fallback_used), "fallback": fallback_used, "fallback_reason": fallback_reason},
+            metadata={"live": True, "fallback": False, "fallback_reason": None},
         )
 
 
@@ -368,52 +385,56 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _fast_template(symbols: list[str], days: int) -> dict[str, Any]:
+def _unavailable_allocation(
+    symbols: list[str],
+    risk_target: float,
+    covariance_model: str,
+    *,
+    status: str,
+    reason: str,
+    next_actions: list[str],
+    fallback_reason: str,
+) -> FunctionResult:
+    """Explicit missing-data state for RPAR: no weights, no volatilities, controls echoed."""
     clean = list(dict.fromkeys(str(s) for s in symbols if str(s)))
-    if not clean:
-        clean = ["AAPL", "MSFT", "BTCUSDT", "EURUSD", "GC=F"]
-    vol_by_symbol: dict[str, float] = {}
-    for idx, symbol in enumerate(clean):
-        upper = symbol.upper()
-        if upper.endswith(("USDT", "USDC", "BTC", "ETH")):
-            vol = 0.58
-        elif upper.endswith("=F"):
-            vol = 0.28
-        elif upper.endswith(("USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD")) and len(upper) == 6:
-            vol = 0.11
-        else:
-            vol = 0.32
-        vol_by_symbol[symbol] = vol + idx * 0.015
-    inv = {symbol: 1.0 / max(vol, 1e-6) for symbol, vol in vol_by_symbol.items()}
-    total = sum(inv.values()) or 1.0
-    weights = {symbol: value / total for symbol, value in inv.items()}
-    risk_pct = {symbol: 1.0 / len(clean) for symbol in clean}
-    portfolio_vol = sum(weights[symbol] * vol_by_symbol[symbol] for symbol in clean)
-    return {
-        "symbols": clean,
-        "weights": weights,
-        "portfolio_vol": portfolio_vol,
-        "risk_contributions_pct": risk_pct,
-        "samples": max(60, min(days, 504)),
-        "info": {"method": "inverse_vol_model", "iterations": 0, "residual": 0.0},
-        "rows": [
-            {
-                "symbol": symbol,
-                "weight": weights[symbol],
-                "weight_pct": weights[symbol] * 100,
-                "risk_contribution_pct": risk_pct[symbol] * 100,
-                "annualized_vol": vol_by_symbol[symbol],
-                "method": "inverse_vol_model",
-            }
-            for symbol in clean
-        ],
-        "methodology": (
-            "Fast reference allocation using inverse volatility. Live ERC mode can solve equal risk "
-            "contribution from return covariance when method=erc is supplied."
-        ),
-        "field_dictionary": {
-            "weight_pct": "Portfolio allocation weight in percent.",
-            "risk_contribution_pct": "Share of total portfolio risk contribution.",
-            "annualized_vol": "Model annualized volatility used by inverse-vol weighting.",
+    return FunctionResult(
+        code="RPAR",
+        instrument=None,
+        data={
+            "status": status,
+            "reason": reason,
+            "next_actions": list(next_actions),
+            "symbols": clean,
+            "weights": {},
+            "portfolio_vol": None,
+            "risk_contributions_pct": {},
+            "samples": 0,
+            "info": {"method": None},
+            "rows": [],
+            "fallback": True,
+            "fallback_reason": fallback_reason,
+            "covariance_model": None,
+            "covariance_model_requested": covariance_model,
+            "risk_target": risk_target,
+            "gross_exposure": None,
+            "summary": {
+                "method": None,
+                "symbols": len(clean),
+                "portfolio_vol": None,
+                "risk_target": risk_target,
+            },
+            "methodology": (
+                "No weights are produced without measured return history. When history exists, RPAR estimates "
+                "the annualized covariance from daily returns, solves for equal-risk-contribution weights, and "
+                "scales them so portfolio volatility equals risk_target."
+            ),
+            "field_dictionary": {
+                "status": "needs_input or provider_unavailable; reason and next_actions say what is missing.",
+                "risk_target": "Requested annualized volatility decimal; applied only when weights exist.",
+                "covariance_model_requested": "Estimator requested; no covariance is estimated without returns.",
+            },
         },
-    }
+        sources=[],
+        warnings=[reason],
+        metadata={"live": False, "fallback": True, "fallback_reason": fallback_reason},
+    )
