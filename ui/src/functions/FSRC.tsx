@@ -6,9 +6,10 @@
  * filter from two persisted controls — fund category chips and a max
  * expense-ratio segmented control — and requests the live quote
  * overlay (`live: true`). Rows the quote provider did not answer keep
- * their reference fields behind an honest "reference" pill. Empty
- * results surface the backend's reason / next_actions guidance and a
- * one-click filter reset.
+ * their reference fields behind an honest "reference" pill. AUM and YTD
+ * are not served by the backend (FSRC#1): they render as a dash, never a
+ * number. Empty results surface the backend's reason / next_actions
+ * guidance and a one-click filter reset.
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -50,20 +51,19 @@ interface FSRCRow {
   name?: string;
   issuer?: string;
   category?: string;
-  aum_usd?: number;
+  // FSRC#1: the backend serves null with aum_state / ytd_state "unavailable".
+  aum_usd?: number | null;
   expenseRatio?: number;
-  ytd_return_pct?: number;
+  ytd_return_pct?: number | null;
   dividend_yield?: number;
   last?: number | null;
   change_pct?: number | null;
   quote_state?: string;
   aum_state?: string;
   ytd_state?: string;
-  aum_as_of?: string;
-  ytd_as_of?: string;
 }
 
-/** Small marker for curated reference values (AUM / YTD are not provider-dated). */
+/** Small marker for curated reference values (no provider as-of date). */
 function RefMark({ title }: { title: string }) {
   return (
     <span
@@ -122,16 +122,17 @@ const MAX_EXPENSE_OPTIONS = [
   { value: "0.005", label: "≤0.50%", title: "Expense max 0.50%" },
 ] as const;
 
+// AUM and YTD are not served (FSRC#1), so they are not sort keys: sorting on
+// an all-null column would only reorder by nothing.
 const SORT_OPTIONS = [
-  { value: "aum_usd", label: "AUM", title: "Sort by AUM" },
   { value: "expenseRatio", label: "EXPENSE", title: "Sort by expense ratio" },
-  { value: "ytd_return_pct", label: "YTD", title: "Sort by YTD return" },
+  { value: "change_pct", label: "CHG", title: "Sort by change %" },
 ] as const;
 
-// The backend treats an empty `query` as "use my default" (which would
-// silently apply its own aum/expense screen), so the unfiltered pane is
-// expressed as a permissive predicate — every reference row has AUM ≥ 0.
-const MATCH_ALL_QUERY = "aum_usd >= 0";
+// The backend treats an empty `query` as "use my default", so the unfiltered
+// pane is expressed as a permissive predicate that every row satisfies (the
+// expense ratio is present on every curated row).
+const MATCH_ALL_QUERY = "expenseRatio >= 0";
 const LIMIT = 50;
 
 export function FSRCPane({ code }: FunctionPaneProps) {
@@ -148,7 +149,7 @@ export function FSRCPane({ code }: FunctionPaneProps) {
   const [sortKey, setSortKey] = usePersistentOption<string>(
     "showme.fsrc.sort",
     SORT_OPTIONS.map((o) => o.value),
-    "aum_usd",
+    "expenseRatio",
   );
 
   const query = useMemo(() => {
@@ -169,7 +170,15 @@ export function FSRCPane({ code }: FunctionPaneProps) {
   const rows = useMemo(() => {
     const base = payload?.rows ?? [];
     const key = sortKey as keyof FSRCRow;
-    return [...base].sort((a, b) => num(b[key]) - num(a[key]));
+    // Rows without a value for the sort key sort last, never as zero.
+    return [...base].sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return num(bv) - num(av);
+    });
   }, [payload, sortKey]);
 
   const referenceCount = useMemo(
@@ -179,6 +188,8 @@ export function FSRCPane({ code }: FunctionPaneProps) {
 
   const isFilterError =
     status === "unsupported_predicate" || status === "input_error";
+  // FSRC#1: a predicate on AUM / YTD is refused by the backend, not matched.
+  const isUnavailable = status === "provider_unavailable";
 
   function resetFilters() {
     setCategory("ALL");
@@ -265,18 +276,24 @@ export function FSRCPane({ code }: FunctionPaneProps) {
         header: "AUM",
         numeric: true,
         width: 96,
-        render: (r) => (
-          <>
-            <span style={monoStrongStyle}>
-              {formatCurrency(r.aum_usd, { compact: true })}
+        render: (r) =>
+          r.aum_usd == null ? (
+            <span
+              className="u-text-mute"
+              title="AUM is not served: no provider supplies fund AUM"
+            >
+              —
             </span>
-            {r.aum_state === "reference" ? (
-              <RefMark
-                title={`Curated reference AUM (table verified ${r.aum_as_of ?? "date unknown"}): not refreshed from a provider`}
-              />
-            ) : null}
-          </>
-        ),
+          ) : (
+            <>
+              <span style={monoStrongStyle}>
+                {formatCurrency(r.aum_usd, { compact: true })}
+              </span>
+              {r.aum_state === "reference" ? (
+                <RefMark title="Curated reference AUM: not refreshed from a provider" />
+              ) : null}
+            </>
+          ),
       },
       {
         key: "expenseRatio",
@@ -296,7 +313,12 @@ export function FSRCPane({ code }: FunctionPaneProps) {
         width: 90,
         render: (r) =>
           r.ytd_return_pct == null ? (
-            <span className="u-text-mute">—</span>
+            <span
+              className="u-text-mute"
+              title="YTD is not served: no provider supplies fund YTD returns"
+            >
+              —
+            </span>
           ) : (
             <>
               <span
@@ -309,9 +331,7 @@ export function FSRCPane({ code }: FunctionPaneProps) {
                 {formatPercent(r.ytd_return_pct, { signed: true })}
               </span>
               {r.ytd_state === "reference" ? (
-                <RefMark
-                  title={`Curated reference YTD (table verified ${r.ytd_as_of ?? "date unknown"}): not refreshed from a provider`}
-                />
+                <RefMark title="Curated reference YTD: not refreshed from a provider" />
               ) : null}
             </>
           ),
@@ -424,6 +444,20 @@ export function FSRCPane({ code }: FunctionPaneProps) {
       <Empty
         title="Filter error"
         body={payload?.reason ?? "The active filter could not be applied."}
+        icon="!"
+        action={
+          <button onClick={resetFilters} className="btn">
+            Reset filters
+          </button>
+        }
+      />
+    ) : isUnavailable ? (
+      <Empty
+        title="Data unavailable"
+        body={
+          payload?.reason ??
+          "The backend cannot serve this filter. Remove the AUM or YTD clause and run the screen again."
+        }
         icon="!"
         action={
           <button onClick={resetFilters} className="btn">

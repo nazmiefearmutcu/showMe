@@ -261,7 +261,7 @@ describe("FSRC pane — filter controls compose the server-side query", () => {
     // Reset path: ALL chip clears the category clause.
     fireEvent.click(screen.getByTitle("Category ALL"));
     fireEvent.click(screen.getByTitle("Expense ANY"));
-    expect(screen.getAllByText(/aum_usd >= 0/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/expenseRatio >= 0/).length).toBeGreaterThan(0);
   });
 });
 

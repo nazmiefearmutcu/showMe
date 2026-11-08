@@ -365,7 +365,7 @@ export function defaultQueryForFunction(code: string, category?: string): string
     case "SRCH":
       return "yield >= 4 AND duration <= 10";
     case "FSRC":
-      return "expenseRatio < 0.01 AND aum_usd > 10000000000";
+      return "expenseRatio < 0.01";
     case "CSRC":
       return 'sector = "Energy"';
     case "MEET":
