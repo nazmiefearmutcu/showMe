@@ -144,10 +144,9 @@ class ALRTFunction(BaseFunction):
                 condition, rejection = _resolve_add_condition(self.code, params, warnings)
                 if rejection is not None:
                     return rejection
-                try:
-                    cooldown = int(params.get("cooldown", 300))
-                except (TypeError, ValueError):
-                    cooldown = 300
+                cooldown, cooldown_warning = _parse_cooldown(params.get("cooldown"))
+                if cooldown_warning:
+                    warnings = warnings + [cooldown_warning]
                 a = Alert(
                     id=str(uuid.uuid4())[:8],
                     condition=condition,
@@ -218,6 +217,27 @@ class ALRTFunction(BaseFunction):
                 },
                 warnings=warnings + [f"unknown action {action}"],
             )
+
+
+_DEFAULT_COOLDOWN_S = 300
+
+
+def _parse_cooldown(raw: Any) -> tuple[int, str | None]:
+    """Return (cooldown_seconds, warning). A bad value is replaced, and the
+    warning names the replaced value so the caller can see it (ALRT#7)."""
+    if raw is None:
+        return _DEFAULT_COOLDOWN_S, None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_COOLDOWN_S, (
+            f"cooldown {raw!r} is not a whole number of seconds; using {_DEFAULT_COOLDOWN_S} s."
+        )
+    if value < 0:
+        return _DEFAULT_COOLDOWN_S, (
+            f"cooldown {raw!r} is negative; using {_DEFAULT_COOLDOWN_S} s."
+        )
+    return value, None
 
 
 def _clean_note(value: Any) -> str | None:

@@ -92,6 +92,16 @@ async def test_add_rejects_unparseable_condition(alrt_home: Path) -> None:
     assert await _listed_count(fn) == 0
 
 
+@pytest.mark.asyncio
+async def test_invalid_cooldown_is_reported_not_silently_replaced(alrt_home: Path) -> None:
+    """ALRT#7: a bad cooldown falls back to 300 s but says so."""
+    fn = ALRTFunction()
+    res = await fn.execute(action="add", condition="AAPL.price > 200", cooldown="abc")
+
+    assert res.data["cooldown_seconds"] == 300, res.data
+    assert any("cooldown" in w and "abc" in w for w in res.warnings), res.warnings
+
+
 _CORRUPT_STORE = '[{"id": "old1", "condition": "AAPL.price > 100"'
 
 
