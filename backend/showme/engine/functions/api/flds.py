@@ -240,15 +240,24 @@ def _provider_for(field: str) -> tuple[str | None, str]:
         return _LIVE_PROVIDER, _AVAILABILITY_LIVE
     return None, _AVAILABILITY_REFERENCE
 
-# Examples name only functions that exist in the function index (EQS, SRCH,
-# MLSIG, BQL). MLSIG's model features are rsi_14 / macd_line / atr_14.
+# Examples name only functions that exist in the function index (BQL, MLSIG).
+# MLSIG's model features are rsi_14 / macd_line / atr_14. A reference-only name
+# gets no screener example (FLDS#1-RQ / FLDS#2-RQ): the catalog does not imply
+# that EQS or SRCH accept it.
 _EXAMPLES = {
     "market": "BQL get(close, volume) for(['AAPL']) by(date)",
-    "valuation": "EQS query: pe < 30 AND market_cap > 50000000000",
-    "fixed_income": "SRCH query: ytm >= 4 AND duration <= 10",
     "technical": "MLSIG model features: rsi_14, macd_line, atr_14 (MLSIG names, not rsi/macd/atr).",
 }
 _DEFAULT_EXAMPLE = "Catalog reference name; BQL get() does not return it (bql_get is false)."
+
+
+def _example_for(field: str, category: str) -> str:
+    """The concrete usage example for a catalog row, or the honest default."""
+    if field in _BQL_GET_FIELDS:
+        return _EXAMPLES.get(category, _DEFAULT_EXAMPLE)
+    if category == "technical":
+        return _EXAMPLES["technical"]
+    return _DEFAULT_EXAMPLE
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
@@ -299,7 +308,7 @@ class FLDSFunction(BaseFunction):
                 "category": category,
                 "description": description,
                 "unit": _UNITS[field],
-                "example": _EXAMPLES.get(category, _DEFAULT_EXAMPLE),
+                "example": _example_for(field, category),
                 "bql_get": field in _BQL_GET_FIELDS,
                 "provider": provider,
                 "availability": availability,
@@ -337,7 +346,7 @@ class FLDSFunction(BaseFunction):
                     "bql_get": "True only when BQL get() returns this field (live mode: OHLCV only).",
                     "provider": "Data provider that returns this field in ShowMe (yfinance for OHLCV); null when none is mapped.",
                     "availability": "bql_live_ohlcv when BQL live mode returns it; reference_only when no provider here returns it.",
-                    "example": "One concrete place the field can be used, naming a function that exists in the index.",
+                    "example": "A concrete use where one exists (BQL get for OHLCV, MLSIG feature names for technical names). Reference-only names get a note that no function returns them, never a screener example.",
                 },
             },
             sources=["showme_field_catalog"],
