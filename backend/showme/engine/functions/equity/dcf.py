@@ -32,6 +32,7 @@ class DDMFunction(BaseFunction):
         d0 = params.get("dividend_ttm")
         g = float(params.get("growth_rate", 0.03))
         r = params.get("required_return")
+        forward_indicated: float | None = None
         # Try to source D0 from yfinance
         if d0 is None and self.deps.yfinance:
             try:
@@ -40,7 +41,11 @@ class DDMFunction(BaseFunction):
                     kind=DataKind.REFDATA, instrument=instrument
                 ))
                 raw = (rd.extras or {}).get("raw", {}) if hasattr(rd, "extras") else {}
-                d0 = raw.get("dividendRate") or raw.get("trailingAnnualDividendRate") or 0
+                # D0 is the TRAILING dividend. dividendRate is the forward
+                # indicated annual rate (not yet paid): growing it by (1+g)
+                # again would double-count one year of growth (DDM#1).
+                d0 = raw.get("trailingAnnualDividendRate") or 0
+                forward_indicated = raw.get("dividendRate")
                 sources.append("yfinance")
             except Exception as e:
                 warnings.append(f"yfinance: {e}")
@@ -150,6 +155,8 @@ class DDMFunction(BaseFunction):
             code=self.code, instrument=instrument,
             data={"status": "ok",
                    "dividend_ttm": d0, "next_dividend": d1,
+                   # Labelled cross-check only; never used in the valuation.
+                   "dividend_forward_indicated": forward_indicated,
                    "growth": g, "required_return": r,
                    "fair_value_per_share": fair_value,
                    "assumptions": {"required_return": r, "growth": g, "dividend_ttm": d0},
@@ -158,6 +165,7 @@ class DDMFunction(BaseFunction):
                    "methodology": "Gordon Growth DDM: P = D1 / (r - g), where D1 is next expected dividend, r is required return, and g is perpetual dividend growth. Required return defaults to WACC when not supplied.",
                    "field_dictionary": {
                        "dividend_ttm": "Trailing annual dividend per share from provider or user override.",
+                       "dividend_forward_indicated": "Provider forward indicated annual dividend; cross-check only, not used in the valuation.",
                        "growth": "Long-run dividend growth assumption.",
                        "required_return": "Discount rate required by equity holders.",
                        "fair_value_per_share": "The dividend-implied value per share.",
