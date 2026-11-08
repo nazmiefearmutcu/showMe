@@ -77,7 +77,12 @@ def test_default_path_is_live_and_well_formed():
     # metadata's live claim follows the payload (R2 H-1): true only when
     # live articles actually landed, false on the provider_unavailable
     # envelope this test also hits when offline.
-    assert res.metadata.get("live") is (data["article_count"] > 0)
+    # F5: live follows the Awareness answer per leg. An unavailable brief is never
+    # live; an answered brief (rows or an honest empty) is live unless a leg is cached.
+    if data["status"] == "provider_unavailable":
+        assert res.metadata.get("live") is False
+    else:
+        assert res.metadata.get("live") is (res.metadata.get("data_mode") == "live_official")
 
 
 def test_live_articles_are_real_with_evidence_links():
@@ -102,7 +107,7 @@ def test_live_articles_are_real_with_evidence_links():
         assert data["status"] in {"provider_unavailable", "empty"}
         assert data["article_count"] == 0
         assert data["next_actions"], "empty brief must explain itself via next_actions"
-        assert "No live watchlist headlines were returned" in data["markdown"]
+        assert "Awareness news service unavailable" in data["markdown"] or "No Awareness headlines matched" in data["markdown"]
         for bad in _FORBIDDEN:
             assert bad not in data["markdown"]
 

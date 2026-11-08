@@ -5,45 +5,47 @@ from __future__ import annotations
 import asyncio
 
 
-def test_brief_live_composes_from_top_items_and_returns_articles(monkeypatch) -> None:
-    from showme.engine.core.base_function import FunctionResult
-    from showme.engine.functions.news import top as top_mod
+def test_brief_live_composes_from_awareness_rows_and_returns_articles() -> None:
+    import httpx
+
+    from showme.engine.data_sources.awareness import AwarenessClient
     from showme.engine.functions.news.brief import BRIEFFunction
 
-    # 2026-06-01 contract change: BRIEF composes from TOP (live RSS/GDELT
-    # headlines under the ``items`` key), not the READ reading-list store.
-    class FakeTOP:
-        def __init__(self, _deps):
-            pass
+    # F5 contract: BRIEF reads Awareness rows (TOP macro leg, CN watchlist leg),
+    # never RSS items. The summary keeps its entities decoded and tags stripped.
+    def row(item_id: str, symbols: list[str]) -> dict:
+        return {
+            "id": item_id,
+            "title": f"{symbols[0] if symbols else 'MACRO'} supply-chain story",
+            "url": f"https://example.com/{item_id}",
+            "publisher_name": "Reuters",
+            "publisher_tier": 1,
+            "symbols": symbols,
+            "summary": "<p>Apple &amp; suppliers raised guidance.</p>",
+            "quality_label": "premium",
+        }
 
-        async def execute(self, **kwargs):
-            assert kwargs["live"] is True
-            sym = kwargs.get("symbol") or "MACRO"
-            return FunctionResult(
-                code="TOP",
-                instrument=None,
-                data={"items": [{
-                    "title": f"{sym} supply-chain story",
-                    "url": f"https://example.com/{sym}",
-                    "matched_symbol": sym,
-                    "source": "rss",
-                    "summary": "<p>Apple &amp; suppliers raised guidance.</p>",
-                }], "status": "ok"},
-                sources=["rss"],
-                metadata={"provider_errors": []},
-            )
+    def handler(request: httpx.Request) -> httpx.Response:
+        symbols = request.url.params.get("symbols")
+        rows = [row("aapl1", ["AAPL"])] if symbols == "AAPL" else [row("macro1", [])]
+        body = {"data": rows, "meta": {"providers": [], "notes": [], "generated_at": "2026-11-08T12:00:00Z"}}
+        return httpx.Response(200, json=body)
 
-    monkeypatch.setattr(top_mod, "TOPFunction", FakeTOP)
+    client = AwarenessClient("http://aw.test", transport=httpx.MockTransport(handler), autostart=False)
+    fn = BRIEFFunction()
+    fn._awareness = client
 
-    result = asyncio.run(BRIEFFunction().execute(live=True, watchlist=["AAPL"]))
+    result = asyncio.run(fn.execute(live=True, watchlist=["AAPL"]))
 
     assert result.data["status"] == "ok"
-    assert result.data["article_count"] >= 1
+    assert result.data["article_count"] == 2
     assert "supply-chain story" in result.data["markdown"]
+    assert "(https://example.com/aapl1)" in result.data["markdown"]
     assert any(
         a["summary"] == "Apple & suppliers raised guidance."
         for a in result.data["articles"]
     )
+    assert result.metadata["data_mode"] == "live_official"
 
 
 def test_brief_offline_returns_dict_with_markdown_key() -> None:
