@@ -64,7 +64,7 @@ def tran() -> FunctionManifest:
                 label="Quarter",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Calendar quarter of the 8-K report date (e.g. Q3 FY26), not necessarily the company's fiscal quarter. Empty = newest earnings 8-K.",
+                description="Fiscal quarter (e.g. Q1 FY26). The 8-K whose report date releases that fiscal quarter is matched using the company's SEC fiscal year end; no fiscal year end or no match is an empty state. Empty = newest earnings 8-K.",
             ),
             InputSpec(
                 name="speaker_filter",
@@ -146,8 +146,9 @@ def tran() -> FunctionManifest:
         ),
         methodology=(
             "TRAN resolves the symbol to its 8-K earnings exhibit using the keyless SEC EDGAR "
-            "submissions index. A requested quarter is matched against the 8-K report date by "
-            "calendar quarter and labelled in event.quarter_basis; it is not the fiscal quarter. "
+            "submissions index. A requested fiscal quarter is matched to the 8-K that releases it, "
+            "using the report date and the company's SEC fiscal year end; event.quarter_basis "
+            "states this derivation. "
             "If a transcript already exists in transcripts_archive for that "
             "event id, it is served straight from the archive. If no transcript exists and the "
             "event has an audio_url, TRAN attempts to invoke Whisper to transcribe the audio — "

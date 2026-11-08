@@ -16,6 +16,7 @@ from showme.engine.functions.news.tran import TRANFunction
 _CIK = "0000320193"
 
 _SUBMISSIONS = {
+    "fiscalYearEnd": "0926",
     "filings": {
         "recent": {
             "form": ["8-K", "8-K", "10-Q"],
@@ -25,7 +26,7 @@ _SUBMISSIONS = {
                 "0000320193-26-000001",
             ],
             "primaryDocument": ["a.htm", "b.htm", "c.htm"],
-            # Period end of each 8-K; the quarter label is derived from it.
+            # Report date of each 8-K; the fiscal quarter label is derived from it.
             "reportDate": ["2026-10-30", "2026-07-30", "2026-04-30"],
             "filingDate": ["2026-10-30", "2026-07-30", "2026-04-30"],
             "items": ["2.02,9.01", "2.02,9.01", ""],

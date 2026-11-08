@@ -194,6 +194,7 @@ class TRANFunction(BaseFunction):
                             "title": ev.get("title"),
                             "event_date": ev.get("event_date"),
                             "quarter": ev.get("quarter") or event.get("quarter"),
+                            "quarter_basis": "archive label as ingested; the fiscal basis was not verified",
                             "source": "transcripts_archive",
                             "event_id": ev.get("event_id"),
                         })
@@ -422,10 +423,10 @@ async def _fetch_sec_earnings_press_release(
     """Return (event_meta, press_release_text) for an 8-K earnings exhibit.
 
     Without ``quarter`` this is the newest earnings 8-K. With ``quarter`` (a
-    normalised label such as ``Q3 FY26``) only 8-Ks whose report date falls in
-    that calendar quarter are considered; none means a lookup error, not the
-    latest filing. The label is a calendar quarter of the filing date, not the
-    company's fiscal quarter.
+    normalised fiscal label such as ``Q1 FY26``) only 8-Ks whose report date
+    releases that fiscal quarter are considered, using the SEC fiscal year end.
+    No match is a lookup error, not the latest filing; no fiscal year end is a
+    lookup error too, since the requested period cannot be placed.
     """
     cik = await _resolve_cik(symbol, deps)
     cik_nozero = str(int(cik))
@@ -433,6 +434,13 @@ async def _fetch_sec_earnings_press_release(
     resp = await client.get(_SUBMISSIONS_URL.format(cik=cik), headers=_sec_headers())
     resp.raise_for_status()
     sub = resp.json()
+    fiscal_year_end = (sub or {}).get("fiscalYearEnd")
+    fiscal_known = _parse_fye_month(fiscal_year_end) is not None
+    if quarter and not fiscal_known:
+        raise _SecLookupError(
+            f"SEC submissions for {symbol} (CIK {cik}) carry no fiscal year end, so fiscal "
+            f"quarter {quarter} cannot be matched to an 8-K report date."
+        )
     recent = ((sub or {}).get("filings") or {}).get("recent") or {}
     forms = recent.get("form") or []
     accessions = recent.get("accessionNumber") or []
@@ -454,12 +462,12 @@ async def _fetch_sec_earnings_press_release(
     if quarter:
         candidates = [
             c for c in candidates  # type: ignore[misc]
-            if _infer_quarter(dates[c[1]] if c[1] < len(dates) else None) == quarter
+            if _fiscal_quarter(dates[c[1]] if c[1] < len(dates) else None, fiscal_year_end) == quarter
         ]
         if not candidates:
             raise _SecLookupError(
-                f"No 8-K filing for {symbol} has a report date in calendar quarter {quarter} "
-                f"among the recent filings (CIK {cik})."
+                f"No 8-K filing for {symbol} reports fiscal quarter {quarter} among the recent "
+                f"filings (CIK {cik})."
             )
     if not candidates:
         raise _SecLookupError(f"No recent 8-K filing found for {symbol} (CIK {cik}).")
@@ -475,8 +483,8 @@ async def _fetch_sec_earnings_press_release(
             "accession": accession,
             "event_date": (dates[idx] if idx < len(dates) and dates[idx] else (fdates[idx] if idx < len(fdates) else None)),
             "filing_date": fdates[idx] if idx < len(fdates) else None,
-            "quarter": _infer_quarter(dates[idx] if idx < len(dates) else None),
-            "quarter_basis": _QUARTER_BASIS,
+            "quarter": _fiscal_quarter(dates[idx] if idx < len(dates) else None, fiscal_year_end),
+            "quarter_basis": _QUARTER_BASIS if fiscal_known else _NO_FISCAL_BASIS,
             "source": "sec_edgar",
             "title": f"{symbol} {str(forms[idx])} earnings press release",
         }
@@ -724,19 +732,51 @@ def _normalize_quarter(text: str | None) -> str | None:
 
 
 _QUARTER_BASIS = (
-    "8-K report date, calendar quarter; not necessarily the company's fiscal quarter"
+    "fiscal quarter: the last fiscal quarter end before the 8-K report date, from the "
+    "company's SEC fiscal year end (month-level)"
+)
+_NO_FISCAL_BASIS = (
+    "no fiscal quarter label: the SEC submissions index carries no fiscal year end"
 )
 
 
-def _infer_quarter(report_date: str | None) -> str | None:
-    if not report_date:
+def _parse_fye_month(fiscal_year_end: Any) -> int | None:
+    """SEC ``fiscalYearEnd`` is MMDD (e.g. '0926'); return the month or None."""
+    text = str(fiscal_year_end or "").strip()
+    if not re.fullmatch(r"\d{4}", text):
+        return None
+    month, day = int(text[:2]), int(text[2:])
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return month
+
+
+def _fiscal_quarter(report_date: str | None, fiscal_year_end: Any) -> str | None:
+    """Fiscal quarter label (e.g. 'Q1 FY26') of the period an 8-K report date releases.
+
+    The release reports the last fiscal quarter that ended before the report
+    date. Fiscal quarter ends fall every three months from the fiscal year-end
+    month. The fiscal year is named for the calendar year in which it ends.
+    Returns None when the report date or the fiscal year end is unusable, so a
+    caller never labels a period it cannot place.
+    """
+    fye_month = _parse_fye_month(fiscal_year_end)
+    if fye_month is None or not report_date:
         return None
     try:
-        dt = datetime.strptime(report_date[:10], "%Y-%m-%d")
-    except Exception:
+        dt = datetime.strptime(str(report_date)[:10], "%Y-%m-%d")
+    except ValueError:
         return None
-    q = (dt.month - 1) // 3 + 1
-    return f"Q{q} FY{str(dt.year)[2:]}"
+    year, month = dt.year, dt.month
+    while True:  # walk back to the nearest fiscal quarter-end month (at most 3 steps)
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+        if (month - fye_month) % 3 == 0:
+            break
+    quarter = ((month - fye_month) % 12) // 3 or 4
+    fy_year = year if month <= fye_month else year + 1
+    return f"Q{quarter} FY{str(fy_year)[2:]}"
 
 
 def _as_list(value: Any) -> list[str]:
