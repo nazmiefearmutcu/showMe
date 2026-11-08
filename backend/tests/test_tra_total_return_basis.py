@@ -82,9 +82,11 @@ def test_max_drawdown_uses_the_full_daily_series_not_the_samples() -> None:
     # 600 bars: rise to 200 at bar 300, fall to 100 at bar 301 (odd index),
     # recover. The chart sampling step is 2, so bar 301 is never sampled.
     n = 600
+    # The fall is 200 -> 120 (a 1.67x move): not a split-sized one-day move, so the drawdown
+    # is reported. A 200 -> 100 fall would be an unexplained 2:1 split and is withheld instead.
     closes = list(np.linspace(100.0, 200.0, 301))
-    closes += [100.0]
-    closes += list(np.linspace(100.0, 180.0, n - len(closes)))
+    closes += [120.0]
+    closes += list(np.linspace(120.0, 180.0, n - len(closes)))
     # wc3-g15: the yfinance adapter always supplies a splits column (zeros when the source
     # reports none). Without it a -50% one-day move is indistinguishable from an unreported
     # 2:1 split, and the drawdown is honestly withheld. The fixture carries the column so the
@@ -92,7 +94,7 @@ def test_max_drawdown_uses_the_full_daily_series_not_the_samples() -> None:
     frame = _frame([float(c) for c in closes], [0.0] * n)
     frame["splits"] = [0.0] * n
     res = _run(frame)
-    assert res.data["max_drawdown"] == pytest.approx(100.0 / 200.0 - 1.0, rel=1e-6)
+    assert res.data["max_drawdown"] == pytest.approx(120.0 / 200.0 - 1.0, rel=1e-6)
 
 
 def test_series_ends_on_the_last_observation() -> None:
@@ -129,3 +131,21 @@ def test_drawdown_is_not_reported_across_an_unconfirmed_split() -> None:
     assert res.data["max_drawdown"] is None, res.data["max_drawdown"]
     assert res.data["max_drawdown_pct"] is None, res.data["max_drawdown_pct"]
     assert any("drawdown" in w and "not reported" in w for w in res.warnings), res.warnings
+
+
+def test_drawdown_is_withheld_across_an_unreported_split_when_splits_column_is_zero() -> None:
+    # wc3-g15 TRA#3 (review follow-up): the live adapter always supplies a splits column, zeros
+    # when the source reports no event. A 4:1 one-day move on such a series is still an
+    # unexplained split-sized jump, so the drawdown must be withheld, not read as -75%.
+    closes = [400.0] * 5 + [100.0] * 5 + [102.0] * 2
+    res = _run(_split_frame(closes, split_at=None))
+    assert res.data["split_adjusted"] is True
+    assert res.data["max_drawdown"] is None, res.data["max_drawdown"]
+    assert any("drawdown" in w and "not reported" in w for w in res.warnings), res.warnings
+
+
+def test_drawdown_is_withheld_when_the_reported_split_is_on_another_bar() -> None:
+    # A reported 4:1 split on bar 2 does not explain the 4:1 jump on bar 5.
+    closes = [400.0] * 5 + [100.0] * 5 + [102.0] * 2
+    res = _run(_split_frame(closes, split_at=2))
+    assert res.data["max_drawdown"] is None, res.data["max_drawdown"]

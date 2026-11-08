@@ -519,12 +519,21 @@ class TRAFunction(BaseFunction):
         # TRA#3: drawdown on the full daily total-return index, not on sampled points.
         # wc3-g15: without a split column, a split-sized one-day move is an unadjusted
         # jump, so the drawdown would report a loss that did not happen. Null, with a reason.
-        unconfirmed_splits = [] if splits_known else _unconfirmed_split_dates(close)
+        # wc3-g15 (TRA#3 review): a live adapter always sends a splits column, zeros when the
+        # source reports no event. A split-sized one-day move is only explained when a split
+        # event is reported on that same bar; otherwise it is an unadjusted jump.
+        reported_split_bars = (
+            df.index[pd.to_numeric(df["splits"], errors="coerce").fillna(0.0).to_numpy() > 0]
+            if splits_known else df.index[:0]
+        )
+        unconfirmed_splits = [
+            bar for bar in _unconfirmed_split_dates(close) if bar not in reported_split_bars
+        ]
         max_dd = None if unconfirmed_splits else _max_drawdown(daily_returns)
         if unconfirmed_splits:
             warnings.append(
-                "TRA: max drawdown is not reported because the source gave no split events and "
-                "a split-sized move sits inside the window."
+                "TRA: max drawdown is not reported because a split-sized one-day move sits "
+                "inside the window with no reported split event on that bar."
             )
         # MWR / IRR — buy 1 share at start, dividends as positive cashflows, sell at end
         cashflows = [(adj_close.index[0].to_pydatetime(), -float(adj_close.iloc[0]))]
