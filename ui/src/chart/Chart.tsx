@@ -8,6 +8,7 @@
  * zoom, drag pan, dblclick fit, keyboard), and theme integration (palette
  * resolved from the live CSS variables — every theme works).
  */
+import { lastBarObservedIso } from "./chart-asof";
 import {
   useCallback,
   useEffect,
@@ -447,7 +448,8 @@ export function Chart({
         barsRef.current = next;
         setSource(res.source ?? "");
         setReason(res.reason ?? null);
-        setAsOf(res.asOf ?? null);
+        // The envelope asOf is the serve time; the legend shows the newest bar's time.
+        setAsOf(lastBarObservedIso(next));
         setFetchError(null);
         if (
           next.length === 0 &&
