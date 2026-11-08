@@ -76,8 +76,11 @@ class PORTWhatIfFunction(BaseFunction):
         warnings: list[str] = []
         if cash_tracked:
             cash_delta = -qty * cost
-            cash_after = float(whatif.cash.get(trade_ccy) or 0.0) + cash_delta
-            whatif.cash[trade_ccy] = cash_after
+            # Debit the key the book already stores (PORT upper-cases cash keys, but a
+            # stored 'usd' must not gain a second 'USD' twin that replaces its balance).
+            cash_key = _whatif_cash_key(whatif.cash, trade_ccy)
+            cash_after = float(whatif.cash.get(cash_key) or 0.0) + cash_delta
+            whatif.cash[cash_key] = cash_after
             if cash_after < 0:
                 warnings.append(
                     f"scenario {trade_ccy} cash would be {cash_after:,.2f}: the trade costs more "
@@ -153,6 +156,15 @@ def _finite_number(raw: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return value if np.isfinite(value) else None
+
+
+def _whatif_cash_key(cash: dict[str, Any], ccy: str) -> str:
+    """Return the key the book already uses for ``ccy`` (case-insensitive), else ``ccy``."""
+    wanted = str(ccy).upper()
+    for key in cash:
+        if str(key).upper() == wanted:
+            return key
+    return ccy
 
 
 def _whatif_inputs(params: dict[str, Any]) -> tuple[float, float, dict[str, Any] | None]:

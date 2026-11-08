@@ -40,6 +40,8 @@ NVDA = Instrument(symbol="NVDA", asset_class=AssetClass.EQUITY)
 _SEED: dict[str, Any] = {"positions": [], "cash": {}, "prices": {}}
 # Positions each fake PORT run analysed, in call order (baseline first, scenario second).
 _SEEN: list[list[PortfolioPosition]] = []
+# Cash dict each fake PORT run analysed, in the same call order.
+_CASH_SEEN: list[dict[str, float]] = []
 
 
 class _FakeState:
@@ -61,6 +63,7 @@ class _FakePort:
         positions = list(getattr(_portfolio_override, "positions", []))
         cash = dict(getattr(_portfolio_override, "cash", {}) or {})
         _SEEN.append(positions)
+        _CASH_SEEN.append(cash)
         if self.deps is not None and self.deps.yfinance is not None:
             for pos in positions:
                 await self.deps.yfinance.fetch(DataRequest(kind=DataKind.QUOTE, instrument=pos.instrument))
@@ -99,6 +102,7 @@ class _CountingQuotes:
 def _offline(monkeypatch):
     _SEED.update({"positions": [], "cash": {}, "prices": {"AAPL": 120.0, "NVDA": 150.0}})
     _SEEN.clear()
+    _CASH_SEEN.clear()
     monkeypatch.setattr(more_mod, "PortfolioState", _FakeState)
     monkeypatch.setattr(port_mod, "PORTFunction", _FakePort)
     load_seeds()
@@ -125,6 +129,14 @@ def test_buy_debits_cash_so_equity_moves_only_by_the_price_gain() -> None:
     assert summary["total_equity_delta"] == pytest.approx(2000.0)
     assert result.data["delta"]["total_equity"] == pytest.approx(2000.0)
     assert result.data["delta"]["market_value"] == pytest.approx(12000.0)
+
+
+def test_buy_debits_the_existing_cash_key_even_when_stored_in_lowercase() -> None:
+    # PORT's cash totals upper-case keys. A book stored as 'usd' must be debited
+    # under that same key, not under a second 'USD' key that would replace its balance.
+    _SEED["cash"] = {"usd": 25000.0}
+    _run({"quantity": 100, "cost": 100})
+    assert _CASH_SEEN[1] == {"usd": pytest.approx(15000.0)}
 
 
 def test_book_without_cash_withholds_equity_change_with_a_warning() -> None:
