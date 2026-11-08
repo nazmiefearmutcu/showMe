@@ -144,11 +144,29 @@ function mapInterval(interval: IntervalId): string {
   return interval;
 }
 
-/** The engine's GP interval id for a chart timeframe id (the chart catalog uses "1D"/"1W"). */
-function payloadIntervalFor(chartId: string): string {
-  if (chartId === "1D") return "1d";
-  if (chartId === "1W") return "1w";
-  return chartId;
+/**
+ * GP#5: the price engine's interval id for a chart timeframe id, or null when
+ * the engine serves no such history. Never a substitute: the engine's
+ * normaliser turns an unknown id into daily bars and "1M" (month) into "1m"
+ * (minute), so an unmapped id must withhold the rail instead of being sent.
+ */
+const ENGINE_INTERVAL_BY_CHART_ID: Readonly<Record<string, string>> = {
+  "1m": "1m",
+  "3m": "3m",
+  "5m": "5m",
+  "15m": "15m",
+  "30m": "30m",
+  "1h": "1h",
+  "2h": "2h",
+  "4h": "4h",
+  "1D": "1d",
+  "1W": "1w",
+  "1M": "1mo",
+};
+function payloadIntervalFor(chartId: string): string | null {
+  return Object.prototype.hasOwnProperty.call(ENGINE_INTERVAL_BY_CHART_ID, chartId)
+    ? ENGINE_INTERVAL_BY_CHART_ID[chartId]
+    : null;
 }
 
 /** GP's historical default chart style, mapped to the engine vocabulary. */
@@ -187,25 +205,43 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<GPData>({
     code,
     symbol: effectiveSymbol,
-    enabled: !!effectiveSymbol,
+    // GP#5: a timeframe the engine does not serve is not requested at all.
+    enabled: !!effectiveSymbol && payloadInterval != null,
     params: {
       days,
       range,
-      interval: payloadInterval,
-      bars: barsForWindow(days, payloadInterval),
+      interval: payloadInterval ?? "",
+      bars: barsForWindow(days, interval),
     },
   });
 
-  const ohlc = useMemo(() => normalizeOHLC(data?.data?.ohlcv), [data]);
+  // GP#5: the engine states the interval it actually served; a different one
+  // means the rail would be computed from another timeframe, so it is withheld.
+  const engineReported = (data as { metadata?: { interval?: unknown } } | undefined)
+    ?.metadata?.interval;
+  const engineMismatch =
+    payloadInterval != null &&
+    typeof engineReported === "string" &&
+    engineReported !== payloadInterval
+      ? engineReported
+      : null;
+  const engineUnavailable = payloadInterval == null || engineMismatch != null;
+
+  const ohlc = useMemo(
+    () => (engineMismatch ? [] : normalizeOHLC(data?.data?.ohlcv)),
+    [data, engineMismatch],
+  );
   // Full series incl. the indicator warm-up before the window; the rail's
   // RSI/MACD/ATR read it so they are not computed from the window's first bar.
   const warmupOhlc = useMemo(
     () =>
-      normalizeOHLC(
-        (data?.data as { indicator_ohlcv?: GPData["ohlcv"] } | undefined)
-          ?.indicator_ohlcv,
-      ),
-    [data],
+      engineMismatch
+        ? []
+        : normalizeOHLC(
+            (data?.data as { indicator_ohlcv?: GPData["ohlcv"] } | undefined)
+              ?.indicator_ohlcv,
+          ),
+    [data, engineMismatch],
   );
   const spanDays = useMemo(() => spanDaysOf(ohlc), [ohlc]);
   const spanShort =
@@ -294,13 +330,36 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
   const snapshotOnly = state === "ok" && ohlc.length === 0 && !!liveQuote.snapshot;
   const liveTickPrice = liveQuote.lastTick?.price ?? null;
 
+  const chartFrame = (
+    <ResizableChartFrame
+      storageId={`${code.toUpperCase()}.price`}
+      defaultHeight={{ vh: 0.34, max: 420, min: 240 }}
+      minWidth={420}
+      minHeight={280}
+      maxHeight={1200}
+      style={chartSurfaceStyle}
+      ariaLabel="Resize chart"
+    >
+      <Chart
+        symbol={effectiveSymbol}
+        fill
+        layoutScope={code.toUpperCase()}
+        initialInterval={mapInterval(persistedInterval)}
+        onIntervalChange={setChartInterval}
+        initialType={mapStyle(GP_CHART_STYLE)}
+      />
+    </ResizableChartFrame>
+  );
+
   return (
     <div className="u-pane-host">
       <Pane>
         <PaneHeader
           code={code}
           title={`Price${effectiveSymbol ? ` — ${effectiveSymbol}` : ""}`}
-          subtitle={`${range} · ${interval} · ${ohlc.length} candles${
+          subtitle={`${range} · ${interval} · ${
+            engineUnavailable ? "rail withheld" : `${ohlc.length} candles`
+          }${
             spanShort && spanDays != null
               ? ` · shows ${spanDays.toFixed(1)} days of ${range}`
               : ""
@@ -470,6 +529,22 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
         <PaneBody className="u-p-0 u-flex u-min-h-0">
           {!effectiveSymbol ? (
             <Empty title="Pick a symbol" body="GP needs a ticker." icon="⌖" />
+          ) : engineUnavailable ? (
+            <div style={chartLayoutStyle}>
+              <div style={chartCanvasWrapStyle}>{chartFrame}</div>
+              <Empty
+                title={
+                  engineMismatch
+                    ? "Rail withheld"
+                    : `No ${timeframeById(interval)?.label ?? interval} price history`
+                }
+                body={
+                  engineMismatch
+                    ? `GP asked the price engine for ${payloadInterval} bars and it reported ${engineMismatch}. Header statistics and indicators are withheld rather than computed from another interval.`
+                    : `The price engine serves no ${timeframeById(interval)?.label ?? interval} history, so header statistics and indicators are withheld instead of computed from another interval. The chart still shows its own bars.`
+                }
+              />
+            </div>
           ) : state === "loading" || state === "idle" ? (
             <div className="u-p-14 u-flex-1">
               <Skeleton height={400} />
@@ -490,24 +565,7 @@ export function GPPane({ code, symbol }: FunctionPaneProps) {
           ) : (
             <div style={chartLayoutStyle}>
               <div style={chartCanvasWrapStyle}>
-                <ResizableChartFrame
-                  storageId={`${code.toUpperCase()}.price`}
-                  defaultHeight={{ vh: 0.34, max: 420, min: 240 }}
-                  minWidth={420}
-                  minHeight={280}
-                  maxHeight={1200}
-                  style={chartSurfaceStyle}
-                  ariaLabel="Resize chart"
-                >
-                  <Chart
-                    symbol={effectiveSymbol}
-                    fill
-                    layoutScope={code.toUpperCase()}
-                    initialInterval={mapInterval(persistedInterval)}
-                    onIntervalChange={setChartInterval}
-                    initialType={mapStyle(GP_CHART_STYLE)}
-                  />
-                </ResizableChartFrame>
+                {chartFrame}
               </div>
               <RightRail
                 stats={stats}
