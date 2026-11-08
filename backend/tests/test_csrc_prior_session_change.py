@@ -72,3 +72,25 @@ def test_commodity_quote_row_change_is_the_prior_session_move(monkeypatch: pytes
     assert row["change_pct"] == pytest.approx((90.83 / 90.52 - 1.0) * 100.0, abs=1e-9)
     assert row["change_pct"] == pytest.approx(0.3425, abs=1e-3)
     assert row["change_pct"] > 0  # the sign is the 1-day sign, not the 5-day -5.8%
+
+
+def test_unestablished_prior_session_never_falls_back_to_previous_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CSRC#1 fallback: on range=5d Yahoo's previousClose is also the close before the window.
+
+    With no trading-period boundary and no price time, the prior session cannot be
+    established. The row must then carry no baseline and no change, not the 5-session
+    previousClose (96.46 here would give a -5.8% move against 90.83).
+    """
+    payload = _payload()
+    meta = payload["chart"]["result"][0]["meta"]
+    meta["previousClose"] = 96.46  # the multi-session baseline the fallback used to adopt
+    meta.pop("regularMarketTime")
+    meta.pop("gmtoffset")
+    meta.pop("currentTradingPeriod", None)
+    monkeypatch.setattr(quotes.requests, "get", lambda url, *a, **k: _Resp(payload))
+    quotes.quote_cache_clear()
+    rows = asyncio.run(screen_funcs._csrc_quote_snapshot_rows(
+        ["CL=F"], screen_timeout=5.0, concurrency=1))[0]
+    row = next(r for r in rows if r["symbol"] == "CL=F")
+    assert row["prev_close"] is None
+    assert row["change_pct"] is None

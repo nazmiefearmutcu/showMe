@@ -592,6 +592,10 @@ def _fetch_yahoo_chart_quote(symbol: str) -> dict[str, Any]:
     # before the current session (see _prior_session_close); it is never read from
     # chartPreviousClose, and is None when it cannot be established.
     prev = _prior_session_close(meta, timestamps, closes)
+    # CSRC#1: records whether the baseline is the established prior session. When it is not,
+    # the previousClose fallback below may be a multi-session baseline (documented as the close
+    # before the 5-day window); a caller that labels a 1D change must check this flag.
+    prior_session_established = prev is not None
     if prev is None:
         # Only when the bars cannot establish the session, the provider's explicit
         # previousClose (a prior-session field) is used. chartPreviousClose is never used:
@@ -614,6 +618,7 @@ def _fetch_yahoo_chart_quote(symbol: str) -> dict[str, Any]:
             "exchange": meta.get("exchangeName") or meta.get("fullExchangeName"),
             "regular_market_time": meta.get("regularMarketTime"),
             "timezone": meta.get("timezone"),
+            "prior_session_established": prior_session_established,
         },
     )
 
