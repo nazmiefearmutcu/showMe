@@ -202,3 +202,74 @@ describe("DDIS pane — ladder sort + keyboard (lane B4)", () => {
     expect(rowsAfter[0]?.textContent).toContain("5Y+");
   });
 });
+
+describe("DDIS pane — scheduled principal vs balance sheet (DDIS#2)", () => {
+  it("labels the headline as scheduled principal, not total debt", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          ...secPayload(),
+          summary: {
+            issuer: "AAPL",
+            cik: "0000320193",
+            scheduled_principal_usd_bn: 78.678,
+            total_debt_usd_bn: 78.678,
+            balance_sheet_long_term_debt_usd_bn: 78.114,
+            balance_sheet_as_of: "2026-09-26",
+            currency: "USD",
+            source_mode: "sec_edgar",
+          },
+        },
+      },
+    });
+    const { container } = render(<DDISPane code="DDIS" symbol="AAPL" />);
+    expect(screen.getByText("Scheduled principal")).toBeInTheDocument();
+    expect(screen.queryByText("Total debt")).toBeNull();
+    expect(container.textContent).toContain("$78.68bn");
+    expect(container.textContent).toContain(
+      "Balance-sheet LT debt $78.11bn (2026-09-26)",
+    );
+  });
+
+  it("says when the balance-sheet figure is not filed on a live SEC ladder", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          ...secPayload(),
+          summary: {
+            issuer: "AAPL",
+            scheduled_principal_usd_bn: 91.281,
+            balance_sheet_long_term_debt_usd_bn: null,
+            currency: "USD",
+            source_mode: "sec_edgar",
+          },
+        },
+      },
+    });
+    const { container } = render(<DDISPane code="DDIS" symbol="AAPL" />);
+    expect(container.textContent).toContain("Balance-sheet LT debt not filed");
+  });
+
+  it("omits the balance-sheet caption for a user-supplied schedule", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          ...secPayload(),
+          summary: {
+            issuer: "ACME",
+            scheduled_principal_usd_bn: 91.281,
+            balance_sheet_long_term_debt_usd_bn: null,
+            currency: "USD",
+            source_mode: "user_input",
+          },
+        },
+      },
+    });
+    const { container } = render(<DDISPane code="DDIS" symbol="ACME" />);
+    expect(container.textContent).not.toContain("Balance-sheet LT debt");
+    expect(container.textContent).toContain("$91.28bn");
+  });
+});

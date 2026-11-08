@@ -570,6 +570,23 @@ class CRPRFunction(BaseFunction):
         )
 
 
+def _balance_sheet_long_term_debt(facts: dict[str, Any]) -> tuple[float | None, str | None]:
+    """Reported balance-sheet long-term debt in USD billions, with its as-of date.
+
+    Uses us-gaap ``LongTermDebt`` (current + noncurrent) when filed, otherwise
+    ``LongTermDebtCurrent`` + ``LongTermDebtNoncurrent`` when both are filed.
+    Returns (None, None) when neither is available; it never estimates.
+    """
+    total = _first_fact(facts, ("LongTermDebt",))
+    if total is not None:
+        return round(total[0] / 1e9, 4), total[1]
+    current = _first_fact(facts, ("LongTermDebtCurrent",))
+    noncurrent = _first_fact(facts, ("LongTermDebtNoncurrent",))
+    if current is not None and noncurrent is not None:
+        return round((current[0] + noncurrent[0]) / 1e9, 4), noncurrent[1]
+    return None, None
+
+
 # ---------------------------------------------------------------------------
 # DDIS — debt by maturity from SEC EDGAR companyfacts
 # ---------------------------------------------------------------------------
@@ -587,9 +604,13 @@ class DDISFunction(BaseFunction):
         "corporates it reads the latest SEC EDGAR companyfacts long-term-debt maturity concepts "
         "(LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths / Year{Two..Five} / "
         "AfterYearFive) and maps them onto the 0-1Y / 1-3Y / 3-5Y / 5Y+ ladder, in USD billions. "
-        "Share % = amount / total x 100. When the caller supplies a ``maturities`` schedule it is "
-        "returned verbatim. With no SEC data and no override the pane stays EMPTY (H-5 fix "
-        "2026-09-08: the old fabricated illustrative ladder was removed) and the payload says why."
+        "Share % = amount / total x 100. summary.scheduled_principal_usd_bn (also returned as the "
+        "legacy total_debt_usd_bn) is the SUM OF SCHEDULED MATURITIES, not balance-sheet debt; "
+        "summary.balance_sheet_long_term_debt_usd_bn is the reported LongTermDebt (null when not "
+        "filed). When the caller supplies a ``maturities`` schedule it is returned verbatim. Amounts "
+        "are USD billions only: a non-USD currency is an input_error, never relabelled. With no SEC "
+        "data and no override the pane stays EMPTY (H-5 fix 2026-09-08: the old fabricated "
+        "illustrative ladder was removed) and the payload says why."
     )
     _FIELD_DICT = {
         "bucket": "Remaining-maturity bucket.",
@@ -618,6 +639,38 @@ class DDISFunction(BaseFunction):
         issuer = str(explicit_issuer or instrument_symbol or "UNSPECIFIED_ISSUER").strip().upper() or "UNSPECIFIED_ISSUER"
         currency = str(params.get("currency") or "USD").upper()
 
+        # 0) amounts are USD billions (amount_usd_bn / SEC USD facts); any other
+        # currency is refused explicitly instead of being echoed as a label.
+        if currency != "USD":
+            reason = (
+                f"DDIS amounts are USD billions; currency={currency} is not supported and no FX "
+                "conversion is applied."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "rows": [],
+                    "summary": {
+                        "issuer": issuer,
+                        "scheduled_principal_usd_bn": 0.0,
+                        "total_debt_usd_bn": 0.0,
+                        "currency": currency,
+                        "source_mode": "input_error",
+                    },
+                    "reason": reason,
+                    "next_actions": [
+                        "Convert the maturity amounts to USD billions and set currency to USD.",
+                    ],
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                },
+                sources=[],
+                warnings=[reason],
+                metadata={"data_mode": "input_error", "as_of": _as_of()},
+            )
+
         # 1) user-supplied schedule -> verbatim
         if params.get("maturities") is not None:
             rows, total = self._finalize_rows(list(params.get("maturities") or []))
@@ -627,7 +680,14 @@ class DDISFunction(BaseFunction):
                 data={
                     "status": "ok",
                     "rows": rows,
-                    "summary": {"issuer": issuer, "total_debt_usd_bn": total, "currency": currency, "source_mode": "user_input"},
+                    "summary": {
+                        "issuer": issuer,
+                        "scheduled_principal_usd_bn": total,
+                        "total_debt_usd_bn": total,
+                        "balance_sheet_long_term_debt_usd_bn": None,
+                        "currency": currency,
+                        "source_mode": "user_input",
+                    },
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
                 },
@@ -643,7 +703,7 @@ class DDISFunction(BaseFunction):
             data: dict[str, Any] = {
                 "status": "empty",
                 "rows": [],
-                "summary": {"issuer": issuer, "total_debt_usd_bn": 0.0, "currency": currency, "source_mode": "no_live_source"},
+                "summary": {"issuer": issuer, "scheduled_principal_usd_bn": 0.0, "total_debt_usd_bn": 0.0, "balance_sheet_long_term_debt_usd_bn": None, "currency": currency, "source_mode": "no_live_source"},
                 "reason": reason,
                 "next_actions": next_actions,
                 "methodology": self._METHODOLOGY,
@@ -690,7 +750,7 @@ class DDISFunction(BaseFunction):
                 data={
                     "status": "provider_unavailable",
                     "rows": [],
-                    "summary": {"issuer": issuer, "total_debt_usd_bn": 0.0, "currency": currency, "source_mode": "sec_edgar"},
+                    "summary": {"issuer": issuer, "scheduled_principal_usd_bn": 0.0, "total_debt_usd_bn": 0.0, "balance_sheet_long_term_debt_usd_bn": None, "currency": currency, "source_mode": "sec_edgar"},
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
                     "next_actions": ["Retry when SEC EDGAR (data.sec.gov) is reachable."],
@@ -732,13 +792,23 @@ class DDISFunction(BaseFunction):
             {"bucket": "5Y+", "tenor_years": 7.0, "amount_usd_bn": b_5p, "currency": currency},
         ])
         fin_date = next((f[1] for f in (y1, y2, beyond) if f is not None), _as_of())
+        bs_total, bs_as_of = _balance_sheet_long_term_debt(facts)
         return FunctionResult(
             code=self.code,
             instrument=instrument,
             data={
                 "status": "ok",
                 "rows": rows,
-                "summary": {"issuer": issuer, "cik": cik, "total_debt_usd_bn": total, "currency": currency, "source_mode": "sec_edgar"},
+                "summary": {
+                    "issuer": issuer,
+                    "cik": cik,
+                    "scheduled_principal_usd_bn": total,
+                    "total_debt_usd_bn": total,
+                    "balance_sheet_long_term_debt_usd_bn": bs_total,
+                    "balance_sheet_as_of": bs_as_of,
+                    "currency": currency,
+                    "source_mode": "sec_edgar",
+                },
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             },
