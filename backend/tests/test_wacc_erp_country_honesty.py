@@ -100,7 +100,7 @@ def test_unknown_issuer_country_is_not_priced_with_the_us_premium() -> None:
     damo = _RecordingDamodaran()
     res = _run(country=None, damo=damo)
     assert damo.calls == []
-    assert res.data["erp_source"] == "assumption_default_5pct"
+    assert res.data["erp_source"] == "unavailable"
     assert any("country" in w.lower() for w in res.warnings)
 
 
@@ -108,7 +108,7 @@ def test_failed_country_lookup_is_reported_and_not_defaulted_to_us() -> None:
     damo = _RecordingDamodaran()
     res = _run(country=None, damo=damo, refdata_error=RuntimeError("refdata down"))
     assert damo.calls == []
-    assert res.data["erp_source"] == "assumption_default_5pct"
+    assert res.data["erp_source"] == "unavailable"
     assert any("refdata down" in w for w in res.warnings)
 
 

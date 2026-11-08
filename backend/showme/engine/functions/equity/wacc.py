@@ -40,7 +40,9 @@ def _is_bank_or_insurer(industry: str) -> bool:
 # "live" = provider data, "partial" = labelled default or stale snapshot.
 _QUALITY_BY_SOURCE: dict[str, dict[str, str]] = {
     "rf": {"user_input": "user", "fred_dgs10": "live"},
-    "rd": {"user_input": "user", "issuer_implied": "live", "fred_bbb_yield": "live", "fred_aaa": "partial"},
+    # WACC#6-RQ: the FRED BBB yield is a market-wide index, not the issuer's own
+    # yield, so it is a labelled proxy (partial), never live.
+    "rd": {"user_input": "user", "issuer_implied": "live", "fred_bbb_yield": "partial", "fred_aaa": "partial"},
     "tax": {"user_input": "user", "issuer_effective": "live", "statutory_us_21pct": "partial"},
     "capital_structure": {"live": "live", "sector_default": "partial", "not_applicable_financial": "live"},
 }
@@ -57,6 +59,8 @@ def _beta_quality(beta_source: str) -> str:
 def _erp_quality(erp_source: str) -> str:
     if erp_source == "user_input":
         return "user"
+    if erp_source == "unavailable":
+        return "missing"
     if erp_source == "assumption_default_5pct" or erp_source.startswith("damodaran_snapshot")             or erp_source.endswith("_country_unmatched"):
         return "partial"
     return "live"
@@ -101,6 +105,12 @@ def _effective_tax_from_income(income: Any) -> tuple[float, str] | None:
     return None
 
 
+# WACC#5: the handler's beta_window (manifest menu, in days) maps onto the
+# BetaFunction window it can compute. Other menu values have no window there.
+_BETA_WINDOW_LABELS: dict[str, str] = {"252d": "1Y", "504d": "2Y"}
+_BETA_WINDOW_ORDER = ("5Y", "2Y", "1Y")
+
+
 def _first_set(params: dict[str, Any], *names: str) -> Any:
     """First caller value that is actually set (None and "" count as unset)."""
     for name in names:
@@ -127,7 +137,7 @@ class WACCFunction(BaseFunction):
         # Its source is always reported; a constant is labelled, never silent.
         erp_user = _first_set(params, "market_premium", "erp")
         erp: float | None = None
-        erp_source: str
+        erp_source: str = "unavailable"
         # The country whose Damodaran premium is used; None when the ERP is not
         # a country's own premium (user input, assumption, or unmatched country).
         erp_country: str | None = None
@@ -157,7 +167,7 @@ class WACCFunction(BaseFunction):
                 if country is None:
                     warnings.append(
                         "issuer country unknown: the Damodaran ERP is set per country, so no "
-                        "premium is matched to this issuer (erp_source assumption_default_5pct)"
+                        "premium is matched to this issuer (erp_source unavailable)"
                     )
                 else:
                     try:
@@ -188,13 +198,15 @@ class WACCFunction(BaseFunction):
                         warnings.append(f"damodaran: {e}")
                         erp = None
             if erp is None:
-                erp = 0.05
-                erp_source = "assumption_default_5pct"
+                # WACC#3-RQ: no hard-coded premium is substituted. Without a
+                # Damodaran value (or a user market_premium) the ERP is missing
+                # and WACC is not computed.
+                erp_source = "unavailable"
                 warnings.append(
-                    "ERP unavailable from Damodaran; WACC uses the 5.0% assumption "
-                    "(erp_source assumption_default_5pct). Pass market_premium to set it."
+                    "ERP unavailable from Damodaran; WACC is not computed without an ERP "
+                    "(erp_source unavailable). Pass market_premium to set it."
                 )
-        erp = float(erp)
+        erp = float(erp) if erp is not None else None
         # Risk-free
         # HNT-07 fix: a user-supplied ``rf`` must win unconditionally, the
         # same way the beta/rd overrides already do. FRED is only consulted
@@ -232,6 +244,8 @@ class WACCFunction(BaseFunction):
         # provider data. The state is reported as provider_unavailable (or
         # empty when no window has enough history) and WACC is not computed.
         beta_window_used: str | None = None
+        # WACC#5: the caller's beta_window, echoed in assumptions whatever β source.
+        beta_window_requested = str(_first_set(params, "beta_window") or "").strip().lower() or None
         beta: float | None = None
         beta_source: str = "user_input"
         if params.get("beta") not in (None, ""):
@@ -239,13 +253,25 @@ class WACCFunction(BaseFunction):
             sources.append("user_input")
         else:
             beta_source = "unavailable"
+            # WACC#5: an explicit beta_window is the first preference when the
+            # BetaFunction computes it; otherwise the long-window order applies.
+            preferred = _BETA_WINDOW_LABELS.get(beta_window_requested or "")
+            if beta_window_requested and preferred is None:
+                warnings.append(
+                    f"beta_window {beta_window_requested} is not computed by BETA (252d and 504d "
+                    "are); the default long-window order was used"
+                )
+            beta_order = (
+                (preferred,) + tuple(w for w in _BETA_WINDOW_ORDER if w != preferred)
+                if preferred else _BETA_WINDOW_ORDER
+            )
             try:
                 beta_fn = BetaFunction(self.deps)
-                # Request 5Y/2Y/1Y so the BetaFunction returns whichever
-                # window has enough history; prefer the long window when it
-                # came back populated (matches what the BETA pane displays).
+                # Request the windows so the BetaFunction returns whichever
+                # window has enough history; the first populated one in
+                # beta_order is used.
                 beta_res = await asyncio.wait_for(
-                    beta_fn.execute(instrument, windows=["5Y", "2Y", "1Y"]),
+                    beta_fn.execute(instrument, windows=list(beta_order)),
                     timeout=float(params.get("beta_timeout", 8)),
                 )
                 beta_payload = beta_res.data or {}
@@ -264,7 +290,7 @@ class WACCFunction(BaseFunction):
                 )
                 resolved: float | None = None
                 if not beta_provider_failed:
-                    for window in ("5Y", "2Y", "1Y"):
+                    for window in beta_order:
                         entry = betas.get(window) if isinstance(betas, dict) else None
                         if isinstance(entry, dict):
                             candidate = entry.get("beta")
@@ -462,9 +488,11 @@ class WACCFunction(BaseFunction):
                 "statutory rate applies to US issuers only. Pass tax_rate_override to set it."
             )
         re_capm: float | None = (
-            rf + beta * erp if rf is not None and beta is not None else None
+            rf + beta * erp if rf is not None and beta is not None and erp is not None else None
         )
         missing: list[str] = []
+        if erp is None:
+            missing.append("equity risk premium (Damodaran, or market_premium)")
         if rf is None:
             missing.append("risk-free rate (FRED DGS10)")
         if beta is None:
@@ -576,7 +604,7 @@ class WACCFunction(BaseFunction):
                     "erp": "Equity risk premium as a decimal.",
                     "tax_source": "Where the tax rate came from: user_input, issuer_effective (latest annual income tax expense over pre-tax income), statutory_us_21pct (a 21% US default for US issuers only, not the issuer's rate) or unavailable (no rate for a non-US issuer; tax_rate is null).",
                     "tax_period": "Period-end date of the income statement behind issuer_effective; null otherwise.",
-                    "erp_source": "Where the ERP came from: user_input, damodaran_cache, damodaran_live, damodaran_snapshot_2025_01 (stale, January 2025 table) or assumption_default_5pct (a 5.0% constant).",
+                    "erp_source": "Where the ERP came from: user_input, damodaran_cache, damodaran_live, damodaran_snapshot_2025_01 (stale, January 2025 table), a *_country_unmatched label (mature-market value) or unavailable (no ERP; WACC is not computed).",
                     "erp_country": "Issuer country whose Damodaran premium is used; null when the ERP is a user input, the 5.0% assumption, or the mature-market value for an unmatched country.",
                     "rd": "Pre-tax cost of debt proxy.",
                     "equity_weight": "Equity share of capital structure.",
@@ -587,6 +615,13 @@ class WACCFunction(BaseFunction):
                 },
                 "beta_source": beta_source,
                 "beta_window": beta_window_used,
+                # WACC#5: the caller's assumptions and the values actually applied.
+                "assumptions": {
+                    "market_premium": float(erp_user) if erp_user is not None else None,
+                    "beta_window": beta_window_requested,
+                    "beta_window_applied": beta_window_used,
+                    "tax_rate_override": float(tax_user) if tax_user is not None else None,
+                },
                 "data_state": data_state,
                 "input_quality": input_quality,
                 "partial_inputs": partial_inputs,

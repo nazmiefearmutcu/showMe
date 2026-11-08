@@ -65,6 +65,26 @@ _ERP_FALLBACK = {
 }
 
 
+# WACC#3-RQ: full country names (upper-cased, as _country_key normalises them)
+# for the ISO-2 keys of the January 2025 snapshot. yfinance reports names.
+_SNAPSHOT_NAME_TO_ISO2 = {
+    "GERMANY": "DE", "UNITED KINGDOM": "GB", "UK": "GB", "GREAT BRITAIN": "GB",
+    "FRANCE": "FR", "JAPAN": "JP", "AUSTRALIA": "AU", "CANADA": "CA",
+    "SWITZERLAND": "CH", "NETHERLANDS": "NL", "SWEDEN": "SE", "DENMARK": "DK",
+    "SPAIN": "ES", "ITALY": "IT", "GREECE": "GR", "PORTUGAL": "PT",
+    "BRAZIL": "BR", "MEXICO": "MX", "CHINA": "CN", "INDIA": "IN",
+    "RUSSIA": "RU", "RUSSIAN FEDERATION": "RU", "TURKEY": "TR", "TURKIYE": "TR",
+    "SOUTH AFRICA": "ZA", "INDONESIA": "ID", "SOUTH KOREA": "KR",
+    "KOREA, REPUBLIC OF": "KR", "REPUBLIC OF KOREA": "KR", "TAIWAN": "TW",
+    "SAUDI ARABIA": "SA", "UNITED ARAB EMIRATES": "AE", "ARGENTINA": "AR",
+    "CHILE": "CL", "COLOMBIA": "CO", "PERU": "PE", "PHILIPPINES": "PH",
+    "THAILAND": "TH", "VIETNAM": "VN", "VIET NAM": "VN", "EGYPT": "EG",
+    "NIGERIA": "NG", "PAKISTAN": "PK", "POLAND": "PL", "HUNGARY": "HU",
+    "CZECHIA": "CZ", "CZECH REPUBLIC": "CZ", "ROMANIA": "RO", "ISRAEL": "IL",
+    "MALAYSIA": "MY",
+}
+
+
 class DamodaranAdapter(BaseDataSource):
     name = "damodaran"
     supported_kinds = (DataKind.ECON_SERIES,)
@@ -194,6 +214,11 @@ class DamodaranAdapter(BaseDataSource):
         keys = {_country_key(name): value for name, value in table.items() if name != "_global"}
         if key in keys:
             return float(keys[key]) / 100.0, source
+        # WACC#3-RQ: the snapshot is keyed by ISO-2, so a full name such as
+        # "Spain" (as yfinance reports it) resolves through the name map.
+        iso = _SNAPSHOT_NAME_TO_ISO2.get(key)
+        if iso is not None and iso in keys:
+            return float(keys[iso]) / 100.0, source
         return float(table.get("_global", 4.60)) / 100.0, f"{source}_country_unmatched"
 
     async def get_erp(self, country: str) -> float:

@@ -66,7 +66,7 @@ def wacc() -> FunctionManifest:
                 label="Beta window",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=False,
-                description="Lookback window passed to BetaFunction.",
+                description="Preferred BETA window: 252d is the 1Y and 504d the 2Y regression; the other menu values are not computed (warned, and the long-window order is used). The window actually used is echoed as beta_window.",
                 options=["60d", "126d", "252d", "504d", "756d"],
             ),
             InputSpec(
@@ -94,7 +94,6 @@ def wacc() -> FunctionManifest:
             ),
         ],
         defaults={
-            "beta_window": "252d",
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(

@@ -19,6 +19,13 @@ from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.equity.wacc import WACCFunction
 
 
+class _Damo:
+    """Live-cache ERP stub (5.0%): these tests exercise other WACC inputs."""
+
+    async def get_erp_with_source(self, country="US"):
+        return 0.05, "damodaran_cache"
+
+
 @dataclass
 class _RefdataPayload:
     market_cap: float | None = None
@@ -59,7 +66,7 @@ def _instrument(symbol: str) -> Instrument:
 
 
 def _run(raw: dict[str, Any], symbol: str):
-    deps = FunctionDeps(
+    deps = FunctionDeps(damodaran=_Damo(), 
         yfinance=_FakeYf(raw=raw),
         fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93}),
     )

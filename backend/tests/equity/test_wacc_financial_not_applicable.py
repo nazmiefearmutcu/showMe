@@ -18,6 +18,13 @@ from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.equity.wacc import WACCFunction
 
 
+class _Damo:
+    """Live-cache ERP stub (5.0%): these tests exercise other WACC inputs."""
+
+    async def get_erp_with_source(self, country="US"):
+        return 0.05, "damodaran_cache"
+
+
 @dataclass
 class _RefdataPayload:
     market_cap: float | None = None
@@ -66,7 +73,7 @@ async def test_financial_issuer_wacc_is_not_applicable_not_a_live_debt_weight():
         "sector": "Financial Services",
         "industry": "Banks - Diversified",
     }
-    deps = FunctionDeps(
+    deps = FunctionDeps(damodaran=_Damo(), 
         yfinance=_FakeYf(raw=raw),
         fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93}),
     )
@@ -87,7 +94,7 @@ async def test_financial_issuer_wacc_is_not_applicable_not_a_live_debt_weight():
 @pytest.mark.asyncio
 async def test_financial_issuer_without_balance_sheet_is_not_applicable_too():
     raw = {"marketCap": 0.0, "totalDebt": 0.0, "sector": "Financial Services", "industry": "Insurance - Life"}
-    deps = FunctionDeps(yfinance=_FakeYf(raw=raw), fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93}))
+    deps = FunctionDeps(damodaran=_Damo(), yfinance=_FakeYf(raw=raw), fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93}))
     res = await WACCFunction(deps).execute(instrument=_instrument("INS"), beta=1.0)
     assert res.data["status"] == "not_applicable"
     assert res.data["wacc"] is None
@@ -96,7 +103,7 @@ async def test_financial_issuer_without_balance_sheet_is_not_applicable_too():
 @pytest.mark.asyncio
 async def test_non_financial_issuer_still_computes_wacc_from_book_debt():
     raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical"}
-    deps = FunctionDeps(yfinance=_FakeYf(raw=raw), fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.0}))
+    deps = FunctionDeps(damodaran=_Damo(), yfinance=_FakeYf(raw=raw), fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.0}))
     res = await WACCFunction(deps).execute(instrument=_instrument("CC"), beta=1.0)
     assert res.data["status"] == "ok"
     assert res.data["wacc"] is not None

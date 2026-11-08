@@ -38,6 +38,13 @@ from showme.engine.functions.equity import wacc as wacc_mod  # noqa: E402
 from showme.engine.functions.equity.wacc import WACCFunction  # noqa: E402
 
 
+class _Damo:
+    """Live-cache ERP stub (5.0%): these tests exercise other WACC inputs."""
+
+    async def get_erp_with_source(self, country="US"):
+        return 0.05, "damodaran_cache"
+
+
 @dataclass
 class _RefdataPayload:
     market_cap: float | None = None
@@ -68,7 +75,7 @@ class _FakeFred:
 
 def _deps() -> FunctionDeps:
     """Offline deps: every WACC input is stubbed, nothing is read from the network."""
-    return FunctionDeps(yfinance=_FakeYf(), fred=_FakeFred())
+    return FunctionDeps(yfinance=_FakeYf(), fred=_FakeFred(), damodaran=_Damo())
 
 
 def _wacc() -> WACCFunction:
@@ -123,7 +130,7 @@ def test_wacc_uses_real_beta_above_1_10_not_hardcoded_one(monkeypatch) -> None:
     # WACC#6: the ERP is an assumption and the tax a statutory default here,
     # so the overall state is partial, not live.
     assert payload["data_state"] == "partial"
-    assert payload["partial_inputs"] == ["erp", "tax"]
+    assert payload["partial_inputs"] == ["rd", "tax"]
     assert "beta" in result.sources
     assert not any("synthetic" in w.lower() for w in result.warnings)
 

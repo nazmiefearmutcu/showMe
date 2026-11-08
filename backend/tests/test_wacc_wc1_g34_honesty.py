@@ -202,11 +202,14 @@ def test_wacc3_snapshot_erp_is_flagged_as_snapshot(monkeypatch) -> None:
     assert any("snapshot" in w.lower() for w in res.warnings)
 
 
-def test_wacc3_missing_damodaran_is_a_labelled_assumption(monkeypatch) -> None:
+def test_wacc3_missing_damodaran_is_missing_not_a_constant(monkeypatch) -> None:
+    """WACC#3-RQ: no Damodaran ERP means no ERP, never a 5.0% constant."""
     monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
     res = _run(_deps())
-    assert res.data["erp"] == pytest.approx(0.05)
-    assert res.data["erp_source"] == "assumption_default_5pct"
+    assert res.data["erp"] is None
+    assert res.data["erp_source"] == "unavailable"
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["wacc"] is None
     assert any("erp" in w.lower() for w in res.warnings)
 
 
@@ -218,7 +221,8 @@ def test_wacc3_damodaran_error_is_warned_and_labelled(monkeypatch) -> None:
             raise RuntimeError("damodaran down")
 
     res = _run(_deps(damodaran=_BrokenDamo()))
-    assert res.data["erp_source"] == "assumption_default_5pct"
+    assert res.data["erp_source"] == "unavailable"
+    assert res.data["erp"] is None
     assert any("damodaran" in w.lower() for w in res.warnings)
 
 
@@ -422,19 +426,21 @@ def _live_deps(**overrides: Any) -> FunctionDeps:
 
 def test_wacc6_every_input_live_is_live(monkeypatch) -> None:
     monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
-    res = _run(_live_deps())
+    # The issuer's own cost of debt (interest / total debt) is the live input;
+    # the FRED BBB index is a labelled proxy and would make the state partial.
+    res = _run(_live_deps(raw={"interestExpense": 5.0}))
     assert res.data["status"] == "ok"
     assert res.data["data_state"] == "live"
     assert res.data["partial_inputs"] == []
     assert res.data["wacc"] is not None
 
 
-def test_wacc6_default_erp_and_tax_make_the_state_partial(monkeypatch) -> None:
+def test_wacc6_statutory_tax_and_bbb_proxy_make_the_state_partial(monkeypatch) -> None:
     monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
-    res = _run(_deps())
+    res = _run(_deps(damodaran=_FakeDamodaran()))
     assert res.data["status"] == "ok"
     assert res.data["data_state"] == "partial"
-    assert res.data["partial_inputs"] == ["erp", "tax"]
+    assert res.data["partial_inputs"] == ["rd", "tax"]
 
 
 def test_wacc6_snapshot_erp_makes_the_state_partial(monkeypatch) -> None:
@@ -462,7 +468,7 @@ def test_wacc6_sector_default_capital_structure_makes_the_state_partial(monkeypa
 
 def test_wacc6_user_supplied_beta_is_user_input(monkeypatch) -> None:
     monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
-    res = _run(_live_deps(), beta=1.1)
+    res = _run(_live_deps(raw={"interestExpense": 5.0}), beta=1.1)
     assert res.data["data_state"] == "user_input"
     assert "beta" in res.data["user_inputs"]
 
