@@ -15,13 +15,40 @@ def _store():
     return runtime_path("cde_fields.json")
 
 
+class _StoreError(Exception):
+    """The stored-fields file exists but cannot be read as a formula store."""
+
+
 def _load() -> dict[str, str]:
-    if _store().exists():
-        try:
-            return json.loads(_store().read_text())
-        except Exception:
-            return {}
-    return {}
+    path = _store()
+    if not path.exists():
+        return {}
+    # CDE#2: an unreadable store used to load as {} and the next add wrote
+    # the file back holding only the new field, silently dropping the rest.
+    # Raise instead so every action reports the problem and no write happens.
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        raise _StoreError(f"cde_fields.json could not be parsed ({type(exc).__name__})") from exc
+    if not isinstance(data, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+    ):
+        raise _StoreError("cde_fields.json does not hold a name-to-formula object")
+    return data
+
+
+def _store_error_payload(reason: str) -> dict[str, Any]:
+    return {
+        "status": "input_error",
+        "reason": f"{reason}. Nothing was changed; fix or move the file aside, then retry.",
+        "rows": [],
+        "actions": ["list", "add", "remove", "evaluate"],
+        "methodology": (
+            "CDE stores named custom data-field formulas in runtime/cde_fields.json. "
+            "The store is not readable, so no field is listed, added, removed or evaluated."
+        ),
+        "next_actions": ["Fix or move aside runtime/cde_fields.json, then retry the action."],
+    }
 
 
 def _save(data: dict[str, str]) -> None:
@@ -42,7 +69,11 @@ class CDEFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         action = params.get("action", "list")
-        store = _load()
+        try:
+            store = _load()
+        except _StoreError as exc:
+            return FunctionResult(code=self.code, instrument=None,
+                                  data=_store_error_payload(str(exc)))
         if action == "add":
             name = str(params.get("name") or "").strip()
             formula = str(params.get("formula") or "").strip()
