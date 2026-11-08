@@ -71,65 +71,98 @@ class ACCTFunction(BaseFunction):
                     continue
                 try:
                     qty = float(p.get("quantity", 0))
-                    price = float(p.get("last", p.get("avg_cost", 0)))
+                    raw_last = p.get("last")
+                    # ACCT#1 residual: a row with no supplied last price has no
+                    # mark. It is never valued at avg_cost; it stays unpriced.
+                    price = float(raw_last) if raw_last is not None else None
                 except (TypeError, ValueError):
                     skipped.append({"index": idx, "symbol": p.get("symbol"),
-                                    "reason": "quantity/last/avg_cost not numeric"})
+                                    "reason": "quantity/last not numeric"})
                     continue
                 acct = p.get("account", "paper")
-                mv = qty * price
+                mv = qty * price if price is not None else None
                 slot = accounts.setdefault(acct, {"account": acct, "positions": [],
                                                    "total_mv": 0.0, "n_positions": 0,
+                                                   "unpriced_positions": 0,
                                                    "by_asset_class": {}})
-                slot["positions"].append({**p, "market_value": mv})
-                slot["total_mv"] += mv
+                slot["positions"].append({**p, "last": price, "market_value": mv,
+                                          "priced": price is not None})
                 slot["n_positions"] += 1
+                if mv is None:
+                    slot["unpriced_positions"] += 1
+                    continue
+                slot["total_mv"] += mv
                 ac = p.get("asset_class", "OTHER")
                 slot["by_asset_class"][ac] = slot["by_asset_class"].get(ac, 0) + mv
             cross = {"total_mv": sum(a["total_mv"] for a in accounts.values()),
                      "by_asset_class": {}, "by_symbol": {}}
+            unpriced_symbols: list[str] = []
             for slot in accounts.values():
                 for ac, mv in slot["by_asset_class"].items():
                     cross["by_asset_class"][ac] = cross["by_asset_class"].get(ac, 0) + mv
                 for p in slot["positions"]:
+                    if p["market_value"] is None:
+                        unpriced_symbols.append(p["symbol"])
+                        continue
                     cross["by_symbol"][p["symbol"]] = cross["by_symbol"].get(p["symbol"], 0) + p["market_value"]
+            cross["unpriced_symbols"] = sorted(set(unpriced_symbols))
+            unpriced_total = sum(slot["unpriced_positions"] for slot in accounts.values())
             metadata: dict[str, Any] = {}
+            warnings: list[str] = []
+            for sym in cross["unpriced_symbols"]:
+                warnings.append(
+                    f"ACCT: no supplied last price for {sym}; its market value is unavailable and it "
+                    "is excluded from totals. It is not valued at cost."
+                )
             if skipped:
                 metadata["provider_errors"] = [
                     f"ACCT: skipped {len(skipped)} invalid position row(s)"
                 ]
                 metadata["skipped_positions"] = skipped
+            if unpriced_total:
+                metadata["stale_marks"] = cross["unpriced_symbols"]
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"accounts": list(accounts.values()),
+                                  data={"status": "partial" if unpriced_total else "ok",
+                                        "accounts": list(accounts.values()),
                                         "rows": [_account_row(slot) for slot in accounts.values()],
                                         "cross": cross,
+                                        "summary": {
+                                            "accounts": len(accounts),
+                                            "positions": sum(slot["n_positions"] for slot in accounts.values()),
+                                            "total_market_value": cross["total_mv"],
+                                            "unpriced_positions": unpriced_total,
+                                            "total_market_value_complete": unpriced_total == 0,
+                                        },
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()},
                                   sources=["user_positions"],
+                                  warnings=warnings,
                                   metadata=metadata)
         # Resolve last prices per symbol (single fetch each).
         symbols = {p.instrument.symbol: p for p in portfolio.positions}
         mark_timeout = _mark_timeout(params)
-        async def _q(sym: str) -> tuple[str, float | None, str | None]:
+        async def _mark(sym: str) -> Any:
             pos = symbols[sym]
+            # HNT-16: crypto positions are quoted live too — the yfinance
+            # adapter maps exchange pairs (BTCUSDT) to Yahoo's "BTC-USD"
+            # spot form (the PORT pattern), so account totals agree with
+            # the PORT pane instead of mixing live marks with stale
+            # avg_cost. The position's own instrument is authoritative
+            # for the asset class; the registry refines equities only.
+            # ACCT#1 residual: the registry lookup runs inside the same
+            # mark timeout as the quote, so a hanging resolver is bounded.
+            inst = pos.instrument
+            if inst.asset_class != AssetClass.CRYPTO and self.deps.symbol_registry:
+                resolved = await self.deps.symbol_registry.resolve(sym)
+                if resolved:
+                    inst = resolved
+            return await self.deps.yfinance.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst))
+
+        async def _q(sym: str) -> tuple[str, float | None, str | None]:
             try:
-                # HNT-16: crypto positions are quoted live too — the yfinance
-                # adapter maps exchange pairs (BTCUSDT) to Yahoo's "BTC-USD"
-                # spot form (the PORT pattern), so account totals agree with
-                # the PORT pane instead of mixing live marks with stale
-                # avg_cost. The position's own instrument is authoritative
-                # for the asset class; the registry refines equities only.
-                inst = pos.instrument
-                if inst.asset_class != AssetClass.CRYPTO and self.deps.symbol_registry:
-                    resolved = await self.deps.symbol_registry.resolve(sym)
-                    if resolved:
-                        inst = resolved
                 if not self.deps.yfinance:
                     return sym, None, "no live quote provider is configured"
-                quote = await asyncio.wait_for(
-                    self.deps.yfinance.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst)),
-                    timeout=mark_timeout,
-                )
+                quote = await asyncio.wait_for(_mark(sym), timeout=mark_timeout)
                 last = getattr(quote, "last", None)
                 if last is None or not float(last) > 0:
                     return sym, None, "quote returned no usable last price"
