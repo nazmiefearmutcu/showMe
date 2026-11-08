@@ -143,17 +143,20 @@ def test_tlh_semantic_test_pins_wash_sale_rule() -> None:
     )
 
 
-def test_mgn_semantic_test_pins_numbers_come_from_broker() -> None:
-    """MGN must carry a semantic test asserting numbers come from broker, not modeled."""
+def test_mgn_semantic_test_pins_numbers_are_model_estimates_not_broker() -> None:
+    """MGN must not claim broker sourcing: its semantic test pins model estimates (MGN#4).
+
+    Previously this asserted broker-sourced numbers, which the handler never produced
+    (it models margin from its own rule table, sources margin_engine).
+    """
     mgn = REGISTRY.get("MGN")
     test_names = [t.name for t in mgn.semantic_tests]
-    assert any(
-        "broker" in name and ("not_modeled" in name or "not modeled" in name)
-        for name in test_names
-    ), (
-        "MGN must declare a semantic_test whose name asserts broker-sourced "
-        f"(not client-side-modeled) margin numbers; got {test_names!r}"
+    assert any("model_estimates_not_broker" in name for name in test_names), (
+        "MGN must declare a semantic_test whose name asserts model estimates, not broker "
+        f"figures; got {test_names!r}"
     )
+    assert "broker" not in mgn.provider_chain.primary
+    assert all("broker" not in f for f in mgn.provider_chain.fallbacks)
 
 
 def test_rpar_methodology_mentions_parity_equation() -> None:

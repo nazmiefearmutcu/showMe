@@ -1,9 +1,11 @@
-"""MGN — Margin Requirements.
+"""MGN — Cross-account margin model.
 
-Per-account margin truth: initial margin, maintenance margin, excess
-liquidity, margin call distance — sourced directly from the broker. NO
-client-side modeling. The semantic test pins this: margin numbers must
-come from broker, never be computed.
+Estimates initial margin, maintenance margin and buying power per account with
+ShowMe's own margin model (margin_engine: Reg-T, portfolio-stress, crypto spot /
+futures, futures per-contract and FX rule tables). The numbers are model estimates
+from the positions the caller supplies, or from the saved portfolio marked to live
+quotes. They are NOT read from a broker: no broker account or margin call is
+queried, and borrow, liquidation and margin-call diagnostics are not produced.
 """
 from __future__ import annotations
 
@@ -36,13 +38,12 @@ from ..spec import (
 def mgn() -> FunctionManifest:
     return FunctionManifest(
         code="MGN",
-        name="Margin Requirements",
+        name="Margin Model",
         category=Category.PORTFOLIO,
         intent=(
-            "Per-account margin truth: initial margin, maintenance margin, "
-            "excess liquidity, and distance to margin call — sourced "
-            "directly from the broker. No client-side modeling of haircuts "
-            "or risk weights."
+            "Per-account margin estimate: initial margin, maintenance margin, "
+            "excess initial equity and buying power, computed by ShowMe's margin "
+            "model from the positions. A model estimate, not a broker margin figure."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -56,62 +57,39 @@ def mgn() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="credential_id",
-                label="Account",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Broker account whose margin profile to read.",
-            ),
-            InputSpec(
-                name="symbol",
-                label="Symbol",
-                control=ControlKind.SYMBOL_PICKER,
-                required=False,
-                description="Filter per-position margin to one symbol; omit for all.",
-            ),
-            InputSpec(
-                name="ccy",
-                label="Display currency",
+                name="margin_type",
+                label="Margin model",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Display currency for margin numbers.",
-                options=["native", "USD", "EUR", "GBP", "TRY", "JPY"],
+                description="Account margin model; omitted means inferred from the book.",
+                options=["reg_t", "portfolio", "crypto_spot", "crypto_futures", "futures", "fx", "bond"],
             ),
             InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
+                name="refresh_prices",
+                label="Live marks",
+                control=ControlKind.SELECT,
                 required=False,
-                description="Preferred data mode; falls back to last cached broker snapshot.",
-                options=[
-                    DataMode.LIVE_EXCHANGE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Mark saved-portfolio positions to live quotes (default true). Unquoted positions stay at average cost and are flagged.",
+                options=["true", "false"],
             ),
         ],
         defaults={
-            "ccy": "native",
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
+            "refresh_prices": True,
         },
         provider_chain=ProviderChain(
-            primary="ccxt_broker",
-            fallbacks=["cached_snapshot"],
+            primary="internal",
+            fallbacks=["yfinance"],
             acceptable_modes=[
-                DataMode.LIVE_EXCHANGE,
-                DataMode.CACHED_SNAPSHOT,
-                DataMode.NOT_CONFIGURED,
+                DataMode.MODELED,
+                DataMode.DELAYED_REFERENCE,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=10, scope="per_input", persist=False),
         output_contract=OutputContract(
             must_have=[
-                "as_of",
-                "credential_id",
-                "currency",
-                "initial_margin",
-                "maintenance_margin",
-                "excess_liquidity",
-                "data_mode",
+                "accounts",
+                "rows",
+                "total",
             ],
             rows=True,
             series=False,
@@ -122,117 +100,102 @@ def mgn() -> FunctionManifest:
         chart_grammar=None,
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="symbol", label="Symbol", kind="text"),
-                ColumnSpec(key="qty", label="Qty", kind="number", format="%.6g"),
+                ColumnSpec(key="account", label="Account", kind="text"),
+                ColumnSpec(key="margin_type", label="Model", kind="text"),
                 ColumnSpec(key="market_value", label="Mkt value", kind="currency", unit="ccy", format="%.2f"),
                 ColumnSpec(key="initial_margin", label="Initial", kind="currency", unit="ccy", format="%.2f"),
                 ColumnSpec(key="maintenance_margin", label="Maint.", kind="currency", unit="ccy", format="%.2f"),
-                ColumnSpec(key="margin_rate_pct", label="Rate %", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="source", label="Source", kind="tag"),
+                ColumnSpec(key="buying_power", label="Buying power", kind="currency", unit="ccy", format="%.2f"),
+                ColumnSpec(key="maintenance_cushion_pct", label="Cushion %", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="positions", label="Positions", kind="number", format="%d"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="excess_liquidity", label="Excess Liq.", kind="big_number", unit="ccy"),
+                CardSlot(key="buying_power", label="Buying power", kind="big_number", unit="ccy"),
+                CardSlot(key="excess_initial", label="Excess initial", kind="kpi", unit="ccy"),
                 CardSlot(key="initial_margin", label="Initial", kind="kpi", unit="ccy"),
                 CardSlot(key="maintenance_margin", label="Maintenance", kind="kpi", unit="ccy"),
-                CardSlot(key="maintenance_pct", label="Maint. %", kind="kpi", unit="%"),
-                CardSlot(key="distance_to_call_pct", label="To call", kind="trend_pill", unit="%"),
-                CardSlot(key="leverage", label="Leverage", kind="kpi"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="maintenance_cushion_pct", label="Cushion %", kind="kpi", unit="%"),
             ],
         ),
         methodology=(
-            "MGN reads broker.account() and broker.position_margin() once "
-            "per refresh and surfaces the venue's authoritative margin "
-            "numbers verbatim. Initial margin, maintenance margin, and "
-            "excess liquidity are quoted in the broker's native currency "
-            "(with optional display-ccy conversion via the FX adapter, "
-            "without overriding the native value). Per-position margin is "
-            "reported when the broker exposes it; otherwise rows omit the "
-            "field rather than guessing. distance_to_call_pct = "
-            "(equity − maintenance_margin) / equity is computed from "
-            "broker-reported numbers and labelled as such. The rebuild "
-            "contract forbids client-side margin modeling — if the broker "
-            "does not return a value, the manifest does not synthesize one."
+            "MGN groups the positions by account and marks each one at its supplied price or "
+            "its live quote; a position with no quote stays at average cost and is listed as "
+            "marked at cost. ShowMe's margin model then applies the account's rule to each "
+            "position: initial and maintenance margin are rates of notional (or fixed per "
+            "contract for futures). Buying power is the equity surplus over initial margin "
+            "divided by the initial rate, or times PORTFOLIO_BUYING_POWER_MULTIPLE (4) for a "
+            "portfolio-margin account, whose maintenance is scaled by PORTFOLIO_MAINTENANCE_SCALE "
+            "(0.6). These are model assumptions, not broker-published requirements. Equity is "
+            "cash plus market value, and cash is the account's recorded cash (0 when none is "
+            "recorded)."
         ),
         formula_dict={
-            "ExcessLiquidity": Formula(
-                expression=r"excess = equity - maintenance\_margin",
-                variables={"equity": "Broker-reported equity"},
+            "ExcessInitial": Formula(
+                expression=r"excess\_initial = equity - initial\_margin",
+                variables={"equity": "Cash plus market value of the account"},
             ),
-            "DistanceToCall": Formula(
-                expression=r"dist\_pct = (equity - maint) / equity \times 100",
+            "MaintenanceCushion": Formula(
+                expression=r"cushion\_pct = (equity - maintenance\_margin) / equity \times 100",
                 variables={},
-                notes="From broker numbers only.",
-            ),
-            "Leverage": Formula(
-                expression=r"L = gross\_position\_notional / equity",
-                variables={},
-                notes="Broker-reported when available.",
+                notes="Model-based: uses the modeled maintenance requirement.",
             ),
         },
         field_dict={
-            "initial_margin": FieldDef(unit="ccy", description="Venue-reported initial margin requirement.", source="broker"),
-            "maintenance_margin": FieldDef(unit="ccy", description="Venue-reported maintenance margin.", source="broker"),
-            "excess_liquidity": FieldDef(unit="ccy", description="equity − maintenance_margin, both broker-reported.", source="computed_from_broker"),
-            "distance_to_call_pct": FieldDef(unit="%", description="Cushion to maintenance breach, from broker numbers.", source="computed_from_broker"),
-            "rows[].source": FieldDef(description="Always 'broker' — never synthesized.", source="broker"),
+            "initial_margin": FieldDef(unit="ccy", description="Modeled initial margin requirement.", source="margin_engine"),
+            "maintenance_margin": FieldDef(unit="ccy", description="Modeled maintenance margin requirement.", source="margin_engine"),
+            "excess_initial": FieldDef(unit="ccy", description="equity - modeled initial margin.", source="computed_from_model"),
+            "buying_power": FieldDef(unit="ccy", description="Modeled capacity for additional notional under the account rule.", source="computed_from_model"),
+            "maintenance_cushion_pct": FieldDef(unit="%", description="Cushion above the modeled maintenance requirement.", source="computed_from_model"),
+            "rows[].source": FieldDef(description="Always the margin model; never a broker figure.", source="margin_engine"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
-            require_as_of=True,
+            require_as_of=False,
             require_latency_ms=True,
         ),
         alerting=AlertingSpec(
             conditions=[
-                "maintenance_level_below",
-                "distance_to_call_below",
-                "excess_liquidity_below",
+                "maintenance_cushion_below",
             ],
             delivery=["tray", "notification", "log"],
         ),
         semantic_tests=[
             SemanticTest(
-                name="mgn_numbers_come_from_broker_not_modeled",
+                name="mgn_numbers_are_model_estimates_not_broker_figures",
                 description=(
-                    "All margin fields trace back to the broker payload — "
-                    "no client-side haircut modeling is permitted."
+                    "Margin fields are produced by the ShowMe margin model; no broker "
+                    "margin source is claimed."
                 ),
-                inputs={"credential_id": "mock_credential_1"},
+                inputs={"positions": "[]"},
                 assertions=[
-                    "initial_margin.source == 'broker'",
-                    "maintenance_margin.source == 'broker'",
-                    "rows[].source == 'broker' for all rows",
-                    "no_field_marked_as_modeled",
+                    "sources does not contain a broker source",
+                    "accounts[].margin_type is one of the model rule names",
                 ],
             ),
             SemanticTest(
-                name="mgn_excess_liquidity_equals_equity_minus_maintenance",
-                description="Formula is exact from broker inputs.",
-                inputs={"credential_id": "mock_credential_1"},
-                assertions=["excess_liquidity == equity - maintenance_margin"],
+                name="mgn_excess_initial_equals_equity_minus_initial_margin",
+                description="Excess initial equity is exact from the modeled inputs.",
+                inputs={"positions": "[{\"symbol\":\"AAPL\",\"asset_class\":\"EQUITY\",\"quantity\":10,\"avg_cost\":100,\"last\":110}]"},
+                assertions=["accounts[].excess_initial == accounts[].equity - accounts[].initial_margin"],
             ),
             SemanticTest(
-                name="mgn_missing_field_is_omitted_not_synthesized",
-                description="If broker does not return per-position margin, rows omit the field.",
-                inputs={"credential_id": "mock_no_position_margin"},
+                name="mgn_unquoted_position_is_disclosed_at_cost",
+                description="A position with no quote is marked at average cost and disclosed; the metadata is flagged degraded.",
+                inputs={"positions": "[{\"symbol\":\"MSFT\",\"asset_class\":\"EQUITY\",\"quantity\":5,\"avg_cost\":300}]"},
                 assertions=[
-                    "rows have no maintenance_margin field",
-                    "warning_says_broker_did_not_expose",
+                    "metadata.marked_at_cost contains MSFT",
+                    "metadata.degraded == true",
                 ],
             ),
             SemanticTest(
-                name="mgn_missing_credential_returns_not_configured",
-                description="Unknown credential id returns data_mode=not_configured.",
-                inputs={"credential_id": "does_not_exist"},
-                assertions=[
-                    "data_mode == 'not_configured'",
-                    "warnings_non_empty",
-                ],
+                name="mgn_empty_book_is_honest_empty_state",
+                description="With no positions and no saved portfolio, MGN returns status empty, not zeros.",
+                inputs={"positions": "[]"},
+                assertions=["status == 'empty'", "next_actions is non-empty"],
             ),
         ],
     )

@@ -217,9 +217,13 @@ def _account_row(account: dict[str, Any]) -> dict[str, Any]:
 
 
 def _methodology() -> str:
+    # MGN#4/MGN#6: a model estimate, not a broker figure; the multipliers are named constants.
     return (
         "Group positions by account, mark positions with supplied or fetched prices, then apply the "
-        "account margin model to estimate initial margin, maintenance margin, excess equity, and buying power."
+        "account margin model to estimate initial margin, maintenance margin, excess equity, and buying power. "
+        "These are model estimates, not broker margin figures. Portfolio-margin accounts use "
+        f"maintenance scale {margin_engine.PORTFOLIO_MAINTENANCE_SCALE} and buying-power multiple "
+        f"{margin_engine.PORTFOLIO_BUYING_POWER_MULTIPLE}."
     )
 
 

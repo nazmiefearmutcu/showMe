@@ -150,7 +150,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   },
   MGN: {
     title: "Margin",
-    subtitle: "Borrow, maintenance, and liquidation diagnostics",
+    subtitle: "Modeled initial and maintenance margin, excess equity, and buying power",
   },
   MLSIG: {
     title: "ML Signals",
