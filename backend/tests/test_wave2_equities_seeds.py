@@ -58,7 +58,7 @@ WAVE2_EQUITIES_CODES: tuple[str, ...] = (
 
 
 SEC_EDGAR_PRIMARY: frozenset[str] = frozenset(
-    {"FORM4", "FTS", "HDS", "HFS", "SPLC", "LITM", "PIB"}
+    {"FORM4", "FTS", "HDS", "HFS", "SPLC", "PIB"}
 )
 YFINANCE_PRIMARY: frozenset[str] = frozenset(
     {"APPL", "ANR", "RV", "DARK"}  # PIB -> SEC (PIB fix), DPF -> FINRA (DPF#4)
@@ -68,7 +68,7 @@ YFINANCE_PRIMARY: frozenset[str] = frozenset(
 FINRA_PRIMARY: frozenset[str] = frozenset({"DPF"})
 # Corporate-calendar functions moved to the Awareness service (dividends, splits, 8-K filings).
 # yfinance and SEC remain secondary inputs inside their handlers, not the declared primary.
-AWARENESS_PRIMARY: frozenset[str] = frozenset({"CACT", "DVD"})
+AWARENESS_PRIMARY: frozenset[str] = frozenset({"CACT", "DVD", "LITM"})
 # F14 seed-truth resync: EE (Finnhub historical earnings, Yahoo calendar as
 # fallback) and EREV (Finnhub recommendation buckets only) were listed under
 # YFINANCE_PRIMARY, but the shipped handlers read Finnhub as their primary

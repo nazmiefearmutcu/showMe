@@ -1,8 +1,9 @@
-"""LITM — Litigation Matters (8-K & 10-K Item 3 extraction).
+"""LITM — Litigation Matters (8-K litigation/governance items from Awareness).
 
-Surfaces material legal proceedings from 8-K Item 1.01 / Item 8.01 filings
-plus 10-K Item 3 (Legal Proceedings) text. SEC EDGAR is primary; the
-handler ranks by filing date and exposes the source filing URL.
+Scans the issuer's 8-K filings of the last year, as served by the Awareness
+service (SEC EDGAR submissions with decoded item codes), for the litigation
+and governance items 1.03, 1.04, 3.03, 5.02 and 5.03, newest first, with the
+source filing URL.
 """
 from __future__ import annotations
 
@@ -36,8 +37,8 @@ def litm() -> FunctionManifest:
         name="Litigation Matters",
         category=Category.EQUITIES,
         intent=(
-            "Surface material legal proceedings disclosed in 8-K and 10-K filings, ranked by "
-            "filing date with the source document URL."
+            "Surface litigation and governance events disclosed in the issuer's 8-K filings "
+            "(items 1.03, 1.04, 3.03, 5.02, 5.03), newest first, with the source filing URL."
         ),
         asset_classes=[AssetClass.EQUITY],
         inputs=[
@@ -85,7 +86,7 @@ def litm() -> FunctionManifest:
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
-            primary="sec_edgar",
+            primary="awareness",
             fallbacks=["cached_snapshot"],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
@@ -123,21 +124,24 @@ def litm() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "LITM walks SEC EDGAR for the issuer's 8-K filings (Item 1.01 and Item 8.01 are the "
-            "common loci for litigation disclosure) plus the most-recent 10-K's Item 3 (Legal "
-            "Proceedings) section. Each matter is normalized into (filing_date, form_type, "
-            "summary, severity, filing_url). Severity is a heuristic bucket (keyword density + "
-            "disclosure size) and is explicitly approximate — operators are expected to read the "
-            "linked filings. The min-severity filter is applied server-side. When no relevant "
-            "filings exist in the window, status=ok with an empty matters array (not unavailable)."
+            "LITM reads the issuer's 8-K filings of the last 365 days from the Awareness service "
+            "(via CACT: SEC EDGAR submissions history plus the latest-filings feed, with the 8-K "
+            "item codes decoded) and keeps filings carrying item 1.03 (bankruptcy), 1.04 (mine "
+            "safety), 3.03 (modification of security holder rights), 5.02 (director/officer "
+            "changes) or 5.03 (charter/bylaw amendments). Each kept filing is one row (filing date, "
+            "matched item codes, accession, filing URL), newest first; severity is a review flag, "
+            "not legal advice. Filings without item codes are reported as a provider gap, no 8-Ks "
+            "in the window is reported as empty with 'not a verified absence', and an unreachable "
+            "Awareness service is provider_unavailable with the reason. Nothing is modelled on the "
+            "default path."
         ),
         field_dict={
             "symbol": FieldDef(description="Equity ticker.", source="instrument"),
-            "matters": FieldDef(description="Normalized list of disclosed litigation matters.", source="sec_edgar"),
+            "matters": FieldDef(description="Normalized list of disclosed litigation matters.", source="awareness"),
             "matter_count": FieldDef(description="Total matters in the lookback window.", source="computed"),
             "severity": FieldDef(description="low | medium | high | critical (heuristic).", source="computed"),
             "latest_filing_date": FieldDef(description="Most-recent litigation-related filing date.", source="computed"),
-            "filing_url": FieldDef(description="Direct EDGAR document URL for the source filing.", source="sec_edgar"),
+            "filing_url": FieldDef(description="Direct EDGAR document URL for the source filing.", source="awareness"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -163,7 +167,7 @@ def litm() -> FunctionManifest:
             ),
             SemanticTest(
                 name="litm_provider_outage_returns_unavailable",
-                description="When EDGAR is unreachable, status=provider_unavailable; no fake matters.",
+                description="When the Awareness service is unreachable, status=provider_unavailable; no fake matters.",
                 inputs={"symbol": "ZZZZZZ"},
                 assertions=[
                     "status_equals_provider_unavailable",
