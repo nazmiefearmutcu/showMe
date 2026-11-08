@@ -91,17 +91,19 @@ async def test_rd_falls_back_to_fred_bbb_not_aaa():
         # no interestExpense → fall through to FRED
         "sector": "Technology",
     }
+    # WACC#1: the BBB input is the YIELD series BAMLC0A4CBBBEY (the spread
+    # series BAMLC0A4CBBB is not a cost of debt).
     deps = FunctionDeps(
         yfinance=_FakeYf(raw=raw),
-        fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBB": 6.5, "AAA": 4.8}),
+        fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 6.5, "AAA": 4.8}),
     )
     fn = WACCFunction(deps)
     instrument = Instrument(symbol="ACME", asset_class=AssetClass.EQUITY)
     res = await fn.execute(instrument=instrument, beta=1.1)
     data = res.data
-    # BBB = 6.5% / 100 = 0.065, not AAA 0.048
+    # BBB yield = 6.5% / 100 = 0.065, not AAA 0.048
     assert abs(data["rd"] - 0.065) < 1e-9
-    assert data["rd_source"] == "fred_bbb"
+    assert data["rd_source"] == "fred_bbb_yield"
 
 
 @pytest.mark.asyncio

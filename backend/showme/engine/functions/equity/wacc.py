@@ -4,7 +4,7 @@ WACC = (E/V × Re) + (D/V × Rd × (1 − T))
 - Re = CAPM: rf + β × ERP
 - rf  = US 10Y FRED DGS10
 - ERP = 5.0% varsayılan (Damodaran scrape Faz 4'te eklenecek)
-- Rd  = FRED corporate Aaa/Baa yield
+- Rd  = FRED ICE BofA BBB corporate yield (BAMLC0A4CBBBEY), Aaa fallback
 - T   = etkin vergi oranı (FA fonksiyonundan)
 - E,D = balance sheet (FA fonksiyonundan)
 """
@@ -195,19 +195,22 @@ class WACCFunction(BaseFunction):
                 warnings.append(f"yfinance implied rd: {e}")
         if rd is None:
             # Keyless FRED CSV fallback (S2 c#3): attempt without a key too.
+            # WACC#1: BAMLC0A4CBBBEY is the ICE BofA BBB corporate YIELD. The
+            # sibling BAMLC0A4CBBB is the option-adjusted SPREAD (1.16 on
+            # 2026-11-05) and is not a cost of debt (yield 5.93 same day).
             try:
                 fred = fred_with_keyless_fallback(
                 self.deps.fred, client=getattr(self, "_http_client", None)
             )
                 df = await asyncio.wait_for(
-                    fred.series("BAMLC0A4CBBB", frequency="d"),
+                    fred.series("BAMLC0A4CBBBEY", frequency="d"),
                     timeout=float(params.get("fred_timeout", 8)),
                 )
                 if not df.empty:
                     rd = float(df["value"].iloc[-1]) / 100.0
-                    rd_source = "fred_bbb"
+                    rd_source = "fred_bbb_yield"
             except Exception as e:
-                warnings.append(f"fred BBB: {e}")
+                warnings.append(f"fred BBB yield: {e}")
         if rd is None:
             # Keyless FRED CSV fallback (S2 c#3): attempt without a key too.
             try:
