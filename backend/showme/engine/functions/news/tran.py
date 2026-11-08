@@ -69,7 +69,7 @@ _METHODOLOGY = (
 _FIELD_DICT = {
     "symbol": "Echoed input symbol.",
     "status": "ok / empty / not_configured / provider_unavailable.",
-    "event": "Earnings event metadata (quarter, event_date, form, accession, source_url).",
+    "event": "Earnings event metadata (quarter, quarter_basis, event_date, form, accession, source_url).",
     "utterances[].position": "1-based order of the utterance within the document.",
     "document_type": "transcript (pasted, archived or audio) or earnings_press_release (SEC 8-K EX-99.x).",
     "utterances[].section": "prepared_remarks / qa for transcripts; document for an earnings release.",
@@ -422,8 +422,10 @@ async def _fetch_sec_earnings_press_release(
     """Return (event_meta, press_release_text) for an 8-K earnings exhibit.
 
     Without ``quarter`` this is the newest earnings 8-K. With ``quarter`` (a
-    normalised label such as ``Q3 FY26``) only 8-Ks whose report period falls in
-    that quarter are considered; none means a lookup error, not the latest filing.
+    normalised label such as ``Q3 FY26``) only 8-Ks whose report date falls in
+    that calendar quarter are considered; none means a lookup error, not the
+    latest filing. The label is a calendar quarter of the filing date, not the
+    company's fiscal quarter.
     """
     cik = await _resolve_cik(symbol, deps)
     cik_nozero = str(int(cik))
@@ -456,7 +458,7 @@ async def _fetch_sec_earnings_press_release(
         ]
         if not candidates:
             raise _SecLookupError(
-                f"No 8-K filing for {symbol} has a report period in quarter {quarter} "
+                f"No 8-K filing for {symbol} has a report date in calendar quarter {quarter} "
                 f"among the recent filings (CIK {cik})."
             )
     if not candidates:
@@ -474,6 +476,7 @@ async def _fetch_sec_earnings_press_release(
             "event_date": (dates[idx] if idx < len(dates) and dates[idx] else (fdates[idx] if idx < len(fdates) else None)),
             "filing_date": fdates[idx] if idx < len(fdates) else None,
             "quarter": _infer_quarter(dates[idx] if idx < len(dates) else None),
+            "quarter_basis": _QUARTER_BASIS,
             "source": "sec_edgar",
             "title": f"{symbol} {str(forms[idx])} earnings press release",
         }
@@ -718,6 +721,11 @@ def _normalize_quarter(text: str | None) -> str | None:
     if not m:
         return None
     return f"Q{m.group(1)} FY{m.group(2)[-2:]}"
+
+
+_QUARTER_BASIS = (
+    "8-K report date, calendar quarter; not necessarily the company's fiscal quarter"
+)
 
 
 def _infer_quarter(report_date: str | None) -> str | None:
