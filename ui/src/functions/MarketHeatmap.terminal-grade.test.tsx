@@ -449,3 +449,23 @@ describe("MarketHeatmap — per-cell flash (live adoption)", () => {
     }
   });
 });
+
+/* ── MAP#3: model rows carry no price or change ───────────────────────── */
+
+describe("MarketHeatmap — model rows without numbers (MAP#3)", () => {
+  it("renders a model tile with an em-dash, never a number or a flat 0.00%", () => {
+    mockOk({
+      status: "model",
+      period: "1D",
+      rows: [countryRow({ quote_type: "model", last: null, change_pct: null })],
+    });
+    const { container } = render(<MarketHeatmapPane code="MAP" />);
+    const tile = within(screen.getByRole("region", { name: /ETF performance heatmap/i }))
+      .getByRole("button", { name: /US \(SPY\)/ });
+    expect(tile.getAttribute("aria-label")).toMatch(/—/);
+    expect(tile.getAttribute("aria-label")).toMatch(/model/);
+    expect(tile.getAttribute("aria-label")).not.toMatch(/0\.00/);
+    expect(container.textContent ?? "").not.toMatch(/NaN/);
+    expect(screen.getByTestId("map-model-badge")).toBeInTheDocument();
+  });
+});

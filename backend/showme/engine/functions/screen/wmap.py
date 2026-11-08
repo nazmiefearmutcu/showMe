@@ -94,21 +94,22 @@ def _unavailable_row(country: str, etf: str) -> dict[str, Any]:
 
 
 def _map_template() -> list[dict[str, Any]]:
-    rows = []
-    for i, (country, etf) in enumerate(_COUNTRY_ETFS.items()):
-        rows.append({
+    """Model-mode rows: the country/ETF map only, never a price or a change.
+
+    MAP#3: the former fixed pattern (last = 50 + 1.7*i, a repeating change
+    cycle) read as market prices. The model now carries no numbers at all.
+    """
+    return [
+        {
             "country": country,
             "etf": etf,
-            "last": round(50 + i * 1.7, 2),
-            "change_pct": round(((i % 9) - 4) * 0.18, 3),
+            "last": None,
+            "change_pct": None,
             "period": "1D",
             "quote_type": "model",
-        })
-    rows.sort(
-        key=lambda x: x.get("change_pct") if x.get("change_pct") is not None else -999,
-        reverse=True,
-    )
-    return rows
+        }
+        for country, etf in _COUNTRY_ETFS.items()
+    ]
 
 
 def _truthy(value: Any) -> bool:
@@ -130,7 +131,7 @@ class MAPFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None,
                                   data={
                                       "status": "model",
-                                      "reason": "Deterministic country ETF model selected; values are not live market quotes.",
+                                      "reason": "Model mode lists the country ETF map only; it carries no prices or changes and is not live market data.",
                                       "period": "1D",
                                       "rows": _map_template(),
                                   },

@@ -4,8 +4,8 @@ Bloomberg ``MAP<GO>`` analogue over a curated set of single-country ETFs
 (EUSA, EWG, MCHI, …): each tile is colored by the delivered change and
 sized by |% change| magnitude (NOT market cap — the pane states this
 explicitly). Live mode quotes each ETF and computes the intraday change
-from last vs previous close; model mode returns a deterministic, labelled
-country ETF template. ``chart_grammar.kind=HEATMAP`` per the wave2 spec
+from last vs previous close; model mode lists the country ETF map with null
+prices and changes, labelled quote_type="model". ``chart_grammar.kind=HEATMAP`` per the wave2 spec
 and pinned by ``test_map_chart_grammar_is_heatmap``. UI hangs off the
 shared MarketHeatmapPane (same component as SECT).
 """
@@ -47,8 +47,8 @@ def market_map() -> FunctionManifest:
             "Render a heat grid of MSCI single-country equity ETFs (US/DE/GB/JP/CN/IN/BR …) "
             "colored by the delivered day change and sized by |% change| magnitude so an operator "
             "can read global market breadth in one glance. Live mode uses quote-provider intraday "
-            "changes; model mode returns a deterministic, labelled country template — never a "
-            "fabricated live print."
+            "changes; model mode lists the country map with no prices or changes (labelled model) "
+            "— never a fabricated live print."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
