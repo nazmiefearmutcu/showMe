@@ -82,7 +82,13 @@ def test_lang_ready_envelope_cites_no_unread_source(lang_file) -> None:
     env = normalize_function_contract("LANG", {"lang": "en"}, {
         "data": res.data, "sources": res.sources, "metadata": {}, "warnings": res.warnings,
     })
-    assert "local_locale_catalog" not in [s.get("name") for s in env.get("sourceDetails", [])]
+    # The envelope must not surface any source the handler did not read. The
+    # base handler cited showme_i18n_registry, which the envelope then lists in
+    # sourceDetails; the only permitted placeholder is the envelope's own
+    # "none" row emitted when no source is cited.
+    cited = [s.get("name") for s in env.get("sourceDetails", []) if s.get("name") != "none"]
+    assert cited == [], f"envelope cites sources the handler never read: {cited}"
+    assert "showme_i18n_registry" not in cited
 
 
 def test_lang_local_catalog_source_is_classified_as_reference() -> None:
