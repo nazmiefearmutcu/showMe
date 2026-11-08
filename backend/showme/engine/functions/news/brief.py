@@ -67,6 +67,13 @@ class BRIEFFunction(BaseFunction):
         limit = _clamp_int(params.get("limit"), default=25, min_value=1, max_value=50)
         timeout = params.get("news_timeout", params.get("timeout", 8))
         base_warnings = [f"{err}" for err in source_errors]
+        # BRIEF#3: ``sections`` selects which article sections are composed;
+        # ``limit`` is applied per section. Omitted/empty means both sections.
+        requested_sections = _requested_sections(params.get("sections"))
+        chosen_sections = [
+            s for s in _ARTICLE_SECTIONS
+            if requested_sections is None or s in requested_sections
+        ]
 
         if not live:
             markdown = _no_compose_markdown(watchlist)
@@ -119,6 +126,32 @@ class BRIEFFunction(BaseFunction):
                 metadata={"format": "markdown", "live": False, "data_mode": "explicit_unavailable"},
             )
 
+        if not chosen_sections:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "markdown": _input_error_markdown(requested_sections or []),
+                    "articles": [],
+                    "rows": [],
+                    "watchlist": watchlist,
+                    "watchlist_source": watchlist_source,
+                    "symbols_searched": [],
+                    "article_count": 0,
+                    "sections": [],
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards(watchlist, 0, "input_error", positions_covered),
+                    "next_actions": [
+                        "Pass sections=top_stories, sections=watchlist, or both.",
+                    ],
+                },
+                sources=["watchlist_brief_builder"],
+                warnings=[*base_warnings, "No recognised article section requested."],
+                metadata={"format": "markdown", "live": False, "data_mode": "input_error"},
+            )
+
         # ---- LIVE COMPOSITION (default) -------------------------------------
         # De-garbage 2026-06-01: the brief used to source its "watchlist news"
         # from ``READFunction`` — but READ is the saved-articles *reading-list*
@@ -148,8 +181,9 @@ class BRIEFFunction(BaseFunction):
 
         top_fn = TOPFunction(self.deps)
         # General macro headlines + per-symbol watchlist headlines, concurrently.
-        wl_symbols = watchlist[:_MAX_SYMBOL_SEARCHES]
-        if len(watchlist) > len(wl_symbols):
+        want_macro = "top_stories" in chosen_sections
+        wl_symbols = watchlist[:_MAX_SYMBOL_SEARCHES] if "watchlist" in chosen_sections else []
+        if "watchlist" in chosen_sections and len(watchlist) > len(wl_symbols):
             base_warnings.append(
                 f"Symbol headlines searched for the first {len(wl_symbols)} of "
                 f"{len(watchlist)} symbols."
@@ -166,7 +200,7 @@ class BRIEFFunction(BaseFunction):
                 symbol=sym, query=sym, live=True, limit=per_symbol, timeout=timeout, stamp_sentiment=False,
             )
 
-        tasks = [_macro(), *[_sym(s) for s in wl_symbols]]
+        tasks = [*([_macro()] if want_macro else []), *[_sym(s) for s in wl_symbols]]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         existing: set[str] = set()
@@ -191,11 +225,13 @@ class BRIEFFunction(BaseFunction):
             for err in (getattr(top_res, "metadata", {}) or {}).get("provider_errors", []) or []:
                 provider_errors.append(err)
 
-        # Surface watchlist-tagged stories first, then macro top stories.
-        articles.sort(key=lambda a: 0 if a.get("section") == "watchlist" else 1)
+        # BRIEF#3: ``limit`` caps each section separately, so a long watchlist
+        # cannot push every top story out of the brief. Watchlist stories
+        # are listed first, then macro top stories.
+        watch_rows = [a for a in articles if a.get("section") == "watchlist"][:limit]
+        macro_rows = [a for a in articles if a.get("section") == "top_stories"][:limit]
+        articles = [*watch_rows, *macro_rows]
 
-        articles = articles[:limit]
-        
         # Stamp sentiment on the final merged list of articles once!
         _, finbert_warning = await stamp_items(articles)
         if finbert_warning:
@@ -203,7 +239,7 @@ class BRIEFFunction(BaseFunction):
         warnings = [*base_warnings, *warnings]
 
         source_label = _SOURCE_LABELS.get(watchlist_source, "Watchlist")
-        markdown = _compose_markdown(watchlist, articles, source_label)
+        markdown = _compose_markdown(watchlist, articles, source_label, chosen_sections)
         status = "ok" if articles else "provider_unavailable"
         if not sources:
             sources = ["watchlist_brief_builder"]
@@ -227,6 +263,7 @@ class BRIEFFunction(BaseFunction):
                 "watchlist": watchlist,
                 "watchlist_source": watchlist_source,
                 "symbols_searched": wl_symbols,
+                "sections": chosen_sections,
                 "article_count": len(articles),
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
@@ -278,6 +315,7 @@ _FIELD_DICTIONARY: dict[str, str] = {
     "watchlist_source": "input / positions_and_watchlists / instrument / none.",
     "symbols_searched": "Symbols that received a symbol-scoped headline search (capped).",
     "article_count": "Number of cited articles.",
+    "sections": "Article sections composed (top_stories / watchlist).",
     "next_actions": "Suggested follow-up actions when no live headlines were returned.",
 }
 
@@ -288,6 +326,21 @@ _SOURCE_LABELS = {
     "instrument": "Instrument",
     "none": "Watchlist",
 }
+
+
+_ARTICLE_SECTIONS = ("top_stories", "watchlist")
+
+
+def _requested_sections(raw: Any) -> list[str] | None:
+    """Normalise the ``sections`` input. ``None`` means the caller asked for no filter."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, (list, tuple, set)):
+        return None
+    out = [str(item).strip().lower() for item in raw if str(item or "").strip()]
+    return out or None
 
 
 def _normalise_symbols(values: list[Any]) -> list[str]:
@@ -393,6 +446,11 @@ def _dedupe_key(article: dict[str, Any]) -> str:
 
 def _clean_article(article: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(article)
+    # BRIEF#5: TOP emits the article link as ``link``; the documented evidence
+    # field is ``url``. Expose the same absolute link under both.
+    link = str(cleaned.get("link") or "").strip()
+    if not cleaned.get("url") and link.lower().startswith(("http://", "https://")):
+        cleaned["url"] = link
     for key in ("summary", "description", "snippet"):
         if isinstance(cleaned.get(key), str):
             cleaned[key] = _strip_html(cleaned[key])
@@ -409,27 +467,52 @@ def _strip_html(value: str) -> str:
 
 
 def _compose_markdown(
-    watchlist: list[str], articles: list[dict[str, Any]], source_label: str = "Watchlist"
+    watchlist: list[str],
+    articles: list[dict[str, Any]],
+    source_label: str = "Watchlist",
+    sections: list[str] | None = None,
 ) -> str:
+    wanted = list(sections or _ARTICLE_SECTIONS)
     lines = [
         f"# ShowMe Daily Brief — {datetime.now(timezone.utc):%Y-%m-%d}",
         "",
         f"**{source_label}:** {', '.join(watchlist)}",
         "",
-        "## Top Stories",
-        "",
     ]
-    if articles:
-        top_symbols = sorted(
-            {
-                str(a.get("matched_symbol") or a.get("symbol") or "")
-                for a in articles
-                if a.get("matched_symbol") or a.get("symbol")
-            }
+    if not articles:
+        lines.extend(
+            [
+                "## Top Stories",
+                "",
+                "- No live watchlist headlines were returned.",
+                "",
+                "## Next actions",
+                "",
+                "- Check RSS/news provider availability.",
+                "- Add watchlist symbols or broaden the query before generating a brief.",
+            ]
         )
-        if top_symbols:
-            lines.extend([f"**Matched symbols:** {', '.join(top_symbols[:10])}", ""])
-        for a in articles:
+        return "\n".join(lines)
+    top_symbols = sorted(
+        {
+            str(a.get("matched_symbol") or a.get("symbol") or "")
+            for a in articles
+            if a.get("matched_symbol") or a.get("symbol")
+        }
+    )
+    if top_symbols:
+        lines.extend([f"**Matched symbols:** {', '.join(top_symbols[:10])}", ""])
+    # BRIEF#3: each requested section gets its own heading; a section with no
+    # rows says so instead of inheriting another section's stories.
+    for key, heading in (("watchlist", "Watchlist"), ("top_stories", "Top Stories")):
+        if key not in wanted:
+            continue
+        lines.extend([f"## {heading}", ""])
+        rows = [a for a in articles if a.get("section") == key]
+        if not rows:
+            lines.extend(["- No headlines in this section.", ""])
+            continue
+        for a in rows:
             title = a.get("title", "")
             link = a.get("url") or a.get("link") or ""
             sym = a.get("matched_symbol") or a.get("symbol") or ""
@@ -439,18 +522,20 @@ def _compose_markdown(
                 lines.append(f"- ({sym}) [{title}]({link}){suffix}")
             else:
                 lines.append(f"- ({sym}) {title}{suffix}")
-    else:
-        lines.extend(
-            [
-                "- No live watchlist headlines were returned.",
-                "",
-                "## Next actions",
-                "",
-                "- Check RSS/news provider availability.",
-                "- Add watchlist symbols or broaden the query before generating a brief.",
-            ]
-        )
-    return "\n".join(lines)
+        lines.append("")
+    return "\n".join(lines).rstrip("\n")
+
+
+def _input_error_markdown(requested: list[str]) -> str:
+    return "\n".join(
+        [
+            f"# ShowMe Daily Brief — {datetime.now(timezone.utc):%Y-%m-%d}",
+            "",
+            f"**Sections requested:** {', '.join(requested) or 'none'}",
+            "",
+            "- No recognised article section was requested. Use top_stories and/or watchlist.",
+        ]
+    )
 
 
 def _no_compose_markdown(watchlist: list[str]) -> str:

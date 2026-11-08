@@ -125,11 +125,11 @@ def brief() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="published_utc", label="Time", kind="datetime", format="rel-time"),
+                ColumnSpec(key="published_at", label="Time", kind="datetime", format="rel-time"),
                 ColumnSpec(key="matched_symbol", label="Symbol", kind="tag"),
                 ColumnSpec(key="source", label="Source", kind="tag"),
                 ColumnSpec(key="title", label="Title", kind="text"),
-                ColumnSpec(key="evidence_url", label="Evidence", kind="action"),
+                ColumnSpec(key="url", label="Evidence", kind="action"),
             ],
             sortable=True,
             filterable=True,
@@ -160,9 +160,9 @@ def brief() -> FunctionManifest:
             "articles": FieldDef(description="Structured rows of the headlines cited in the markdown body.", source="read"),
             "watchlist": FieldDef(description="Effective watchlist used (input + positions).", source="composed"),
             "article_count": FieldDef(unit="count", description="Number of cited articles.", source="derived"),
-            "articles[].evidence_url": FieldDef(unit="url", description="Direct HTTPS link to the source article — the evidence cite.", source="read"),
+            "articles[].url": FieldDef(unit="url", description="Direct HTTPS link to the source article — the evidence cite (same value as articles[].link).", source="read"),
             "articles[].title": FieldDef(description="Headline text quoted from the source.", source="read"),
-            "articles[].source": FieldDef(description="Publisher domain.", source="read"),
+            "articles[].source": FieldDef(description="Publisher name.", source="read"),
             "articles[].matched_symbol": FieldDef(description="Symbol this article was tagged to.", source="read"),
             "next_actions": FieldDef(description="Suggested follow-up actions (e.g. 'no live headlines — broaden watchlist').", source="derived"),
         },
@@ -175,7 +175,7 @@ def brief() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="brief_evidence_links_present",
-                description="Asserts every bullet in markdown has an http(s) link AND every articles[] row has a non-empty evidence_url. The brief must cite, never summarize without evidence.",
+                description="Asserts every bullet in markdown has an http(s) link AND every articles[] row has a non-empty url. The brief must cite, never summarize without evidence.",
                 inputs={"watchlist": ["AAPL", "MSFT"]},
                 assertions=[
                     "every_markdown_bullet_has_link",
