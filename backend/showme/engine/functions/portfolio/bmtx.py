@@ -122,6 +122,7 @@ class BMTXFunction(BaseFunction):
                 failures=failures,
             )
         cells = []
+        strategy_errors: dict[str, list[str]] = {}
         for sym, df in bars_dict.items():
             for strat in strategies:
                 fn = STRATEGY_REGISTRY.get(strat)
@@ -139,8 +140,35 @@ class BMTXFunction(BaseFunction):
                         "trades": r.metrics["trades"],
                         "final_equity": r.final_equity,
                     })
-                except Exception:
-                    continue
+                except Exception as exc:  # BMTX-R1: keep the reason, do not drop silently
+                    strategy_errors.setdefault(sym, []).append(
+                        (strat, f"{type(exc).__name__}: {exc}")
+                    )
+        # BMTX-R1: a symbol with no successful cell is excluded and named with its reason.
+        ok_symbols = {cell["symbol"] for cell in cells}
+        failed_cells = [
+            {"symbol": sym, "strategy": strat, "error": msg}
+            for sym, errs in strategy_errors.items()
+            for strat, msg in errs
+        ]
+        for sym in list(bars_dict):
+            if sym not in ok_symbols:
+                reasons = [f"{strat}: {msg}" for strat, msg in strategy_errors.get(sym, [])]
+                failures[sym] = (
+                    "all strategy backtests failed (" + "; ".join(reasons) + ")"
+                    if reasons else "no registered strategy produced a run"
+                )
+                del bars_dict[sym]
+        if not bars_dict:
+            return _unavailable(
+                instrument=instrument,
+                symbols=symbols,
+                strategies=strategies,
+                days=days,
+                fee_bps=fee_bps,
+                reason="No backtest completed for any requested symbol.",
+                failures=failures,
+            )
         # Best per symbol
         best_per_symbol = {}
         for cell in cells:
@@ -162,9 +190,10 @@ class BMTXFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=None,
             data={
-                "status": "partial" if failures else "ok",
+                "status": "partial" if (failures or failed_cells) else "ok",
                 "symbols": list(bars_dict.keys()),
                 "unavailable_symbols": list(failures),
+                "failed_cells": failed_cells,
                 "strategies": strategies,
                 "cells": cells,
                 "surface": surface,
@@ -192,14 +221,18 @@ class BMTXFunction(BaseFunction):
                 },
             },
             sources=sources,
-            warnings=[_failure_warning(sym, reason) for sym, reason in failures.items()],
+            warnings=[_failure_warning(sym, reason) for sym, reason in failures.items()]
+            + [
+                f"BMTX: {cell['strategy']} failed on {cell['symbol']} ({cell['error']}); that cell is excluded."
+                for cell in failed_cells if cell["symbol"] in ok_symbols
+            ],
             metadata={"days": days, "fee_bps": fee_bps, "live": True,
                       "unavailable_symbols": list(failures)},
         )
 
 
 def _failure_warning(sym: str, reason: str) -> str:
-    return f"BMTX: no live OHLCV history for {sym} ({reason}); it is excluded from the matrix."
+    return f"BMTX: no usable live backtest for {sym} ({reason}); it is excluded from the matrix."
 
 
 def _unavailable(
