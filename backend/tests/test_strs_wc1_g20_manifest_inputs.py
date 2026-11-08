@@ -15,9 +15,8 @@ from showme.manifest import REGISTRY, load_seeds
 _STRS_SRC = Path(__file__).resolve().parents[1] / "showme" / "engine" / "functions" / "portfolio" / "strs.py"
 
 # Inputs the handler does not read by name. Each is a documented limitation, not a
-# silent control: propagation has one option that describes the engine's only method;
-# provider_mode is not wired to the yfinance history path (residual, see the commit).
-_DESCRIPTIVE_OR_RESIDUAL = {"propagation", "provider_mode"}
+# silent control: propagation has one option that describes the engine's only method.
+_DESCRIPTIVE_OR_RESIDUAL = {"propagation"}
 
 
 def _strs():
@@ -53,3 +52,12 @@ def test_every_manifest_input_is_read_by_the_handler_or_is_declared_residual():
 def test_scenario_magnitudes_is_read_as_the_scale_factor():
     src = _STRS_SRC.read_text(encoding="utf-8")
     assert '"scenario_magnitudes"' in src
+
+
+def test_provider_mode_is_not_a_declared_control_the_engine_ignores():
+    # STRS#7: provider_mode was declared as the price-history data mode, but the handler
+    # never reads it (history is fetched from yfinance regardless). A declared control
+    # that changes nothing is removed, not left as a silent setting.
+    strs = _strs()
+    assert "provider_mode" not in {i.name for i in strs.inputs}
+    assert "provider_mode" not in (strs.defaults or {})

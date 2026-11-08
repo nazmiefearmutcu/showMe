@@ -121,22 +121,10 @@ def strs() -> FunctionManifest:
                 step=1,
                 unit="days",
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for the price history.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
             "propagation": "hand_set_lookup",
             "horizon_days": 5,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
