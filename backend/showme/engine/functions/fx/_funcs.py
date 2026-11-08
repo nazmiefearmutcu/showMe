@@ -1491,7 +1491,8 @@ def _annualized_vol(returns: list[float]) -> float | None:
     if n < 2:
         return None
     mean = sum(returns) / n
-    var = sum((r - mean) ** 2 for r in returns) / n  # population stdev
+    # Sample (n-1) variance, the same estimator as portfolio/greeks, corr and anr (XCON-11).
+    var = sum((r - mean) ** 2 for r in returns) / (n - 1)
     return math.sqrt(var) * _FX_ANNUALIZATION
 
 
