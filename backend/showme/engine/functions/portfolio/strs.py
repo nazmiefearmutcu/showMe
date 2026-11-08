@@ -108,7 +108,9 @@ class STRSFunction(BaseFunction):
             scale_raw = params.get("scenario_magnitudes", 1.0)
         scale = float(scale_raw)
         sources = ["stress_scenarios", "portfolio_state"]
-        if refresh_prices or include_sectors:
+        # yfinance is a source only when an adapter exists and a quote or REFDATA
+        # lookup was actually attempted (STRS#2 follow-up).
+        if self.deps.yfinance and (refresh_prices or include_sectors):
             sources.insert(0, "yfinance")
         # Bond funds in the GFC/COVID windows take their own measured window return.
         # Fetch it only for the windows this request runs; custom shocks use none.
