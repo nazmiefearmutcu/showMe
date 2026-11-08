@@ -517,7 +517,15 @@ class TRAFunction(BaseFunction):
         daily_returns = _total_daily_returns(adj_close, adj_divs if dividends_known else None)
         twr = _twr(daily_returns)
         # TRA#3: drawdown on the full daily total-return index, not on sampled points.
-        max_dd = _max_drawdown(daily_returns)
+        # wc3-g15: without a split column, a split-sized one-day move is an unadjusted
+        # jump, so the drawdown would report a loss that did not happen. Null, with a reason.
+        unconfirmed_splits = [] if splits_known else _unconfirmed_split_dates(close)
+        max_dd = None if unconfirmed_splits else _max_drawdown(daily_returns)
+        if unconfirmed_splits:
+            warnings.append(
+                "TRA: max drawdown is not reported because the source gave no split events and "
+                "a split-sized move sits inside the window."
+            )
         # MWR / IRR — buy 1 share at start, dividends as positive cashflows, sell at end
         cashflows = [(adj_close.index[0].to_pydatetime(), -float(adj_close.iloc[0]))]
         for d, amt in zip(adj_divs.index, adj_divs.values):
