@@ -146,6 +146,52 @@ function evaluateAlert(
   return { status: onTriggerSide ? "triggered" : "armed", newTrigger: crossed };
 }
 
+/** The last value observed for one alert, and when it was observed. */
+export interface AlertObservation {
+  value: number;
+  at: number;
+}
+
+/**
+ * ALRT#5 — record one observation for an alert, ordered by observation time.
+ * An observation older than the newest one already recorded for that alert is
+ * reported as `stale` and ignored, so it can never move the edge state back.
+ */
+export function observeAlertEdge(
+  seen: Map<string, AlertObservation>,
+  alertId: string,
+  direction: AlertDirection,
+  threshold: number,
+  value: number | null,
+  at: number,
+): { newTrigger: boolean; stale: boolean } {
+  const last = seen.get(alertId);
+  if (last && at < last.at) return { newTrigger: false, stale: true };
+  const prev = last ? last.value : null;
+  const { newTrigger } = evaluateAlert(direction, threshold, value, prev);
+  if (value !== null && Number.isFinite(value)) seen.set(alertId, { value, at });
+  return { newTrigger, stale: false };
+}
+
+/**
+ * ALRT#5 — cooldown gate. True when the alert fired within FIRE_COOLDOWN_MS,
+ * either per its persisted `last_fired_at` or per `inFlight`, the time this pane
+ * started firing it (recorded before the async fire is awaited, so a second
+ * evaluation cannot pass while `rows` still shows the old value).
+ */
+export function isInFireCooldown(
+  lastFiredAt: string | null | undefined,
+  inFlight: number | undefined,
+  now: number,
+): boolean {
+  const persisted = lastFiredAt ? Date.parse(lastFiredAt) : NaN;
+  const latest = Math.max(
+    Number.isFinite(persisted) ? persisted : -Infinity,
+    inFlight ?? -Infinity,
+  );
+  return Number.isFinite(latest) && now - latest < FIRE_COOLDOWN_MS;
+}
+
 export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
   // B1b (campaign 2026-09-11 double) — route-bound opening. `PaneChrome`'s
   // "set alert" action navigates to `#/symbol/<sym>/ALRT`, so the pane
@@ -200,9 +246,13 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
   // Time of the last live report per symbol, even when the value is unchanged
   // (a ref: it feeds the stalled-evaluation check without re-rendering).
   const liveSeenRef = useRef<Record<string, number>>({});
-  // Previous observed value per alert id, for cross detection + above/below
-  // edge tracking. A ref (not state) so updating it never re-triggers render.
-  const prevValuesRef = useRef<Map<string, number>>(new Map());
+  // Previous observed value per alert id (and when it was observed), for cross
+  // detection + above/below edge tracking. A ref (not state) so updating it
+  // never re-triggers render.
+  const prevValuesRef = useRef<Map<string, AlertObservation>>(new Map());
+  // Time each alert was last fired by this pane, recorded before the async fire
+  // is awaited, so overlapping evaluations honour the cooldown (ALRT#5).
+  const firedAtRef = useRef<Map<string, number>>(new Map());
   // Always-fresh `rows` for the polling callback (closure would otherwise
   // capture a stale snapshot across ticks).
   const rowsRef = useRef<AlertRow[] | null>(null);
@@ -374,19 +424,22 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
     readValue: (field: AlertRow["field"]) => number | null,
     now: number,
     isStopped: () => boolean,
+    observedAt: number,
   ): Promise<void> => {
     for (const row of rowsForSym) {
-      const value = readValue(row.field);
-      const prev = prevValuesRef.current.get(row.id) ?? null;
-      const { newTrigger } = evaluateAlert(row.direction, row.threshold, value, prev);
-      if (value !== null && Number.isFinite(value)) {
-        prevValuesRef.current.set(row.id, value);
-      }
-      if (!newTrigger) continue;
-      const lastFired = row.last_fired_at ? Date.parse(row.last_fired_at) : NaN;
-      const inCooldown =
-        Number.isFinite(lastFired) && now - lastFired < FIRE_COOLDOWN_MS;
-      if (inCooldown) continue;
+      const { newTrigger, stale } = observeAlertEdge(
+        prevValuesRef.current,
+        row.id,
+        row.direction,
+        row.threshold,
+        readValue(row.field),
+        observedAt,
+      );
+      // A reading older than one already observed for this alert (e.g. a REST
+      // snapshot fetched before a live tick) never moves the edge state.
+      if (stale || !newTrigger) continue;
+      if (isInFireCooldown(row.last_fired_at, firedAtRef.current.get(row.id), now)) continue;
+      firedAtRef.current.set(row.id, now);
       await fireAlert(row);
       if (isStopped()) break;
     }
@@ -439,11 +492,13 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
       for (const sym of uniqueSymbols) {
         const snap = fresh[sym];
         if (!snap) continue;
+        const snapAt = Date.parse(snap.fetched_at);
         await evaluateSymbolRows(
           activeRows.filter((r) => r.symbol === sym),
           (field) => quoteValue(snap, field),
           now,
           () => cancelled,
+          Number.isFinite(snapAt) ? snapAt : now,
         );
         if (cancelled) break;
       }
@@ -483,6 +538,7 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
       (field) => liveValue(obs, field),
       obs.at,
       () => false,
+      obs.at,
     );
   }, []);
 
@@ -641,7 +697,7 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
             r.direction,
             r.threshold,
             value,
-            prevValuesRef.current.get(r.id) ?? null,
+            prevValuesRef.current.get(r.id)?.value ?? null,
           );
           if (status === "none") {
             return <span style={{ color: "var(--text-mute)" }}>{formatMissing}</span>;
@@ -1069,22 +1125,26 @@ function LiveEvalBridge({
   onObservation: (sym: string, obs: LiveObservation) => void;
 }) {
   const quote = useLiveQuote(symbol);
-  const price = quote.price;
-  const changePct = quote.changePct;
-  const volume = quote.snapshot?.volume ?? null;
-  // lastTickAt moves on every feed update, so an unchanged price still counts
-  // as a live report (it keeps the stalled check honest); the parent dedupes
-  // the state update on values.
-  const lastTickAt = quote.lastTickAt;
+  // Only a genuine live tick is an observation. When the hook has no fresher
+  // tick it falls back to the REST snapshot price; that reading is not live
+  // and is left to the 45 s poll, so it is never stamped as a fresh tick.
+  const tick = quote.sourceKind === "tick" ? quote.lastTick : null;
+  const price = tick?.price ?? null;
+  const changePct = tick?.changePct ?? null;
+  // The tick's own feed time, so ordering against REST readings is honest.
+  const tickAt = tick ? quote.lastTickAt : null;
   useEffect(() => {
-    if (price == null && changePct == null && volume == null) return;
+    if (tickAt == null) return;
+    if (price == null && changePct == null) return;
     onObservation(symbol, {
       price,
       change_pct: changePct,
-      volume,
-      at: Date.now(),
+      // Volume is not carried by the live observation; the Current column
+      // falls back to the REST snapshot volume, labelled as such.
+      volume: null,
+      at: tickAt,
     });
-  }, [symbol, price, changePct, volume, lastTickAt, onObservation]);
+  }, [symbol, price, changePct, tickAt, onObservation]);
   return null;
 }
 
