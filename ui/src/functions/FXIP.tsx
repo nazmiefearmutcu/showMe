@@ -125,7 +125,7 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
   // supplied them; any non-user_input basis must say so on the pane.
   const rateBasis = [payload?.rate_basis?.base, payload?.rate_basis?.quote];
   const ratesAreReference = rateBasis.some(
-    (src) => typeof src === "string" && src !== "user_input",
+    (src) => typeof src === "string" && src.startsWith("reference_policy_rate"),
   );
   const rateVintage =
     rateBasis
@@ -269,7 +269,11 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
         />
         <StatCard
           label="Carry (annualized)"
-          value={fmtSignedPct((payload.carry_annualized ?? 0) * 100)}
+          value={
+            typeof payload.carry_annualized === "number" && Number.isFinite(payload.carry_annualized)
+              ? fmtSignedPct(payload.carry_annualized * 100)
+              : "—"
+          }
           caption="QUOTE − BASE RATE · LONG BASE EARNS IF NEGATIVE"
           tone="neutral"
         />

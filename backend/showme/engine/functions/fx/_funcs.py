@@ -367,15 +367,22 @@ class FXIPFunction(BaseFunction):
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
         r_base, base_rate_source = _fxip_rate(base, params.get("r_base"))
         r_quote, quote_rate_source = _fxip_rate(quote, params.get("r_quote"))
+        # FXIP#2 follow-up: with an unlisted currency and no caller rate there
+        # is no honest rate, so forwards and carry are null, not invented.
+        rates_missing = r_base is None or r_quote is None
+        missing_currencies = [c for c, r in ((base, r_base), (quote, r_quote)) if r is None]
+        fwd_1m = None if rates_missing else round(_forward(spot, r_base, r_quote, 1 / 12), 6)
+        fwd_3m = None if rates_missing else round(_forward(spot, r_base, r_quote, 0.25), 6)
+        carry = None if rates_missing else round(r_quote - r_base, 6)
         atm_vol = float(params.get("atm_vol", params.get("vol", 0.0845)))
         rows = [
             {"metric": "spot", "value": round(spot, 6), "unit": f"{quote} per {base}", "source": spot_source},
             {"metric": "base_rate", "value": r_base, "unit": "decimal annual", "source": base_rate_source},
             {"metric": "quote_rate", "value": r_quote, "unit": "decimal annual", "source": quote_rate_source},
-            {"metric": "1m_forward", "value": round(_forward(spot, r_base, r_quote, 1 / 12), 6), "unit": "rate", "source": "covered_interest_parity"},
-            {"metric": "3m_forward", "value": round(_forward(spot, r_base, r_quote, 0.25), 6), "unit": "rate", "source": "covered_interest_parity"},
+            {"metric": "1m_forward", "value": fwd_1m, "unit": "rate", "source": "covered_interest_parity"},
+            {"metric": "3m_forward", "value": fwd_3m, "unit": "rate", "source": "covered_interest_parity"},
             {"metric": "atm_vol_1m_pct", "value": round(atm_vol * 100, 3), "unit": "percent", "source": "reference_vol_assumption"},
-            {"metric": "carry_annualized", "value": round(r_quote - r_base, 6), "unit": "decimal annual", "source": "rate_differential"},
+            {"metric": "carry_annualized", "value": carry, "unit": "decimal annual", "source": "rate_differential"},
         ]
         history, history_source = await _history_rows(self, pair, params)
         data = {
@@ -384,12 +391,12 @@ class FXIPFunction(BaseFunction):
             "quote": quote,
             "spot": round(spot, 6),
             "daily_change_pct": _daily_change(history),
-            "one_month_forward": round(_forward(spot, r_base, r_quote, 1 / 12), 6),
-            "three_month_forward": round(_forward(spot, r_base, r_quote, 0.25), 6),
+            "one_month_forward": fwd_1m,
+            "three_month_forward": fwd_3m,
             # FXIP#1: the 1M ATM vol is an assumption (default 8.45 %), not a
             # market implied vol, so the key says "assumed".
             "assumed_vol_atm_1m_pct": round(atm_vol * 100, 3),
-            "carry_annualized": round(r_quote - r_base, 6),
+            "carry_annualized": carry,
             "source_mode": source_mode,
             "rate_basis": {"base": base_rate_source, "quote": quote_rate_source},
             "rows": rows,
@@ -409,7 +416,7 @@ class FXIPFunction(BaseFunction):
             },
         }
         sources = [spot_source, "covered_interest_parity_formula"]
-        if any(src != "user_input" for src in (base_rate_source, quote_rate_source)):
+        if any(src.startswith("reference_policy_rate") for src in (base_rate_source, quote_rate_source)):
             sources.append("reference_policy_rate")
         if history_source:
             sources.append(history_source)
@@ -420,22 +427,45 @@ class FXIPFunction(BaseFunction):
             warnings.append(f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})")
         # FXIP#2: the policy rates are 2024-06 reference constants unless the
         # caller supplied them; forwards and carry inherit that vintage.
-        if any(src != "user_input" for src in (base_rate_source, quote_rate_source)):
+        if any(src.startswith("reference_policy_rate") for src in (base_rate_source, quote_rate_source)):
             warnings.append(
                 f"policy rates are reference constants (vintage {_REFERENCE_AS_OF}), not current rates; "
                 "forwards and carry use them"
             )
+        metadata: dict[str, Any] = (
+            {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
+            if source_mode == "reference_model"
+            else {"data_mode": source_mode}
+        )
+        if rates_missing:
+            # No honest policy rate for an unlisted currency: explicit state,
+            # never a substituted constant.
+            data.update(
+                {
+                    "status": "needs_input",
+                    "data_mode": "needs_input",
+                    "reason": (
+                        "No policy rate for "
+                        + ", ".join(missing_currencies)
+                        + f" in the {_REFERENCE_AS_OF} reference table; forwards and carry are unavailable."
+                    ),
+                    "next_actions": [
+                        "Supply r_base and/or r_quote as decimal annual rates (e.g. 0.04) for the missing currency.",
+                        "Forwards and carry are computed once both policy rates are known.",
+                    ],
+                }
+            )
+            warnings.append(
+                "no reference policy rate for " + ", ".join(missing_currencies) + "; forwards and carry are null"
+            )
+            metadata = {"data_mode": "needs_input"}
         return FunctionResult(
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
             sources=_unique(sources),
             warnings=warnings,
-            metadata=(
-                {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
-                if source_mode == "reference_model"
-                else {"data_mode": source_mode}
-            ),
+            metadata=metadata,
         )
 
 
@@ -1019,20 +1049,25 @@ def _rate_for(currency: str, explicit: Any = None) -> float:
     return float(_REFERENCE_RATES.get(currency.upper(), 0.04))
 
 
-def _fxip_rate(currency: str, explicit: Any = None) -> tuple[float, str]:
+def _fxip_rate(currency: str, explicit: Any = None) -> tuple[float | None, str]:
     """FXIP policy rate plus its provenance (FXIP#2).
 
     A caller-supplied rate is ``user_input``. Otherwise the value is the dated
     2024-06 reference constant, and the source label carries that vintage so
-    the pane never presents it as a current policy rate. Kept separate from
-    the shared ``_rate_for`` so other FX functions keep their behaviour.
+    the pane never presents it as a current policy rate. A currency missing
+    from the reference table returns ``(None, "unavailable_no_reference_rate")``
+    rather than an invented value. Kept separate from the shared ``_rate_for``
+    so other FX functions keep their behaviour.
     """
     if explicit not in (None, ""):
         try:
             return float(explicit), "user_input"
         except Exception:
             pass
-    return _rate_for(currency, None), f"reference_policy_rate_{_REFERENCE_AS_OF}"
+    key = currency.upper()
+    if key not in _REFERENCE_RATES:
+        return None, "unavailable_no_reference_rate"
+    return float(_REFERENCE_RATES[key]), f"reference_policy_rate_{_REFERENCE_AS_OF}"
 
 
 async def _resolve_spot(
