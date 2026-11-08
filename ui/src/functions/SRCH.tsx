@@ -1,5 +1,5 @@
 /**
- * SRCH — Sovereign curve screener (registry name: Bond Screener).
+ * SRCH — Sovereign curve screener (registry name: Sovereign Curve Screener).
  *
  * The universe is benchmark curve points (sovereign and TIPS tenors), not
  * issue-level bonds: there are no CUSIPs, coupons or issue yields. Screen over
