@@ -176,7 +176,8 @@ def peop() -> FunctionManifest:
         ),
         methodology=(
             "PEOP searches the local SQLite people directory first. With ``action=search`` the engine"
-            " matches the whole trimmed query as one case-insensitive substring against full name,"
+            " matches the query exactly as sent (no whitespace trimming, no word splitting) as one"
+            " case-insensitive substring against full name,"
             " company, role and bio (tags are not searched) and returns the most recently ingested"
             " matches first. When the local set has no"
             " hits the engine runs a keyless live search against the Wikipedia search API + REST"
@@ -194,6 +195,9 @@ def peop() -> FunctionManifest:
             " response carries ``status='needs_data'`` with a 'broaden the query' next-action."
             " Auxiliary actions (``upsert`` / ``delete`` / ``stats`` / ``by_company``) hit the"
             " directory directly and surface ``items`` for the renderer to draw as profile cards."
+            " The PEOP pane is search-only: it sends just ``action=search`` and ``query``, so"
+            " ``company``, ``limit`` and ``by_company`` are reachable through the API and agent"
+            " runtime but not from the pane."
         ),
         formula_dict={},
         field_dict={

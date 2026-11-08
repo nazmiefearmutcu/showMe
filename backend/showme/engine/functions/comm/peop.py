@@ -23,7 +23,7 @@ REFERENCE_AS_OF = "2026-04-20"
 PUBLIC_REFERENCE_PEOPLE: list[dict[str, Any]] = [
     {
         "full_name": "Tim Cook",
-        "role": "Apple CEO; announced to become Executive Chairman effective 2026-09-01 (announcement dated 2026-04-20)",
+        "role": "Apple CEO as of the 2026-04-20 announcement; announced to become Executive Chairman effective 2026-09-01",
         "company": "Apple",
         "email": None,
         "linkedin": None,
@@ -38,7 +38,7 @@ PUBLIC_REFERENCE_PEOPLE: list[dict[str, Any]] = [
     },
     {
         "full_name": "John Ternus",
-        "role": "Senior Vice President, Hardware Engineering; announced as CEO effective 2026-09-01 (announcement dated 2026-04-20)",
+        "role": "Senior Vice President, Hardware Engineering as of the 2026-04-20 announcement; announced as CEO effective 2026-09-01",
         "company": "Apple",
         "email": None,
         "linkedin": None,
@@ -53,7 +53,7 @@ PUBLIC_REFERENCE_PEOPLE: list[dict[str, Any]] = [
     },
     {
         "full_name": "Arthur Levinson",
-        "role": "Chairman of the Board; announced as Lead Independent Director effective 2026-09-01 (announcement dated 2026-04-20)",
+        "role": "Chairman of the Board as of the 2026-04-20 announcement; announced as Lead Independent Director effective 2026-09-01",
         "company": "Apple",
         "email": None,
         "linkedin": None,

@@ -133,6 +133,9 @@ def test_peop_static_reference_fallback_is_stale_flagged(
     roles = {r["full_name"]: r["role"] for r in result.data["items"]}
     assert "CEO through summer 2026" not in roles["Tim Cook"]
     assert all("announced" in role for role in roles.values())
+    # PEOP#2: every served role is anchored to the snapshot date, so no row
+    # reads as a present-tense current-position claim.
+    assert all("as of the 2026-04-20 announcement" in role for role in roles.values())
 
 
 # ---------------------------------------------------------------------------
@@ -147,5 +150,18 @@ def test_peop_seed_text_matches_actual_search_behaviour() -> None:
     assert "tokeniz" not in text
     assert "ranks rows by tag" not in text
     assert "tags are not searched" in text
+    # PEOP#5: the handler does not trim the query, so the seed must not say it does.
+    assert "trimmed" not in text
     query_input = next(i for i in manifest.inputs if i.name == "query")
     assert "tag" not in (query_input.description or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# PEOP#8 — the pane is search-only; the seed must say so
+# ---------------------------------------------------------------------------
+
+
+def test_peop_seed_documents_search_only_pane() -> None:
+    load_seeds()
+    manifest = REGISTRY.get("PEOP")
+    assert "search-only" in manifest.methodology.lower()
