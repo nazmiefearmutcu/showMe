@@ -24,6 +24,13 @@ import pytest
 from showme.engine.core.instrument import AssetClass, Instrument
 
 
+def _fresh_quote_time():
+    """A quote stamped now: the stubbed board is live, not a stale reference."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
 def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
@@ -220,9 +227,14 @@ def test_fxgo_default_board_ok_with_stub(monkeypatch):
     """Deterministic default-path board with a stubbed spot (no network)."""
     from showme.engine.functions.trade._funcs import FXGOFunction
 
+    # FXGO#1: a live label needs a provider quote time; the stub supplies a fresh one.
     monkeypatch.setattr(
         FXGOFunction, "_fetch_fx_spot",
-        lambda self, pair: (1.10 if not pair.upper().endswith("JPY") else 150.0, None),
+        lambda self, pair: (
+            1.10 if not pair.upper().endswith("JPY") else 150.0,
+            None,
+            {"previous_close_date": None, "quote_time": _fresh_quote_time()},
+        ),
     )
 
     h = _mk_handler(FXGOFunction, deps=None)
@@ -264,9 +276,14 @@ def test_fxgo_board_via_injected_spot(monkeypatch):
     """With a stubbed FX spot, the board computes a real bid/ask/spread."""
     from showme.engine.functions.trade._funcs import FXGOFunction
 
+    # FXGO#1: a live label needs a provider quote time; the stub supplies a fresh one.
     monkeypatch.setattr(
         FXGOFunction, "_fetch_fx_spot",
-        lambda self, pair: (1.0850, 1.0800),
+        lambda self, pair: (
+            1.0850,
+            1.0800,
+            {"previous_close_date": None, "quote_time": _fresh_quote_time()},
+        ),
     )
 
     h = _mk_handler(FXGOFunction, deps=None)
