@@ -75,7 +75,13 @@ const metricRows = [
   },
 ];
 
-function fxipPayload(sourceMode: string) {
+function fxipPayload(
+  sourceMode: string,
+  rateBasis: { base: string; quote: string } = {
+    base: "reference_policy_rate_2024-06",
+    quote: "reference_policy_rate_2024-06",
+  },
+) {
   return {
     data: {
       data: {
@@ -86,9 +92,10 @@ function fxipPayload(sourceMode: string) {
         daily_change_pct: 0.1198,
         one_month_forward: 1.16378,
         three_month_forward: 1.165721,
-        implied_vol_atm_1m: 8.45,
+        assumed_vol_atm_1m_pct: 8.45,
         carry_annualized: 0.01,
         source_mode: sourceMode,
+        rate_basis: rateBasis,
         rows: metricRows,
         history: [
           { date: "2026-05-10", close: 1.1768 },
@@ -159,6 +166,39 @@ describe("FXIP pane — live payload", () => {
     setMockFn({ state: "ok", ...fxipPayload("live_yfinance_quote") });
     render(<FXIPPane code="FXIP" symbol="EURUSD" />);
     expect(screen.getByText(/ASSUMPTION — NOT A QUOTE/i)).toBeInTheDocument();
+  });
+
+  it("never calls the assumed vol 'implied' on the card", () => {
+    setMockFn({ state: "ok", ...fxipPayload("live_yfinance_quote") });
+    render(<FXIPPane code="FXIP" symbol="EURUSD" />);
+    expect(screen.getByText(/Assumed ATM vol 1M/i)).toBeInTheDocument();
+    expect(screen.getByText("8.450%")).toBeInTheDocument();
+    expect(screen.queryByText(/implied/i)).toBeNull();
+  });
+});
+
+describe("FXIP pane — rate vintage honesty", () => {
+  it("warns that the policy rates are dated reference constants", () => {
+    setMockFn({ state: "ok", ...fxipPayload("live_yfinance_quote") });
+    render(<FXIPPane code="FXIP" symbol="EURUSD" />);
+    const note = screen.getByRole("note", { name: "FXIP rate vintage notice" });
+    expect(note.textContent).toMatch(/Reference policy rates/i);
+    expect(note.textContent).toContain("2024-06");
+  });
+
+  it("does not warn when the caller supplied the rates", () => {
+    setMockFn({
+      state: "ok",
+      ...fxipPayload("live_yfinance_quote", { base: "user_input", quote: "user_input" }),
+    });
+    render(<FXIPPane code="FXIP" symbol="EURUSD" />);
+    expect(screen.queryByRole("note", { name: "FXIP rate vintage notice" })).toBeNull();
+  });
+
+  it("states the carry direction for the long-base reader", () => {
+    setMockFn({ state: "ok", ...fxipPayload("live_yfinance_quote") });
+    render(<FXIPPane code="FXIP" symbol="EURUSD" />);
+    expect(screen.getByText(/LONG BASE EARNS IF NEGATIVE/i)).toBeInTheDocument();
   });
 });
 

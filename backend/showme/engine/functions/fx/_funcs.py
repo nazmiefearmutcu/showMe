@@ -365,13 +365,13 @@ class FXIPFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         base, quote, pair = _pair_from(instrument, params)
         spot, spot_source, source_mode = await _resolve_spot(self, pair, params)
-        r_base = _rate_for(base, params.get("r_base"))
-        r_quote = _rate_for(quote, params.get("r_quote"))
+        r_base, base_rate_source = _fxip_rate(base, params.get("r_base"))
+        r_quote, quote_rate_source = _fxip_rate(quote, params.get("r_quote"))
         atm_vol = float(params.get("atm_vol", params.get("vol", 0.0845)))
         rows = [
             {"metric": "spot", "value": round(spot, 6), "unit": f"{quote} per {base}", "source": spot_source},
-            {"metric": "base_rate", "value": r_base, "unit": "decimal annual", "source": "reference_policy_rate"},
-            {"metric": "quote_rate", "value": r_quote, "unit": "decimal annual", "source": "reference_policy_rate"},
+            {"metric": "base_rate", "value": r_base, "unit": "decimal annual", "source": base_rate_source},
+            {"metric": "quote_rate", "value": r_quote, "unit": "decimal annual", "source": quote_rate_source},
             {"metric": "1m_forward", "value": round(_forward(spot, r_base, r_quote, 1 / 12), 6), "unit": "rate", "source": "covered_interest_parity"},
             {"metric": "3m_forward", "value": round(_forward(spot, r_base, r_quote, 0.25), 6), "unit": "rate", "source": "covered_interest_parity"},
             {"metric": "atm_vol_1m_pct", "value": round(atm_vol * 100, 3), "unit": "percent", "source": "reference_vol_assumption"},
@@ -386,38 +386,51 @@ class FXIPFunction(BaseFunction):
             "daily_change_pct": _daily_change(history),
             "one_month_forward": round(_forward(spot, r_base, r_quote, 1 / 12), 6),
             "three_month_forward": round(_forward(spot, r_base, r_quote, 0.25), 6),
-            "implied_vol_atm_1m": round(atm_vol * 100, 3),
+            # FXIP#1: the 1M ATM vol is an assumption (default 8.45 %), not a
+            # market implied vol, so the key says "assumed".
+            "assumed_vol_atm_1m_pct": round(atm_vol * 100, 3),
             "carry_annualized": round(r_quote - r_base, 6),
             "source_mode": source_mode,
+            "rate_basis": {"base": base_rate_source, "quote": quote_rate_source},
             "rows": rows,
             "history": history,
             "methodology": (
-                "FXIP combines a spot quote, reference policy-rate assumptions, forward levels from covered interest parity, "
-                "and an optional Yahoo/ECB price history. IV is an explicit ATM volatility assumption unless a vendor is configured."
+                "FXIP combines a spot quote, policy-rate inputs, forward levels from covered interest parity, "
+                "and an optional Yahoo/ECB price history. The ATM volatility is an explicit assumption, not a market "
+                "quote. Policy rates are caller inputs or dated reference constants (see rate_basis)."
             ),
             "field_dictionary": {
                 "daily_change_pct": "Last history close change versus previous close, in percent; null when no usable history exists.",
                 "one_month_forward": "1M covered-interest-parity forward.",
                 "three_month_forward": "3M covered-interest-parity forward.",
-                "implied_vol_atm_1m": "ATM volatility assumption for 1M, in percent.",
-                "carry_annualized": "quote_rate - base_rate.",
+                "assumed_vol_atm_1m_pct": "ASSUMED ATM volatility for 1M, in percent. Not a market implied vol.",
+                "carry_annualized": "quote_rate - base_rate (positive means a long-base holder pays; negative means a long-base holder earns).",
+                "rate_basis": f"Per-rate source: user_input, or reference_policy_rate_{_REFERENCE_AS_OF} (dated reference constant, not current).",
             },
         }
-        sources = [spot_source, "covered_interest_parity_formula", "reference_policy_rate"]
+        sources = [spot_source, "covered_interest_parity_formula"]
+        if any(src != "user_input" for src in (base_rate_source, quote_rate_source)):
+            sources.append("reference_policy_rate")
         if history_source:
             sources.append(history_source)
+        warnings: list[str] = []
+        # manual_input + any live_* counts as a real spot; warn only for
+        # the static reference_model fallback.
+        if source_mode == "reference_model":
+            warnings.append(f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})")
+        # FXIP#2: the policy rates are 2024-06 reference constants unless the
+        # caller supplied them; forwards and carry inherit that vintage.
+        if any(src != "user_input" for src in (base_rate_source, quote_rate_source)):
+            warnings.append(
+                f"policy rates are reference constants (vintage {_REFERENCE_AS_OF}), not current rates; "
+                "forwards and carry use them"
+            )
         return FunctionResult(
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
             data=data,
             sources=_unique(sources),
-            # manual_input + any live_* counts as a real spot; warn only for
-            # the static reference_model fallback.
-            warnings=(
-                []
-                if source_mode != "reference_model"
-                else [f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})"]
-            ),
+            warnings=warnings,
             metadata=(
                 {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
                 if source_mode == "reference_model"
@@ -1004,6 +1017,22 @@ def _rate_for(currency: str, explicit: Any = None) -> float:
         except Exception:
             pass
     return float(_REFERENCE_RATES.get(currency.upper(), 0.04))
+
+
+def _fxip_rate(currency: str, explicit: Any = None) -> tuple[float, str]:
+    """FXIP policy rate plus its provenance (FXIP#2).
+
+    A caller-supplied rate is ``user_input``. Otherwise the value is the dated
+    2024-06 reference constant, and the source label carries that vintage so
+    the pane never presents it as a current policy rate. Kept separate from
+    the shared ``_rate_for`` so other FX functions keep their behaviour.
+    """
+    if explicit not in (None, ""):
+        try:
+            return float(explicit), "user_input"
+        except Exception:
+            pass
+    return _rate_for(currency, None), f"reference_policy_rate_{_REFERENCE_AS_OF}"
 
 
 async def _resolve_spot(
