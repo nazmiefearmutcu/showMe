@@ -70,6 +70,8 @@ interface ToolConfig {
   defaultSymbol?: string;
   usesUniverse?: boolean;
   usesSymbol?: boolean;
+  /** Shows a bar-count horizon input that is sent as the backend's label_horizon. */
+  usesHorizon?: boolean;
   /** false: never forward the dock/linked symbol (portfolio-wide tools whose
    *  backend treats a symbol as a filter, e.g. LOTS list). */
   sendsDockSymbol?: boolean;
@@ -154,7 +156,10 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   },
   MLSIG: {
     title: "ML Signals",
-    subtitle: "Portfolio signal ranking",
+    subtitle: "Next-day direction classifier for one symbol, scored against always-long",
+    defaultSymbol: "AAPL",
+    usesSymbol: true,
+    usesHorizon: true,
     supportsLive: true,
   },
   PCAS: {
@@ -240,6 +245,9 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   const [symbolInput, setSymbolInput] = useState(symbol ?? config.defaultSymbol ?? "AAPL");
   const [live, setLive] = useState(false);
   const [mode, setMode] = useState(config.modes?.[0] ?? "all");
+  // MLSIG label horizon in bars (sent as label_horizon). Default matches the
+  // routed run (1 bar).
+  const [horizon, setHorizon] = useState("1");
   // REBA capital: the rebalance order deltas are computed against this
   // notional, so it must be an explicit user input (was hardcoded 100000).
   const [capital, setCapital] = useState("100000");
@@ -291,8 +299,9 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         blak,
         cash,
         cashAccount,
+        horizon,
       }),
-    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak, cash, cashAccount],
+    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak, cash, cashAccount, horizon],
   );
   const { state, data, error, refetch } = useFunction<PortfolioPayload>({
     code: upper,
@@ -414,6 +423,8 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setCash={setCash}
             cashAccount={cashAccount}
             setCashAccount={setCashAccount}
+            horizon={horizon}
+            setHorizon={setHorizon}
           />
           {body}
         </PaneBody>
@@ -471,6 +482,8 @@ function PortfolioControls({
   setCash,
   cashAccount,
   setCashAccount,
+  horizon,
+  setHorizon,
 }: {
   config: ToolConfig;
   code: string;
@@ -496,6 +509,8 @@ function PortfolioControls({
   setCash: (value: string) => void;
   cashAccount: string;
   setCashAccount: (value: string) => void;
+  horizon: string;
+  setHorizon: (value: string) => void;
 }) {
   if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC" && code !== "MGN") {
     return null;
@@ -584,6 +599,17 @@ function PortfolioControls({
             />
           </label>
         </>
+      ) : null}
+      {config.usesHorizon ? (
+        <label className="portfolio-control-field" htmlFor={fid("horizon")}>
+          <span>Horizon (bars)</span>
+          <input
+            id={fid("horizon")}
+            value={horizon}
+            onChange={(e) => setHorizon(e.target.value.replace(/[^0-9]/g, ""))}
+            inputMode="numeric"
+          />
+        </label>
       ) : null}
       {code === "REBA" ? (
         <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("targets")}>
@@ -1125,6 +1151,7 @@ function buildParams(
     blak: BlakInputs;
     cash: string;
     cashAccount: string;
+    horizon: string;
   },
 ): Record<string, unknown> {
   const symbols = splitSymbols(state.symbols);
@@ -1160,8 +1187,9 @@ function buildParams(
       // Live parameter sweep — same dead-path issue as BMTX.
       return { live_backtest: state.live };
     case "MLSIG":
-      // Live yfinance-trained classifier (backend reads live_ml).
-      return { live_ml: state.live };
+      // MODEL sends live_ml=false (no live fit, the backend says so); LIVE trains
+      // on live OHLCV. label_horizon is the bar count the target is built from.
+      return { live_ml: state.live, label_horizon: num(state.horizon, 1) };
     case "PORT_OPT":
       return { symbols, mode: state.mode, live: state.live, days: 756 };
     case "RPAR":
