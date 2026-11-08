@@ -101,7 +101,19 @@ class COUNFunction(BaseFunction):
                 },
                 "source_mode": "live_macro" if has_live else "reference_country_profile",
                 "country_known": country_is_known,
-                **({} if country_is_known else _unknown_country_state(country)),
+                # An unknown country gets needs_input as its status only when no
+                # live row exists; with live rows the missing profile is disclosed
+                # under profile_state so the top-level status does not contradict them.
+                **(
+                    {}
+                    if country_is_known or has_live
+                    else _unknown_country_state(country)
+                ),
+                **(
+                    {"profile_state": _unknown_country_state(country)}
+                    if not country_is_known and has_live
+                    else {}
+                ),
             },
             sources=_unique(live_sources),
             warnings=all_warnings,
