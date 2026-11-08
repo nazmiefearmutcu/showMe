@@ -521,10 +521,11 @@ class APPLFunction(BaseFunction):
             else:
                 reason = "yfinance adapter not configured; taxonomy fell back to bundled defaults"
             warnings = [reason] if (live and not self.deps.yfinance) else []
+            status = "reference_only" if (reference or not live) else "provider_unavailable"
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_taxonomy_template(instrument),
+                data=_taxonomy_template(instrument, status, reason),
                 sources=["taxonomy_model"],
                 metadata={"live": False, "fallback": True,
                           "data_mode": "reference",
@@ -542,10 +543,11 @@ class APPLFunction(BaseFunction):
                 timeout=timeout + 1,
             )
         except Exception as exc:
+            reason = f"yfinance refdata failed ({type(exc).__name__}); no live classification returned"
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_taxonomy_template(instrument),
+                data=_taxonomy_template(instrument, "provider_unavailable", reason),
                 sources=["taxonomy_model"],
                 metadata={"live": False, "fallback": True, "data_mode": "reference",
                           "provider_errors": [f"yfinance: {exc}"]},
@@ -649,34 +651,36 @@ def _appl_identifier_rows(ids: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _taxonomy_template(instrument: Instrument) -> dict[str, Any]:
-    asset_class = instrument.asset_class.value
-    if asset_class == "CRYPTO":
-        sector, industry, exchange, currency = "Digital Assets", "Cryptoasset", "Global", "USD"
-    elif asset_class == "FX":
-        sector, industry, exchange, currency = "Foreign Exchange", "Currency Pair", "OTC", None
-    elif asset_class == "COMMODITY":
-        sector, industry, exchange, currency = "Commodities", "Futures/Spot Commodity", "Global", "USD"
-    elif asset_class in {"EQUITY", "ETF"}:
-        sector, industry, exchange, currency = "Equity", "Listed Security", "Exchange", "USD"
-    else:
-        sector, industry, exchange, currency = "Market", asset_class.title(), "Global", None
+def _taxonomy_template(instrument: Instrument, status: str, reason: str) -> dict[str, Any]:
+    """Honest no-provider payload: no sector/industry/exchange is invented.
+
+    APPL#3 (review): the old template stamped placeholder classifications
+    ("Equity", "Listed Security", "Exchange", "Global") as data. Those values are
+    now null; only real bundled crosswalk rows and the instrument-registry asset
+    class remain in ``rows``.
+    """
+    profile = reference_profile(instrument.symbol)
+    rows = _taxonomy_rows(instrument, None, None, None, None, None, profile,
+                          source_mode="reference_taxonomy_template")
+    rows = [r for r in rows if r.get("classification") is not None]
     return {
-        "status": "reference_taxonomy",
-        "sector": sector,
-        "industry": industry,
-        "country": "Global",
-        "currency": currency,
-        "exchange": exchange,
-        "exchange_name": EXCHANGE_LEGEND.get(exchange, exchange),
-        "rows": _taxonomy_rows(instrument, sector, industry, "Global", currency, exchange,
-                               reference_profile(instrument.symbol),
-                               source_mode="reference_taxonomy_template"),
-        "methodology": "Fallback taxonomy is labelled as a reference model when live provider classification is unavailable.",
+        "status": status,
+        "reason": reason,
+        "next_actions": ["Retry with live=true when the yfinance refdata provider is reachable."],
+        "sector": None,
+        "industry": None,
+        "country": None,
+        "currency": None,
+        "exchange": None,
+        "exchange_name": None,
+        "crosswalk_status": "bundled" if any(
+            r.get("source_mode") == "reference_taxonomy_crosswalk" for r in rows) else "not_bundled",
+        "rows": rows,
+        "methodology": "No live provider classification was returned, so provider fields are null. Only bundled crosswalk rows and the instrument-registry asset class are shown.",
         "field_dictionary": {
             "level": "Taxonomy level or provider field.",
-            "classification": "Human-readable classification value.",
-            "source_mode": "reference taxonomy fallback.",
+            "classification": "Human-readable classification value; null fields are not available.",
+            "source_mode": "reference_taxonomy_crosswalk or instrument_registry.",
         },
     }
 

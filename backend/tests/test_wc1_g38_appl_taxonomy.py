@@ -133,10 +133,10 @@ def test_crosswalk_status_marks_bundled_and_unbundled_symbols() -> None:
 def test_reference_template_rows_are_not_stamped_live_yfinance() -> None:
     fn = APPLFunction(FunctionDeps())
     result = _run(fn.execute(instrument=AAPL))
-    assert result.data["status"] == "reference_taxonomy"
+    assert result.data["status"] == "provider_unavailable"
     modes = {r.get("source_mode") for r in result.data["rows"]}
     assert "live_yfinance" not in modes, modes
-    assert "reference_taxonomy_template" in modes
+    assert result.data["sector"] is None
 
 
 def test_live_sources_list_the_static_crosswalk_when_it_contributes_rows() -> None:
@@ -155,7 +155,7 @@ def test_live_sources_omit_the_crosswalk_when_none_is_bundled() -> None:
 def test_explicit_live_false_selects_the_template_path() -> None:
     fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(REFDATA)))
     result = _run(fn.execute(instrument=AAPL, live=False))
-    assert result.data["status"] == "reference_taxonomy"
+    assert result.data["status"] == "reference_only"
     assert result.metadata.get("live") is False
 
 
@@ -165,3 +165,41 @@ def test_appl_manifest_intent_does_not_promise_gics_for_every_symbol() -> None:
     intent = appl.intent.lower()
     assert "gics" in intent and "bundled" in intent, appl.intent
     assert "sic" in intent and "cik" in intent, appl.intent
+
+
+# ── APPL#3 (review): placeholder classifications are never returned ─────────
+
+_PLACEHOLDERS = {"Equity", "Listed Security", "Exchange", "Global", "Market",
+                 "Digital Assets", "Cryptoasset", "Foreign Exchange", "Commodities"}
+
+
+def test_template_path_returns_null_classifications_not_placeholders() -> None:
+    fn = APPLFunction(FunctionDeps())
+    result = _run(fn.execute(instrument=MSFT))
+    data = result.data
+    assert data["status"] == "provider_unavailable", data
+    assert data["sector"] is None and data["industry"] is None
+    assert data["exchange"] is None and data["country"] is None
+    assert data["currency"] is None and data["exchange_name"] is None
+    assert data["reason"], data
+    values = {r.get("classification") for r in data["rows"]}
+    assert not (values & _PLACEHOLDERS), values
+    assert all(r.get("classification") is not None for r in data["rows"])
+
+
+def test_explicit_reference_path_returns_null_classifications() -> None:
+    fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(REFDATA)))
+    result = _run(fn.execute(instrument=MSFT, reference=True))
+    assert result.data["status"] == "reference_only", result.data
+    assert result.data["sector"] is None and result.data["industry"] is None
+    assert result.data["reason"], result.data
+    values = {r.get("classification") for r in result.data["rows"]}
+    assert not (values & _PLACEHOLDERS), values
+
+
+def test_template_path_after_yfinance_error_is_honest() -> None:
+    fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(boom=True)))
+    result = _run(fn.execute(instrument=AAPL, live=True))
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["sector"] is None and result.data["industry"] is None
+    assert "live_yfinance" not in {r.get("source_mode") for r in result.data["rows"]}
