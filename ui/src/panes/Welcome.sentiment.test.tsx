@@ -39,6 +39,10 @@ function reading(
     as_of: "2026-11-06T23:59:00Z",
     previous_close: 24.6,
     source: "CNN Fear & Greed via Awareness",
+    stale: false,
+    providerStatus: null,
+    cryptoScore: null,
+    cryptoRating: null,
     ...overrides,
   };
 }
@@ -112,7 +116,7 @@ describe("Market mood card — accepted reading", () => {
     });
     const { getByTestId, container } = render(<Welcome />);
     expect(getByTestId("sentiment-score").textContent).toBe("22");
-    expect(getByTestId("sentiment-label").textContent).toBe("Extreme Fear");
+    expect(getByTestId("sentiment-label").textContent).toBe("Extreme fear");
     expect(getByTestId("sentiment-change").textContent).toBe("−2.2 vs prev close");
     expect(getByTestId("sentiment-gauge").getAttribute("aria-label")).toBe(
       "Fear and Greed gauge at 22, extreme fear",
@@ -174,5 +178,62 @@ describe("Welcome — demo data banners on BRIEF + MOVERS", () => {
   it("renders 'Demo data' badge on the MOVERS panel header", () => {
     const { getByTestId } = render(<Welcome />);
     expect(getByTestId("movers-demo-banner").textContent).toMatch(/Demo data/i);
+  });
+});
+
+describe("Market mood card — F6 notices (M-6, M-7)", () => {
+  it("keeps the reading and says a refresh failed after a good reading", () => {
+    useSentimentStore.setState({
+      gauge: reading({ as_of: freshAsOf() }),
+      lastUpdated: new Date(),
+      error: "sidecar timeout",
+    });
+    const { getByTestId } = render(<Welcome />);
+    expect(getByTestId("sentiment-refresh-error").textContent).toContain(
+      "Refresh failed: sidecar timeout",
+    );
+    expect(getByTestId("sentiment-score").textContent).toBe("22");
+  });
+
+  it("flags a degraded CNN provider next to the reading", () => {
+    useSentimentStore.setState({
+      gauge: reading({
+        as_of: freshAsOf(),
+        stale: true,
+        providerStatus: {
+          provider: "sent.cnn_fng",
+          status: "degraded",
+          last_error: "HTTP 503",
+        },
+      }),
+      lastUpdated: new Date(),
+    });
+    const { getByTestId } = render(<Welcome />);
+    const notice = getByTestId("sentiment-provider-stale").textContent ?? "";
+    expect(notice).toContain("sent.cnn_fng");
+    expect(notice).toContain("HTTP 503");
+    expect(getByTestId("sentiment-score").textContent).toBe("22");
+  });
+
+  it("the source line carries the crypto reading as a footnote", () => {
+    useSentimentStore.setState({
+      gauge: reading({ as_of: freshAsOf(), cryptoScore: 28, cryptoRating: "Fear" }),
+      lastUpdated: new Date(),
+    });
+    const { container } = render(<Welcome />);
+    expect(container.querySelector(".aw-mood__source")?.textContent).toContain(
+      "Crypto: 28, fear.",
+    );
+  });
+
+  it("no crypto reading means no crypto footnote", () => {
+    useSentimentStore.setState({
+      gauge: reading({ as_of: freshAsOf() }),
+      lastUpdated: new Date(),
+    });
+    const { container } = render(<Welcome />);
+    expect(container.querySelector(".aw-mood__source")?.textContent).not.toContain(
+      "Crypto",
+    );
   });
 });

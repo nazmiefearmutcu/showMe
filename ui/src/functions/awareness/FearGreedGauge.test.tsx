@@ -6,6 +6,7 @@ import {
   formatSignedDelta,
   formatUtcStamp,
   needleAngle,
+  ratingLabel,
 } from "./FearGreedGauge";
 
 describe("fearGreedZone", () => {
@@ -90,5 +91,21 @@ describe("FearGreedGauge", () => {
     const hero = render(<FearGreedGauge score={50} size="hero" />);
     expect(hero.container.querySelectorAll("text").length).toBe(3);
     expect(hero.container.querySelector("svg")?.getAttribute("width")).toBe("240");
+  });
+});
+
+describe("ratingLabel and the crypto gauge size (F6 M-4, M-7)", () => {
+  it("sentence-cases awareness ratings and returns null for blank input", () => {
+    expect(ratingLabel("extreme fear")).toBe("Extreme fear");
+    expect(ratingLabel("Extreme Fear")).toBe("Extreme fear");
+    expect(ratingLabel("  ")).toBeNull();
+    expect(ratingLabel(null)).toBeNull();
+  });
+
+  it("draws the crypto size at 160 x 88", () => {
+    const { container } = render(<FearGreedGauge score={28} size="crypto" testId="g" />);
+    const svg = container.querySelector("svg");
+    expect(svg?.getAttribute("width")).toBe("160");
+    expect(svg?.getAttribute("height")).toBe("88");
   });
 });

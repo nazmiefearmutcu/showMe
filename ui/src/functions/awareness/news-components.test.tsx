@@ -605,3 +605,37 @@ describe("StoryList focus and drawer identity", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("StoryList o key (N4)", () => {
+  it("opens the safe https link when the row url is unsafe", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(
+      <StoryList
+        rows={[
+          makeRow({
+            id: "o1",
+            title: "Unsafe url row",
+            url: "javascript:alert(1)",
+            link: "https://news.example/safe",
+          }),
+        ]}
+        code="TOP"
+        ariaLabel="Stories"
+      />,
+    );
+    const article = screen.getByRole("article", { name: /Unsafe url row/ });
+    article.focus();
+    fireEvent.keyDown(article, { key: "o" });
+    expect(open).toHaveBeenCalledWith(
+      "https://news.example/safe",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(open).not.toHaveBeenCalledWith(
+      "javascript:alert(1)",
+      expect.anything(),
+      expect.anything(),
+    );
+    open.mockRestore();
+  });
+});

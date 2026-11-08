@@ -88,11 +88,21 @@ class ERNFunction(BaseFunction):
 
         watch_resp, watch_error = await aw_get(self, "/watchlist")
         watch = {_norm_symbol(sym) for sym in (watch_resp.data if watch_resp and isinstance(watch_resp.data, list) else [])}
-        warnings: list[str] = [f"watchlist: {watch_error}"] if watch_error else []
+        # A failed watchlist call never hides rows: every in_watchlist flag is false, and the warning says so.
+        warnings: list[str] = []
+        if watch_error:
+            warnings.append(f"watchlist unavailable: in_watchlist is false for every row ({watch_error})")
 
         rows = [_earning_row(item, watch) for item in calendar.data if isinstance(item, dict)]
+        dropped_unknown_cap = 0
         if min_market_cap is not None:
+            # A row with no market cap cannot pass a cap floor, so it is dropped; the count is reported, not hidden.
+            dropped_unknown_cap = sum(1 for row in rows if parse_float(row.get("market_cap")) is None)
             rows = [row for row in rows if (parse_float(row.get("market_cap")) or 0.0) >= min_market_cap]
+            if dropped_unknown_cap:
+                warnings.append(
+                    f"min_market_cap: {dropped_unknown_cap} row(s) with no market cap were dropped"
+                )
         if time_filter:
             rows = [row for row in rows if row["time_of_day"] == time_filter]
         rows.sort(key=lambda row: (str(row.get("date") or ""), -(parse_float(row.get("market_cap")) or 0.0)))
@@ -121,13 +131,16 @@ class ERNFunction(BaseFunction):
                     "symbols": symbols,
                     "min_market_cap": min_market_cap,
                     "time_of_day": time_filter or None,
+                    "dropped_unknown_market_cap": dropped_unknown_cap,
                 },
                 "meta": meta,
                 "methodology": (
                     "ERN lists scheduled earnings reports from the Awareness corporate calendar for the "
                     "requested window. time_of_day is bmo (before market open), amc (after market close) or "
                     "unknown when the provider did not state it. Rows sort by date, then market cap "
-                    "descending. in_watchlist marks symbols on the Awareness watchlist. Nothing is estimated."
+                    "descending. in_watchlist marks symbols on the Awareness watchlist; if the watchlist call fails, "
+                    "every in_watchlist is false and a warning says so. min_market_cap is an absolute USD floor; rows "
+                    "with no market cap are dropped by that filter and counted in a warning. Nothing is estimated."
                 ),
                 "field_dictionary": {
                     "eps_estimate": "Consensus EPS estimate for the reported quarter.",

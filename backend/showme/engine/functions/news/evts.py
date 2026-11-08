@@ -99,12 +99,15 @@ class EVTSFunction(BaseFunction):
         calls: list[Any] = []
         if corporate_types:
             calls.append(aw_get(self, "/calendar/corporate", {**window, "types": ",".join(corporate_types), "symbols": symbol}))
-        if "filing" in requested and days_back > 0:
+        filings_requested = "filing" in requested
+        if filings_requested and days_back > 0:
             calls.append(aw_get(self, "/filings", {"symbols": symbol, "days": min(days_back, _FILING_WINDOW_MAX_DAYS), "limit": 200}))
         answers = await asyncio.gather(*calls) if calls else []
 
         responses = []
         warnings: list[str] = []
+        if filings_requested and days_back == 0:
+            warnings.append("filings skipped: days_back=0 leaves no filing window")
         rows: list[dict[str, Any]] = []
         answered = 0
         index = 0
@@ -119,7 +122,7 @@ class EVTSFunction(BaseFunction):
             for item in resp.data or []:
                 if isinstance(item, dict) and item.get("type") in corporate_types:
                     rows.append(_event_row(item, symbol, str(item.get("type"))))
-        if "filing" in requested and days_back > 0:
+        if filings_requested and days_back > 0:
             resp, error = answers[index]
             if resp is None:
                 warnings.append(f"filings: {error}")
@@ -129,16 +132,19 @@ class EVTSFunction(BaseFunction):
                 for item in resp.data or []:
                     if isinstance(item, dict):
                         rows.append(_event_row(item, symbol, "filing"))
-        if answered == 0:
+        if calls and answered == 0:
             return unavailable_result("EVTS", instrument, "awareness returned no response",
                                       extra={"symbol": symbol, "rows": []})
 
         today_text = today.isoformat()
-        upcoming = sorted((r for r in rows if r["date"] >= today_text), key=lambda r: (r["date"], r["type"]))
-        recent = sorted((r for r in rows if r["date"] < today_text), key=lambda r: (r["date"], r["type"]), reverse=True)
-        ordered = upcoming + recent
+        # A row without a usable date cannot be placed in upcoming or recent, so it gets its own list.
+        dated = [r for r in rows if r["date"]]
+        undated = [r for r in rows if not r["date"]]
+        upcoming = sorted((r for r in dated if r["date"] >= today_text), key=lambda r: (r["date"], r["type"]))
+        recent = sorted((r for r in dated if r["date"] < today_text), key=lambda r: (r["date"], r["type"]), reverse=True)
+        ordered = upcoming + recent + undated
         status = "ok" if ordered else "empty"
-        sources = [f"awareness:{area}" for area in (["corporate"] if corporate_types else []) + (["filings"] if "filing" in requested and days_back > 0 else [])]
+        sources = [f"awareness:{area}" for area in (["corporate"] if corporate_types else []) + (["filings"] if filings_requested and days_back > 0 else [])]
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -148,13 +154,15 @@ class EVTSFunction(BaseFunction):
                 "rows": ordered,
                 "upcoming": upcoming,
                 "recent": recent,
+                "undated": undated,
                 "event_count": len(ordered),
                 "filters": {**window, "days_back": days_back, "days_ahead": days_ahead, "types": requested},
                 "meta": data_meta(responses),
                 "methodology": (
                     "EVTS lists earnings, dividend, split, IPO and SEC filing rows for the symbol from the "
                     "Awareness corporate calendar and filings index. Upcoming rows (date today or later) sort "
-                    "ascending; recent rows sort descending. Nothing is estimated."
+                    "ascending; recent rows sort descending; rows without a date are listed separately as undated "
+                    "and never placed in recent. Nothing is estimated."
                 ),
                 "reason": None if ordered else f"No {', '.join(requested)} events for {symbol} in this window.",
             },

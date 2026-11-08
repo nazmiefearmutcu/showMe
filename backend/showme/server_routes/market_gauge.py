@@ -34,6 +34,17 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         cnn = data.get("cnn") if isinstance(data.get("cnn"), dict) else None
         if not cnn or cnn.get("score") is None:
             return {"ok": False, "reason": "CNN Fear & Greed has no value from Awareness yet."}
+        # M-6: a CNN provider that Awareness reports down or degraded keeps its last value but is flagged stale,
+        # so the Welcome card can say the reading may not be current.
+        failing = next(
+            (
+                p for p in response.providers
+                if "cnn" in str(p.get("provider", "")).lower() and p.get("status") in {"down", "degraded"}
+            ),
+            None,
+        )
+        crypto = data.get("crypto") if isinstance(data.get("crypto"), dict) else {}
+        crypto_score = crypto.get("score") if isinstance(crypto.get("score"), (int, float)) else None
         return {
             "ok": True,
             "score": cnn.get("score"),
@@ -41,6 +52,19 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             "as_of": cnn.get("as_of"),
             "source": SOURCE_LABEL,
             "previous_close": cnn.get("previous_close"),
+            "stale": failing is not None,
+            "provider_status": (
+                {
+                    "provider": failing.get("provider"),
+                    "status": failing.get("status"),
+                    "last_ok_at": failing.get("last_ok_at"),
+                    "last_error": failing.get("last_error"),
+                }
+                if failing is not None else None
+            ),
+            # Crypto Fear & Greed for the Welcome footnote; null when Awareness has no crypto reading.
+            "crypto_score": crypto_score,
+            "crypto_rating": crypto.get("rating") if crypto_score is not None else None,
         }
 
     app.include_router(router)

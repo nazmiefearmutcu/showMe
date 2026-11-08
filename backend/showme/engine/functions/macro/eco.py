@@ -10,7 +10,6 @@ with the client's reason. Holidays for the selected countries ride along from
 from __future__ import annotations
 
 import asyncio
-import math
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -151,8 +150,12 @@ class ECOFunction(BaseFunction):
             )
 
         warnings: list[str] = []
+        # A failed holiday call is a degraded answer, not an empty one: the pane must say holidays were not checked.
+        holidays_status = "unavailable" if holiday_error is not None else "ok"
+        degraded: list[str] = []
         if holiday_error is not None:
-            warnings.append(f"holidays: {holiday_error}")
+            warnings.append(f"holidays unavailable, not checked: {holiday_error}")
+            degraded.append("holidays")
         responses = [calendar] + ([holidays] if holidays is not None else [])
 
         rows = [_econ_row(item) for item in calendar.data if isinstance(item, dict)]
@@ -183,6 +186,9 @@ class ECOFunction(BaseFunction):
                 "events": rows,
                 "next_high_impact": next_high,
                 "holidays": holiday_rows,
+                "holidays_status": holidays_status,
+                "degraded": bool(degraded),
+                "degraded_parts": degraded,
                 "surface": [{"importance": key, "value": value} for key, value in sorted(surface.items())],
                 "cards": [
                     {"label": "Events", "value": len(rows)},
@@ -209,55 +215,7 @@ class ECOFunction(BaseFunction):
                 "country": ",".join(countries) or "ALL",
                 "importance": _IMPORTANCE_LABEL[importance],
                 "days": days,
+                "degraded": bool(degraded),
+                "degraded_parts": degraded,
             }),
         )
-
-
-def _parse_ff_number(raw: Any) -> tuple[float | None, str, bool]:
-    """Parse a ForexFactory-style numeric cell into ``(value, unit, capped)``.
-
-    Kept for MEET's numeric attachment of calendar text cells. Strips ``%`` and
-    ``,``, applies ``K/M/B/T`` multipliers, reports a leading ``<`` as capped,
-    and treats score-like strings (``3-0-6``) as non-numeric.
-    """
-    if raw is None:
-        return (None, "", False)
-    if isinstance(raw, bool):
-        return (None, str(raw), False)
-    if isinstance(raw, (int, float)):
-        value = float(raw)
-        return (round(value, 6), "", False) if math.isfinite(value) else (None, str(raw), False)
-    text = str(raw).strip()
-    if not text:
-        return (None, "", False)
-    if "|" in text:
-        text = text.split("|", 1)[0].strip()
-        if not text:
-            return (None, str(raw).strip(), False)
-    capped = False
-    work = text
-    if work.startswith("<"):
-        capped = True
-        work = work[1:].strip()
-    if re.fullmatch(r"\d+-\d+-\d+", work):
-        return (None, work, False)
-    has_percent = "%" in work
-    cleaned = work.replace("%", "").replace(",", "").strip()
-    if not cleaned:
-        return (None, text, capped)
-    suffix = ""
-    multiplier = 1.0
-    if cleaned[-1] in "KMBTkmbt":
-        suffix = cleaned[-1].upper()
-        multiplier = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}[suffix]
-        cleaned = cleaned[:-1].strip()
-        if not cleaned:
-            return (None, text, capped)
-    try:
-        value = round(float(cleaned) * multiplier, 6)
-    except ValueError:
-        return (None, text, capped)
-    if not math.isfinite(value):
-        return (None, text, capped)
-    unit = "%" if has_percent else suffix
-    return (value, unit, capped)

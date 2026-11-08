@@ -8,7 +8,7 @@
  * (no default gauge value is ever drawn). The news card reads the SOSC
  * function for the chosen ticker.
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Pane,
   PaneBody,
@@ -21,7 +21,6 @@ import {
 import { PaneState } from "@/design-system/PaneState";
 import { useFunction } from "@/lib/useFunction";
 import { loadWatchlist, subscribeWatchlist, type WatchlistRow } from "@/lib/watchlist";
-import { isGaugeStale } from "@/lib/sentiment-store";
 import { FunctionControlGroup, LoadStatePill, RefreshButton } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
 import { AwarenessUnavailable } from "./awareness/AwarenessUnavailable";
@@ -32,6 +31,7 @@ import {
   fearGreedZone,
   formatSignedDelta,
   formatUtcStamp,
+  ratingLabel,
 } from "./awareness/FearGreedGauge";
 import { TermStructureChart, nearTermAboveSpot } from "./awareness/TermStructureChart";
 import { SentimentBars } from "./awareness/SentimentBars";
@@ -124,6 +124,41 @@ interface SoscData {
 }
 
 const DEFAULT_TICKER_COUNT = 5;
+/** Freshness of the newest scored article. Its own rule, not the 36 h Welcome gauge rule (M-13). */
+export const ARTICLE_STALE_MS = 24 * 60 * 60 * 1000;
+
+function isArticleStale(iso: string, nowMs: number = Date.now()): boolean {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? true : nowMs - t > ARTICLE_STALE_MS;
+}
+
+/** A named timestamp from the payload's `sources` map (for example sources.cboe), or null. */
+function sourceStamp(sources: unknown, key: string): string | null {
+  if (!sources || typeof sources !== "object") return null;
+  const value = (sources as Record<string, unknown>)[key];
+  return typeof value === "string" && value ? value : null;
+}
+
+/** Latest as_of among social rows, or null when none parses. */
+function latestRowAsOf(rows: SocialRow[]): string | null {
+  let best: { iso: string; t: number } | null = null;
+  for (const r of rows) {
+    if (!r.as_of) continue;
+    const t = Date.parse(r.as_of);
+    if (Number.isNaN(t)) continue;
+    if (!best || t > best.t) best = { iso: r.as_of, t };
+  }
+  return best ? best.iso : null;
+}
+
+/**
+ * y of a value on the Sparkline's own auto-scale (same formula as the design-system
+ * Sparkline), so a guide sits at its value on the plotted line.
+ */
+export function sparkGuideY(value: number, min: number, max: number, height = 96): number {
+  const span = max - min || 1;
+  return height - ((value - min) / span) * (height - 2) - 1;
+}
 
 /** Watchlist symbols, upper-cased, kept current when the watchlist changes. */
 function useWatchlistSymbols(): string[] {
@@ -166,7 +201,18 @@ export function MSENTPane({ code }: FunctionPaneProps) {
     [watch],
   );
   const [picked, setPicked] = useState<string | null>(null);
-  const ticker = picked ?? tickerOptions[0] ?? null;
+  // A pick must still be a watchlist option or a ticker on the social table; otherwise it falls back to the
+  // first watchlist option (M-5), so the news card never keeps querying a symbol that is no longer offered.
+  const socialTickers = useMemo(
+    () =>
+      [...(payload?.social?.stocks ?? []), ...(payload?.social?.crypto ?? [])].map(
+        (r) => r.ticker,
+      ),
+    [payload?.social],
+  );
+  const pickable =
+    picked != null && (tickerOptions.includes(picked) || socialTickers.includes(picked));
+  const ticker = pickable ? picked : (tickerOptions[0] ?? null);
 
   const sosc = useFunction<SoscData>({
     code: "SOSC",
@@ -187,7 +233,11 @@ export function MSENTPane({ code }: FunctionPaneProps) {
         <FearGreedCard cnn={payload?.cnn ?? null} providers={providers} />
         <ComponentsCard cnn={payload?.cnn ?? null} providers={providers} />
         <CryptoCard crypto={payload?.crypto ?? null} providers={providers} />
-        <VixCard vix={payload?.vix ?? null} providers={providers} />
+        <VixCard
+          vix={payload?.vix ?? null}
+          providers={providers}
+          sources={payload?.sources}
+        />
         <SocialCard
           social={payload?.social ?? null}
           providers={providers}
@@ -338,19 +388,57 @@ function shortDate(iso: string | null | undefined): string {
   return `${d.getUTCDate()} ${months[d.getUTCMonth()]}`;
 }
 
-function SparkBlock({ history, label }: { history: HistoryPoint[]; label: string }) {
+const SPARK_W = 300;
+const SPARK_H = 96;
+
+function SparkBlock({
+  history,
+  label,
+  guides,
+}: {
+  history: HistoryPoint[];
+  label: string;
+  /** Reference values drawn at their own y on the sparkline (for example 25, 50, 75 on a 0-100 index). */
+  guides?: number[];
+}) {
   const values = history.map((h) => h.value).filter((v) => Number.isFinite(v));
   if (values.length < 2) return null;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const drawn = (guides ?? []).filter((g) => g >= min && g <= max);
   return (
     <div>
       <div className="aw-spark">
         <Sparkline
           values={values}
-          width={300}
-          height={96}
+          width={SPARK_W}
+          height={SPARK_H}
           tone="neutral"
           ariaLabel={label}
         />
+        {drawn.length > 0 ? (
+          <svg
+            className="aw-spark__guides"
+            viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+            focusable="false"
+          >
+            {drawn.map((g) => (
+              <line
+                key={g}
+                data-guide={g}
+                x1={0}
+                x2={SPARK_W}
+                y1={sparkGuideY(g, min, max)}
+                y2={sparkGuideY(g, min, max)}
+                strokeWidth={1}
+                strokeDasharray={g === 50 ? "4 3" : undefined}
+                style={{ stroke: "var(--border-strong)" } as CSSProperties}
+              />
+            ))}
+          </svg>
+        ) : null}
       </div>
       <div
         className="aw-mono"
@@ -403,7 +491,9 @@ function FearGreedCard({
         <FearGreedGauge score={cnn.score} size="hero" testId="msent-fg-gauge" />
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
           <span className="aw-mood__score">{Math.round(cnn.score)}</span>
-          <strong style={{ color: zone.color }}>{cnn.rating ?? zone.label}</strong>
+          <strong style={{ color: zone.color }}>
+            {ratingLabel(cnn.rating) ?? zone.label}
+          </strong>
         </div>
         <span className="aw-mono" style={{ fontSize: 11, color: "var(--text-secondary)" }}>
           {delta == null ? "—" : `${formatSignedDelta(delta)} vs previous close`}
@@ -418,7 +508,11 @@ function FearGreedCard({
         ))}
       </dl>
       {cnn.history && cnn.history.length > 1 ? (
-        <SparkBlock history={cnn.history} label="Fear and Greed, 90 days" />
+        <SparkBlock
+          history={cnn.history}
+          label="Fear and Greed, 90 days"
+          guides={[25, 50, 75]}
+        />
       ) : null}
     </Card>
   );
@@ -457,7 +551,8 @@ function ComponentsCard({
                 />
               </span>
               <span style={{ color, fontSize: 10 }}>
-                {c.rating ?? (c.score == null ? "—" : fearGreedZone(c.score).label)}
+                {ratingLabel(c.rating) ??
+                  (c.score == null ? "—" : fearGreedZone(c.score).label)}
               </span>
               <span className="aw-mono">{fmtNum(c.score, 0)}</span>
             </li>
@@ -492,12 +587,14 @@ function CryptoCard({
   return (
     <Card id="msent-crypto" title="Crypto Fear & Greed" asOf={crypto.as_of ?? null}>
       <div style={{ display: "grid", justifyItems: "center", gap: 4 }}>
-        <FearGreedGauge score={crypto.score} testId="msent-crypto-gauge" />
+        <FearGreedGauge score={crypto.score} size="crypto" testId="msent-crypto-gauge" />
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           <span className="aw-mood__score" style={{ fontSize: 24 }}>
             {Math.round(crypto.score)}
           </span>
-          <strong style={{ color: zone.color }}>{crypto.rating ?? zone.label}</strong>
+          <strong style={{ color: zone.color }}>
+            {ratingLabel(crypto.rating) ?? zone.label}
+          </strong>
         </div>
         <span className="aw-mono" style={{ fontSize: 11, color: "var(--text-secondary)" }}>
           {delta == null ? "—" : `${formatSignedDelta(delta)} vs yesterday`}
@@ -510,12 +607,22 @@ function CryptoCard({
   );
 }
 
+/** VIX source line from the payload's own sources map (M-8), not a fixed provider claim. */
+function vixSourceLine(sources: unknown, vixAsOf: string | null | undefined): string {
+  const cboe = sourceStamp(sources, "cboe");
+  if (cboe) return `CBOE daily closes, ${cboe}`;
+  if (vixAsOf) return `VIX daily closes, ${vixAsOf}`;
+  return "VIX daily closes, time not reported";
+}
+
 function VixCard({
   vix,
   providers,
+  sources,
 }: {
   vix: VixBlock | null;
   providers: AwarenessProvider[];
+  sources: unknown;
 }) {
   if (!vix || (vix.vix == null && vix.vix9d == null && vix.vix3m == null)) {
     return (
@@ -551,7 +658,7 @@ function VixCard({
           9-day above spot: near-term event risk
         </p>
       ) : null}
-      <p className="aw-card__asof">CBOE daily closes{vix.as_of ? `, ${vix.as_of}` : ""}</p>
+      <p className="aw-card__asof">{vixSourceLine(sources, vix.as_of)}</p>
     </Card>
   );
 }
@@ -570,7 +677,7 @@ function SocialCard({
   const [kind, setKind] = useState<"stocks" | "crypto">("stocks");
   const rows = social?.[kind] ?? [];
   return (
-    <Card id="msent-social" title="Social buzz">
+    <Card id="msent-social" title="Social buzz" asOf={latestRowAsOf(rows)}>
       <div className="aw-chip-row" role="group" aria-label="Social universe">
         {(["stocks", "crypto"] as const).map((k) => (
           <button
@@ -772,7 +879,7 @@ function NewsCard({
       {content}
       <p className="aw-card__asof">
         {news?.latest_at
-          ? `latest article ${formatUtcStamp(news.latest_at)}${isGaugeStale(news.latest_at) ? " stale" : ""}`
+          ? `latest article ${formatUtcStamp(news.latest_at)}${isArticleStale(news.latest_at) ? " stale" : ""}`
           : ticker
             ? "no scored articles yet"
             : ""}

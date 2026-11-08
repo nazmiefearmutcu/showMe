@@ -360,6 +360,14 @@
 .aw-eco__previous {
   color: var(--text-mute);
 }
+.aw-cal__degraded {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  background: var(--warn-soft);
+  border-bottom: 1px solid var(--border-row);
+}
 .aw-cal__legend {
   margin: 0;
   font-size: var(--font-size-2xs);

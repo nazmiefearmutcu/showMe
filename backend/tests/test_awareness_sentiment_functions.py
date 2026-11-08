@@ -525,3 +525,46 @@ def test_market_gauge_awareness_down_reports_reason(monkeypatch: pytest.MonkeyPa
     assert body["ok"] is False
     assert "not running" in body["reason"]
     assert "score" not in body
+
+
+# ───────────────────── F6 minors (sentiment review M-6, M-11) ─────────────────────
+
+
+def test_market_gauge_flags_a_degraded_cnn_provider_as_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+    data = _market_payload()["data"]
+    providers = [{"provider": "sent.cnn_fng", "status": "degraded", "last_ok_at": None, "last_error": "HTTP 503"},
+                 {"provider": "sent.cboe_vix", "status": "ok", "last_ok_at": None, "last_error": None}]
+    tc = _gauge_app(_client({f"{PREFIX}/sentiment/market": _envelope(data, providers=providers)}), monkeypatch)
+    body = tc.get("/api/sentiment/market-gauge").json()
+    assert body["ok"] is True
+    assert body["score"] == pytest.approx(22.1)
+    assert body["stale"] is True
+    assert body["provider_status"]["provider"] == "sent.cnn_fng"
+    assert body["provider_status"]["status"] == "degraded"
+    assert body["provider_status"]["last_error"] == "HTTP 503"
+
+
+def test_market_gauge_healthy_cnn_provider_is_not_stale_and_carries_crypto(monkeypatch: pytest.MonkeyPatch) -> None:
+    tc = _gauge_app(_client({f"{PREFIX}/sentiment/market": _market_payload()}), monkeypatch)
+    body = tc.get("/api/sentiment/market-gauge").json()
+    assert body["stale"] is False
+    assert body["provider_status"] is None
+    assert body["crypto_score"] == pytest.approx(28.0)
+    assert body["crypto_rating"] == "Fear"
+
+
+def test_market_gauge_without_crypto_reports_null_crypto(monkeypatch: pytest.MonkeyPatch) -> None:
+    tc = _gauge_app(_client({f"{PREFIX}/sentiment/market": _market_payload(crypto=None)}), monkeypatch)
+    body = tc.get("/api/sentiment/market-gauge").json()
+    assert body["ok"] is True
+    assert body["crypto_score"] is None
+    assert body["crypto_rating"] is None
+
+
+@pytest.mark.parametrize("params", [{"symbol": "AAPL", "window": "2h"}, {}])
+def test_sosc_error_returns_carry_the_must_have_keys(params: dict[str, Any]) -> None:
+    out = _sosc(_client(_standard_routes()), **params) if params.get("window") else _sosc(None, symbol="", **{})
+    assert out.data["status"] in {"input_error", "input_required"}
+    assert "news" in out.data and out.data["news"] is None
+    assert out.data["headlines"] == []
+    assert out.data["gdelt_tone"] == []

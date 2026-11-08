@@ -20,12 +20,25 @@ export const MARKET_GAUGE_PATH = "/api/sentiment/market-gauge";
 /** A reading older than this is still shown, but flagged as stale. */
 export const MARKET_GAUGE_STALE_MS = 36 * 60 * 60 * 1000;
 
+/** Provider health behind a CNN reading Awareness reports down or degraded (M-6). */
+export interface MarketGaugeProviderStatus {
+  provider: string | null;
+  status: string | null;
+  last_error: string | null;
+}
+
 export interface MarketGauge {
   score: number;
   rating: string | null;
   as_of: string;
   previous_close: number | null;
   source: string | null;
+  /** True when the CNN provider is degraded or down: the value may not be current. */
+  stale: boolean;
+  providerStatus: MarketGaugeProviderStatus | null;
+  /** Crypto Fear & Greed for the footnote; null when Awareness has none. */
+  cryptoScore: number | null;
+  cryptoRating: string | null;
 }
 
 /** Wire shape of `/api/sentiment/market-gauge` (see showme-payload-contract). */
@@ -37,6 +50,14 @@ export interface MarketGaugeResponse {
   previous_close?: number | null;
   source?: string | null;
   reason?: string | null;
+  stale?: boolean | null;
+  provider_status?: {
+    provider?: string | null;
+    status?: string | null;
+    last_error?: string | null;
+  } | null;
+  crypto_score?: number | null;
+  crypto_rating?: string | null;
 }
 
 interface SentimentStoreShape {
@@ -75,6 +96,8 @@ export function parseMarketGauge(
     return { reason: "Market gauge payload had no valid timestamp" };
   }
   const prev = raw.previous_close;
+  const ps = raw.provider_status;
+  const cryptoScore = raw.crypto_score;
   return {
     gauge: {
       score,
@@ -82,6 +105,23 @@ export function parseMarketGauge(
       as_of: asOf,
       previous_close: typeof prev === "number" && Number.isFinite(prev) ? prev : null,
       source: typeof raw.source === "string" && raw.source ? raw.source : null,
+      stale: raw.stale === true,
+      providerStatus:
+        ps && typeof ps === "object"
+          ? {
+              provider: typeof ps.provider === "string" ? ps.provider : null,
+              status: typeof ps.status === "string" ? ps.status : null,
+              last_error: typeof ps.last_error === "string" ? ps.last_error : null,
+            }
+          : null,
+      cryptoScore:
+        typeof cryptoScore === "number" && Number.isFinite(cryptoScore)
+          ? cryptoScore
+          : null,
+      cryptoRating:
+        typeof raw.crypto_rating === "string" && raw.crypto_rating
+          ? raw.crypto_rating
+          : null,
     },
   };
 }

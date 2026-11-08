@@ -64,6 +64,8 @@ export interface TrdhExchange {
   next_close_utc?: string | null;
   sessions?: TrdhSession[];
   closures?: TrdhClosure[];
+  /** Row-level error (e.g. an invalid exchange timezone): today is unknown, the instants are still exact. */
+  error?: string | null;
 }
 
 interface TrdhPayload {
@@ -166,7 +168,12 @@ export function TRDHPane({ code }: FunctionPaneProps) {
         key: "session",
         header: "Local session today",
         width: 230,
-        render: (r) => <span style={monoMutedStyle}>{fmtSession(r.today)}</span>,
+        render: (r) =>
+          r.error ? (
+            <span style={monoMutedStyle}>{r.error}</span>
+          ) : (
+            <span style={monoMutedStyle}>{fmtSession(r.today)}</span>
+          ),
       },
       {
         key: "state",

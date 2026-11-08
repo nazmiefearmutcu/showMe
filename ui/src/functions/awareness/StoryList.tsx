@@ -1,6 +1,6 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { StoryDrawer } from "./StoryDrawer";
-import { StoryRow, openArticle } from "./StoryRow";
+import { StoryRow, openArticle, safeArticleUrl } from "./StoryRow";
 import type { NewsRow } from "./news-types";
 
 export interface StoryListProps {
@@ -56,7 +56,8 @@ export function StoryList({
       e.preventDefault();
       focusRow(Math.max(0, current - 1));
     } else if (e.key === "o") {
-      openArticle(rows[current]?.url ?? rows[current]?.link);
+      const row = rows[current];
+      openArticle(safeArticleUrl(row?.url) ?? safeArticleUrl(row?.link));
     }
   };
 

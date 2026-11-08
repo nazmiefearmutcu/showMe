@@ -48,7 +48,6 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import Instrument
 from showme.engine.data_sources.awareness import AwarenessResponse
 from showme.engine.functions.calendar._common import aw_get, data_meta, parse_float, parse_int, provenance_metadata
-from showme.engine.functions.macro import eco as eco_mod
 from showme.engine.services import country_gates as cg
 from showme.engine.services import world_events as we
 
@@ -182,6 +181,15 @@ class MEETFunction(BaseFunction):
         ) = calendar_bundle
         warnings.extend(calendar_warnings)
         sources.extend(calendar_sources)
+        calendar_failed = bool(calendar_warnings)
+        calendar_error = "; ".join(calendar_warnings)
+        failed_calls: list[str] = []
+        if calendar_failed:
+            failed_calls.append(f"/calendar/economic: {calendar_error}")
+        if world_error:
+            failed_calls.append(f"/news (world headlines): {world_error}")
+        if symbol_news_error:
+            failed_calls.append(f"/news (followed symbols): {symbol_news_error}")
         if symbol_news_error:
             warnings.append(f"symbol_events: awareness news unavailable: {symbol_news_error}")
         gate_holiday_rows, gate_statuses = gate_bundle
@@ -323,6 +331,7 @@ class MEETFunction(BaseFunction):
             )
             empty_data["data_gates"] = gate_statuses
             empty_data["meta"] = data_meta(aw_responses)
+            empty_data["meta"]["failed_calls"] = failed_calls
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -417,10 +426,22 @@ class MEETFunction(BaseFunction):
         if provider_mode == "cached_snapshot" and live_mode == "live_official":
             warnings.append("requested cached_snapshot, served live_official")
         forward_economic = [row for row in upcoming if row.get("kind") == "economic"]
+        # A failed economic-calendar call is never an answered empty calendar. With no forward economic rows it is
+        # provider_unavailable (news rows are kept); with some rows left (holidays) it is served as cached_snapshot.
+        calendar_down = calendar_failed and not forward_economic
+        if calendar_down:
+            live_mode = "provider_unavailable"
+            status = "provider_unavailable"
+            reason: str | None = f"Awareness did not answer: {calendar_error}"
+        else:
+            if calendar_failed:
+                live_mode = "cached_snapshot"
+            status = "ok" if forward_economic else "empty"
+            reason = None if forward_economic else "No upcoming economic events in the window."
         payload = _shell(
             now=now,
-            status="ok" if forward_economic else "empty",
-            reason=None if forward_economic else "No upcoming economic events in the window.",
+            status=status,
+            reason=reason,
             rows=ordered,
             upcoming=upcoming,
             past=past,
@@ -460,6 +481,7 @@ class MEETFunction(BaseFunction):
         payload["symbols_requested"] = symbols
         payload["data_gates"] = gate_statuses
         payload["meta"] = data_meta(aw_responses)
+        payload["meta"]["failed_calls"] = failed_calls
         payload["country_gate_report"] = {
             "min_events_per_7d": cg.MEET_GATE_MIN_EVENTS,
             "window_days": cg.MEET_GATE_WINDOW_DAYS,
@@ -471,7 +493,8 @@ class MEETFunction(BaseFunction):
             data=payload,
             sources=sources or ["no_live_source"],
             warnings=warnings,
-            metadata=provenance_metadata(aw_responses, provider_errors=warnings, extra={
+            metadata=_meet_provenance(aw_responses, provider_errors=warnings, calendar_down=calendar_down,
+                                      calendar_failed=calendar_failed, extra={
                 "fallback": not sources,
                 "requested_mode": provider_mode,
                 "counts": {
@@ -573,6 +596,19 @@ _AWARENESS_IMPORTANCE_HIGH = 70
 _AWARENESS_IMPORTANCE_MEDIUM = 40
 
 
+def _meet_provenance(
+    responses: list[AwarenessResponse], *, provider_errors: list[str], calendar_down: bool,
+    calendar_failed: bool, extra: dict[str, Any],
+) -> dict[str, Any]:
+    """Provenance for MEET: a failed economic calendar overrides the answered providers' live claim."""
+    out = provenance_metadata(responses, provider_errors=provider_errors, extra=extra)
+    if calendar_down:
+        out.update({"data_mode": "provider_unavailable", "live": False, "fallback": True})
+    elif calendar_failed:
+        out.update({"data_mode": "cached_snapshot", "live": False})
+    return out
+
+
 def _calendar_row_from_awareness(item: dict[str, Any]) -> dict[str, Any] | None:
     """Awareness economic row -> the calendar-row shape ``we.economic_rows`` consumes."""
     when = str(item.get("scheduled_at") or "").strip()
@@ -656,7 +692,8 @@ def _article_from_awareness(item: dict[str, Any]) -> dict[str, Any]:
     url = str(item.get("url") or "").strip()
     topics = [str(topic) for topic in (item.get("topics") or []) if str(topic).strip()]
     symbols = [str(sym).strip().upper() for sym in (item.get("symbols") or []) if str(sym).strip()]
-    publisher = str(item.get("publisher_name") or item.get("publisher_id") or "").strip()
+    # /news list rows carry `publisher` (the name); story items carry `publisher_name`; ids are the last resort.
+    publisher = str(item.get("publisher") or item.get("publisher_name") or item.get("publisher_id") or "").strip()
     return {
         "title": str(item.get("title") or "").strip(),
         "summary": str(item.get("summary") or item.get("excerpt") or "").strip() or None,
@@ -948,14 +985,64 @@ def _has_detail(value: Any) -> bool:
     }
 
 
+def _parse_ff_number(raw: Any) -> tuple[float | None, str, bool]:
+    """Parse a calendar numeric cell (provider text such as ``180K``) into ``(value, unit, capped)``.
+
+    Used for MEET's numeric attachment of calendar text cells. Strips ``%`` and
+    ``,``, applies ``K/M/B/T`` multipliers, reports a leading ``<`` as capped,
+    and treats score-like strings (``3-0-6``) as non-numeric.
+    """
+    if raw is None:
+        return (None, "", False)
+    if isinstance(raw, bool):
+        return (None, str(raw), False)
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        return (round(value, 6), "", False) if math.isfinite(value) else (None, str(raw), False)
+    text = str(raw).strip()
+    if not text:
+        return (None, "", False)
+    if "|" in text:
+        text = text.split("|", 1)[0].strip()
+        if not text:
+            return (None, str(raw).strip(), False)
+    capped = False
+    work = text
+    if work.startswith("<"):
+        capped = True
+        work = work[1:].strip()
+    if re.fullmatch(r"\d+-\d+-\d+", work):
+        return (None, work, False)
+    has_percent = "%" in work
+    cleaned = work.replace("%", "").replace(",", "").strip()
+    if not cleaned:
+        return (None, text, capped)
+    suffix = ""
+    multiplier = 1.0
+    if cleaned[-1] in "KMBTkmbt":
+        suffix = cleaned[-1].upper()
+        multiplier = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}[suffix]
+        cleaned = cleaned[:-1].strip()
+        if not cleaned:
+            return (None, text, capped)
+    try:
+        value = round(float(cleaned) * multiplier, 6)
+    except ValueError:
+        return (None, text, capped)
+    if not math.isfinite(value):
+        return (None, text, capped)
+    unit = "%" if has_percent else suffix
+    return (value, unit, capped)
+
+
 def _is_numeric_value(value: Any) -> bool:
-    """Numeric per the shared ForexFactory parser (K/M/B/T, %, capped)."""
+    """Numeric cell check: a finite value after the K/M/B/T, %, capped parse."""
     if isinstance(value, bool) or value is None:
         return False
     if isinstance(value, (int, float)):
         return math.isfinite(float(value))
     try:
-        parsed, _, _ = eco_mod._parse_ff_number(value)
+        parsed, _, _ = _parse_ff_number(value)
     except Exception:  # noqa: BLE001 - best-effort filter
         return False
     return parsed is not None
@@ -973,7 +1060,7 @@ def _safe_parse_number(value: Any) -> tuple[float | None, str, bool]:
     if isinstance(value, (int, float)):
         return (round(float(value), 6), "", False) if math.isfinite(float(value)) else (None, "", False)
     try:
-        parsed, unit, capped = eco_mod._parse_ff_number(value)
+        parsed, unit, capped = _parse_ff_number(value)
     except Exception:  # noqa: BLE001 - best-effort enrichment
         return None, "", False
     return parsed, unit, capped

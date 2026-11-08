@@ -68,6 +68,16 @@ export function needleAngle(score: number): number {
   return Math.PI * (1 - clampScore(score) / 100);
 }
 
+/**
+ * Display casing for a provider rating: awareness sends lowercase ("extreme fear"), the zone
+ * labels are sentence case. Null for a missing or blank rating.
+ */
+export function ratingLabel(raw: string | null | undefined): string | null {
+  const text = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!text) return null;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /** "6 Nov 23:59 UTC" from an ISO timestamp; "" when unparseable. */
 export function formatUtcStamp(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -122,8 +132,8 @@ function arcPath(from: number, to: number): string {
 
 export interface FearGreedGaugeProps {
   score: number;
-  /** "hero" = 240 x 132 with tick labels; "compact" = 140 x 78 (Welcome, crypto). */
-  size?: "hero" | "compact";
+  /** "hero" = 240 x 132 with tick labels; "compact" = 140 x 78 (Welcome); "crypto" = 160 x 88 (MSENT). */
+  size?: "hero" | "compact" | "crypto";
   testId?: string;
 }
 
@@ -132,8 +142,14 @@ export function FearGreedGauge({ score, size = "compact", testId }: FearGreedGau
   const zone = fearGreedZone(s);
   const [nx, ny] = pointAt(s, NEEDLE_LEN);
   const hero = size === "hero";
-  const width = hero ? 240 : 140;
-  const height = hero ? 132 : 78;
+  const dims =
+    size === "hero"
+      ? { w: 240, h: 132 }
+      : size === "crypto"
+        ? { w: 160, h: 88 }
+        : { w: 140, h: 78 };
+  const width = dims.w;
+  const height = dims.h;
   const ariaLabel = `Fear and Greed gauge at ${Math.round(s)}, ${zone.label.toLowerCase()}`;
 
   const bounds = [0, ...ZONES.map((z) => z.upTo)];
