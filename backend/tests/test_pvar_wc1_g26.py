@@ -61,6 +61,16 @@ def test_default_confidence_matches_manifest_default(monkeypatch) -> None:
     assert res.data["confidence_level"] == pytest.approx(0.99), res.data["confidence_level"]
 
 
+def test_default_method_matches_manifest_default(monkeypatch) -> None:
+    # pvar_seed defaults method="historical"; the handler must not pick another
+    # estimator silently when the caller omits method.
+    monkeypatch.setattr(pvar_mod, "PortfolioState", _Book)
+    monkeypatch.setattr(pvar_mod, "_download_returns", _fake_download)
+    res = _run(pvar_mod.PVARFunction().execute())
+    assert res.data["method"] == "historical", res.data["method"]
+    assert res.data["cards"]["method"] == "historical"
+
+
 def test_out_of_range_confidence_is_an_input_error_not_a_silent_default(monkeypatch) -> None:
     monkeypatch.setattr(pvar_mod, "PortfolioState", _Book)
     monkeypatch.setattr(pvar_mod, "_download_returns", _fake_download)

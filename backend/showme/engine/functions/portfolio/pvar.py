@@ -95,7 +95,8 @@ class PVARFunction(BaseFunction):
                 "Pass a confidence strictly between 0 and 1, for example 0.95 or 0.99.",
             )
         horizon_days = _horizon_days(params.get("horizon", "1d"))
-        method = str(params.get("method", "parametric")).strip().lower()
+        # Default matches pvar_seed defaults (method="historical"); no silent estimator choice.
+        method = str(params.get("method", _DEFAULT_METHOD)).strip().lower()
         if method not in _SUPPORTED_METHODS:
             # PVAR#3: monte_carlo is not implemented. Substituting another
             # estimator would present its numbers as the requested method, so
@@ -404,6 +405,8 @@ _HORIZON_MAP = {"1d": 1, "5d": 5, "10d": 10, "20d": 20}
 # Must equal pvar_seed defaults["confidence_level"].
 _DEFAULT_CONFIDENCE = 0.99
 _SUPPORTED_METHODS = frozenset({"parametric", "historical"})
+# Must equal pvar_seed defaults["method"].
+_DEFAULT_METHOD = "historical"
 # Minimum shared return dates before a covariance-based VaR is reported.
 _MIN_COMMON_SAMPLES = 20
 
@@ -497,7 +500,7 @@ def _empty_pvar(
             "reason": reason,
             "as_of": _utcnow_iso(),
             "data_mode": "unavailable",
-            "method": str(params.get("method", "parametric")),
+            "method": str(params.get("method", _DEFAULT_METHOD)),
             "horizon": params.get("horizon", "1d"),
             "confidence_level": confidence,
             "confidence": confidence,
@@ -553,7 +556,7 @@ def _input_error(
             "reason": reason,
             "as_of": _utcnow_iso(),
             "data_mode": "unavailable",
-            "method": str(params.get("method", "parametric")),
+            "method": str(params.get("method", _DEFAULT_METHOD)),
             "horizon": params.get("horizon", "1d"),
             "confidence_level": None,
             "confidence": None,
