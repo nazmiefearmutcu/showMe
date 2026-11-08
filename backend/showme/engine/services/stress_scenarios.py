@@ -295,15 +295,25 @@ def apply_scenario(
             shock = scenario.symbol_shocks.get(sym)
             if shock is None and sector:
                 shock = scenario.sector_shocks.get(sector)
-            if shock is None:
-                shock = scenario.asset_class_shocks.get(ac, 0.0)
             source = "hand_set"
+            if shock is None and ac == "BOND" and str(sym).upper() in BOND_ETF_SYMBOLS \
+                    and "BOND" not in scenario.asset_class_shocks:
+                # A Treasury/aggregate fund with no BOND row in this scenario must
+                # neither take the equity-style ETF/FUND shock nor a silent 0.0.
+                shock = None
+                source = "unavailable"
+            elif shock is None:
+                shock = scenario.asset_class_shocks.get(ac, 0.0)
         if shock is None:
             unpriced += 1
-            warnings.append(
-                f"{sym}: measured window return unavailable for {scenario.name}; "
-                "position left unshocked (not estimated)"
-            )
+            if source == "unavailable" and measured is None:
+                reason = (
+                    f"{sym}: scenario {scenario.name} has no BOND shock, so the Treasury "
+                    "fund shock is unavailable"
+                )
+            else:
+                reason = f"{sym}: measured window return unavailable for {scenario.name}"
+            warnings.append(f"{reason}; position left unshocked (not estimated)")
             rows.append({
                 "symbol": sym, "asset_class": ac, "sector": sector,
                 "shock": None, "shock_unfloored": None, "floored": False,
