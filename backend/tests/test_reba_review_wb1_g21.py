@@ -161,3 +161,12 @@ def test_reba5_handler_emits_only_documented_suppression_reasons(monkeypatch):
     emitted = {s["reason"] for s in res.data["suppressed"]}
     assert emitted <= documented
     assert emitted  # the min-trade filter must actually fire in this fixture
+
+
+def test_reba5_methodology_uses_the_emitted_suppression_key():
+    # WC3-G01 REBA#5-RQ: the handler emits suppressed[].reason; the methodology
+    # must name that same key, not a nonexistent suppressed_reason field.
+    entry = _reba_entry()
+    assert "suppressed_reason" not in entry.methodology
+    assert "reason='below_min'" in entry.methodology
+    assert "reason='below_lot'" in entry.methodology

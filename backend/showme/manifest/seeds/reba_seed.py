@@ -192,8 +192,9 @@ def reba() -> FunctionManifest:
             "Remaining trades are sized as notional = target_weight × NAV − current_value, "
             "and quantity = notional / last_price on the live path. lot_rounding=whole floors "
             "equity and ETF quantities to whole shares. Trades below min_trade_size are "
-            "dropped with suppressed_reason='below_min'. If whole-share rounding leaves zero "
-            "shares, the trade is dropped with suppressed_reason='below_lot'. Live preview "
+            "dropped and listed in suppressed[] with reason='below_min'. If whole-share rounding "
+            "leaves zero shares, the trade is dropped and listed in suppressed[] with "
+            "reason='below_lot'. Live preview "
             "holdings with no quote withhold the preview (status='provider_unavailable'). "
             "The output is strictly a preview: REBA does not submit orders."
         ),
