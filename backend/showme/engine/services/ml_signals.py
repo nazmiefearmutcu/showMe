@@ -94,6 +94,17 @@ def _oos_sharpe(positions: np.ndarray, realised_next: pd.Series) -> float:
     return float(strat.mean() / sd * (252 ** 0.5))
 
 
+def _wilson_interval(successes: int, n: int, z: float = 1.959963984540054) -> list[float] | None:
+    """Wilson score interval for a proportion, clipped to [0, 1]. None when n is 0."""
+    if n <= 0:
+        return None
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return [float(max(0.0, centre - half)), float(min(1.0, centre + half))]
+
+
 def _direction_label(value: float) -> str:
     if value > 0:
         return "up"
@@ -186,7 +197,13 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
     actual = y_test.values
     # Accuracy ignoring zeros
     mask = actual != 0
-    acc = float((pred_test[mask] == actual[mask]).mean()) if mask.any() else float("nan")
+    scored = int(mask.sum())
+    correct = int((pred_test[mask] == actual[mask]).sum())
+    acc = float(correct / scored) if scored else float("nan")
+    # Reference points for reading the accuracy: always-long share of up labels
+    # among the scored rows, and a 95% interval (test set is small).
+    baseline_long = float((actual[mask] == 1).mean()) if scored else float("nan")
+    ci95 = _wilson_interval(correct, scored) if scored else None
     # Strategy: out-of-sample position decided at bar t's close, earning the
     # realised t -> t+1 return. In-sample fitted values are never used.
     sharpe = _oos_sharpe(pred_test, labelled["fwd_ret_1"].iloc[split:])
@@ -197,6 +214,9 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
         "backend": backend,
         "test_accuracy": acc,
         "test_samples": int(len(actual)),
+        "scored_samples": scored,
+        "test_baseline_always_long_accuracy": baseline_long,
+        "test_accuracy_ci95": ci95,
         "feature_importance": dict(sorted(feat_imp.items(), key=lambda kv: -kv[1])[:15]),
         "strategy_sharpe": sharpe,
         "latest_prediction": direction,

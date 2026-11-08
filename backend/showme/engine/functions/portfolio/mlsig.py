@@ -288,6 +288,15 @@ def _enrich_report(
                 "unless a live latest-bar prediction exists; test accuracy never sets it."
             ),
             "horizon_days": "Forward return horizon used to build the target label.",
+            "scored_samples": "Test rows with a non-zero label; accuracy is computed over these.",
+            "test_baseline_always_long_accuracy": (
+                "Accuracy of always predicting up on the same scored test rows (the share of up labels). "
+                "Compare test_accuracy against it."
+            ),
+            "test_accuracy_ci95": (
+                "95% Wilson score interval for test_accuracy over scored_samples. With a small test set "
+                "the interval is wide."
+            ),
         },
     }
     if reason:
@@ -315,6 +324,9 @@ def _no_measured_result(
         "backend": None,
         "test_accuracy": None,
         "test_samples": 0,
+        "scored_samples": 0,
+        "test_baseline_always_long_accuracy": None,
+        "test_accuracy_ci95": None,
         "feature_importance": {},
         "strategy_sharpe": None,
         "latest_prediction": None,
