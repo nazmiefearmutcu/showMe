@@ -83,3 +83,41 @@ def test_cmt_series_table_covers_standard_tenors() -> None:
     assert ovme_mod._cmt_series_for(0.25)[0] == "DGS3MO"
     assert ovme_mod._cmt_series_for(1.0)[0] == "DGS1"
     assert ovme_mod._cmt_series_for(30.0)[0] == "DGS30"
+
+
+class _DatedFred:
+    """FRED-shaped frame carrying the observation dates the rate came from."""
+
+    async def series(self, series_id: str, frequency: str = "d", **_: object) -> pd.DataFrame:
+        return pd.DataFrame({"date": ["2026-11-05", "2026-11-06"], "value": [4.1, 4.2]})
+
+
+def test_heston_source_says_fixed_defaults_when_none_supplied() -> None:
+    res = _run(None, spot=100, strike=100, years_to_expiry=0.5, vol=0.25,
+               model="heston", paths=2000, steps=20)
+    assert res.data["heston_params"]["source"] == (
+        "fixed illustrative defaults, not calibrated to market quotes"
+    )
+
+
+def test_heston_source_names_caller_supplied_parameters() -> None:
+    res = _run(None, spot=100, strike=100, years_to_expiry=0.5, vol=0.25,
+               model="heston", paths=2000, steps=20, kappa=3.5)
+    hp = res.data["heston_params"]
+    assert hp["kappa"] == 3.5
+    assert hp["source"] == "caller_supplied, not calibrated to market quotes"
+    assert "illustrative" not in hp["source"]
+
+
+def test_live_rate_reports_the_observation_date() -> None:
+    fn = OVMEFunction()
+    fn.deps = _Deps(_DatedFred())
+    res = asyncio.run(fn.execute(spot=100, strike=100, years_to_expiry=0.5, vol=0.25,
+                                 live_rate=True))
+    assert res.data["rate_source"] == "fred_DGS6MO"
+    assert res.data["rate_as_of"] == "2026-11-06"
+
+
+def test_default_rate_has_no_observation_date() -> None:
+    res = _run(None, spot=100, strike=100, years_to_expiry=0.5, vol=0.25)
+    assert res.data["rate_as_of"] is None

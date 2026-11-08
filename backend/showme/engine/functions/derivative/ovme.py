@@ -116,6 +116,21 @@ def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is
             "d1": d1, "d2": d2}
 
 
+def _observation_date(df: Any) -> str | None:
+    """Date (YYYY-MM-DD) of the last FRED observation, or None when not dated."""
+    try:
+        if "date" in df.columns:
+            value = df["date"].iloc[-1]
+        elif str(getattr(df.index, "dtype", "")).startswith("datetime"):
+            value = df.index[-1]
+        else:
+            return None
+    except (AttributeError, IndexError, KeyError):
+        return None
+    text = str(value)[:10]
+    return text or None
+
+
 @FunctionRegistry.register
 class OVMEFunction(BaseFunction):
     code = "OVME"
@@ -134,6 +149,7 @@ class OVMEFunction(BaseFunction):
         # and not read live is the 0.045 default, and is labelled as such.
         r = float(params.get("rate", 0.045))
         rate_source = "input" if params.get("rate") not in (None, "") else "default_0.045"
+        rate_as_of: str | None = None
         q = float(params.get("div_yield", 0.0))
         sources_list = ["black_scholes_formula"]
         if _truthy(params.get("live_rate")) and getattr(self.deps, "fred", None) is not None:
@@ -144,6 +160,7 @@ class OVMEFunction(BaseFunction):
                 if live_r is not None and math.isfinite(live_r):
                     r = live_r
                     rate_source = f"fred_{series_id}"
+                    rate_as_of = _observation_date(df)
                     if "fred" not in sources_list:
                         sources_list.append("fred")
             except Exception:
@@ -192,7 +209,12 @@ class OVMEFunction(BaseFunction):
         ]
         if model == "heston" and not input_error:
             # OVME#2: the Heston parameters are echoed with the price. They are
-            # fixed defaults, not calibrated to market quotes.
+            # not calibrated to market quotes; the source says whether the
+            # caller supplied them or the handler's illustrative defaults apply.
+            heston_supplied = any(
+                params.get(key) not in (None, "")
+                for key in ("kappa", "theta", "hsigma", "rho", "v0")
+            )
             result["heston_params"] = {
                 "kappa": float(params.get("kappa", 2.0)),
                 "theta": float(params.get("theta", sigma * sigma)),
@@ -200,7 +222,11 @@ class OVMEFunction(BaseFunction):
                 "rho": float(params.get("rho", -0.6)),
                 "v0": float(params.get("v0", sigma * sigma)),
                 "calibrated": False,
-                "source": "fixed illustrative parameters, not calibrated to market quotes",
+                "source": (
+                    "caller_supplied, not calibrated to market quotes"
+                    if heston_supplied
+                    else "fixed illustrative defaults, not calibrated to market quotes"
+                ),
             }
             try:
                 from showme.engine.functions.derivative.heston import HestonParams, heston_mc
@@ -229,6 +255,7 @@ class OVMEFunction(BaseFunction):
             "vol": sigma,
             "rate": r,
             "rate_source": rate_source,
+            "rate_as_of": rate_as_of,
             "div_yield": q,
             "type": opt_type,
             "model": model,
