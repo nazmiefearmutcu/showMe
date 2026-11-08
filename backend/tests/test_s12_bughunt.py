@@ -112,35 +112,32 @@ def test_sosc_default_returns_template_with_fallback_metadata_when_no_providers(
     bullish/bearish template (hardcoded 42/18 split) tagged
     ``metadata.fallback=True`` / ``fallback_reason="no_social_providers_configured"``.
 
-    NEW honest contract: SOSC pulls REAL keyless GDELT news-tone + FinBERT and
-    NEVER fabricates a sentiment split. The result depends on ambient
-    connectivity: with a live GDELT path it returns ``ok``/``empty`` sourced from
-    ``gdelt`` (+ ``finbert`` when headlines are scored); on a genuine GDELT
-    outage it returns the honest ``provider_unavailable`` envelope with
-    ``no_live_source``. Either way the fabricated 42/18 template must never
-    reappear. We assert the honest-degradation shape + the no-garbage invariant
-    rather than pinning a single branch.
+    NEW honest contract (S3a): SOSC reads Awareness entity sentiment and NEVER
+    fabricates a sentiment split. With Awareness down it returns the honest
+    ``provider_unavailable`` envelope with ``no_live_source``; the fabricated 42/18
+    template must never reappear. Awareness is mocked offline here.
     """
+    import httpx
+
     from showme.engine.core.instrument import AssetClass, Instrument
+    from showme.engine.data_sources.awareness import AwarenessClient
     from showme.engine.functions.news.sosc import SOSCFunction
 
-    out = asyncio.run(SOSCFunction().execute(instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)))
+    def _down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    fn = SOSCFunction()
+    fn._awareness = AwarenessClient("http://aw.test", transport=httpx.MockTransport(_down), autostart=False)
+    out = asyncio.run(fn.execute(instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)))
     status = out.data["status"]
-    assert status in {"ok", "empty", "provider_unavailable"}
+    assert status == "provider_unavailable"
     assert out.data["methodology"]
     srcs = [s.lower() for s in (out.sources or [])]
-    summary = out.data.get("summary") or {}
     # Anti-garbage: the removed 42/18 hardcoded template must never come back.
-    assert not (summary.get("bullish_pct") == 42 and summary.get("bearish_pct") == 18)
-    if status in {"ok", "empty"}:
-        # Live GDELT path: tone-sourced (FinBERT joins when headlines exist).
-        assert "gdelt" in srcs
-        assert out.metadata.get("live") is True
-    else:
-        # Genuine outage (e.g. GDELT throttled) — honest, never fabricated.
-        assert "no_live_source" in srcs
-        assert out.metadata.get("live") is False
-        assert out.warnings  # provider-unavailable warning is visible
+    assert "bullish_pct" not in out.data
+    assert "no_live_source" in srcs
+    assert out.metadata.get("live") is False
+    assert out.warnings  # provider-unavailable warning is visible
 
 
 def test_sosc_never_fabricates_a_sentiment_for_thin_coverage() -> None:
@@ -155,22 +152,26 @@ def test_sosc_never_fabricates_a_sentiment_for_thin_coverage() -> None:
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.news.sosc import SOSCFunction
 
-    # The old StockTwits/Reddit adapters are ignored by the GDELT rewrite;
-    # passing none proves no fake bull/bear split can be injected.
+    import httpx
+
+    from showme.engine.data_sources.awareness import AwarenessClient
+
+    # An offline awareness answers nothing; no fake bull/bear split can appear.
+    def _down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
     deps = FunctionDeps()
-    out = asyncio.run(SOSCFunction(deps).execute(
+    fn = SOSCFunction(deps)
+    fn._awareness = AwarenessClient("http://aw.test", transport=httpx.MockTransport(_down), autostart=False)
+    out = asyncio.run(fn.execute(
         instrument=Instrument(symbol="ZZZZ", asset_class=AssetClass.EQUITY),
     ))
     status = str(out.data.get("status", "")).lower()
-    assert status in {"ok", "empty", "provider_unavailable"}
+    assert status == "provider_unavailable"
     # The removed garbage contract must be gone for good.
     assert "bull_bear_ratio" not in out.data
-    summary = out.data.get("summary") or {}
-    # An obscure ticker yields no real coverage → honest neutral/empty, never
-    # the old fabricated 42-bull/18-bear constant.
-    if status in {"empty", "provider_unavailable"}:
-        assert summary.get("net_sentiment") in (0.0, None)
-        assert not (out.data.get("rows") or [])
+    assert "news" not in out.data
+    assert not (out.data.get("rows") or [])
 
 
 # ----------------------- SRSK -----------------------

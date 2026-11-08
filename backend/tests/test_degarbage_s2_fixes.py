@@ -43,17 +43,8 @@ def test_ecfc_normalize_country_alpha2_to_alpha3() -> None:
     assert _normalize_country("EURO") == "EURO"
 
 
-# ── SOSC: GDELT query must be a single OR-group, never nested paren groups ────
-def test_sosc_query_is_single_or_group() -> None:
-    from showme.engine.functions.news.sosc import _query_for
-
-    q = _query_for("AAPL")
-    # bare symbol leads, ANDed with exactly one parenthesised OR-group
-    assert q.startswith("AAPL (")
-    assert q.count("(") == 1 and q.count(")") == 1
-    # the old rejected shape had two adjacent groups: ``(...) (...)``
-    assert ") (" not in q
-    assert " OR " in q
+# SOSC no longer builds a GDELT query (S3a: it reads Awareness entity sentiment);
+# its query-shape regression was removed with the GDELT path.
 
 
 # ── DARK: FINRA ats_weekly POSTs summaryTypeCode=ATS_W_SMBL + symbol ─────────

@@ -54,6 +54,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
         instant,
         integrations,
         manifest,
+        market_gauge,
         mis,
         portfolio,
         portfolio_aggregate,
@@ -72,6 +73,7 @@ def register_routes(app: FastAPI, *, deps: AppDeps) -> None:
     indicators.register(app, deps)
     function_index.register(app, deps)
     manifest.register(app, deps)
+    market_gauge.register(app, deps)
     quote.register(app, deps)
     scanner.register(app, deps)
     mis.register(app, deps)

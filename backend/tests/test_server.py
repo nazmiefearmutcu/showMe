@@ -984,52 +984,30 @@ def test_evts_empty_provider_returns_actionable_status(monkeypatch) -> None:
 
 
 def test_sosc_provider_failure_does_not_emit_placeholder(monkeypatch) -> None:
-    """De-garbage 2026-06-01: SOSC now reads keyless GDELT tone, so when the
-    network is up the live path legitimately returns real rows. To pin the
-    *contract* ("a provider failure must NOT be papered over with a fabricated
-    placeholder") deterministically — instead of depending on the network
-    actually being down — we force the GDELT leg to raise and assert the
-    honest ``provider_unavailable`` envelope with empty rows."""
+    """S3a: SOSC reads Awareness. When Awareness cannot answer, a provider failure
+    must NOT be papered over with a fabricated placeholder: the result is the
+    honest ``provider_unavailable`` envelope with empty rows and no score."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
+    import httpx
+
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.core.instrument import AssetClass, Instrument
-    from showme.engine.functions.news import sosc as sosc_mod
+    from showme.engine.data_sources.awareness import AwarenessClient
     from showme.engine.functions.news.sosc import SOSCFunction
 
-    async def _boom(*_args, **_kwargs):
-        raise RuntimeError("simulated GDELT outage")
+    def _down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated awareness outage", request=request)
 
-    monkeypatch.setattr(sosc_mod, "_gdelt_articles", _boom)
-
+    fn = SOSCFunction(FunctionDeps())
+    fn._awareness = AwarenessClient("http://aw.test", transport=httpx.MockTransport(_down), autostart=False)
     instrument = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = asyncio.run(SOSCFunction(FunctionDeps()).execute(instrument, live=True))
+    result = asyncio.run(fn.execute(instrument, live=True))
 
     assert result.data["status"] == "provider_unavailable"
     assert result.data["rows"] == []
-    assert result.data["summary"]["net_sentiment"] is None
-    assert result.data["summary"]["total_mentions"] == 0
-    assert "simulated GDELT outage" in result.data["reason"]
+    assert "news" not in result.data
+    assert "not running" in result.data["reason"]
     assert "placeholder" not in str(result.data).lower()
-
-
-def test_sosc_tone_maps_to_unit_interval() -> None:
-    """De-garbage 2026-06-01: SOSC was rewritten from a StockTwits/Reddit
-    aggregator (the removed ``_sentiment_rows`` helper) to a keyless GDELT
-    news-tone + FinBERT signal. The old per-row reddit_score/sentiment_score
-    separation no longer applies. This pins the new contract's core numeric
-    primitive instead: GDELT tone (roughly [-10, +10]) maps to a bounded
-    [-1, +1] sentiment, and garbage tone values are dropped (None), never
-    fabricated."""
-    from showme.engine.functions.news.sosc import _to_unit_tone
-
-    assert abs(_to_unit_tone(5.0) - 0.5) < 1e-9
-    assert abs(_to_unit_tone(-5.0) - (-0.5)) < 1e-9
-    # Clamped to the unit interval, never out of band.
-    assert _to_unit_tone(50.0) == 1.0
-    assert _to_unit_tone(-50.0) == -1.0
-    # Non-numeric / NaN tone is dropped honestly, not coerced to a fake 0.
-    assert _to_unit_tone("not-a-number") is None
-    assert _to_unit_tone(None) is None
 
 
 def test_news_alert_stale_headline_cannot_be_critical(monkeypatch) -> None:
