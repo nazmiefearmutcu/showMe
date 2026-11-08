@@ -112,7 +112,11 @@ export function GLCOPane({ code }: FunctionPaneProps) {
 
   const stats = useMemo(() => deriveCommodityStats(rows), [rows]);
   const utcStamp = useUtcStamp(tick);
-  const isLive = state === "ok" && (!status || status === "ok");
+  // Live only when the hook says ok AND the payload's own source_mode is a
+  // live provider (the backend emits live_yfinance; model rows say "model").
+  const sourceModeRaw = typeof payload?.source_mode === "string" ? payload.source_mode : "";
+  const isLive =
+    state === "ok" && status === "ok" && sourceModeRaw.startsWith("live");
 
   const cols = useMemo<DataGridColumn<CommodityRow>[]>(
     () => [
@@ -187,35 +191,36 @@ export function GLCOPane({ code }: FunctionPaneProps) {
         header: "5d",
         width: 78,
         render: (r) => {
-          // P2 honesty: a real per-row history series (r.history, shipped by
-          // the backend's keyless Yahoo chart path as `history_source:
-          // "yfinance_daily"`) renders solid and marked data-synthetic="false";
-          // otherwise the procedural line is de-emphasized + tagged synthetic
-          // so it cannot masquerade as real history (WEI pattern).
+          // Honesty: a per-row history series (r.history, shipped by the
+          // backend's keyless Yahoo chart path as `history_source:
+          // "yfinance_daily"`) is the only thing drawn. A row without real
+          // history gets an em dash, never a procedural stand-in line.
           const real = realHistoryFor(r);
-          const series = real ?? syntheticTrendFor(r);
+          if (!real) {
+            return (
+              <span
+                style={mutedNumStyle}
+                data-trend="none"
+                title={NO_HISTORY_TITLE}
+              >
+                —
+              </span>
+            );
+          }
           const dir =
             (r.change_pct ?? r.changePercent ?? 0) >= 0 ? "positive" : "negative";
           return (
             <span
-              style={real ? sparkRealStyle : synthSparkStyle}
-              data-synthetic={real ? "false" : "true"}
-              title={
-                real
-                  ? "Daily close history from the payload"
-                  : SYNTH_SPARK_TITLE
-              }
+              style={sparkRealStyle}
+              data-synthetic="false"
+              title="Daily close history from the payload"
             >
               <Sparkline
-                values={series}
+                values={real}
                 width={62}
                 height={18}
                 tone={dir}
-                ariaLabel={
-                  real
-                    ? "Daily close history"
-                    : "Illustrative trend — no real history available"
-                }
+                ariaLabel="Daily close history"
               />
             </span>
           );
@@ -271,7 +276,7 @@ export function GLCOPane({ code }: FunctionPaneProps) {
                 tone={isLive ? "positive" : "warn"}
                 variant="soft"
               >
-                {isLive ? "live" : status || "stale"}
+                {isLive ? "live" : sourceModeRaw || status || "stale"}
               </Pill>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
@@ -390,9 +395,8 @@ function deriveCommodityStats(rows: CommodityRow[]): CommodityStats {
     counted += 1;
     const sym = r.symbol ?? r.ticker ?? "";
     const name = r.name ?? sym;
-    // KPI sparklines only ever carry real history (the synthetic line lives
-    // in the table cell, where it is explicitly marked). A fake KPI trend is
-    // therefore never rendered.
+    // KPI sparklines only ever carry real history; a row without it draws
+    // no trend, so a fake KPI or table trend is never rendered.
     const trend = real ?? [];
     if (!leader || chg > leader.chg) leader = { sym, name, chg, trend, trendReal: real !== null };
     if (!laggard || chg < laggard.chg) laggard = { sym, name, chg, trend, trendReal: real !== null };
@@ -541,35 +545,19 @@ function SectorChip({ sector }: { sector: string }) {
   );
 }
 
-const SYNTH_SPARK_TITLE = "Illustrative trend — no real history available";
+const NO_HISTORY_TITLE = "No daily history from the provider";
 
 /**
  * P2 honesty: the real per-row series, when the payload ships one (backend
  * keyless Yahoo chart path, `history_source: "yfinance_daily"` — routed
  * outside the adapter bucket so quote passes are not starved). Returns null
- * when the row carries no usable history so the caller can fall back to the
- * explicitly-marked synthetic line instead.
+ * when the row carries no usable history; the caller then shows no trend.
  */
 function realHistoryFor(r: CommodityRow): number[] | null {
   if (Array.isArray(r.history) && r.history.length >= 4) {
     return r.history.slice(-12);
   }
   return null;
-}
-
-/** Procedural stand-in — only ever rendered de-emphasized + data-synthetic. */
-function syntheticTrendFor(r: CommodityRow): number[] {
-  const seed = (r.symbol ?? r.ticker ?? r.name ?? "row") + (r.sector ?? "");
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1009;
-  const out: number[] = [];
-  let v = 50;
-  for (let i = 0; i < 12; i++) {
-    const x = Math.sin((i + h) * 0.6) * 5 + Math.cos((i * 0.32 + h) * 1.1) * 3.5;
-    v = Math.max(20, Math.min(80, v + x * 0.55));
-    out.push(v);
-  }
-  return out;
 }
 
 function normalizeRows(payload: unknown): CommodityRow[] {
@@ -627,12 +615,6 @@ const tabBarStyle: CSSProperties = {
 // is de-emphasized so it cannot masquerade as real history.
 const sparkRealStyle: CSSProperties = {
   display: "inline-flex",
-};
-
-const synthSparkStyle: CSSProperties = {
-  display: "inline-flex",
-  opacity: 0.4,
-  filter: "saturate(0.6)",
 };
 
 const kpiGridStyle: CSSProperties = {

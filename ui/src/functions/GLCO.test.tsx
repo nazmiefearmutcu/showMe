@@ -1,11 +1,11 @@
 /**
- * GLCO pane — real-vs-synthetic "5d" sparkline honesty.
+ * GLCO pane — real-only "5d" sparkline honesty.
  *
  * The backend can ship a per-row history series (`_contract_snapshot(...,
  * include_history=True)`, the BOIL/BGAS convention). When it does, the "5d"
  * cell renders it solid + marked data-synthetic="false". When it does not,
- * the procedural fallback must be de-emphasized and marked synthetic — never
- * an unlabeled fake history line. KPI cards only ever draw real series.
+ * the cell shows an em dash and no line at all: no procedural stand-in is
+ * drawn, even labelled. KPI cards only ever draw real series.
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -68,21 +68,46 @@ describe("GLCO pane — 5d sparkline honesty", () => {
       expect(call.params ?? {}).not.toHaveProperty("tick");
     }
   });
-  it("marks a procedural fallback line synthetic with an explanatory title", () => {
+  it("draws no sparkline for a row without real history (no procedural stand-in)", () => {
     mockFn.state = "ok";
     mockFn.data = okData([
       { symbol: "GC=F", name: "Gold", sector: "metals", last: 2000, change_pct: -0.5 },
     ]);
     const { container } = render(<GLCOPane code="GLCO" />);
 
-    const synthetic = container.querySelectorAll('[data-synthetic="true"]');
-    expect(synthetic.length).toBeGreaterThanOrEqual(1);
-    synthetic.forEach((el) => {
-      expect(el.getAttribute("title")).toBe(
-        "Illustrative trend — no real history available",
-      );
-      expect(el.querySelector("svg")).not.toBeNull();
-    });
+    // A fabricated trend shape is never rendered, not even labelled.
+    expect(container.querySelectorAll('[data-synthetic="true"]').length).toBe(0);
+    const table = screen.getByRole("table");
+    const row = within(table).getByText("GC=F").closest("tr")!;
+    expect(row.querySelector("svg")).toBeNull();
+    const none = row.querySelector('[data-trend="none"]');
+    expect(none).not.toBeNull();
+    expect(none!.textContent).toBe("—");
+    expect(none!.getAttribute("title")).toBe("No daily history from the provider");
+  });
+
+  it("does not claim live when the payload source_mode is not live", () => {
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: {
+        status: "ok",
+        source_mode: "model",
+        rows: [{ symbol: "GC=F", name: "Gold", sector: "metals", last: 2000, change_pct: -0.5 }],
+      },
+      sources: ["commodity_reference_model"],
+      elapsed_ms: 9,
+    };
+    render(<GLCOPane code="GLCO" />);
+    expect(screen.queryByText("live")).toBeNull();
+  });
+
+  it("shows live when the payload is a live source_mode", () => {
+    mockFn.state = "ok";
+    mockFn.data = okData([
+      { symbol: "GC=F", name: "Gold", sector: "metals", last: 2000, change_pct: -0.5 },
+    ]);
+    render(<GLCOPane code="GLCO" />);
+    expect(screen.getByText("live")).toBeInTheDocument();
   });
 
   it("renders a real per-row history series as data-synthetic=false", () => {
@@ -114,6 +139,8 @@ describe("GLCO pane — 5d sparkline honesty", () => {
     const realRow = within(table).getByText("CL=F").closest("tr")!;
     const synthRow = within(table).getByText("GC=F").closest("tr")!;
     expect(realRow.querySelector('[data-synthetic="false"]')).not.toBeNull();
-    expect(synthRow.querySelector('[data-synthetic="true"]')).not.toBeNull();
+    expect(realRow.querySelector('[data-trend="none"]')).toBeNull();
+    expect(synthRow.querySelector("svg")).toBeNull();
+    expect(synthRow.querySelector('[data-trend="none"]')).not.toBeNull();
   });
 });
