@@ -146,7 +146,7 @@ def dcfs() -> FunctionManifest:
                 ColumnSpec(key="input", label="Input", kind="text"),
                 ColumnSpec(key="low_value", label="−20% value", kind="number", format="%.2f"),
                 ColumnSpec(key="high_value", label="+20% value", kind="number", format="%.2f"),
-                ColumnSpec(key="delta_pct", label="Delta %", kind="percent", format="%.2f"),
+                ColumnSpec(key="delta", label="Spread (USD / share)", kind="number", format="%.2f"),
             ],
             sortable=True,
             filterable=False,
