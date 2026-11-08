@@ -375,3 +375,24 @@ describe("SRSK pane — grid CSV export", () => {
     expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });
+
+describe("SRSK pane — highest-risk KPI follows the highest-PD card", () => {
+  it("shows the backend highest-PD sovereign even when the score ranking differs", () => {
+    const rows = [
+      srskRow({ country: "TR", risk_score: 90.1, pd_1y_pct: 1.67 }),
+      srskRow({ country: "DE", risk_score: 30.2, pd_1y_pct: 16.67 }),
+    ];
+    const payload = livePayload(rows);
+    payload.data.data.cards = {
+      highest_pd_country: "DE",
+      highest_pd: 16.67,
+      recovery: 0.4,
+      data_mode: "live_official",
+      as_of: "2024",
+    };
+    setMockFn({ state: "ok", ...payload });
+    render(<SRSKPane code="SRSK" />);
+    expect(screen.getByText("1Y PD 16.67%")).toBeInTheDocument();
+    expect(screen.queryByText("1Y PD 1.67%")).toBeNull();
+  });
+});

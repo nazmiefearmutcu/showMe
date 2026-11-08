@@ -488,8 +488,13 @@ class SRSKFunction(BaseFunction):
         # Rank: highest risk first for the bar ladder / cards.
         # Rows without a live risk score stay unranked and never lead the cards,
         # even when a FRED differential gives them a spread and PD.
-        scored = [r for r in rows if r.get("risk_score") is not None]
-        highest = max(scored, key=lambda r: r["risk_score"]) if scored else None
+        # The card is "Highest PD": pick the largest PD among scored rows, not the
+        # largest composite score (FRED spreads can reorder the two).
+        scored = [
+            r for r in rows
+            if r.get("risk_score") is not None and r.get("pd_1y_pct") is not None
+        ]
+        highest = max(scored, key=lambda r: r["pd_1y_pct"]) if scored else None
 
         # data_mode names what actually priced the rows: live World Bank macro,
         # or (with no macro score at all) live FRED 10Y differentials only.

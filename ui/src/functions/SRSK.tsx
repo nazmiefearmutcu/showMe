@@ -503,10 +503,12 @@ function withRanks(rows: RankedRow[]): RankedRow[] {
 }
 
 function deriveStats(rows: RankedRow[], cards?: SRSKCards) {
+  // The backend's card is the highest PD, which can differ from the top
+  // composite score once FRED spreads refine PD; prefer it over the table order.
   const worst = rows.find((r) => typeof r.risk_score === "number");
   return {
-    worstCountry: worst?.country ?? cards?.highest_pd_country ?? null,
-    worstPd: worst?.pd_1y_pct ?? cards?.highest_pd ?? null,
+    worstCountry: cards?.highest_pd_country ?? worst?.country ?? null,
+    worstPd: cards?.highest_pd ?? worst?.pd_1y_pct ?? null,
     rankedCount: rows.filter((r) => typeof r.risk_score === "number").length,
     totalCount: rows.length,
     // Rows with no risk score stay unranked, even when a FRED differential prices them.

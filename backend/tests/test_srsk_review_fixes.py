@@ -157,3 +157,38 @@ def test_row_as_of_is_the_oldest_leg_with_per_leg_dates(no_network: None) -> Non
         "inflation_pct": "2025",
     }, row
     assert out.data["cards"]["as_of"] == "2018"
+
+
+# SRSK#8: the card is labelled "Highest PD", so it must pick the highest PD, not
+# the highest composite score. With FRED refining the spread, the two can diverge.
+class _ScoreWorldBank:
+    """TR gets a high composite score; DE a moderate one (both with real macro)."""
+
+    _BY_ISO3 = {
+        "TUR": {"GC.DOD.TOTL.GD.ZS": 34.0, "FI.RES.TOTL.MO": 3.5, "BN.CAB.XOKA.GD.ZS": -4.5, "FP.CPI.TOTL.ZG": 53.0},
+        "DEU": {"GC.DOD.TOTL.GD.ZS": 64.0, "FI.RES.TOTL.MO": 4.0, "BN.CAB.XOKA.GD.ZS": 2.0, "FP.CPI.TOTL.ZG": 2.3},
+    }
+
+    async def indicator(self, iso3: str, indicator: str) -> Any:
+        value = self._BY_ISO3.get(iso3, {}).get(indicator)
+        return [{"page": 1, "total": 1}, [{"value": value, "date": "2024"}]]
+
+
+class _SpreadFred:
+    """UST 2%; DE 12% (spread 10, large PD) and TR 3% (spread 1, small PD)."""
+
+    _SERIES = {"DGS10": 2.0, "IRLTLT01DEM156N": 12.0, "IRLTLT01TRM156N": 3.0}
+
+    async def series(self, series_id: str) -> dict[str, _Col]:
+        return {"value": _Col(self._SERIES[series_id])}
+
+
+def test_highest_pd_card_picks_highest_pd_not_highest_score(no_network: None) -> None:
+    fn = SRSKFunction(FunctionDeps(worldbank=_ScoreWorldBank(), fred=_SpreadFred()))
+    out = asyncio.run(fn.execute(countries="TR,DE"))
+    rows = {r["country"]: r for r in out.data["rows"]}
+    assert rows["TR"]["risk_score"] > rows["DE"]["risk_score"]  # precondition: score says TR
+    assert rows["DE"]["pd_1y_pct"] > rows["TR"]["pd_1y_pct"]  # PD says DE
+    assert out.data["cards"]["highest_pd_country"] == "DE", out.data["cards"]
+    assert out.data["cards"]["highest_pd"] == pytest.approx(rows["DE"]["pd_1y_pct"], abs=1e-4)
+    assert out.data["summary"]["highest_risk_country"] == "DE"
