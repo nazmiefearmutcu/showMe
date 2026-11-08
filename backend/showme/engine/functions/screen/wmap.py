@@ -217,7 +217,7 @@ class MAPFunction(BaseFunction):
                     "rows": [],
                     "next_actions": [
                         "Retry MAP after the public quote provider recovers.",
-                        "Use the Live/Model control to switch to the deterministic model intentionally.",
+                        "Use the Live/Model control to view the country ETF map without prices (model mode carries no numbers).",
                     ],
                 },
                 sources=["showme_quotes"],
