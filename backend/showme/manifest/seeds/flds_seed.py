@@ -56,7 +56,8 @@ def flds() -> FunctionManifest:
                 control=ControlKind.TEXT,
                 required=False,
                 description=(
-                    "Substring matched against the field name, description, and category. "
+                    "Matches field names and words in names, descriptions and categories that start with "
+                    "the query (a multi-word query is a phrase). Name-prefix matches are listed first. "
                     "Empty returns the full catalog."
                 ),
             ),
@@ -130,19 +131,19 @@ def flds() -> FunctionManifest:
         ),
         methodology=(
             "FLDS searches the local ShowMe field catalog by field name, description, and category. "
-            "The catalog is an in-process dictionary that maps user-visible field names to supported "
-            "function contexts (BQL get clauses, screener DSL filters, analytics advanced params). "
-            "It is not a live market-data request and never reaches any provider. Matching uses a "
-            "case-insensitive substring against the concatenated field+description+category haystack, "
-            "with field-name prefix matches always included even when the substring is elsewhere. "
-            "Companion to BQL (which executes queries against these fields) and DAPI (which lists "
-            "the routes that consume them)."
+            "The catalog is an in-process reference index of field names. Only the OHLCV fields flagged "
+            "bql_get=true are returned by BQL get() (live mode fetches OHLCV rows only); the other names "
+            "have no provider mapping in this catalog and are not implied to be BQL, screener or analytics "
+            "fields. It is not a live market-data request and never reaches any provider. Matching is "
+            "case-insensitive: a field matches when its name, or a word in its name, description or category, "
+            "starts with the query; name-prefix matches are ranked first. Companion to BQL and DAPI."
         ),
         field_dict={
             "rows[].field": FieldDef(description="Canonical field name accepted by BQL/screeners/analytics.", source="catalog"),
             "rows[].category": FieldDef(description="market/valuation/statement/technical/option/risk/fixed_income/general.", source="catalog"),
             "rows[].description": FieldDef(description="Plain-language meaning of the field.", source="catalog"),
-            "rows[].example": FieldDef(description="One concrete place the field can be used.", source="catalog"),
+            "rows[].example": FieldDef(description="One concrete place the field can be used, naming a function in the index.", source="catalog"),
+            "rows[].bql_get": FieldDef(description="True only when BQL get() returns this field (live mode: OHLCV only).", source="catalog"),
             "summary.matched": FieldDef(unit="count", description="Total matches before limit.", source="flds"),
             "summary.shown": FieldDef(unit="count", description="Rows returned after limit.", source="flds"),
             "summary.catalog_fields": FieldDef(unit="count", description="Total fields in the catalog.", source="flds"),
