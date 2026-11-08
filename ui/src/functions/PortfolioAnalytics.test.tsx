@@ -270,10 +270,13 @@ describe("PORTX generic renderer shape fixes (F3)", () => {
     expect(text).not.toContain("3.50%");
   });
 
-  it("defaults PORT_WHATIF to a 100-share ticket, not 10,000", () => {
-    mockOk({ status: "ok", rows: [{ metric: "cost", before: 0, after: 10000 }] });
+  it("leaves PORT_WHATIF quantity blank until the user types one (no 100-share placeholder)", () => {
+    mockOk({ status: "needs_input", rows: [] });
     render(<PortfolioAnalyticsPane code="PORT_WHATIF" symbol="" />);
-    expect(mockArgs.current?.params?.quantity).toBe(100);
+    expect(screen.getByLabelText("Quantity")).toHaveValue("");
+    expect(mockArgs.current?.params?.quantity).toBeUndefined();
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "25" } });
+    expect(mockArgs.current?.params?.quantity).toBe(25);
   });
 
   it("sends no placeholder cost for PORT_WHATIF until the user types one", () => {
