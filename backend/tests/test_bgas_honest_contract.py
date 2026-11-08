@@ -275,7 +275,7 @@ def test_routed_range_is_honoured_despite_router_injected_days() -> None:
 
     load_seeds()
     routed = _route_function_params("BGAS", {"symbol": "NG=F", "range": "1Y"})
-    assert routed["days"] == 120  # the router still injects its default
+    assert "days" not in routed  # the route no longer injects the probe window
     assert routed["range"] == "1Y"
     yahoo = _Yahoo()
     fn = BGASFunction(deps=FunctionDeps(yfinance=yahoo))

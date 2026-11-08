@@ -2133,14 +2133,20 @@ def unavailable_function_data(
         asset_class: str | None = default_asset_class_name(symbol, params.get("asset_class"))
     else:
         asset_class = None
+    # ISIN#7: values the /api/fn route filled in are not the caller's request.
+    injected = set(params.get("__route_defaults") or ())
+
+    def _asked(key: str) -> Any:
+        return None if key in injected else params.get(key)
+
     requested = {
         "symbol": symbol,
         "asset_class": asset_class,
-        "query": params.get("query"),
-        "topic": params.get("topic"),
-        "limit": params.get("limit") or params.get("top_n"),
-        "range": params.get("range"),
-        "days": params.get("days"),
+        "query": _asked("query"),
+        "topic": _asked("topic"),
+        "limit": _asked("limit") or _asked("top_n"),
+        "range": _asked("range"),
+        "days": _asked("days"),
     }
     data = {
         "symbol": symbol,

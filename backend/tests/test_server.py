@@ -766,10 +766,14 @@ def test_icx_index_query_and_reference_rows(monkeypatch) -> None:
     )
 
     routed = server._route_function_params("ICX", {"query": "NDX", "limit": 50})
-    assert routed["index"] == "NDX"
+    # The handler, not the route, reads an index code out of query (ICX#3).
+    assert "index" not in routed and routed["query"] == "NDX"
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
     from showme.engine.functions.screen.icx import ICXFunction
+
+    by_query = asyncio.run(ICXFunction().execute(query="NDX", live=False, limit=50))
+    assert by_query.data["index"] == "NDX"
 
     out = asyncio.run(ICXFunction().execute(index="SPX", live=False, limit=50))
     assert out.data["status"] == "ok"

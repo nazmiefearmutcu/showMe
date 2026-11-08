@@ -564,10 +564,16 @@ class ICXFunction(BaseFunction):
         quote_timeout = max(0.5, min(req_timeout, 4.0))
 
         # INDEX path: when addressed by an index code (SPX/NDX/DAX/...), resolve
-        # to the curated index-member table. This honours the agent router which
-        # maps ICX's query to an ``index`` key, and keeps the region-correct
+        # to the curated index-member table (an explicit ``index``, or a
+        # ``query`` that names a known index code), keeping the region-correct
         # ticker contract (a DAX query never leaks SPX names).
         raw_index = params.get("index")
+        if not raw_index and not (params.get("sector") or params.get("parent")):
+            # ICX#3: ``query`` is either an index code or a sector name. A known
+            # index code selects the index table; anything else stays a sector.
+            query = str(params.get("query") or "").strip()
+            if query and _canonical_index(query):
+                raw_index = query
         if raw_index:
             return await self._execute_index(
                 instrument, str(raw_index).strip(), attach_quotes, quote_timeout

@@ -181,7 +181,15 @@ def normalize_function_contract(
     # The retrieval time is kept separately as retrievedAt.
     payload["retrievedAt"] = payload.get("fetched_at") or _utcnow()
     payload["asOf"] = _observation_as_of(metadata, data, rows, _parse_observation(payload["retrievedAt"]))
-    payload["inputEcho"] = _clean_input(params)
+    echo = _clean_input(params)
+    # Keys the /api/fn route filled in (never sent by the caller) are reported
+    # as routeDefaults, not echoed as if the caller had asked for them.
+    route_defaults = params.get("__route_defaults")
+    if isinstance(route_defaults, (list, tuple)):
+        injected = {key: echo.pop(key) for key in route_defaults if key in echo}
+        if injected:
+            payload["routeDefaults"] = injected
+    payload["inputEcho"] = echo
     # The router injects a default symbol when the caller chose none and flags
     # it __explicit_symbol=False. That default must never be silent: say so in
     # the envelope (defaultedInputs) and in the visible warnings (XCON-5).

@@ -254,8 +254,13 @@ class OVMEFunction(BaseFunction):
             r_for = params.get("r_foreign")
             if r_dom is not None:
                 r = float(r_dom)
+                rate_source = "input_r_domestic"
             if r_for is not None:
                 q = float(r_for)
+        # OVME#1: a contract type the caller did not choose (route default or
+        # nothing at all) is an assumption, and is reported as one.
+        route_filled = set(params.get("__route_defaults") or ())
+        type_given = params.get("type") not in (None, "") and "type" not in route_filled
         opt_type = (params.get("type") or "CALL").upper()
         is_call = opt_type == "CALL"
         model = (params.get("model") or "bs").lower()
@@ -363,6 +368,7 @@ class OVMEFunction(BaseFunction):
             "rate_as_of": rate_as_of,
             "div_yield": q,
             "type": opt_type,
+            "type_source": "input" if type_given else "default",
             "model": model,
             "rows": rows,
             "curve": sensitivity,
@@ -391,6 +397,17 @@ class OVMEFunction(BaseFunction):
         warnings_list: list[str] = []
         if input_error:
             warnings_list.append(input_error)
+        assumed: list[str] = []
+        if not type_given:
+            assumed.append(f"type={opt_type}")
+        if rate_source.startswith("default"):
+            assumed.append(f"rate={r:g}")
+        foreign_rate_given = option_kind in {"fx", "currency"} and params.get("r_foreign") is not None
+        if params.get("div_yield") in (None, "") and not foreign_rate_given:
+            assumed.append("div_yield=0")
+        payload["assumed_defaults"] = assumed
+        if assumed:
+            warnings_list.append("Not given, so assumed: " + ", ".join(assumed) + ".")
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=payload,
