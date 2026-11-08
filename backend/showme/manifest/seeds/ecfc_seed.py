@@ -68,6 +68,7 @@ def ecfc() -> FunctionManifest:
                     "LUR",
                     "BCA_NGDPD",
                     "GGXCNL_NGDP",
+                    "GGXWDG_NGDP",
                     "NGDPD",
                 ],
             ),
@@ -104,7 +105,7 @@ def ecfc() -> FunctionManifest:
         ],
         defaults={
             "country": "USA",
-            "indicators": ["NGDP_RPCH", "PCPIPCH", "LUR"],
+            "indicators": ["NGDP_RPCH", "PCPIPCH", "LUR", "GGXCNL_NGDP", "GGXWDG_NGDP"],
             "years": 5,
             "vintage": "latest",
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
