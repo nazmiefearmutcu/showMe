@@ -85,7 +85,7 @@ def test_stale_exclusion_is_reported_as_a_warning(monkeypatch) -> None:
     assert result.data["summary"]["fresh_rows"] == 2
 
 
-def test_all_stale_yields_no_average_range_or_largest_move(monkeypatch) -> None:
+def test_all_stale_yields_no_average_or_largest_move_and_labels_range(monkeypatch) -> None:
     rows = [
         {"country_code": "X", "policy_rate": 1.0, "change_bp": -50.0, "as_of": "2020-01-01"},
         {"country_code": "Y", "policy_rate": 4.0, "change_bp": 25.0, "as_of": "2021-01-01"},
@@ -93,6 +93,10 @@ def test_all_stale_yields_no_average_range_or_largest_move(monkeypatch) -> None:
     result = _run_with(monkeypatch, rows)
     summary = result.data["summary"]
     assert summary["average_policy_rate"] is None
-    assert summary["min_policy_rate"] is None
-    assert summary["max_policy_rate"] is None
     assert summary["largest_last_move"] is None
+    # Range falls back to the full set so the card is not blank, but the
+    # basis is labelled as stale rather than presented as a current range.
+    assert summary["min_policy_rate"] == 1.0
+    assert summary["max_policy_rate"] == 4.0
+    assert summary["range_basis"] == "no_fresh_rows_full_set"
+    assert summary["range_is_stale"] is True

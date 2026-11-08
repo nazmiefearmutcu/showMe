@@ -279,89 +279,6 @@ _SORT_ORDER = [
     "MX",
 ]
 
-_FALLBACK_ROWS = [
-    {
-        "country_code": "US",
-        "bis_ref_area": "US",
-        "country": "United States",
-        "central_bank": "Federal Reserve",
-        "currency": "USD",
-        "region": "americas",
-        "policy_rate": 3.625,
-        "as_of": "2026-04-28",
-        "previous_rate": 3.875,
-        "previous_date": "2025-12-10",
-        "change_bp": -25.0,
-        "last_move": "cut",
-        "trend_3m_bp": 0.0,
-        "source": "local fallback",
-    },
-    {
-        "country_code": "EU",
-        "bis_ref_area": "XM",
-        "country": "Euro area",
-        "central_bank": "European Central Bank",
-        "currency": "EUR",
-        "region": "europe",
-        "policy_rate": 2.0,
-        "as_of": "2026-04-28",
-        "previous_rate": 2.25,
-        "previous_date": "2025-06-10",
-        "change_bp": -25.0,
-        "last_move": "cut",
-        "trend_3m_bp": 0.0,
-        "source": "local fallback",
-    },
-    {
-        "country_code": "GB",
-        "bis_ref_area": "GB",
-        "country": "United Kingdom",
-        "central_bank": "Bank of England",
-        "currency": "GBP",
-        "region": "europe",
-        "policy_rate": 3.75,
-        "as_of": "2026-04-27",
-        "previous_rate": 4.0,
-        "previous_date": "2025-12-18",
-        "change_bp": -25.0,
-        "last_move": "cut",
-        "trend_3m_bp": 0.0,
-        "source": "local fallback",
-    },
-    {
-        "country_code": "JP",
-        "bis_ref_area": "JP",
-        "country": "Japan",
-        "central_bank": "Bank of Japan",
-        "currency": "JPY",
-        "region": "asia_pacific",
-        "policy_rate": 0.75,
-        "as_of": "2026-04-28",
-        "previous_rate": 0.5,
-        "previous_date": "2025-12-19",
-        "change_bp": 25.0,
-        "last_move": "hike",
-        "trend_3m_bp": 0.0,
-        "source": "local fallback",
-    },
-    {
-        "country_code": "TR",
-        "bis_ref_area": "TR",
-        "country": "Turkiye",
-        "central_bank": "Central Bank of the Republic of Turkiye",
-        "currency": "TRY",
-        "region": "europe",
-        "policy_rate": 37.0,
-        "as_of": "2026-04-24",
-        "previous_rate": 38.0,
-        "previous_date": "2026-01-22",
-        "change_bp": -100.0,
-        "last_move": "cut",
-        "trend_3m_bp": 0.0,
-        "source": "local fallback",
-    },
-]
-
 
 @FunctionRegistry.register
 class BTMMFunction(BaseFunction):
@@ -385,9 +302,10 @@ class BTMMFunction(BaseFunction):
             rows = await asyncio.to_thread(_load_bis_rows, timeout, force_refresh)
             sources = ["BIS CBPOL"]
         except Exception as exc:
-            rows = [dict(row) for row in _FALLBACK_ROWS]
-            sources = ["local fallback"]
+            # DATA POLICY: no stored or hard-coded policy-rate snapshot is served
+            # in place of the BIS feed. Report the outage explicitly instead.
             warnings.append(f"BIS CBPOL unavailable: {exc}")
+            return _unavailable_result(self.code, country=country, region=region, warnings=warnings)
 
         filtered = _filter_rows(rows, country=country, region=region)
         filtered = sorted(filtered, key=_sort_key)[:limit]
@@ -423,6 +341,7 @@ class BTMMFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
+                "status": "ok" if filtered else "empty",
                 "country": country,
                 "region": region,
                 "rows": filtered,
@@ -734,21 +653,42 @@ def _summary(rows: list[dict[str, Any]], *, universe: list[dict[str, Any]]) -> d
         for row in fresh_rows
         if isinstance(row.get("policy_rate"), (int, float))
     ]
+    # Tilt counts skip stale observations (legacy 1998 series, a 2025 move) so
+    # they are not presented as current policy moves. Undated rows are kept.
+    non_stale_rows = [row for row, state in zip(rows, freshness) if state != "stale"]
     move_counts = {
-        "hikes": sum(1 for row in rows if row.get("last_move") == "hike"),
-        "cuts": sum(1 for row in rows if row.get("last_move") == "cut"),
-        "holds": sum(1 for row in rows if row.get("last_move") == "hold"),
+        "hikes": sum(1 for row in non_stale_rows if row.get("last_move") == "hike"),
+        "cuts": sum(1 for row in non_stale_rows if row.get("last_move") == "cut"),
+        "holds": sum(1 for row in non_stale_rows if row.get("last_move") == "hold"),
     }
     movers = [row for row in fresh_rows if isinstance(row.get("change_bp"), (int, float))]
     hottest = max(movers, key=lambda row: abs(float(row["change_bp"])), default=None)
+
+    # Range falls back to the full set only when no row is fresh, and then the
+    # basis is labelled so the card is never read as a current range.
+    range_rates = rates
+    range_basis = f"fresh_{_RANGE_WINDOW_DAYS}d"
+    range_is_stale = False
+    if not range_rates:
+        all_rates = [
+            float(row["policy_rate"])
+            for row in rows
+            if isinstance(row.get("policy_rate"), (int, float))
+        ]
+        if all_rates:
+            range_rates = all_rates
+            range_basis = "no_fresh_rows_full_set"
+            range_is_stale = True
 
     return {
         "rows": len(rows),
         "universe": len(universe),
         "average_policy_rate": round(sum(rates) / len(rates), 4) if rates else None,
         "average_basis": f"fresh_{_RANGE_WINDOW_DAYS}d",
-        "max_policy_rate": max(rates) if rates else None,
-        "min_policy_rate": min(rates) if rates else None,
+        "max_policy_rate": max(range_rates) if range_rates else None,
+        "min_policy_rate": min(range_rates) if range_rates else None,
+        "range_basis": range_basis,
+        "range_is_stale": range_is_stale,
         "range_window_days": _RANGE_WINDOW_DAYS,
         "fresh_rows": len(fresh_rows),
         "stale_rows": freshness.count("stale"),
@@ -756,6 +696,56 @@ def _summary(rows: list[dict[str, Any]], *, universe: list[dict[str, Any]]) -> d
         **move_counts,
         "largest_last_move": hottest,
     }
+
+
+def _unavailable_result(
+    code: str,
+    *,
+    country: str,
+    region: str,
+    warnings: list[str],
+) -> FunctionResult:
+    """Explicit no-data state when the BIS CBPOL feed cannot be read.
+
+    No rows, no summary figures and no stored snapshot are served: the status
+    and reason say what is missing and what the user can do next.
+    """
+    return FunctionResult(
+        code=code,
+        instrument=None,
+        data={
+            "status": "provider_unavailable",
+            "reason": "bis_cbpol_unreachable",
+            "country": country,
+            "region": region,
+            "rows": [],
+            "summary": _summary([], universe=[]),
+            "as_of": None,
+            "stale_seconds": None,
+            "history": [],
+            "next_actions": [
+                "Retry in a few minutes, or pass refresh=true to bypass the BIS cache",
+                "BIS CBPOL is a free public source; no API key is required",
+            ],
+            "methodology": (
+                "BTMM reads BIS CBPOL policy-rate series. BIS CBPOL could not be read, "
+                "so no policy rates are shown; no stored or estimated values are substituted."
+            ),
+            "field_dictionary": {
+                "status": "provider_unavailable means no BIS CBPOL rows were loaded.",
+            },
+        },
+        sources=[],
+        warnings=warnings,
+        metadata={
+            "source_url": BIS_CBPOL_URL,
+            "cache_age_seconds": None,
+            "row_count": 0,
+            "universe_count": 0,
+            "country": country,
+            "region": region,
+        },
+    )
 
 
 def _max_as_of(rows: list[dict[str, Any]]) -> str | None:
