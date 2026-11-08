@@ -15,6 +15,15 @@ def test_methodology_does_not_claim_risk_parity_is_the_only_convergence_reporter
     assert "converged" in methodology and "solver_residual" in methodology, methodology
 
 
+def test_methodology_names_the_risk_parity_output_key_that_is_emitted() -> None:
+    # PORT_OPT#6-RQ: the manifest must name the key the output really contains
+    # (port_opt.py emits max_risk_contribution_error, not the internal max_rc_error).
+    load_seeds()
+    methodology = REGISTRY.get("PORT_OPT").methodology
+    assert "max_rc_error" not in methodology, methodology
+    assert "max_risk_contribution_error" in methodology, methodology
+
+
 import asyncio  # noqa: E402
 
 from showme.engine.core.base_function import FunctionDeps  # noqa: E402

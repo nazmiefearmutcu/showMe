@@ -240,7 +240,7 @@ def port_opt() -> FunctionManifest:
             "samples targets between the lowest and highest single-asset annualized "
             "mean; targets the solver cannot reach repeat one portfolio, so duplicate "
             "points are removed. Risk parity uses cyclical coordinate descent and "
-            "reports converged and max_rc_error; min-volatility and max-Sharpe report "
+            "reports converged and max_risk_contribution_error; min-volatility and max-Sharpe report "
             "converged and solver_residual. Symbols "
             "whose live returns cannot be fetched are listed in dropped_symbols with "
             "status partial; with fewer than two survivors no weights are produced "
