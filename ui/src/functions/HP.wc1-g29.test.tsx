@@ -147,6 +147,21 @@ describe("HP#3 — retracement levels are labelled with their method", () => {
     expect(fibLabel.parentElement?.getAttribute("title") ?? "").toMatch(/retracement/i);
     expect(railValue(container, "Fib 78.6%")).not.toBeNull();
   });
+
+  it("computes the levels as retracements down from the range high", () => {
+    // Range high 115.50, range low 99.00, span 16.50. A standard retracement
+    // of a low-to-high move is measured down from the high:
+    //   23.6% -> 115.50 - 0.236 * 16.50 = 111.606 -> 111.61
+    //   78.6% -> 115.50 - 0.786 * 16.50 = 102.531 -> 102.53
+    // The previous formula (low + fraction * span) gave 102.89 and 111.97,
+    // which are the 76.4% and 21.4% retracements, not the labelled levels.
+    mockState.payload = payloadWith({});
+    const { container } = render(<HPPane code="HP" symbol="AAPL" />);
+    expect(railValue(container, "Fib 23.6%")).toBe("111.61");
+    expect(railValue(container, "Fib 78.6%")).toBe("102.53");
+    const title = screen.getByText("Fib 78.6%").parentElement?.getAttribute("title") ?? "";
+    expect(title).toMatch(/from the range high/i);
+  });
 });
 
 /* ── HP#2 — a bar-cap shortfall is disclosed, not silently shown ───── */

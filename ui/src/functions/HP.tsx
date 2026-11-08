@@ -674,8 +674,10 @@ function RightRail({
   symbol: string;
 }) {
   const indicators = useMemo(() => computeIndicators(rows), [rows]);
-  const support = stats ? stats.low + (stats.high - stats.low) * 0.236 : null;
-  const resist = stats ? stats.low + (stats.high - stats.low) * 0.786 : null;
+  // Standard retracements of the low-to-high move, measured down from the
+  // range high: level = high - fraction * span.
+  const fib236 = stats ? stats.high - (stats.high - stats.low) * 0.236 : null;
+  const fib786 = stats ? stats.high - (stats.high - stats.low) * 0.786 : null;
   // True 52-week extremes when the provider meta carried them; otherwise the
   // label is honest about being the selected range's high/low.
   const highLabel = week52 ? "52w high" : "Range high";
@@ -686,15 +688,15 @@ function RightRail({
       <RailSection title="Key levels">
         <RailKv
           label="Fib 23.6%"
-          value={fmtNum(support)}
+          value={fmtNum(fib236)}
           tone="positive"
-          title="Fibonacci 23.6% retracement of the selected range (low to high). A computed level, not a support signal."
+          title="Fibonacci 23.6% retracement of the selected range, measured down from the range high. A computed level, not a support signal."
         />
         <RailKv
           label="Fib 78.6%"
-          value={fmtNum(resist)}
+          value={fmtNum(fib786)}
           tone="negative"
-          title="Fibonacci 78.6% retracement of the selected range (low to high). A computed level, not a resistance signal."
+          title="Fibonacci 78.6% retracement of the selected range, measured down from the range high. A computed level, not a resistance signal."
         />
         <RailKv
           label={highLabel}
