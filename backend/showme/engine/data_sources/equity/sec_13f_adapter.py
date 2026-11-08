@@ -212,7 +212,16 @@ class SEC13FAdapter(BaseDataSource):
     async def query_holdings_by_security(self, cusip: str | None = None,
                                           issuer: str | None = None,
                                           quarter: str | None = None,
-                                          top_n: int = 20) -> pd.DataFrame:
+                                          top_n: int = 20,
+                                          issuer_normalized: str | None = None) -> pd.DataFrame:
+        """Aggregate 13F holdings per filer for one security.
+
+        ``issuer`` is a substring match on the 13F nameOfIssuer (ILIKE).
+        ``issuer_normalized`` is an exact match on the issuer name with all
+        non-alphanumerics removed and upper-cased (``"Apple Inc."`` and
+        ``"APPLE INC"`` both become ``APPLEINC``), so a company name cannot
+        match a different issuer that merely contains it.
+        """
         try:
             import duckdb  # type: ignore
         except Exception:
@@ -225,6 +234,9 @@ class SEC13FAdapter(BaseDataSource):
             sql += " AND cusip = ?"; params.append(cusip)
         if issuer:
             sql += " AND issuer ILIKE ?"; params.append(f"%{issuer}%")
+        if issuer_normalized:
+            sql += " AND regexp_replace(upper(issuer), '[^A-Z0-9]', '', 'g') = ?"
+            params.append(issuer_normalized)
         if quarter:
             sql += " AND report_date LIKE ?"; params.append(f"{quarter}%")
         sql += " GROUP BY filer_cik, report_date ORDER BY value_usd DESC LIMIT ?"

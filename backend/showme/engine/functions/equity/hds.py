@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import pandas as pd
@@ -69,19 +70,25 @@ class HDSFunction(BaseFunction):
                 sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance: {e}")
-        # Then enrich with SEC 13F aggregate by issuer name (DuckDB-cached)
+        # Then enrich with the SEC 13F aggregate for the issuer (DuckDB-cached).
+        # 13F rows carry the issuer name, not the ticker, so the ticker is first
+        # resolved to its SEC filer name and matched on the normalized name.
         sec_top: list[dict[str, Any]] = []
         sec_13f = getattr(self.deps, "sec_13f", None)
         if sec_13f:
             try:
                 top = await asyncio.wait_for(
-                    sec_13f.query_holdings_by_security(
-                        issuer=instrument.symbol,
+                    _query_13f_for_ticker(
+                        sec_13f,
+                        getattr(self.deps, "sec_edgar", None),
+                        instrument.symbol,
                         top_n=int(params.get("top_n", 20)),
                     ),
                     timeout=float(params.get("sec_timeout", 8)),
                 )
-                if not top.empty:
+                if top is None:
+                    warnings.append(f"sec_13f: no SEC issuer name maps to {instrument.symbol}")
+                elif not top.empty:
                     sec_top = top.to_dict(orient="records")
                     sources.append("sec_13f")
             except Exception as e:
@@ -128,6 +135,34 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+async def _query_13f_for_ticker(sec_13f: Any, sec_edgar: Any, symbol: str, *, top_n: int) -> pd.DataFrame | None:
+    """Return the 13F per-filer aggregate for ``symbol``, or None when the
+    ticker has no SEC issuer name (nothing to match on, so nothing is guessed)."""
+    issuer_name = await _sec_issuer_name(sec_edgar, symbol)
+    if not issuer_name:
+        return None
+    return await sec_13f.query_holdings_by_security(
+        issuer_normalized=_issuer_key(issuer_name),
+        top_n=top_n,
+    )
+
+
+async def _sec_issuer_name(sec_edgar: Any, symbol: str) -> str | None:
+    if sec_edgar is None:
+        return None
+    cik = await sec_edgar.cik_for(symbol)
+    if not cik:
+        return None
+    submissions = await sec_edgar.submissions(cik)
+    name = (submissions or {}).get("name") if isinstance(submissions, dict) else None
+    return str(name).strip() if name else None
+
+
+def _issuer_key(name: str) -> str:
+    """Same normalization the 13F adapter applies to nameOfIssuer."""
+    return re.sub(r"[^A-Z0-9]", "", name.upper())
+
+
 def _major_summary(frame: Any) -> dict[str, Any]:
     """Yahoo major_holders is a label/Value summary, not a holder table."""
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -151,13 +186,17 @@ def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, An
     if sec_top:
         rows = []
         for item in sec_top:
+            # Field names follow SEC13FAdapter.query_holdings_by_security:
+            # filer_cik, report_date, value_usd, shares. The local store keeps
+            # no filer name, so the holder is labelled by its CIK.
+            filer_cik = item.get("filer_cik")
             rows.append({
                 "symbol": symbol,
-                "holder": item.get("filer") or item.get("holder") or item.get("name"),
+                "holder": f"CIK {filer_cik}" if filer_cik else (item.get("filer") or item.get("holder")),
                 "holder_type": "institutional_13f",
-                "shares": finite(item.get("shares") or item.get("sshPrnamt")),
-                "market_value": finite(item.get("market_value") or item.get("value")),
-                "quarter": item.get("quarter") or item.get("period"),
+                "shares": finite(item.get("shares")),
+                "market_value": finite(item.get("value_usd")),
+                "quarter": item.get("report_date") or None,
                 "source_mode": "sec_13f",
             })
         return rows
