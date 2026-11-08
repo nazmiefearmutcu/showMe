@@ -71,6 +71,24 @@ interface ISINData {
   next_actions?: string[];
 }
 
+/** ID type choices; AUTO lets the backend detect the flavour per input. */
+const ID_TYPE_CHOICES = [
+  "AUTO",
+  "ID_ISIN",
+  "ID_CUSIP",
+  "ID_SEDOL",
+  "TICKER",
+] as const;
+type IdTypeChoice = (typeof ID_TYPE_CHOICES)[number];
+/** Display labels; kept distinct from the backend tokens shown on match pills. */
+const ID_TYPE_LABELS: Record<IdTypeChoice, string> = {
+  AUTO: "Auto",
+  ID_ISIN: "ISIN",
+  ID_CUSIP: "CUSIP",
+  ID_SEDOL: "SEDOL",
+  TICKER: "Ticker",
+};
+
 const HISTORY_KEY = "showme.isin.history";
 const HISTORY_MAX = 5;
 const DEFAULT_INPUT = "US0378331005";
@@ -164,9 +182,11 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
   const [input, setInput] = useState(() => (symbol || "").trim() || DEFAULT_INPUT);
   const [lookup, setLookup] = useState(() => (symbol || "").trim() || DEFAULT_INPUT);
   const [history, setHistory] = useState<string[]>(readHistory);
+  const [idType, setIdType] = useState<IdTypeChoice>("AUTO");
   const { state, data, error, refetch } = useFunction<ISINData>({
     code,
-    params: { ids: lookup },
+    params:
+      idType === "AUTO" ? { ids: lookup } : { ids: lookup, id_type: idType },
     enabled: lookup.length > 0,
   });
 
@@ -351,6 +371,19 @@ export function ISINPane({ code, symbol }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <form onSubmit={submit} style={formStyle}>
+                <select
+                  aria-label="Identifier type"
+                  title="Force the identifier type, or detect it per input"
+                  value={idType}
+                  onChange={(event) => setIdType(event.target.value as IdTypeChoice)}
+                  style={selectStyle}
+                >
+                  {ID_TYPE_CHOICES.map((choice) => (
+                    <option key={choice} value={choice}>
+                      {ID_TYPE_LABELS[choice]}
+                    </option>
+                  ))}
+                </select>
                 <input
                   type="search"
                   aria-label="Identifier to cross-reference"
@@ -452,6 +485,17 @@ const inputStyle: CSSProperties = {
   height: 24,
   padding: "0 6px",
   width: 200,
+};
+
+const selectStyle: CSSProperties = {
+  background: "var(--surface-2)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-md)",
+  height: 24,
+  padding: "0 4px",
 };
 
 const historyRowStyle: CSSProperties = {
