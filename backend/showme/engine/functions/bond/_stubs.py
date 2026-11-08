@@ -412,12 +412,15 @@ class CRPRFunction(BaseFunction):
         term_debt_parts = [lt_debt[0]] if lt_debt is not None else []
         if lt_debt_cur is not None and (lt_debt is None or lt_debt[2] != "LongTermDebt"):
             term_debt_parts.append(lt_debt_cur[0])
-        gross_debt = sum(term_debt_parts) + (short_debt[0] if short_debt is not None else 0.0)
+        # No debt concept at all is a missing input, not zero debt.
+        gross_debt: float | None = None
+        if term_debt_parts or short_debt is not None:
+            gross_debt = sum(term_debt_parts) + (short_debt[0] if short_debt is not None else 0.0)
 
         # A missing input stays None. It is never read as zero.
         ebit = op_income[0] if op_income is not None else None
         ebitda = (ebit + dep_amort[0]) if (ebit is not None and dep_amort is not None) else None
-        leverage = round(gross_debt / ebitda, 3) if ebitda is not None and ebitda > 0 else None
+        leverage = round(gross_debt / ebitda, 3) if gross_debt is not None and ebitda is not None and ebitda > 0 else None
         # Coverage is EBIT / interest expense, the conventional definition.
         coverage = round(ebit / interest[0], 3) if ebit is not None and interest is not None and interest[0] > 0 else None
         fin_date = next((x[1] for x in (op_income, lt_debt, interest) if x is not None), _as_of())
@@ -442,8 +445,13 @@ class CRPRFunction(BaseFunction):
                     input_warnings.append("No annual interest expense reported; interest coverage is not computed.")
         if ebitda is not None and ebitda <= 0:
             input_warnings.append("EBITDA is not positive, so leverage is not meaningful.")
+        if gross_debt is None:
+            input_warnings.append(
+                "No debt concept (LongTermDebt, LongTermDebtNoncurrent or ShortTermBorrowings) reported; "
+                "gross debt and leverage are not computed, so no implied rating is derived."
+            )
 
-        if gross_debt <= 0 and (ebitda or 0.0) <= 0:
+        if (gross_debt or 0.0) <= 0 and (ebitda or 0.0) <= 0:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
