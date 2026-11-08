@@ -96,31 +96,16 @@ def bmtx() -> FunctionManifest:
                 step=0.1,
                 unit="bps",
             ),
-            InputSpec(
-                name="paper_mode",
-                label="Paper mode (safe)",
-                control=ControlKind.BOOLEAN,
-                required=True,
-                description="Always true here — backtest cannot wire to live.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for OHLCV history.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
+        # paper_mode is not a control: the handler never reads it, and
+        # backtests cannot reach live routing. It stays as a default invariant.
+        # provider_mode is not a control either: OHLCV always comes from the
+        # yfinance source, which the result's sources state.
         defaults={
             "initial_equity": 100000,
             "commission_bps": 5.0,
             "slippage_bps": 2.0,
             "paper_mode": True,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",

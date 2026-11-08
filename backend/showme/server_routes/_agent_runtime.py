@@ -418,11 +418,10 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code == "BTFW":
         params.update({"strategy": "sma_crossover", "days": 120})
     elif code == "BMTX":
-        # BMTX#5: no forced 120-day window (about 25 holdout bars). Dropping the
-        # key lets the handler default (3 years of daily bars) apply; an explicit
-        # caller `days` is still re-merged after this point.
-        params.pop("days", None)
-        params.update({"strategies": ["sma_crossover", "rsi_meanrev", "buy_and_hold"]})
+        # BMTX#5: send an explicit bounded window. The handler default (3 years of
+        # daily bars) costs more than the live budget on a universe, so it would
+        # always time out. oos_windows reports the test-slice size this yields.
+        params.update({"strategies": ["sma_crossover", "rsi_meanrev", "buy_and_hold"], "days": 120})
     elif code == "MLSIG":
         params.update({"horizon": 1, "days": 365})
     elif code == "BTUNE":

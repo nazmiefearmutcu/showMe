@@ -120,39 +120,11 @@ class BMTXFunction(BaseFunction):
             )
         # BMTX: a requested name that is not registered is not run; name it, do not drop it silently.
         unknown_strategies = [s for s in strategies if s not in STRATEGY_REGISTRY]
-        cells = []
-        strategy_errors: dict[str, list[str]] = {}
-        oos_windows: dict[str, dict[str, Any]] = {}
-        for sym, df in bars_dict.items():
-            split = _oos_split(len(df))
-            oos_windows[sym] = _oos_window(df, split)
-            for strat in strategies:
-                fn = STRATEGY_REGISTRY.get(strat)
-                if fn is None:
-                    continue
-                try:
-                    bt = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps)
-                    r = bt.run()
-                    # BMTX#6: holdout score on the final slice only. The strategies
-                    # use fixed default parameters, so nothing is fitted on it.
-                    holdout = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps,
-                                       eval_start=split).run()
-                    cells.append({
-                        "label": f"{sym} {strat}",
-                        "symbol": sym, "strategy": strat,
-                        "sharpe": r.metrics["sharpe"],
-                        "total_return": r.metrics["total_return"],
-                        "max_drawdown": r.metrics["max_drawdown"],
-                        "trades": r.metrics["trades"],
-                        "final_equity": r.final_equity,
-                        "oos_sharpe": holdout.metrics["sharpe"],
-                        "oos_total_return": holdout.metrics["total_return"],
-                        "oos_max_drawdown": holdout.metrics["max_drawdown"],
-                    })
-                except Exception as exc:  # BMTX-R1: keep the reason, do not drop silently
-                    strategy_errors.setdefault(sym, []).append(
-                        (strat, f"{type(exc).__name__}: {exc}")
-                    )
+        # BMTX#5: the backtest loop is CPU-bound and synchronous. It runs in a
+        # worker thread so LIVE_TIMEOUT_S can fire and the event loop stays free.
+        cells, strategy_errors, oos_windows = await asyncio.to_thread(
+            _run_backtests, bars_dict, strategies, initial_equity, fee_bps,
+        )
         # BMTX-R1: a symbol with no successful cell is excluded and named with its reason.
         ok_symbols = {cell["symbol"] for cell in cells}
         failed_cells = [
@@ -261,6 +233,53 @@ class BMTXFunction(BaseFunction):
             metadata={"days": days, "fee_bps": fee_bps, "live": True,
                       "unavailable_symbols": list(failures)},
         )
+
+
+def _run_backtests(
+    bars_dict: dict[str, pd.DataFrame],
+    strategies: list[str],
+    initial_equity: float,
+    fee_bps: float,
+) -> tuple[list[dict[str, Any]], dict[str, list[tuple[str, str]]], dict[str, dict[str, Any]]]:
+    """Synchronous backtest grid: one cell per (symbol, registered strategy).
+
+    Returns (cells, strategy_errors, oos_windows). Each failed run is kept with
+    its reason in strategy_errors (BMTX-R1), never dropped silently.
+    """
+    cells: list[dict[str, Any]] = []
+    strategy_errors: dict[str, list[tuple[str, str]]] = {}
+    oos_windows: dict[str, dict[str, Any]] = {}
+    for sym, df in bars_dict.items():
+        split = _oos_split(len(df))
+        oos_windows[sym] = _oos_window(df, split)
+        for strat in strategies:
+            fn = STRATEGY_REGISTRY.get(strat)
+            if fn is None:
+                continue
+            try:
+                bt = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps)
+                r = bt.run()
+                # BMTX#6: holdout score on the final slice only. The strategies
+                # use fixed default parameters, so nothing is fitted on it.
+                holdout = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps,
+                                   eval_start=split).run()
+                cells.append({
+                    "label": f"{sym} {strat}",
+                    "symbol": sym, "strategy": strat,
+                    "sharpe": r.metrics["sharpe"],
+                    "total_return": r.metrics["total_return"],
+                    "max_drawdown": r.metrics["max_drawdown"],
+                    "trades": r.metrics["trades"],
+                    "final_equity": r.final_equity,
+                    "oos_sharpe": holdout.metrics["sharpe"],
+                    "oos_total_return": holdout.metrics["total_return"],
+                    "oos_max_drawdown": holdout.metrics["max_drawdown"],
+                })
+            except Exception as exc:  # BMTX-R1: keep the reason, do not drop silently
+                strategy_errors.setdefault(sym, []).append(
+                    (strat, f"{type(exc).__name__}: {exc}")
+                )
+    return cells, strategy_errors, oos_windows
 
 
 def _failure_warning(sym: str, reason: str) -> str:
