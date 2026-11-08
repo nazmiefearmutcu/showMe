@@ -438,16 +438,9 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
     elif code == "SECF":
         params.update({"query": "technology"})
     elif code == "GREEKS":
-        params["positions"] = [{
-            "symbol": symbol,
-            "option_type": "CALL",
-            "qty": 1,
-            "spot": 100,
-            "strike": 105,
-            "expiry": 0.25,
-            "vol": 0.35,
-            "rate": 0.04,
-        }]
+        # No injected demo book: an empty positions list is the honest
+        # input_required state (T10 offline audit, placeholder_value).
+        params.pop("positions", None)
     elif category == "portfolio":
         params.setdefault("symbols", profile["peer_symbols"])
     return params
