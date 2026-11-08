@@ -2,8 +2,9 @@
 
 FINRA ATS Transparency is the canonical source for weekly off-exchange
 share volume by venue; the handler aggregates per-venue prints into a
-single weekly ranking. yfinance volumes provide the lit-market baseline
-for the dark-pool % calculation when FINRA is unavailable.
+single weekly ranking. yfinance weekly total volume is only the
+denominator for dark-pool %; it is never a stand-in for FINRA. When FINRA
+is unavailable the handler returns provider_unavailable with empty venues.
 """
 from __future__ import annotations
 
@@ -68,7 +69,6 @@ def dark() -> FunctionManifest:
                 description="Preferred provider mode; chain may downgrade and report it.",
                 options=[
                     DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
         ],
@@ -78,7 +78,6 @@ def dark() -> FunctionManifest:
             fallbacks=[],
             acceptable_modes=[
                 DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),

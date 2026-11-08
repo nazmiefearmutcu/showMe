@@ -36,3 +36,26 @@ def test_dark_seed_primary_provider_is_finra() -> None:
     assert "yfinance" not in seed.provider_chain.fallbacks
 
 
+
+
+# ---------------------------------------------------------------- DARK#3 (residuals)
+
+
+def test_dark_seed_docstring_does_not_describe_a_lit_market_fallback() -> None:
+    import showme.manifest.seeds.dark_seed as dark_seed
+
+    doc = (dark_seed.__doc__ or "").lower()
+    assert "lit-market baseline" not in doc
+    assert "when finra is unavailable" not in doc
+    assert "provider_unavailable" in doc
+
+
+def test_dark_seed_never_advertises_cached_snapshot() -> None:
+    from showme.manifest.enums import DataMode
+
+    seed = _seed()
+    cached = DataMode.CACHED_SNAPSHOT.value
+    acceptable = {getattr(m, "value", m) for m in seed.provider_chain.acceptable_modes}
+    assert cached not in acceptable
+    provider_mode = next(i for i in seed.inputs if i.name == "provider_mode")
+    assert cached not in {getattr(o, "value", o) for o in (provider_mode.options or [])}
