@@ -118,6 +118,28 @@ function studyLabel(key: string): string {
 
 const CHART_H = 380;
 
+/* Study cards, table and footer are computed on this bar interval. The chart
+ * below keeps its own interval (Chart.tsx state), so it is stated, not implied. */
+const STUDY_INTERVAL = "1d";
+
+/* Pill label derived from the backend data mode — never a hard-coded "live".
+ * yfinance quotes are a free delayed/end-of-day feed, not a real-time one. */
+function studyFeedPill(mode: string): {
+  label: string;
+  tone: "positive" | "warn" | "muted";
+} {
+  if (mode === "live_exchange" || mode === "live_official") {
+    return { label: "live studies", tone: "positive" };
+  }
+  if (mode === "cached_snapshot") {
+    return { label: "cached studies", tone: "warn" };
+  }
+  if (mode === "delayed_reference" || mode === "live_yfinance") {
+    return { label: "delayed studies", tone: "muted" };
+  }
+  return { label: "studies, mode unknown", tone: "muted" };
+}
+
 export function CHGSPane({ code, symbol }: FunctionPaneProps) {
   const [days, setDays] = usePersistentOption<number>(
     "showme.chgs.days",
@@ -131,11 +153,12 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<CHGSData>({
     code,
     symbol: effectiveSymbol,
-    params: { days },
+    params: { days, interval: STUDY_INTERVAL },
     enabled: !!effectiveSymbol,
   });
 
   const payload = data?.data;
+  const feed = studyFeedPill(String(data?.metadata?.data_mode ?? ""));
   const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
   const hasStudies = !!payload?.indicators;
   // The synthetic label is reserved for the genuine template mode — the
@@ -321,6 +344,10 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
           tone="neutral"
         />
       </section>
+      <p style={monoMutedStyle}>
+        Study cards and table use daily (1d) bars; the chart above uses its own
+        interval and does not change them.
+      </p>
       <Chart
         symbol={effectiveSymbol}
         height={CHART_H}
@@ -369,7 +396,7 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
                     : `${closes.length} bars`}
               </Pill>
               <Pill
-                tone={isSynthetic || isOutage ? "warn" : "positive"}
+                tone={isSynthetic || isOutage ? "warn" : feed.tone}
                 variant="soft"
                 withDot={!isSynthetic && !isOutage}
               >
@@ -377,7 +404,7 @@ export function CHGSPane({ code, symbol }: FunctionPaneProps) {
                   ? "synthetic template"
                   : isOutage
                     ? "provider unavailable"
-                    : "live studies"}
+                    : feed.label}
               </Pill>
               <SegmentedControl
                 label="RANGE"
