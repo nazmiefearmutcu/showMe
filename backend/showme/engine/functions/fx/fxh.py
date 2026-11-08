@@ -237,7 +237,10 @@ class FXHFunction(BaseFunction):
         out["data_mode"] = effective_source
         out["bid_ask_pips"] = bid_ask_pips
         out["spot_shock_pct"] = shock * 100
-        out["exposure_side"] = exposure_side if len(objs) == 1 else None
+        # Top-level side follows the computed rows (a per-row side overrides
+        # the request default); mixed sides have no single top-level side.
+        row_sides = {e.side for e in objs}
+        out["exposure_side"] = next(iter(row_sides)) if len(row_sides) == 1 else None
         single = out["rows"][0] if len(out["rows"]) == 1 else None
         out["spot"] = single["spot_rate"] if single else None
         out["exposure_notional"] = single["notional_foreign"] if single else None
