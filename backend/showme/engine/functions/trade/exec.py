@@ -136,6 +136,19 @@ def _bar_index_at(times: list[float], instant_s: float) -> int:
     return idx
 
 
+def _bar_index_containing(times: list[float], instant_s: float, bar_s: float) -> int | None:
+    """Index of the stored bar whose span ``[open, open + bar_s)`` contains
+    ``instant_s``, or ``None`` when no stored bar covers it (a halt, a missing
+    minute, or a time before the first bar). EXEC#2-RQ / EXEC#3-RQ: the nearest
+    earlier bar is NOT a substitute; the caller must report the gap instead."""
+    if not times:
+        return None
+    idx = _bar_index_at(times, instant_s)
+    if times[idx] <= instant_s < times[idx] + bar_s:
+        return idx
+    return None
+
+
 def _bar_interval_vwap(row: dict[str, Any]) -> float | None:
     high = row.get("high")
     low = row.get("low")
@@ -154,13 +167,15 @@ def _build_plan_rows(
     side: str,
     arrival_price: float | None,
     schedule_start_s: int,
+    bar_s: float,
 ) -> list[dict[str, Any]]:
     """Map an algo ``schedule`` onto the real ``bars`` by RELEASE TIME and
     compute real per-slice slippage / shortfall / pace from the bar data.
 
     EXEC#3: slice ``i`` releases at ``schedule_start_s + offset_s`` and is
-    measured against the bar in effect at that instant. Slices therefore span
-    exactly the requested horizon instead of the last N consecutive bars.
+    measured against the bar that CONTAINS that instant. A release that falls in
+    a gap of the stored bars carries no market data (``bar_status`` says so)
+    rather than borrowing the previous bar (EXEC#3-RQ).
     """
     times = [float(b["time"]) for b in bars]
     side_sign = -1.0 if str(side).upper() == "SELL" else 1.0
@@ -169,24 +184,26 @@ def _build_plan_rows(
     for idx, slot in enumerate(schedule):
         offset_s = int(slot.get("offset_s", 0))
         release_s = schedule_start_s + offset_s
-        bar = bars[_bar_index_at(times, release_s)]
-        close = bar.get("close")
-        bench = _bar_interval_vwap(bar)
         qty = float(slot.get("qty", 0.0))
         cum_qty += qty
+        bar_idx = _bar_index_containing(times, release_s, bar_s)
+        bar = bars[bar_idx] if bar_idx is not None else None
+        close = bar.get("close") if bar is not None else None
+        bench = _bar_interval_vwap(bar) if bar is not None else None
         slip_bps: float | None = None
         if close is not None and bench:
             slip_bps = (float(close) - bench) / bench * 10_000.0
         is_bps: float | None = None
         if close is not None and arrival_price:
             is_bps = (float(close) - float(arrival_price)) / float(arrival_price) * 10_000.0 * side_sign
-        ts_s = bar.get("time")
+        ts_s = bar.get("time") if bar is not None else None
         rows.append(
             {
                 "slice_idx": idx,
                 "offset_s": offset_s,
                 "release_ts_ms": int(release_s) * 1000,
                 "ts_ms": int(ts_s) * 1000 if ts_s is not None else None,
+                "bar_status": "ok" if bar is not None else "no_bar_at_release",
                 "qty": round(qty, 8),
                 "cum_qty": round(cum_qty, 8),
                 "bar_close": float(close) if close is not None else None,
@@ -574,8 +591,11 @@ class EXECFunction(BaseFunction):
         # EXEC#2: with no supplied arrival, the decision price is the price at
         # the START of the schedule (open of the bar in effect then), never the
         # close of the window's last bar, which would be look-ahead.
-        arrival_bar = bars[_bar_index_at(times, schedule_start_s)]
-        if arrival_price is None:
+        # EXEC#2-RQ: the arrival bar must CONTAIN the schedule start; a gap yields
+        # no arrival (null) instead of the open of an older, unrelated bar.
+        arrival_idx = _bar_index_containing(times, schedule_start_s, bar_s)
+        arrival_bar = bars[arrival_idx] if arrival_idx is not None else None
+        if arrival_price is None and arrival_bar is not None:
             start_px = arrival_bar.get("open")
             if start_px is None:
                 start_px = arrival_bar.get("close")
@@ -587,6 +607,11 @@ class EXECFunction(BaseFunction):
                 f"bar_coarser_than_slice_spacing: {int(bar_s)}s bars for "
                 f"{slot_s:g}s slice spacing; consecutive slices share a bar."
             )
+        if arrival_price is None and arrival_bar is None:
+            warnings.append(
+                "arrival_unavailable: no stored bar covers the schedule start, so "
+                "arrival_price is null; pass arrival_price to compute implementation shortfall."
+            )
 
         schedule, resolved_algo = _algo_schedule(
             algo, target_qty=target_qty, horizon_s=horizon_s, slices=slices,
@@ -595,7 +620,14 @@ class EXECFunction(BaseFunction):
         rows = _build_plan_rows(
             bars, schedule=schedule, target_qty=target_qty, side=side,
             arrival_price=arrival_price, schedule_start_s=schedule_start_s,
+            bar_s=bar_s,
         )
+        gap_rows = sum(1 for r in rows if r["bar_status"] != "ok")
+        if gap_rows:
+            warnings.append(
+                f"bar_gap: {gap_rows} of {len(rows)} slice(s) release where no stored bar "
+                f"covers the instant; those rows carry no market data."
+            )
 
         # EXEC#4: the cards report the monitor store, not a hard-coded parent.
         parents = exec_monitor.list_parents(limit=10_000)
@@ -604,8 +636,11 @@ class EXECFunction(BaseFunction):
 
         # Parent-level aggregates from the real per-slice rows.
         filled_qty = rows[-1]["cum_qty"] if rows else 0.0
-        notional = sum((r["qty"] * (r["bar_close"] or 0.0)) for r in rows)
-        avg_fill_px = (notional / filled_qty) if filled_qty else ref_price
+        # Only slices that have a stored bar contribute; a gap slice has no price.
+        priced = [r for r in rows if r["bar_close"] is not None]
+        priced_qty = sum(r["qty"] for r in priced)
+        notional = sum(r["qty"] * r["bar_close"] for r in priced)
+        avg_fill_px = (notional / priced_qty) if priced_qty else None
         is_values = [r["is_bps"] for r in rows if r["is_bps"] is not None]
         slip_values = [r["slip_bps"] for r in rows if r["slip_bps"] is not None]
         avg_is_bps = round(sum(is_values) / len(is_values), 2) if is_values else None
