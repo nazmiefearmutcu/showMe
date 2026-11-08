@@ -73,6 +73,8 @@ interface AVData {
   methodology?: string;
 }
 
+const ARCHIVE_LIMIT = 25;
+
 type ScopeValue = "symbol" | "global";
 const SCOPE_OPTIONS = [
   { value: "symbol" as ScopeValue, label: "symbol" },
@@ -93,7 +95,9 @@ export function AVPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<AVData>({
     code,
     symbol: scope === "symbol" ? effectiveSymbol : undefined,
-    params: { symbol: scope === "symbol" ? effectiveSymbol : "", query },
+    // Explicit limit: the agent router otherwise injects limit 6 for news
+    // functions and the pane would silently show only six archive items.
+    params: { symbol: scope === "symbol" ? effectiveSymbol : "", query, limit: ARCHIVE_LIMIT },
     enabled: scope === "global" || !!effectiveSymbol,
   });
 
