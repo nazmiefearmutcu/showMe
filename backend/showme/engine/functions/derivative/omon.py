@@ -23,10 +23,30 @@ from showme.engine.core.base_function import (
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.derivative.ovme import _bs_price
 
-# Continuously-compounded risk-free rate used for greeks. Kept as a documented
-# constant so the chain stays keyless; OVME uses the same 5% default.
-_RISK_FREE_RATE = 0.05
+# Default continuously-compounded risk-free rate for the greeks, used only when
+# the caller gives no ``risk_free``/``rate``. Same default as OVME and the OMON
+# manifest (4.5%). The value actually used is echoed as risk_free_rate.
+_RISK_FREE_RATE = 0.045
+# Default dividend yield (0 = none supplied). Echoed as dividend_yield with
+# dividend_yield_source "default_0", so a missing q is never silent.
+_DIVIDEND_YIELD = 0.0
 _DAYS_PER_YEAR = 365.0
+
+
+def _rate_param(
+    params: dict[str, Any], keys: tuple[str, ...], default: float, default_source: str,
+) -> tuple[float, str]:
+    """A finite fraction from the first present key, else the default, with its source."""
+    for key in keys:
+        if params.get(key) is None:
+            continue
+        try:
+            value = float(params[key])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            return value, "param"
+    return default, default_source
 
 # Implied vol below this floor is a failed inversion (yfinance reports e.g. 1e-5
 # for deep-ITM quotes the solver could not invert), not a real vol.
@@ -246,8 +266,8 @@ class OMONFunction(BaseFunction):
         "requested) expiry: strikes, best bid/ask, open interest, traded volume "
         "and implied volatility per side. Delta is computed with Black-Scholes "
         "(same pricer as OVME) using each leg's own implied vol, the live spot, "
-        f"a {int(_RISK_FREE_RATE * 100)}% risk-free rate, and the calendar time "
-        "to expiry."
+        "the risk-free rate r (default 4.5%) and dividend yield q (default 0%, "
+        "echoed in the output with their sources), and the calendar time to expiry."
     )
 
     _FIELD_DICTIONARY = {
@@ -340,6 +360,13 @@ class OMONFunction(BaseFunction):
         # computed around an invented price, and the chain is not labelled live.
         spot_unavailable = spot is None
         tau = _years_to_expiry(expiry)
+        # OMON#4: r and q are inputs, not constants; the output echoes each one.
+        risk_free, risk_free_source = _rate_param(
+            params, ("risk_free", "rate"), _RISK_FREE_RATE, "default"
+        )
+        div_yield, div_yield_source = _rate_param(
+            params, ("dividend_yield", "div_yield"), _DIVIDEND_YIELD, "default_0"
+        )
 
         # Merge calls and puts on strike.
         merged: dict[float, dict[str, Any]] = {}
@@ -376,9 +403,9 @@ class OMONFunction(BaseFunction):
                 row[f"{side}_iv"] = round(iv, 4) if iv is not None else None
                 delta = None
                 if spot and iv and iv > 0 and tau > 0 and strike > 0:
-                    # _bs_price(S, K, T, r, sigma, q, is_call) — q=0 dividend yield.
+                    # _bs_price(S, K, T, r, sigma, q, is_call)
                     delta = _bs_price(
-                        spot, strike, tau, _RISK_FREE_RATE, iv, 0.0, is_call
+                        spot, strike, tau, risk_free, iv, div_yield, is_call
                     ).get("delta")
                 row[f"{side}_delta"] = delta
 
@@ -499,6 +526,10 @@ class OMONFunction(BaseFunction):
                 "expiries": chain.get("expiries", []),
                 "spot": round(spot, 4) if spot else None,
                 "spot_source": spot_source,
+                "risk_free_rate": risk_free,
+                "risk_free_source": risk_free_source,
+                "dividend_yield": div_yield,
+                "dividend_yield_source": div_yield_source,
                 "rows": rows,
                 "series": series,
                 "cards": cards,
