@@ -75,7 +75,7 @@ class BMTXFunction(BaseFunction):
         days = int(params.get("days", 365 * 3))
         fee_bps = float(params.get("fee_bps", 5.0))
         sources = ["yfinance"]
-        if not _truthy(params.get("live_backtest") or params.get("live")):
+        if not _live_requested(params):
             # BMTX residual: without live OHLCV no backtest runs, so the grid
             # carries requested labels with null metrics and needs_input status.
             return FunctionResult(
@@ -252,6 +252,17 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _live_requested(params: dict[str, Any]) -> bool:
+    """BMTX#4: an explicit ``live_backtest`` (even False) decides the mode.
+
+    The router injects ``live=True`` as a default; a caller's explicit
+    ``live_backtest=False`` must not be overridden by it.
+    """
+    if params.get("live_backtest") is not None:
+        return _truthy(params["live_backtest"])
+    return _truthy(params.get("live"))
 
 
 _OFFLINE_REASON = (
