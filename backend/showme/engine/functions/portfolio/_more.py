@@ -403,6 +403,31 @@ def _irr(cashflows: list[tuple[datetime, float]],
     return rate
 
 
+def _tra_unavailable(
+    instrument: Instrument, years: int, *, status: str, reason: str, next_actions: list[str],
+) -> FunctionResult:
+    """TRA with no live history: an explicit state, never a generated price path."""
+    return FunctionResult(
+        code="TRA",
+        instrument=instrument,
+        data={
+            "status": status,
+            "reason": reason,
+            "symbol": instrument.symbol,
+            "years": years,
+            "rows": [],
+            "points": [],
+            "twr": None, "irr": None, "cagr": None, "price_return": None, "max_drawdown": None,
+            "next_actions": next_actions,
+            "methodology": "TRA computes total return from live daily closes and dividends only.",
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"live": False,
+                  "data_mode": "provider_unavailable" if status == "provider_unavailable" else "input_error"},
+    )
+
+
 @FunctionRegistry.register
 class TRAFunction(BaseFunction):
     """TRA — Total Return Analysis (TWR + IRR + price + dividend)."""
@@ -415,51 +440,45 @@ class TRAFunction(BaseFunction):
         if instrument is None:
             raise ValueError("TRA requires instrument")
         years = int(params.get("years", 5))
-        # Default-polarity flip (2026-09-08): TRA computes from the live
-        # price feed by default; ``reference=true`` opts into the labelled
-        # template history. A live-feed failure may still fall back to the
-        # template, but only WITH an explicit warning + honest data_mode.
+        # TRA computes from the live price feed only. The old labelled template
+        # history (btfw._template_history, a generated price path) is gone:
+        # reference=true, a feed failure or an empty feed is an explicit state
+        # with no total-return figures (data policy).
         live = not _truthy(params.get("reference"))
         warnings: list[str] = []
-        metadata: dict[str, Any] = {"live": False, "data_mode": "modeled"}
-        if live:
-            try:
-                if not self.deps.yfinance:
-                    raise RuntimeError("yfinance adapter unavailable")
-                import asyncio
-                df = await asyncio.wait_for(
-                    self.deps.yfinance.fetch(DataRequest(
+        if not live:
+            return _tra_unavailable(
+                instrument, years, status="input_error",
+                reason=("TRA computes total return from live price history only; reference=true asked "
+                        "for a template history, which is not offered."),
+                next_actions=["Run TRA without reference=true."],
+            )
+        try:
+            if not self.deps.yfinance:
+                raise RuntimeError("yfinance adapter unavailable")
+            import asyncio
+            df = await asyncio.wait_for(
+                self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=instrument,
                     start=datetime.now(timezone.utc) - timedelta(days=365 * years),
                     interval="1d",
-                    )),
-                    timeout=float(params.get("quote_timeout", 8)),
-                )
-                sources = ["yfinance"]
-                metadata = {"live": True, "data_mode": "live_yfinance"}
-            except Exception as exc:
-                from showme.engine.functions.portfolio.btfw import _template_history
-                df = _template_history(365 * years)
-                sources = ["total_return_model"]
-                metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
-                warnings.append(
-                    "TRA fell back to the labelled template history after the live "
-                    f"price feed failed: {exc}"
-                )
-        else:
-            from showme.engine.functions.portfolio.btfw import _template_history
-            df = _template_history(365 * years)
-            sources = ["total_return_model"]
-        if df.empty:
-            from showme.engine.functions.portfolio.btfw import _template_history
-            df = _template_history(365 * years)
-            sources = ["total_return_model"]
-            metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
-            if live:
-                warnings.append(
-                    "Live price feed returned no usable observations; showing the "
-                    "labelled template history instead."
-                )
+                )),
+                timeout=float(params.get("quote_timeout", 8)),
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never substituted
+            return _tra_unavailable(
+                instrument, years, status="provider_unavailable",
+                reason=f"Live price feed failed: {str(exc) or type(exc).__name__}. No total return is computed.",
+                next_actions=["Retry once the price provider recovers."],
+            )
+        if df is None or df.empty or "close" not in df.columns:
+            return _tra_unavailable(
+                instrument, years, status="provider_unavailable",
+                reason="Live price feed returned no usable observations. No total return is computed.",
+                next_actions=["Retry later or check the symbol."],
+            )
+        sources = ["yfinance"]
+        metadata: dict[str, Any] = {"live": True, "data_mode": "live_yfinance"}
         close = df["close"]
         # A source without a dividend series (e.g. the template) must not read
         # as "no dividends paid": keep the count/total null and say so.
@@ -486,22 +505,43 @@ class TRAFunction(BaseFunction):
             splits_count: int | None = int(split_events.sum())
         else:
             splits_count = None
+        adj_close = close.astype(float).copy()
+        adj_divs = divs.astype(float).copy() if dividends_known else divs
+        # Reconciles TRA#2 and TRA#3: closes are used as delivered (already
+        # split-adjusted by the live sources), except when a reported split bar
+        # carries a one-day jump equal to the reported ratio. Then the earlier
+        # closes are evidently raw, and they (and their dividends) are put on
+        # the post-split basis by that ratio, so the split is neither a gain
+        # nor a phantom loss.
+        raw_split_fixed: list[str] = []
+        if splits_known:
+            ratios = pd.to_numeric(df["splits"], errors="coerce").fillna(0.0)
+            positions = {bar: i for i, bar in enumerate(close.index)}
+            for bar in sorted(split_bars):
+                i = positions.get(bar)
+                ratio = float(ratios.loc[bar]) if bar in ratios.index else 0.0
+                if not i or ratio <= 1.0:
+                    continue
+                prev, cur = float(adj_close.iloc[i - 1]), float(adj_close.iloc[i])
+                if prev > 0 and cur > 0 and abs((prev / cur) / ratio - 1.0) <= 0.02:
+                    adj_close.iloc[:i] = adj_close.iloc[:i] / ratio
+                    if dividends_known:
+                        adj_divs.iloc[:i] = adj_divs.iloc[:i] / ratio
+                    raw_split_fixed.append(bar.strftime("%Y-%m-%d"))
+        for stamp in raw_split_fixed:
+            warnings.append(
+                f"TRA: closes before {stamp} were not split-adjusted by the source; they were put "
+                "on the post-split basis with the reported split ratio."
+            )
         for bar in _unconfirmed_split_dates(close):
             stamp = bar.strftime("%Y-%m-%d")
             if bar in split_bars:
-                warnings.append(
-                    f"TRA: the one-day price move on {stamp} matches a stock split ratio even "
-                    "though the source reports a split event there. The closes may not be "
-                    "split-adjusted; verify before reading total return or drawdown."
-                )
-            else:
-                warnings.append(
-                    f"TRA: the one-day price move on {stamp} matches a stock split ratio, but "
-                    "the source reported no split event. Verify it before reading total return "
-                    "or drawdown."
-                )
-        adj_close = close.astype(float)
-        adj_divs = divs.astype(float) if dividends_known else divs
+                continue  # reported split: handled above (adjusted or already adjusted)
+            warnings.append(
+                f"TRA: the one-day price move on {stamp} matches a stock split ratio, but "
+                "the source reported no split event. Verify it before reading total return "
+                "or drawdown."
+            )
         price_ret = float(adj_close.iloc[-1] / adj_close.iloc[0] - 1)
         # TRA#2: TWR is a total return: each day compounds (close + dividend) over
         # the prior close, so dividends are reinvested at the ex-date close. With

@@ -110,14 +110,18 @@ def test_tra_reports_dividends_from_chart_events() -> None:
     assert result.metadata.get("data_mode") == "live_yfinance"
 
 
-def test_tra_dividends_are_null_when_the_dividend_series_is_unavailable() -> None:
-    # Live feed fails, so TRA serves the labelled template: it has no
-    # dividend series, and must say so instead of reporting zero.
+def test_tra_live_feed_failure_serves_no_template_history() -> None:
+    # Data policy: a failed live feed is provider_unavailable with no total-return
+    # figures; the generated template history is gone.
     deps = FunctionDeps(yfinance=None)
     result = _run(TRAFunction(deps).execute(instrument=AAPL))
-    assert result.metadata.get("fallback") is True
-    # Before the fix: dividends_count 0 and dividends_total 0.0.
-    assert result.data["dividends_count"] is None
-    assert result.data["dividends_total"] is None
-    assert result.data["summary"]["dividends_total"] is None
-    assert any("dividend" in w.lower() for w in result.warnings)
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["twr"] is None and result.data["rows"] == []
+    assert result.sources == []
+    assert any("no total return" in w.lower() for w in result.warnings)
+
+
+def test_tra_reference_mode_is_refused() -> None:
+    result = _run(TRAFunction(FunctionDeps(yfinance=None)).execute(instrument=AAPL, reference=True))
+    assert result.data["status"] == "input_error"
+    assert result.sources == []

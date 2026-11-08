@@ -2,7 +2,7 @@
  * TRA — specialized Total Return pane tests.
  *
  * Pins the four render states plus the two controls that map to real backend
- * params: the symbol input and the LIVE/MODEL (`reference`) toggle.
+ * params: the symbol input (no MODEL template toggle).
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -98,11 +98,10 @@ describe("TRA Total Return pane", () => {
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
   });
 
-  it("toggles the MODEL (reference) control state", () => {
+  it("offers no MODEL (template series) toggle", () => {
     ok(LIVE_SERIES);
     render(<TotalReturnPane code="TRA" />);
-    const liveButton = screen.getByRole("button", { name: "LIVE" });
-    fireEvent.click(liveButton);
-    expect(screen.getByRole("button", { name: "MODEL" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "MODEL" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "LIVE" })).toBeNull();
   });
 });

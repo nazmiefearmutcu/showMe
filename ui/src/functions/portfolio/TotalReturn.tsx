@@ -5,9 +5,8 @@
  * chart from the sampled `series[]`, a TWR / IRR / CAGR / price-return KPI
  * row (labelled by total_return_basis), the backend max drawdown computed on the
  * full daily series, and a
- * tail observation table. Live price history is the backend default; the
- * MODEL toggle opts into the labelled template series (`reference=true`),
- * which the shared data-quality badge then discloses.
+ * tail observation table. TRA runs on live price history only: the old MODEL
+ * toggle (a generated template series) is gone (data policy).
  */
 import { useMemo, useState } from "react";
 import {
@@ -102,13 +101,9 @@ const OBSERVATION_COLUMNS: DataGridColumn<Row>[] = [
 
 export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
   const [symbolInput, setSymbolInput] = useState("AAPL");
-  const [reference, setReference] = useState(false);
   const effectiveSymbol = symbol || symbolInput || "AAPL";
 
-  const params = useMemo(
-    () => ({ years: 5, reference }),
-    [reference],
-  );
+  const params = useMemo(() => ({ years: 5 }), []);
   const { state, data, error, refetch } = useFunction<TraPayload>({
     code,
     symbol: effectiveSymbol,
@@ -289,15 +284,6 @@ export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
                   spellCheck={false}
                 />
               </label>
-              <button
-                type="button"
-                className={`btn btn--ghost portfolio-analytics-live${reference ? "" : " portfolio-analytics-live--on"}`}
-                onClick={() => setReference((value) => !value)}
-                aria-pressed={!reference}
-                title="Toggle live price history vs the labelled template series"
-              >
-                {reference ? "MODEL" : "LIVE"}
-              </button>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}

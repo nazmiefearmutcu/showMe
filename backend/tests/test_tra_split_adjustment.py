@@ -154,7 +154,8 @@ def test_unadjusted_drop_at_a_reported_split_is_named_not_hidden() -> None:
     splits[SPLIT_BAR] = 4.0
     res = _run(_frame(closes, [0.0] * N, splits))
     assert res.data["split_adjusted"] is True
-    assert any("matches a stock split ratio even though" in w for w in res.warnings)
+    # Named, and now corrected with the reported ratio (TRA#2/#3 reconciliation).
+    assert any("not split-adjusted by the source" in w for w in res.warnings)
 
 
 def test_frames_without_split_column_and_no_split_sized_move_stay_quiet() -> None:

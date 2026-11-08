@@ -42,19 +42,6 @@ DEFAULT_WALK_STEPS = 5
 _MIN_OOS_BARS = 126  # about half a trading year of daily bars
 _MIN_OOS_TRADES = 5
 
-def _template_history(days: int) -> pd.DataFrame:
-    periods = max(240, min(days, 756))
-    index = pd.date_range(end=datetime.now(timezone.utc).date(), periods=periods, freq="B")
-    periods = len(index)
-    t = np.arange(periods, dtype=float)
-    close = 100 + (t * 0.08) + np.sin(t / 9) * 2.5
-    return pd.DataFrame({
-        "open": close * 0.998,
-        "high": close * 1.012,
-        "low": close * 0.988,
-        "close": close,
-        "volume": 1_000_000 + (t % 20) * 10_000,
-    }, index=index)
 
 
 class _InputError(ValueError):
