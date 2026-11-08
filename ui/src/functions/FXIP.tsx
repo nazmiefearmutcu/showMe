@@ -284,11 +284,7 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
         />
         <StatCard
           label="Carry (annualized)"
-          value={
-            typeof payload.carry_annualized === "number" && Number.isFinite(payload.carry_annualized)
-              ? fmtSignedPct(payload.carry_annualized * 100)
-              : "—"
-          }
+          value={carryText(payload.carry_annualized)}
           caption="QUOTE − BASE RATE · LONG BASE EARNS IF NEGATIVE"
           tone="neutral"
         />
@@ -377,6 +373,16 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
 function fmtRate(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return Math.abs(v) >= 20 ? v.toFixed(3) : v.toFixed(4);
+}
+
+/* UI-10: a missing carry is shown as missing, never as a real +0.000%. */
+function carryPctOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v * 100 : null;
+}
+
+function carryText(v: unknown): string {
+  const pct = carryPctOrNull(v);
+  return pct == null ? "—" : fmtSignedPct(pct);
 }
 
 function fmtPct(v: number | null | undefined): string {

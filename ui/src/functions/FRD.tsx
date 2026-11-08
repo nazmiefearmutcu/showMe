@@ -138,10 +138,6 @@ export function FRDPane({ code, symbol }: FunctionPaneProps) {
   const rows = useMemo(() => payload?.rows ?? [], [payload]);
   const spot = payload?.S;
   const isLive = rows[0]?.source_mode === "live_yfinance_quote";
-  const rBase = payload?.r_base;
-  const rQuote = payload?.r_quote;
-  // A missing rate gives no differential (shown as an em dash), never 0.
-  const rateDiff = rBase != null && rQuote != null ? rQuote - rBase : null;
 
   const stats = useMemo(() => deriveStats(rows, payload), [rows, payload]);
 
@@ -366,11 +362,9 @@ export function FRDPane({ code, symbol }: FunctionPaneProps) {
           />
           <StatCard
             label="Rate diff"
-            value={rateDiff == null ? "—" : `${fmtSigned(rateDiff, 3)}%`}
+            value={rateSpreadText(payload?.r_quote, payload?.r_base)}
             caption={rateCaption(payload)}
-            tone={
-              rateDiff == null ? "neutral" : rateDiff >= 0 ? "positive" : "negative"
-            }
+            tone={rateSpreadTone(payload?.r_quote, payload?.r_base)}
           />
           <StatCard
             label="1Y F − S"
@@ -569,6 +563,33 @@ function fmtCarry(v: number | null | undefined): string {
 function fmtSigned(v: number, digits: number): string {
   if (!Number.isFinite(v)) return "—";
   return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(digits)}`;
+}
+
+/* UI-5: a rate differential needs both rates; a missing one is a dash, never
+ * the other rate shown as the spread. */
+function rateSpreadOf(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): number | null {
+  if (typeof quote !== "number" || typeof base !== "number") return null;
+  if (!Number.isFinite(quote) || !Number.isFinite(base)) return null;
+  return quote - base;
+}
+
+function rateSpreadText(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): string {
+  const spread = rateSpreadOf(quote, base);
+  return spread == null ? "—" : `${fmtSigned(spread, 3)}%`;
+}
+
+function rateSpreadTone(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): "positive" | "negative" | "neutral" {
+  const spread = rateSpreadOf(quote, base);
+  return spread == null ? "neutral" : spread >= 0 ? "positive" : "negative";
 }
 
 function fmtYears(v: number | null | undefined): string {

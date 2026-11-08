@@ -270,23 +270,13 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           />
           <StatCard
             label="Rate diff"
-            value={
-              payload?.base_rate == null || payload?.quote_rate == null
-                ? "—"
-                : `${fmtRate(payload.quote_rate - payload.base_rate)}%`
-            }
+            value={rateSpreadText(payload?.quote_rate, payload?.base_rate)}
             caption={
               payload?.base_rate == null || payload?.quote_rate == null
                 ? "rates not supplied (r_base / r_quote)"
                 : `${payload?.quote ?? "—"} vs ${payload?.base ?? "—"} RATES`
             }
-            tone={
-              payload?.base_rate == null || payload?.quote_rate == null
-                ? "neutral"
-                : payload.quote_rate >= payload.base_rate
-                  ? "positive"
-                  : "negative"
-            }
+            tone={rateSpreadTone(payload?.quote_rate, payload?.base_rate)}
           />
           <StatCard
             label="Band vol"
@@ -488,6 +478,33 @@ function volCaption(
   if (source === "live_realized_vol") return "LIVE REALIZED VOL · MODEL BANDS (spot·vol·√T)";
   if (source === "user_inputs") return "USER INPUT VOL · MODEL BANDS (spot·vol·√T)";
   return "MODEL BAND INPUT (spot·vol·√T)";
+}
+
+/* UI-5: a rate differential needs both rates; a missing one is a dash, never
+ * the other rate shown as the spread. */
+function rateSpreadOf(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): number | null {
+  if (typeof quote !== "number" || typeof base !== "number") return null;
+  if (!Number.isFinite(quote) || !Number.isFinite(base)) return null;
+  return quote - base;
+}
+
+function rateSpreadText(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): string {
+  const spread = rateSpreadOf(quote, base);
+  return spread == null ? "—" : `${fmtRate(spread)}%`;
+}
+
+function rateSpreadTone(
+  quote: number | null | undefined,
+  base: number | null | undefined,
+): "positive" | "negative" | "neutral" {
+  const spread = rateSpreadOf(quote, base);
+  return spread == null ? "neutral" : spread >= 0 ? "positive" : "negative";
 }
 
 function fmtRate(v: number | null | undefined): string {
