@@ -30,6 +30,21 @@ from showme.engine.functions.bond.srsk import (
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+class _FredOutage:
+    async def series(self, series_id: str):  # noqa: ARG002
+        raise RuntimeError("fred offline (test)")
+
+
+@pytest.fixture(autouse=True)
+def _no_fred_network(monkeypatch):
+    """These tests cover the World Bank legs. SRSK falls back to the keyless
+    FRED CSV when no key is set (SRSK#5), so pin that fallback to an outage
+    instead of letting the test reach the network."""
+    import showme.engine.functions.bond.srsk as srsk_mod
+
+    monkeypatch.setattr(srsk_mod, "fred_with_keyless_fallback", lambda fred, client=None: fred or _FredOutage())
+
+
 def _make_handler() -> SRSKFunction:
     """Construct the handler, tolerating either zero-arg or deps-arg ctors."""
     try:

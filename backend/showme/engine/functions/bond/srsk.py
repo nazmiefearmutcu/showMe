@@ -31,6 +31,37 @@ from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
+
+
+def _last_observation(df: Any) -> tuple[float | None, str | None]:
+    """(value, ISO date) of the last finite observation in a FRED frame."""
+    try:
+        values = df["value"].astype(float)
+        values = values[values.notna()]
+        if values.empty:
+            return None, None
+        return float(values.iloc[-1]), str(values.index[-1])[:10]
+    except Exception:  # noqa: BLE001 - unreadable frame is "no observation"
+        return None, None
+
+
+def _month_mean(df: Any, iso_date: str) -> float | None:
+    """Mean of a daily FRED frame over the calendar month of ``iso_date``.
+
+    The OECD IRLTLT01 sovereign 10Y series are monthly averages of daily
+    yields, so the UST leg of the differential is the same month's average of
+    DGS10, not today's print (SRSK#5).
+    """
+    try:
+        month = str(iso_date)[:7]
+        values = df["value"].astype(float)
+        mask = [str(idx)[:7] == month for idx in values.index]
+        picked = values[mask]
+        picked = picked[picked.notna()]
+        return float(picked.mean()) if not picked.empty else None
+    except Exception:  # noqa: BLE001
+        return None
 
 # ---------------------------------------------------------------------------
 # ISO-2 → ISO-3 for the curated sovereign universe (World Bank uses ISO-3
@@ -269,21 +300,24 @@ class SRSKFunction(BaseFunction):
         warnings: list[str] = []
         rows: list[dict[str, Any]] = []
 
-        # Optional FRED refinement of the proxy spread (only if a key is set).
+        # FRED refinement of the proxy spread: the keyed adapter when a key is
+        # set, else the keyless CSV (SRSK#5, same as gc3d/wb/yas).
+        fred = fred_with_keyless_fallback(self.deps.fred)
+        ust_frame: Any = None
         ust_y: float | None = None
+        ust_as_of: str | None = None
         sovereign_fred_ids: dict[str, str] = {}
-        if self.deps.fred:
-            try:
-                ust = await self.deps.fred.series("DGS10")
-                ust_y = float(ust["value"].iloc[-1])
-            except Exception as exc:  # pragma: no cover - key-gated
-                warnings.append(f"fred DGS10: {exc}")
-            try:
-                from showme.engine.functions.bond.wb import _SOVEREIGN_FRED_IDS  # type: ignore
+        try:
+            ust_frame = await fred.series("DGS10")
+            ust_y, ust_as_of = _last_observation(ust_frame)
+        except Exception as exc:  # noqa: BLE001 - outage is reported, not hidden
+            warnings.append(f"fred DGS10: {str(exc) or type(exc).__name__}")
+        try:
+            from showme.engine.functions.bond.wb import _SOVEREIGN_FRED_IDS  # type: ignore
 
-                sovereign_fred_ids = dict(_SOVEREIGN_FRED_IDS)
-            except Exception:  # pragma: no cover - sibling import optional
-                sovereign_fred_ids = {}
+            sovereign_fred_ids = dict(_SOVEREIGN_FRED_IDS)
+        except Exception:  # pragma: no cover - sibling import optional
+            sovereign_fred_ids = {}
 
         wb_network_failures = 0
         wb_success = 0
@@ -306,12 +340,19 @@ class SRSKFunction(BaseFunction):
             target_y = None
             fred_err = None
             fid = sovereign_fred_ids.get(country)
-            if self.deps.fred and ust_y is not None and fid and country != "US":
+            if ust_y is not None and fid and country != "US":
                 try:
-                    target = await self.deps.fred.series(fid)
-                    target_y = float(target["value"].iloc[-1])
-                except Exception as exc:
-                    fred_err = exc
+                    target = await fred.series(fid)
+                    value, observed = _last_observation(target)
+                    if value is not None and observed:
+                        aligned = _month_mean(ust_frame, observed)
+                        if aligned is None:
+                            fred_err = (f"{fid} {observed[:7]}: no DGS10 observations in that month "
+                                        "to align the UST leg; no differential computed")
+                        else:
+                            target_y = {"yield": value, "as_of": observed, "ust_aligned": round(aligned, 4)}
+                except Exception as exc:  # noqa: BLE001
+                    fred_err = f"{fid}: {str(exc) or type(exc).__name__}"
             return country, macro, macro_notes, wb_ok, wb_err, target_y, fred_err
 
         tasks = {c: asyncio.ensure_future(_fetch_one_country(c)) for c in countries}
@@ -367,9 +408,10 @@ class SRSKFunction(BaseFunction):
                     "computed (unranked)"
                 )
 
-            # Refine with a real yield differential when FRED is available.
+            # Refine with a real yield differential when FRED answered.
             fid = sovereign_fred_ids.get(country)
-            if self.deps.fred and ust_y is not None and fid:
+            fred_leg: dict[str, Any] = {}
+            if ust_y is not None and fid:
                 if country == "US":
                     # The US is the UST benchmark: a UST-minus-UST differential is zero by
                     # construction, not a credit reading. Never pin a constant spread here;
@@ -382,7 +424,14 @@ class SRSKFunction(BaseFunction):
                             ]
                         )
                 elif target_y is not None:
-                    proxy_spread = round(target_y - ust_y, 4)
+                    # Same-month legs: the monthly sovereign average minus the
+                    # DGS10 average over that month.
+                    proxy_spread = round(target_y["yield"] - target_y["ust_aligned"], 4)
+                    fred_leg = {
+                        "fred_10y_pct": target_y["yield"],
+                        "ust_10y_same_month_pct": target_y["ust_aligned"],
+                        "fred_as_of": target_y["as_of"],
+                    }
                     source_mode = "fred+worldbank" if risk_score is not None else "fred"
                     if risk_score is None:
                         # The spread/PD now come from a real FRED differential, but
@@ -413,6 +462,7 @@ class SRSKFunction(BaseFunction):
                     "source_mode": source_mode,
                     "as_of": macro.get("as_of"),
                     "as_of_by_leg": macro.get("as_of_by_leg", {}),
+                    **fred_leg,
                     "pd_basis": (
                         None
                         if pd_1y_pct is None
@@ -459,11 +509,16 @@ class SRSKFunction(BaseFunction):
                     "field_dictionary": self._field_dictionary(),
                     "next_actions": [
                         "Retry once World Bank api.worldbank.org is reachable.",
-                        "Optionally configure a FRED API key to add real 10Y yield differentials.",
+                        "FRED 10Y differentials need fred.stlouisfed.org reachable (keyless CSV; "
+                        "a FRED API key is optional).",
                     ],
                 },
                 sources=["worldbank"],
-                warnings=warnings or ["worldbank: no live observations returned"],
+                warnings=[
+                    *warnings,
+                    *([] if any("worldbank" in w.lower() for w in warnings)
+                      else ["worldbank: no live observations returned"]),
+                ],
                 metadata={
                     "live": False,
                     "fallback": False,
@@ -511,11 +566,16 @@ class SRSKFunction(BaseFunction):
                             if outage
                             else "Check the requested country codes (ISO-2, for example TR or DE)."
                         ),
-                        "Optionally configure a FRED API key to add real 10Y yield differentials.",
+                        "FRED 10Y differentials need fred.stlouisfed.org reachable (keyless CSV; "
+                        "a FRED API key is optional).",
                     ],
                 },
                 sources=[],
-                warnings=warnings or [f"worldbank: no live observations for {unpriced}"],
+                warnings=[
+                    *warnings,
+                    *([] if any("worldbank" in w.lower() for w in warnings)
+                      else [f"worldbank: no live observations for {unpriced}"]),
+                ],
                 metadata={
                     "live": False,
                     "fallback": False,
@@ -597,6 +657,7 @@ class SRSKFunction(BaseFunction):
             metadata={
                 "live": bool(wb_success),
                 "ust_10y_pct": ust_y,
+                "ust_10y_as_of": ust_as_of,
                 "worldbank_countries": wb_success,
                 "wb_network_failures": wb_network_failures,
             },

@@ -14,6 +14,17 @@ from showme.engine.core.base_function import FunctionDeps
 from showme.engine.functions.bond.srsk import SRSKFunction
 
 
+def _fred_frame(series_id: str, value: float):
+    """A FRED-shaped frame: DGS10 daily over a month, IRLTLT01 sovereigns monthly."""
+    import pandas as pd
+
+    if series_id == "DGS10":
+        idx = pd.date_range("2026-09-01", "2026-09-30", freq="B")
+    else:
+        idx = pd.DatetimeIndex(["2026-09-01"])
+    return pd.DataFrame({"value": [float(value)] * len(idx)}, index=idx)
+
+
 class _Col:
     def __init__(self, value: float) -> None:
         self.iloc = [value]
@@ -26,8 +37,10 @@ class _FakeFred:
         "IRLTLT01TRM156N": 9.0,
     }
 
-    async def series(self, series_id: str) -> dict[str, _Col]:
-        return {"value": _Col(self._SERIES[series_id])}
+    api_key = "test-key"  # a keyed adapter, so the keyless CSV shim is not used
+
+    async def series(self, series_id: str) -> Any:
+        return _fred_frame(series_id, self._SERIES[series_id])
 
 
 class _NoWorldBank:
@@ -179,8 +192,10 @@ class _SpreadFred:
 
     _SERIES = {"DGS10": 2.0, "IRLTLT01DEM156N": 12.0, "IRLTLT01TRM156N": 3.0}
 
-    async def series(self, series_id: str) -> dict[str, _Col]:
-        return {"value": _Col(self._SERIES[series_id])}
+    api_key = "test-key"  # a keyed adapter, so the keyless CSV shim is not used
+
+    async def series(self, series_id: str) -> Any:
+        return _fred_frame(series_id, self._SERIES[series_id])
 
 
 def test_highest_pd_card_picks_highest_pd_not_highest_score(no_network: None) -> None:

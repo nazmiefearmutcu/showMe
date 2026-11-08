@@ -386,7 +386,7 @@ export function SRSKPane({ code }: FunctionPaneProps) {
           }
           body={
             payload?.reason ??
-            "World Bank returned no fundamentals and no FRED key is configured."
+            "World Bank returned no fundamentals and FRED priced no 10Y differential."
           }
           icon="∅"
           action={
