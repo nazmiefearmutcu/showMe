@@ -45,7 +45,10 @@ _FIELD_DICTIONARY: dict[str, str] = {
     "rows[].side": "bid | ask for the ladder row.",
     "rows[].cum_size": "Cumulative size from best to this level.",
     "rows[].notional": "price * size for this level.",
-    "kyle_lambda_proxy": "Local price-impact proxy from recent kline returns vs dollar volume (lower = more liquid).",
+    "kyle_lambda_proxy": "Kyle's lambda: OLS slope of 1-interval log return on signed dollar taker flow (log-return per USD; estimated from klines, not tick data). Larger magnitude = more price impact per USD.",
+    "kyle_lambda_intercept": "OLS intercept of the same regression (average log return per interval at zero net flow).",
+    "kyle_lambda_r2": "R-squared of the Kyle regression; low values mean flow explains little of the return.",
+    "kyle_lambda_bps_per_1m_usd": "Price impact in bps per $1M of net taker flow = lambda * 1,000,000 * 10,000.",
 }
 
 _NEXT_ACTIONS = [
@@ -241,8 +244,15 @@ class MICROFunction(BaseFunction):
                 }
             )
 
-        # Kyle's lambda price-impact proxy from recent klines.
+        # Kyle's lambda (Kyle 1985): delta log price_t = alpha + lambda * x_t, where
+        # x_t is SIGNED order flow. Klines carry aggressor-side volume: taker-buy
+        # base volume (index 9) and total base volume (index 5), so signed base
+        # flow = taker_buy - taker_sell = 2 * taker_buy - volume. The slope is
+        # estimated by OLS with an intercept on 1-interval log returns, against
+        # the signed dollar flow of the same bar (close * signed base flow).
         kyle_lambda: float | None = None
+        kyle_intercept: float | None = None
+        kyle_r2: float | None = None
         kyle_points = 0
         kyle_warning: str | None = None
         if not isinstance(klines, Exception) and getattr(klines, "status_code", None) == 200:
@@ -251,13 +261,21 @@ class MICROFunction(BaseFunction):
                 if krows:
                     closes = np.array([float(r[4]) for r in krows])
                     vols = np.array([float(r[5]) for r in krows])
+                    taker_buy = np.array([float(r[9]) for r in krows])
                     rets = np.diff(np.log(closes))
-                    abs_rets = np.abs(rets)
-                    vol_dollar = vols[1:] * closes[1:]
-                    if len(abs_rets) > 30 and vol_dollar.sum() > 0:
-                        beta = np.cov(abs_rets, vol_dollar)[0, 1] / max(np.var(vol_dollar), 1e-12)
-                        kyle_lambda = abs(float(beta))
-                        kyle_points = int(len(abs_rets))
+                    signed_flow_usd = (2.0 * taker_buy[1:] - vols[1:]) * closes[1:]
+                    if len(rets) > 30 and float(np.var(signed_flow_usd)) > 0:
+                        cov = np.cov(rets, signed_flow_usd)
+                        slope = float(cov[0, 1] / cov[1, 1])
+                        intercept = float(rets.mean() - slope * signed_flow_usd.mean())
+                        resid = rets - (intercept + slope * signed_flow_usd)
+                        ss_tot = float(((rets - rets.mean()) ** 2).sum())
+                        kyle_lambda = slope
+                        kyle_intercept = intercept
+                        kyle_r2 = (1.0 - float((resid ** 2).sum()) / ss_tot) if ss_tot > 0 else None
+                        kyle_points = int(len(rets))
+                    else:
+                        kyle_warning = "insufficient kline variation in signed flow for Kyle lambda"
             except Exception as exc:
                 kyle_warning = str(exc)
         elif isinstance(klines, Exception):
@@ -308,14 +326,20 @@ class MICROFunction(BaseFunction):
                     "imbalance": imbalance,
                     "top10_imbalance": depth_table[1]["imbalance"] if len(depth_table) > 1 else None,
                 },
-                # Liquidity / impact proxy.
+                # Price impact (Kyle's lambda, signed-flow OLS, kline taker flow).
                 "kyle_lambda_proxy": kyle_lambda,
+                "kyle_lambda_intercept": kyle_intercept,
+                "kyle_lambda_r2": kyle_r2,
+                "kyle_lambda_points": kyle_points,
                 "kyle_lambda_bps_per_1m_usd": (
                     kyle_lambda * 1_000_000 * 10_000
                     if isinstance(kyle_lambda, (int, float))
                     else None
                 ),
-                "kyle_lambda_equation": "lambda = |slope(|delta log price| ~ dollar_volume)|",
+                "kyle_lambda_equation": (
+                    "lambda = OLS slope of 1-interval log return on signed dollar taker flow "
+                    "(signed base flow = 2*taker_buy_base - volume, times close), with intercept"
+                ),
                 "kyle_lambda_scaled_equation": "bps per $1M = lambda * 1,000,000 * 10,000",
                 "top10_imbalance": depth_table[1]["imbalance"] if len(depth_table) > 1 else None,
                 "methodology": (
@@ -324,8 +348,9 @@ class MICROFunction(BaseFunction):
                     "spread_bps = (best_ask - best_bid) / mid * 10000. "
                     "microprice = (best_bid*ask_size + best_ask*bid_size) / (bid_size + ask_size) — "
                     "the size-weighted mid. imbalance = (bid_size - ask_size)/(bid_size + ask_size) in [-1,1]. "
-                    "Depth buckets sum per-side quantity/notional. Kyle's lambda is a local price-impact "
-                    "proxy estimated from recent kline returns vs dollar volume (lower = more liquid). "
+                    "Depth buckets sum per-side quantity/notional. Kyle's lambda is the OLS slope (with "
+                    "intercept) of 1-interval log returns on signed dollar taker flow from recent klines "
+                    "(Binance taker-buy volume; an estimate, not tick-level order flow). "
                     "Asset classes without an L2 provider are explicit_unavailable, never a synthetic ladder."
                 ),
                 "field_dictionary": _FIELD_DICTIONARY,

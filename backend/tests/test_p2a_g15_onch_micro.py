@@ -292,3 +292,56 @@ def test_onch_seed_describes_the_shipped_bitcoin_vitals_contract() -> None:
     # The seed must not promise a time-series contract the handler never produces.
     assert not any("time_utc" in k for k in onch.field_dict)
     assert onch.output_contract.series is True
+
+
+# --------------------------------------------------------------------------
+# MICRO#1 — Kyle's lambda is the slope of 1-interval log return on SIGNED flow
+# --------------------------------------------------------------------------
+
+
+def _signed_flow_klines(n: int = 201) -> tuple[list[list[Any]], float, float, float]:
+    """Klines whose returns follow Kyle's model exactly:
+
+        r_k = alpha + lam * f_k,  f_k = signed dollar taker flow of bar k.
+
+    Signed base flow = taker_buy - taker_sell = 2*taker_buy - volume, so the
+    handler's reconstruction f_k = signed_base_k * close_k equals the design.
+    """
+    alpha = 0.0002
+    lam = 2e-8  # log-return per USD of net taker flow
+    closes = [100.0]
+    flows = [0.0]
+    for k in range(1, n):
+        f = 1e5 * ((k * 37) % 19 - 9) / 9.0  # signed USD flow, both signs
+        flows.append(f)
+        r = alpha + lam * f
+        closes.append(closes[-1] * (2.718281828459045 ** r))
+    vol = 5000.0
+    rows: list[list[Any]] = []
+    for k in range(n):
+        s = flows[k] / closes[k]  # signed base volume
+        taker_buy = (vol + s) / 2.0
+        rows.append([k, f"{closes[k]:.8f}", f"{closes[k]:.8f}", f"{closes[k]:.8f}",
+                     f"{closes[k]:.8f}", f"{vol:.6f}", k, "0", 10,
+                     f"{taker_buy:.8f}", "0", "0"])
+    return rows, alpha, lam, closes[-1]
+
+
+def test_micro_kyle_lambda_is_signed_flow_slope_with_intercept(monkeypatch: Any) -> None:
+    from showme.engine.functions.screen.micro import MICROFunction
+
+    _patch_micro_http(monkeypatch)
+    _reset_fake()
+    rows, alpha, lam, _ = _signed_flow_klines()
+    _FakeAsyncClient.klines = rows
+
+    data = asyncio.run(MICROFunction(deps=None).execute(instrument=_btc(), depth_levels=20)).data
+    assert data["status"] == "ok"
+
+    # The estimate recovers the true signed-flow slope and the drift intercept.
+    assert abs(data["kyle_lambda_proxy"] - lam) / lam < 1e-6, data["kyle_lambda_proxy"]
+    assert abs(data["kyle_lambda_intercept"] - alpha) < 1e-9
+    # Units: bps move per $1M of net flow.
+    assert abs(data["kyle_lambda_bps_per_1m_usd"] - lam * 1e6 * 1e4) < 1e-6
+    assert data["kyle_lambda_r2"] > 0.999
+    assert "signed" in data["kyle_lambda_equation"].lower()
