@@ -90,3 +90,26 @@ describe("ICX pane — partial index coverage", () => {
     expect(screen.getAllByText(/30 constituents/i).length).toBeGreaterThan(0);
   });
 });
+
+describe("ICX pane — partial coverage without an official count", () => {
+  it("does not render an unknown official count in the header", () => {
+    // Sector fallback (security master unreadable): coverage.official is null.
+    mockFn.data = {
+      sources: ["showme_gics_reference"],
+      elapsed_ms: 12,
+      data: {
+        status: "partial",
+        index: "Information Technology",
+        constituents: 5,
+        coverage: { listed: 5, official: null, complete: false },
+        reason: "Showing 5 Information Technology names from a curated sample.",
+        rows: [{ symbol: "AAPL", company: "Apple Inc.", index: "IT", last: null, change_pct: null }],
+        summary: { index: "Information Technology", constituent_count: 5 },
+      },
+    };
+    render(<ICXPane code="ICX" />);
+    expect(screen.queryByText(/of \? constituents/)).toBeNull();
+    expect(screen.getAllByText(/5 listed/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/partial/i).length).toBeGreaterThan(0);
+  });
+});

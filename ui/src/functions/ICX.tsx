@@ -306,7 +306,9 @@ export function ICXPane({ code, symbol }: FunctionPaneProps) {
           title="Index Constituents"
           subtitle={
             partial && payload?.coverage
-              ? `${payload.coverage.listed ?? rows.length} of ${payload.coverage.official ?? "?"} constituents · ${payload?.index ?? effectiveIndex} · partial`
+              ? payload.coverage.official != null
+                ? `${payload.coverage.listed ?? rows.length} of ${payload.coverage.official} constituents · ${payload?.index ?? effectiveIndex} · partial`
+                : `${payload.coverage.listed ?? rows.length} listed · ${payload?.index ?? effectiveIndex} · partial`
               : `${payload?.constituents ?? 0} constituents · ${payload?.index ?? effectiveIndex}`
           }
           trailing={
