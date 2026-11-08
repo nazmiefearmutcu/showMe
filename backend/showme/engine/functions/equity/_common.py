@@ -36,11 +36,6 @@ REFERENCE_PROFILES: dict[str, dict[str, Any]] = {
             {"relationship": "supplier/partner", "counterparty": "Semiconductor foundry and component suppliers", "exposure": "high", "confidence": 0.66, "source": "10-K supply-chain risk language"},
             {"relationship": "supplier/partner", "counterparty": "Assembly and logistics partners", "exposure": "high", "confidence": 0.62, "source": "10-K supply-chain risk language"},
         ],
-        "holders": [
-            {"holder": "Vanguard Group", "holder_type": "institutional", "shares": 1_318_000_000, "pct_outstanding": 0.087, "quarter": "latest public 13F reference", "source_mode": "reference_13f_public"},
-            {"holder": "BlackRock", "holder_type": "institutional", "shares": 1_040_000_000, "pct_outstanding": 0.069, "quarter": "latest public 13F reference", "source_mode": "reference_13f_public"},
-            {"holder": "Berkshire Hathaway", "holder_type": "institutional", "shares": 400_000_000, "pct_outstanding": 0.026, "quarter": "latest public 13F reference", "source_mode": "reference_13f_public"},
-        ],
     }
 }
 
