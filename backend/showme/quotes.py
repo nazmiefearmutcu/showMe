@@ -521,22 +521,33 @@ def _fetch_coingecko_quote(symbol: str) -> dict[str, Any]:
     )
 
 
+def _exchange_session_date(epoch_seconds: float, gmtoffset: float) -> Any:
+    """Calendar date of an epoch in the exchange's local time (gmtoffset in seconds)."""
+    return datetime.fromtimestamp(epoch_seconds + gmtoffset, tz=timezone.utc).date()
+
+
 def _prior_session_close(
     meta: dict[str, Any],
     timestamps: list[float | None],
     closes: list[float | None],
 ) -> float | None:
-    """Close of the most recent daily bar before the current regular session.
+    """Close of the most recent daily bar before the session of the current price.
 
     Uses the bar timestamps against ``currentTradingPeriod.regular.start`` when
     Yahoo publishes it, so today's bar (or a still-forming one) is never taken as
-    the baseline. Without a session boundary it falls back to the penultimate
-    non-null close, which is the prior session for a daily series.
+    the baseline. Without that boundary the session is the calendar date (exchange
+    local) of the price's own ``regularMarketTime``, and the baseline is the last
+    non-null close from an earlier date. A null close for today is skipped, so the
+    baseline is never pushed back to a bar two sessions earlier. When neither the
+    boundary nor the price time is published the prior session cannot be
+    established, so None is returned rather than a guessed bar.
     """
+    if len(timestamps) != len(closes):
+        return None
     trading = meta.get("currentTradingPeriod") or {}
     regular = trading.get("regular") if isinstance(trading, dict) else None
     regular_start = number(regular.get("start")) if isinstance(regular, dict) else None
-    if regular_start is not None and len(timestamps) == len(closes):
+    if regular_start is not None:
         prior = [
             close
             for ts, close in zip(timestamps, closes)
@@ -544,7 +555,18 @@ def _prior_session_close(
         ]
         if prior:
             return prior[-1]
-    return previous_non_null(closes)
+    market_time = number(meta.get("regularMarketTime"))
+    gmtoffset = number(meta.get("gmtoffset"))
+    if market_time is None or gmtoffset is None:
+        return None
+    price_session = _exchange_session_date(market_time, gmtoffset)
+    prior = [
+        close
+        for ts, close in zip(timestamps, closes)
+        if ts is not None and close is not None
+        and _exchange_session_date(ts, gmtoffset) < price_session
+    ]
+    return prior[-1] if prior else None
 
 
 def _fetch_yahoo_chart_quote(symbol: str) -> dict[str, Any]:
@@ -567,9 +589,14 @@ def _fetch_yahoo_chart_quote(symbol: str) -> dict[str, Any]:
     last = number(meta.get("regularMarketPrice")) or last_close
     # MAP#1: the request is range=5d, so meta.chartPreviousClose is the close before the
     # 5-day window, not the prior session. The prior-session close is the last daily bar
-    # before the current regular session started (or the penultimate bar when no session
-    # boundary is published).
+    # before the current session (see _prior_session_close); it is never read from
+    # chartPreviousClose, and is None when it cannot be established.
     prev = _prior_session_close(meta, timestamps, closes)
+    if prev is None:
+        # Only when the bars cannot establish the session, the provider's explicit
+        # previousClose (a prior-session field) is used. chartPreviousClose is never used:
+        # on range=5d it is the close before the window.
+        prev = number(meta.get("previousClose"))
     volume = number(meta.get("regularMarketVolume")) or last_non_null(volumes)
     return normalized_snapshot(
         symbol=symbol,
