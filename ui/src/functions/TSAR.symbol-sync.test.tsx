@@ -93,6 +93,25 @@ describe("TSAR pane — linked symbol sync (UI-2)", () => {
     expect(screen.queryByText(/^AAPL · /)).not.toBeInTheDocument();
   });
 
+  it("drops an AAPL analysis still in flight when the link moves to MSFT", async () => {
+    let resolveAapl: (value: unknown) => void = () => {};
+    runFunctionMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveAapl = resolve; }),
+    );
+    const { rerender } = render(<TSARPane code="TSAR" symbol="AAPL" />);
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await waitFor(() => expect(runFunctionMock).toHaveBeenCalledTimes(1));
+
+    rerender(<TSARPane code="TSAR" symbol="MSFT" />);
+    // The AAPL request completes after the link has moved on.
+    resolveAapl(analysisPayload());
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByText("+0.42")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^AAPL · /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^MSFT · /)).not.toBeInTheDocument();
+  });
+
   it("runs the next analysis on the newly linked symbol", async () => {
     const { rerender } = render(<TSARPane code="TSAR" symbol="AAPL" />);
     fireEvent.click(screen.getByRole("button", { name: "Analyze" }));

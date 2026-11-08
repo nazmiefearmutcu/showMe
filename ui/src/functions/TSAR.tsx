@@ -14,7 +14,7 @@
  *   Search — the day-to-day FTS5 query over the local archive; never fires
  *     on mount so the empty-archive path cannot look like a broken render.
  */
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -134,7 +134,12 @@ export function TSARPane({ code, symbol }: FunctionPaneProps) {
   // UI-2: the pane is linked to `symbol`; when the link changes the input is
   // re-synced and the analysis computed for the previous symbol is dropped so
   // it can never be shown under the new symbol's label.
+  // A request still in flight for the previous link must not land after the
+  // reset: each call records the link generation it started under and drops
+  // its response when the generation has since moved on.
+  const linkGeneration = useRef(0);
   useEffect(() => {
+    linkGeneration.current += 1;
     setFilterSymbol(symbol ?? "");
     setAnalysisResult(null);
     setAnalysisState("idle");
@@ -203,15 +208,18 @@ export function TSARPane({ code, symbol }: FunctionPaneProps) {
     }
     setAnalysisState("loading");
     setAnalysisError(null);
+    const generation = linkGeneration.current;
     try {
       const params: Record<string, unknown> = {};
       if (pasted) params.text = text;
       if (sym) params.symbol = sym.toUpperCase();
       const res = await runFunction(code, { params });
+      if (generation !== linkGeneration.current) return;
       setAnalysisResult(res);
       setAnalyzedSymbol(sym ? sym.toUpperCase() : null);
       setAnalysisState("ok");
     } catch (e) {
+      if (generation !== linkGeneration.current) return;
       setAnalysisError(e instanceof Error ? e : new Error(String(e)));
       setAnalysisState("error");
     }
