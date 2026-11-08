@@ -818,15 +818,37 @@ class IVOLFunction(BaseFunction):
                           "provider_errors": ["yfinance implied volatility cells all dropped"]},
             )
         if not surface_rows:
-            # Chains came back but carried no usable implied-vol rows. yfinance
-            # is present, so fall back to the spot-anchored reference surface
-            # (with ``calls_grid``) rather than an empty payload, labeled via
-            # ``data_state`` so the UI never mistakes it for a live surface.
-            return self._reference_result(
-                instrument, spot, spot_state,
-                provider_errors=["yfinance implied volatility rows empty"],
-                available_expiry_count=len(targets),
-                available_expiry_preview=", ".join(map(str, targets[:6])),
+            # Chains came back with no call or put rows at all. The reference
+            # template would substitute invented constant IVs, so report the
+            # empty state explicitly instead (DATA POLICY: never template data).
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "reason": "The option chain returned no call or put rows for the requested expiries.",
+                    "symbol": instrument.symbol,
+                    "spot": spot,
+                    "data_state": spot_state,
+                    "expiries": targets,
+                    "rows": [],
+                    "surface": [],
+                    "series": [],
+                    "dropped_cells": dropped_cells,
+                    "summary": {
+                        "contracts": 0,
+                        "expiries": 0,
+                        "source_mode": "provider_unavailable",
+                        "dropped_invalid_iv": len(dropped_cells),
+                    },
+                    "methodology": "Live implied volatility surface from option-chain impliedVolatility. No rows were returned, so no surface is shown.",
+                    "field_dictionary": _IVOL_FIELDS,
+                    "next_actions": ["Retry during market hours or with a different expiry set; the provider returned empty chains."],
+                },
+                sources=["yfinance"],
+                metadata={"live": False, "fallback": True,
+                          "spot_source": spot_state,
+                          "provider_errors": ["yfinance implied volatility rows empty"]},
             )
         stats, series = _ivol_atm_term_and_skew(surface_rows)
         return FunctionResult(code=self.code, instrument=instrument,

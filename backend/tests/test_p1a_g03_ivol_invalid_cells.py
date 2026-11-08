@@ -151,3 +151,37 @@ def test_valid_cells_are_kept_and_dropped_count_is_reported() -> None:
     assert kept.isdisjoint(INVALID_STRIKES)
     assert result.data["summary"]["dropped_invalid_iv"] == len(INVALID_STRIKES)
     assert result.data["summary"]["contracts"] == len(PUTS) + len(CALLS) - len(INVALID_STRIKES)
+
+
+class _EmptyExpiryYF:
+    """The expiry is listed but its call and put tables are both empty."""
+
+    async def fetch(self, request: DataRequest) -> Any:
+        if not request.extra or "expiry" not in request.extra:
+            return {"underlyingPrice": SPOT, "expiries": [EXPIRY]}
+        empty = pd.DataFrame({
+            "strike": pd.Series([], dtype=float),
+            "impliedVolatility": pd.Series([], dtype=float),
+            "bid": pd.Series([], dtype=float),
+            "ask": pd.Series([], dtype=float),
+            "lastPrice": pd.Series([], dtype=float),
+            "volume": pd.Series([], dtype=float),
+            "openInterest": pd.Series([], dtype=float),
+        })
+        return {"calls": empty, "puts": empty.copy()}
+
+
+def test_empty_expiry_returns_honest_status_not_template() -> None:
+    fn = IVOLFunction(deps=_Deps(yfinance=_EmptyExpiryYF()))
+    result = asyncio.run(fn.execute(Instrument(symbol="SPY", asset_class=AssetClass.ETF)))
+    data = result.data
+    # RED before fix: the empty-rows path fell back to _surface_template, which
+    # carries invented constant IVs and the black_scholes_reference_formula source.
+    assert data["status"] == "provider_unavailable", data.get("status")
+    assert data["surface"] == []
+    assert data["rows"] == []
+    assert "calls_grid" not in data and "puts_grid" not in data
+    assert "black_scholes_reference_formula" not in result.sources
+    assert result.sources == ["yfinance"]
+    assert data["reason"]
+    assert data["next_actions"]
