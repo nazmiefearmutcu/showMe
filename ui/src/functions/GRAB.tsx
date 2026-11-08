@@ -2,7 +2,7 @@
  * GRAB — Screenshot → Email (honest capture-plan form).
  *
  * The backend GRAB function NEVER sends anything: it returns a two-step
- * capture plan (local capture = planned, email = draft_only / not_configured)
+ * capture plan (local capture = planned, email = planned / not_configured)
  * and refuses to auto-transmit. The pane mirrors that contract honestly:
  * a real form (target + recipient) whose submit calls the backend function,
  * a plan view of the returned steps, and a standing notice that nothing is
@@ -130,7 +130,7 @@ export function GRABPane({ code }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone="warn" variant="soft" withDot={false}>
-                draft only
+                plan only
               </Pill>
               <LoadStatePill state={state} status={status} />
               <RefreshButton
@@ -209,7 +209,7 @@ export function GRABPane({ code }: FunctionPaneProps) {
             value={`${result?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
           <StatusDivider />
-          <StatusSection label="mode" value="draft only" tone="accent" />
+          <StatusSection label="mode" value="plan only" tone="accent" />
         </PaneFooter>
       </Pane>
     </div>
@@ -249,7 +249,7 @@ function PlanView({
         <span style={sectionTitleStyle}>Plan</span>
         <Empty
           title="No plan yet"
-          body="Set a target and press Prepare capture plan to build the draft."
+          body="Set a target and press Prepare capture plan to build the plan."
           icon="•"
         />
       </section>
@@ -268,11 +268,7 @@ function PlanView({
             <span style={bodyStyle}>{row.target ?? "—"}</span>
             <Pill
               tone={
-                row.status === "ready"
-                  ? "positive"
-                  : row.status === "draft_only"
-                    ? "warn"
-                    : "muted"
+                row.status === "planned" ? "warn" : "muted"
               }
               variant="soft"
               withDot={false}

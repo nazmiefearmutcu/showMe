@@ -35,7 +35,7 @@ class GRABFunction(BaseFunction):
             {
                 "step": "email",
                 "target": recipient or "not configured",
-                "status": "draft_only" if recipient else "not_configured",
+                "status": "planned" if recipient else "not_configured",
                 "output": "requires user-confirmed mail integration",
                 "transmits_data": True,
             },

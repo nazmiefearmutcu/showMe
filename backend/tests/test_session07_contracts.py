@@ -303,6 +303,6 @@ def test_grab_remains_a_planning_only_contract_no_silent_send():
     result = _run(fn.execute(send=True))  # send=true should NOT transmit
     rows = result.data["rows"]
     email_row = next(r for r in rows if r["step"] == "email")
-    assert email_row["status"] in {"not_configured", "draft_only"}
+    assert email_row["status"] in {"not_configured", "planned"}
     assert email_row.get("transmits_data") is True  # the FLAG only; not actually sent
     assert any("not executed automatically" in w for w in result.warnings)

@@ -34,6 +34,17 @@ def test_grab_with_recipient_is_planned_not_a_draft():
     assert res.sources == ["local_capture_plan"]
 
 
+def test_grab_email_row_with_recipient_is_planned_not_a_draft_object():
+    res = _run(
+        GRABFunction(FunctionDeps()).execute(target="current_pane", recipient="ops@example.com")
+    )
+    email = next(r for r in res.data["rows"] if r["step"] == "email")
+    # The email row used to say draft_only, but no draft object is ever created.
+    assert email["status"] == "planned"
+    assert email["transmits_data"] is True
+    assert all("draft" not in str(r["status"]) for r in res.data["rows"])
+
+
 def test_grab_capture_row_is_planned_and_top_status_has_no_draft_object():
     res = _run(
         GRABFunction(FunctionDeps()).execute(target="current_pane", recipient="ops@example.com")
