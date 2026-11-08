@@ -259,3 +259,24 @@ describe("TLH wash-sale window badge (real derivation)", () => {
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 });
+
+describe("TLH partial state with unpriced positions", () => {
+  it("does not claim nothing-to-harvest while a position has no quote", () => {
+    ok(
+      {
+        status: "partial",
+        candidates: [],
+        rows: [],
+        total_estimated_tax_savings: 0,
+        n_loss_positions: 0,
+        unpriced_symbols: ["TLT"],
+        summary: { positions_evaluated: 1, positions_unpriced: 1 },
+      },
+      { warnings: ["No current quote for TLT; those positions were not evaluated."] },
+    );
+    render(<TaxLossHarvestPane code="TLH" />);
+    expect(screen.queryByText(/below its cost basis/i)).toBeNull();
+    expect(screen.getByText("Loss status unknown for some positions")).toBeInTheDocument();
+    expect(screen.getAllByText(/No current quote for TLT/).length).toBeGreaterThan(0);
+  });
+});

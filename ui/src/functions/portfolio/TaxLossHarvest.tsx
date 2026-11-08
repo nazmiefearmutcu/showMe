@@ -53,6 +53,8 @@ interface TlhPayload {
   rows?: Row[];
   total_estimated_tax_savings?: number | null;
   n_loss_positions?: number;
+  /** Positions with no quote; they were NOT evaluated for a loss. */
+  unpriced_symbols?: string[];
   tax_bracket_used?: number;
   lt_cap_rate_used?: number;
   methodology?: string;
@@ -282,16 +284,30 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
     />
   );
   const empty = emptyCopy(payload as Row | undefined);
-  const emptyTitle = empty.title === "No data available" ? "No harvest candidates" : empty.title;
-  const emptyBody =
-    empty.title === "No data available"
+  const unpricedSymbols = Array.isArray(payload?.unpriced_symbols)
+    ? payload.unpriced_symbols.filter((s): s is string => typeof s === "string" && s.length > 0)
+    : [];
+  // Unpriced positions were never checked for a loss: say so instead of
+  // claiming "nothing to harvest" (provider_unavailable keeps its own reason).
+  const hasUnpriced = unpricedSymbols.length > 0 && status !== "provider_unavailable";
+  const emptyTitle = hasUnpriced
+    ? "Loss status unknown for some positions"
+    : empty.title === "No data available"
+      ? "No harvest candidates"
+      : empty.title;
+  const emptyBody = hasUnpriced
+    ? `No current quote for ${unpricedSymbols.join(", ")}, so those positions could not be checked for a loss. Nothing is reported as harvestable for them until a quote is available.`
+    : empty.title === "No data available"
       ? "No position is currently below its cost basis, so there is nothing to harvest."
       : empty.body;
 
   const body = (
     <PaneGate state={state} error={error} refetch={refetch}>
       {isEmpty ? (
-        <PortfolioEmpty badge={badge} title={emptyTitle} body={emptyBody} />
+        <>
+          <WarningStrip warnings={warnings} />
+          <PortfolioEmpty badge={badge} title={emptyTitle} body={emptyBody} />
+        </>
       ) : (
         <div className="portfolio-analytics-view">
           {badge}

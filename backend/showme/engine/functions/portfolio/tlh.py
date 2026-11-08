@@ -84,7 +84,7 @@ class TLHFunction(BaseFunction):
                 sources=["portfolio_state"],
             )
 
-        async def _meta(sym: str):
+        async def _meta(sym: str, quote_timeout: float):
             try:
                 inst = await asyncio.wait_for(
                     self.deps.symbol_registry.resolve(sym),
@@ -96,14 +96,14 @@ class TLHFunction(BaseFunction):
                     return sym, None, None
                 q = await asyncio.wait_for(
                     self.deps.yfinance.fetch(DataRequest(kind=DataKind.QUOTE, instrument=inst)),
-                    timeout=max(1.0, min(float(params.get("quote_timeout", 2.5)), 3.0)),
+                    timeout=quote_timeout,
                 )
                 sector = None
                 if suggest_replacement:
                     try:
                         rd = await asyncio.wait_for(
                             self.deps.yfinance.fetch(DataRequest(kind=DataKind.REFDATA, instrument=inst)),
-                            timeout=max(1.0, min(float(params.get("quote_timeout", 2.5)), 3.0)),
+                            timeout=quote_timeout,
                         )
                         sector = getattr(rd, "sector", None)
                     except Exception:  # noqa: BLE001 - sector is optional
@@ -112,10 +112,23 @@ class TLHFunction(BaseFunction):
             except Exception:  # noqa: BLE001 - reported as unpriced below
                 return sym, None, None
 
+        quote_timeout = max(1.0, min(float(params.get("quote_timeout", 2.5)), 3.0))
+        retry_timeout = max(quote_timeout, min(float(params.get("retry_quote_timeout", 6.0)), 8.0))
         max_positions = max(1, min(int(params.get("max_positions", 25)), 100))
         positions = portfolio.positions[:max_positions]
-        meta = await asyncio.gather(*(_meta(p.instrument.symbol) for p in positions))
+        meta = await asyncio.gather(*(_meta(p.instrument.symbol, quote_timeout) for p in positions))
         meta_map = {sym: (price, sector) for sym, price, sector in meta}
+        # One slow quote must not silently drop a loss lot: retry the unpriced
+        # symbols once with a longer timeout before reporting them as unpriced.
+        missing = list(dict.fromkeys(
+            p.instrument.symbol for p in positions
+            if meta_map.get(p.instrument.symbol, (None, None))[0] is None
+        ))
+        if missing:
+            retried = await asyncio.gather(*(_meta(sym, retry_timeout) for sym in missing))
+            for sym, price, sector in retried:
+                if price is not None:
+                    meta_map[sym] = (price, sector)
         candidates: list[dict[str, Any]] = []
         unpriced: list[str] = []
         now = datetime_now()
@@ -158,8 +171,9 @@ class TLHFunction(BaseFunction):
         candidates.sort(key=lambda x: x["estimated_tax_savings"], reverse=True)
         total_savings = sum(c["estimated_tax_savings"] for c in candidates)
         warnings = []
-        if unpriced:
-            warnings.append(f"No current quote for {', '.join(sorted(unpriced))}; those positions were not evaluated.")
+        unpriced_symbols = sorted(set(unpriced))
+        if unpriced_symbols:
+            warnings.append(f"No current quote for {', '.join(unpriced_symbols)}; those positions were not evaluated.")
         if len(portfolio.positions) > max_positions:
             warnings.append(f"Only the first {max_positions} of {len(portfolio.positions)} positions were evaluated.")
         priced = len(positions) - len(unpriced)
@@ -169,19 +183,26 @@ class TLHFunction(BaseFunction):
                 data={**base, "status": "provider_unavailable",
                       "reason": "No current quotes were available for any portfolio position.",
                       "next_actions": ["Retry when the quote provider is reachable."],
-                      "candidates": [], "rows": [], "total_estimated_tax_savings": 0, "n_loss_positions": 0},
+                      "candidates": [], "rows": [], "total_estimated_tax_savings": 0, "n_loss_positions": 0,
+                      "unpriced_symbols": unpriced_symbols},
                 sources=["portfolio_state"], warnings=warnings,
             )
+        # Any unpriced position means the result is incomplete: never "ok" with
+        # zero candidates while a position could be at a loss.
+        status = "partial" if unpriced_symbols else "ok"
         return FunctionResult(
             code=self.code, instrument=None,
             data={
                 **base,
+                "status": status,
                 "candidates": candidates,
                 "rows": candidates,
                 "total_estimated_tax_savings": total_savings,
                 "n_loss_positions": len(candidates),
+                "unpriced_symbols": unpriced_symbols,
                 "summary": {
                     "positions_evaluated": priced,
+                    "positions_unpriced": len(unpriced_symbols),
                     "n_loss_positions": len(candidates),
                     "total_estimated_tax_savings": total_savings,
                     "tax_bracket_used": bracket,
