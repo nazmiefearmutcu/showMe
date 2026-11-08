@@ -145,7 +145,11 @@
     },
     "BTFW": {
       "keys": [
-        "live"
+        "live",
+        "strategy_id",
+        "train_pct",
+        "walk_steps",
+        "window_length"
       ],
       "conditional": [],
       "dynamic": false,
@@ -730,7 +734,8 @@
     },
     "ICX": {
       "keys": [
-        "index"
+        "index",
+        "sector"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1026,6 +1031,7 @@
     "POLY": {
       "keys": [
         "min_liquidity_usd",
+        "query",
         "status"
       ],
       "conditional": [],
@@ -1396,7 +1402,14 @@
       ]
     },
     "WACC": {
-      "keys": [],
+      "keys": [
+        "beta",
+        "beta_window",
+        "market_premium",
+        "rd",
+        "rf",
+        "tax_rate_override"
+      ],
       "conditional": [],
       "dynamic": false,
       "files": [
@@ -1477,6 +1490,8 @@
     "YAS": {
       "keys": [
         "asset_class",
+        "assume_decimal",
+        "benchmark",
         "benchmark_rate",
         "coupon",
         "freq",
@@ -1491,6 +1506,10 @@
     }
   },
   "unresolved": [
+    {
+      "where": "ui/src/functions/anr_pane/index.tsx:125",
+      "why": "code not resolvable to a registry entry"
+    },
     {
       "where": "ui/src/functions/CDE.tsx:81",
       "why": "params expression not resolvable (AsExpression)"
