@@ -278,6 +278,12 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   // Blank means "not stated": the backend then uses the recorded or PORT cash.
   const [cash, setCash] = useState("");
   const [cashAccount, setCashAccount] = useState("");
+  // PSC direction and sizing assumptions. Side defaults to LONG (the backend
+  // default). Risk is typed in percent and sent as a fraction. Win rate is
+  // typed in percent and starts blank: no Kelly fraction is invented.
+  const [side, setSide] = useState("LONG");
+  const [riskPct, setRiskPct] = useState("1");
+  const [winRate, setWinRate] = useState("");
 
   const effectiveSymbol = config.usesSymbol
     ? (symbol || symbolInput || config.defaultSymbol)
@@ -300,8 +306,11 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         cash,
         cashAccount,
         horizon,
+        side,
+        riskPct,
+        winRate,
       }),
-    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak, cash, cashAccount, horizon],
+    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak, cash, cashAccount, horizon, side, riskPct, winRate],
   );
   const { state, data, error, refetch } = useFunction<PortfolioPayload>({
     code: upper,
@@ -425,6 +434,12 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setCashAccount={setCashAccount}
             horizon={horizon}
             setHorizon={setHorizon}
+            side={side}
+            setSide={setSide}
+            riskPct={riskPct}
+            setRiskPct={setRiskPct}
+            winRate={winRate}
+            setWinRate={setWinRate}
           />
           {body}
         </PaneBody>
@@ -484,6 +499,12 @@ function PortfolioControls({
   setCashAccount,
   horizon,
   setHorizon,
+  side,
+  setSide,
+  riskPct,
+  setRiskPct,
+  winRate,
+  setWinRate,
 }: {
   config: ToolConfig;
   code: string;
@@ -511,6 +532,12 @@ function PortfolioControls({
   setCashAccount: (value: string) => void;
   horizon: string;
   setHorizon: (value: string) => void;
+  side: string;
+  setSide: (value: string) => void;
+  riskPct: string;
+  setRiskPct: (value: string) => void;
+  winRate: string;
+  setWinRate: (value: string) => void;
 }) {
   if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC" && code !== "MGN") {
     return null;
@@ -701,6 +728,32 @@ function PortfolioControls({
                   onChange={(e) => setTarget(e.target.value)}
                   inputMode="decimal"
                   placeholder="optional"
+                />
+              </label>
+              <label className="portfolio-control-field" htmlFor={fid("side")}>
+                <span>Side</span>
+                <select id={fid("side")} value={side} onChange={(e) => setSide(e.target.value)}>
+                  <option value="LONG">LONG</option>
+                  <option value="SHORT">SHORT</option>
+                </select>
+              </label>
+              <label className="portfolio-control-field" htmlFor={fid("risk")}>
+                <span>Risk per trade (%)</span>
+                <input
+                  id={fid("risk")}
+                  value={riskPct}
+                  onChange={(e) => setRiskPct(e.target.value)}
+                  inputMode="decimal"
+                />
+              </label>
+              <label className="portfolio-control-field" htmlFor={fid("winrate")}>
+                <span>Win rate (%)</span>
+                <input
+                  id={fid("winrate")}
+                  value={winRate}
+                  onChange={(e) => setWinRate(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="optional (Kelly)"
                 />
               </label>
             </>
@@ -1191,6 +1244,9 @@ function buildParams(
     cash: string;
     cashAccount: string;
     horizon: string;
+    side: string;
+    riskPct: string;
+    winRate: string;
   },
 ): Record<string, unknown> {
   const symbols = splitSymbols(state.symbols);
@@ -1250,12 +1306,17 @@ function buildParams(
     case "PSC": {
       // Only what the user typed is sent; blanks fall to the backend's real
       // defaults (live price / portfolio value) or its input request (stop).
-      const out: Record<string, unknown> = { risk_pct: 0.01 };
+      // Risk and win rate are typed in percent and sent as fractions.
+      const out: Record<string, unknown> = { side: state.side === "SHORT" ? "SHORT" : "LONG" };
+      const risk = optionalNumber(state.riskPct);
+      if (risk !== undefined) out.risk_pct = risk / 100;
       const fields = { account: state.account, entry: state.entry, stop: state.stop, target: state.target };
       for (const [key, raw] of Object.entries(fields)) {
         const value = optionalNumber(raw);
         if (value !== undefined) out[key] = value;
       }
+      const winRate = optionalNumber(state.winRate);
+      if (winRate !== undefined) out.win_rate = winRate / 100;
       return out;
     }
     case "PORT_WHATIF": {

@@ -576,12 +576,33 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
   it("PSC never sends a demo trade: blank fields are not sent (strict truth audit)", () => {
     mockOk({ status: "input_error", rows: [] });
     render(<PortfolioAnalyticsPane code="PSC" symbol="AAPL" />);
-    expect(mockArgs.current?.params).toEqual({ risk_pct: 0.01 });
+    expect(mockArgs.current?.params).toEqual({ side: "LONG", risk_pct: 0.01 });
     expect((screen.getByLabelText("Account") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Stop") as HTMLInputElement).placeholder).toBe("required");
     fireEvent.change(screen.getByLabelText("Stop"), { target: { value: "260" } });
-    expect(mockArgs.current?.params).toEqual({ risk_pct: 0.01, stop: 260 });
+    expect(mockArgs.current?.params).toEqual({ side: "LONG", risk_pct: 0.01, stop: 260 });
     expect(mockArgs.current?.symbol).toBe("AAPL");
+  });
+
+  it("PSC sends the side, risk % and win rate the user sets (SHORT and Kelly reachable)", () => {
+    mockOk({ status: "input_error", rows: [] });
+    render(<PortfolioAnalyticsPane code="PSC" symbol="" />);
+    // Risk is shown in percent (default 1 = 1%) and sent as a fraction.
+    expect((screen.getByLabelText("Risk per trade (%)") as HTMLInputElement).value).toBe("1");
+    // No win rate is invented: the field starts blank and is not sent.
+    expect((screen.getByLabelText("Win rate (%)") as HTMLInputElement).value).toBe("");
+    fireEvent.change(screen.getByLabelText("Side"), { target: { value: "SHORT" } });
+    fireEvent.change(screen.getByLabelText("Risk per trade (%)"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Win rate (%)"), { target: { value: "55" } });
+    fireEvent.change(screen.getByLabelText("Stop"), { target: { value: "105" } });
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "90" } });
+    expect(mockArgs.current?.params).toEqual({
+      side: "SHORT",
+      risk_pct: 0.02,
+      win_rate: 0.55,
+      stop: 105,
+      target: 90,
+    });
   });
 });
 
