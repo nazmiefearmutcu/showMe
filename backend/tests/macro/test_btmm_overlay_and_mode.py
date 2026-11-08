@@ -191,3 +191,16 @@ def test_btmm_seed_names_bis_as_primary_provider() -> None:
         "every BTMM row is read from BIS CBPOL, so the seed must not name fred; "
         f"got {btmm_manifest.provider_chain.primary!r}"
     )
+
+
+def test_stale_bis_observation_is_a_warning_not_a_provider_error(monkeypatch) -> None:
+    # BTMM#4: data staleness is a data-age notice, not a provider failure, so it
+    # must not be filed under metadata.provider_errors.
+    from datetime import timedelta
+
+    stale = _rows()
+    stale[0]["as_of"] = (date.today() - timedelta(days=10)).isoformat()
+    result = _run_with_loader(monkeypatch, lambda _t, _f=False: stale, country="US")
+
+    assert any(w.startswith("data_stale_24h") for w in result.warnings), result.warnings
+    assert "provider_errors" not in (result.metadata or {}), result.metadata
