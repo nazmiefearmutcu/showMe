@@ -97,7 +97,7 @@ def acct() -> FunctionManifest:
         card_schema=CardSchema(
             slots=[
                 CardSlot(key="total_market_value", label="Market Value", kind="big_number", unit="ccy"),
-                CardSlot(key="accounts", label="Accounts", kind="kpi"),
+                CardSlot(key="accounts_count", label="Accounts", kind="kpi"),
                 CardSlot(key="positions", label="Positions", kind="kpi"),
                 CardSlot(key="unpriced_positions", label="Unpriced", kind="kpi"),
             ],
