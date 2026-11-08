@@ -61,21 +61,32 @@ async def _binance_ranked_symbols(client: Any) -> list[str] | None:
         return None
 
 
-async def _symbol_universe(client: Any, limit: int) -> list[str]:
-    """Default 25-symbol list, expanded from Binance's volume ranking when asked."""
+UNIVERSE_DEFAULT = "default_list"
+UNIVERSE_VOLUME = "binance_24h_quote_volume"
+UNIVERSE_EXPLICIT = "explicit_symbols"
+# Not open interest: ranking by open interest needs one request per symbol.
+_SINGLE_VENUE_LABEL = "insufficient venues (fewer than 2)"
+
+
+async def _symbol_universe(client: Any, limit: int) -> tuple[list[str], str]:
+    """Return ``(symbols, basis)``.
+
+    The default 25-symbol list is hard-coded; larger universes are ranked by
+    Binance 24h quote volume (not open interest) and labelled as such.
+    """
     global _ranking_cache
     if limit <= len(_DEFAULT_SYMBOLS):
-        return _DEFAULT_SYMBOLS[:limit]
+        return _DEFAULT_SYMBOLS[:limit], UNIVERSE_DEFAULT
     cached = _ranking_cache
     if cached is not None:
         ts, ranked = cached
         if time.monotonic() - ts < _RANKING_TTL_S and len(ranked) >= limit:
-            return ranked[:limit]
+            return ranked[:limit], UNIVERSE_VOLUME
     ranked = await _binance_ranked_symbols(client)
     if ranked is None:
-        return _DEFAULT_SYMBOLS[:limit]
+        return _DEFAULT_SYMBOLS[:limit], UNIVERSE_DEFAULT
     _ranking_cache = (time.monotonic(), ranked)
-    return ranked[:limit]
+    return ranked[:limit], UNIVERSE_VOLUME
 
 
 async def _binance_funding(client: httpx.AsyncClient, symbol: str) -> float | None:
@@ -114,7 +125,12 @@ async def _okx_funding(client: httpx.AsyncClient, symbol: str) -> float | None:
         if r.status_code == 200:
             items = (r.json() or {}).get("data") or []
             if items:
-                return float(items[0].get("fundingRate", 0) or 0)
+                # OKX ``fundingRate`` is the current-period estimate; ``settFundingRate``
+                # is the last settled rate, the same basis as Binance ``lastFundingRate``.
+                settled = items[0].get("settFundingRate")
+                if settled in (None, ""):
+                    return None
+                return float(settled)
     except Exception:
         return None
     return None
@@ -144,7 +160,10 @@ class FRHFunction(BaseFunction):
         if owns_client:
             client = httpx.AsyncClient(timeout=float(params.get("funding_timeout", 6)))
         try:
-            symbols = explicit[:limit] if explicit else await _symbol_universe(client, limit)
+            if explicit:
+                symbols, basis = explicit[:limit], UNIVERSE_EXPLICIT
+            else:
+                symbols, basis = await _symbol_universe(client, limit)
             rows = await self._fetch_live_rows(client, symbols)
         finally:
             if owns_client:
@@ -189,9 +208,11 @@ class FRHFunction(BaseFunction):
             else []
         )
         usable.sort(key=lambda x: -(x.get("avg") or 0))
+        data = _payload(usable, live=True)
+        data["universe_basis"] = basis
         return FunctionResult(
             code=self.code, instrument=None,
-            data=_payload(usable, live=True), sources=["binance", "bybit", "okx"],
+            data=data, sources=["binance", "bybit", "okx"],
             warnings=warnings,
             metadata={
                 "note": "Positive funding => longs paying shorts.",
@@ -217,8 +238,15 @@ class FRHFunction(BaseFunction):
                          if isinstance(v, (int, float))]
             row["avg"] = sum(non_null) / len(non_null) if non_null else None
             row["rate"] = row["avg"]
-            row["interpretation"] = _interpret_funding(row["avg"])
             row["provider_count"] = len(non_null)
+            # A cross-venue signal needs at least two venues; one venue is a rate, not a signal.
+            row["signal_suppressed"] = row["provider_count"] < 2
+            if row["signal_suppressed"]:
+                row["interpretation"] = (
+                    _SINGLE_VENUE_LABEL if row["avg"] is not None else "missing"
+                )
+            else:
+                row["interpretation"] = _interpret_funding(row["avg"])
             return row
 
         rows = await asyncio.gather(*(_per_symbol(s) for s in symbols))
