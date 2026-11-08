@@ -7,7 +7,7 @@
  * `useFunction` is mocked so each test drives the pane without the sidecar.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ANRPane } from "./index";
 
 interface MockFnState {
@@ -18,7 +18,7 @@ interface MockFnState {
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
 const refetch = vi.fn();
-const requested: Array<{ code?: string; symbol?: string; enabled?: boolean }> = [];
+const requested: Array<{ code?: string; symbol?: string; enabled?: boolean; params?: Record<string, unknown> }> = [];
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -27,7 +27,7 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: (args: { code?: string; symbol?: string; enabled?: boolean }) => {
+  useFunction: (args: { code?: string; symbol?: string; enabled?: boolean; params?: Record<string, unknown> }) => {
     requested.push(args);
     return {
       state: mockFn.state,
@@ -116,6 +116,16 @@ describe("ANR pane - ANR#6 no silent AMZN default", () => {
     // Disabled hook means useFunction issues no request at all.
     expect(requested.every((args) => args.enabled === false)).toBe(true);
     expect(requested.some((args) => args.symbol === "AMZN")).toBe(false);
+  });
+});
+
+describe("ANR pane - ANR#2 trend window control", () => {
+  it("sends the chosen trend window as months (default 12)", () => {
+    setMockFn({ state: "ok", ...okPayload({}) });
+    render(<ANRPane code="ANR" symbol="AAPL" />);
+    expect(requested.at(-1)?.params).toEqual({ months: 12 });
+    fireEvent.click(screen.getByTitle("24-month recommendation trend"));
+    expect(requested.at(-1)?.params).toEqual({ months: 24 });
   });
 });
 

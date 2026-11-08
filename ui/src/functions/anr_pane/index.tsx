@@ -34,7 +34,16 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "../function-controls";
+import { usePersistentOption } from "../function-control-state";
 import type { FunctionPaneProps } from "../registry-types";
+
+// ANR#2: the trend-table lookback (backend clamps to 3..36 months).
+const MONTH_OPTIONS = [
+  { value: "6", label: "6M", title: "6-month recommendation trend" },
+  { value: "12", label: "12M", title: "12-month recommendation trend" },
+  { value: "24", label: "24M", title: "24-month recommendation trend" },
+  { value: "36", label: "36M", title: "36-month recommendation trend" },
+] as const;
 import {
   ANR_SCREEN_OPTIONS,
   BACKGROUND_VERYFINDER_REFRESHED_AT,
@@ -107,9 +116,16 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
       veryfinderRequestId.current += 1;
     };
   }, []);
+  const [trendMonths, setTrendMonths] = usePersistentOption<string>(
+    "showme.anr.months",
+    MONTH_OPTIONS.map((o) => o.value),
+    "12",
+  );
+  const anrParams = useMemo(() => ({ months: Number(trendMonths) }), [trendMonths]);
   const { state, data, error, refetch } = useFunction<ANRData>({
     code,
     symbol: effectiveSymbol,
+    params: anrParams,
     enabled: !!effectiveSymbol,
   });
   const summary = data?.data?.summary;
@@ -328,6 +344,12 @@ export function ANRPane({ code, symbol }: FunctionPaneProps) {
                   {formatInt(analystCount)} {isCryptoSummary(summary) ? "sig" : "anl"}
                 </Pill>
               ) : null}
+              <SegmentedControl
+                label="TREND"
+                value={trendMonths}
+                options={MONTH_OPTIONS}
+                onChange={setTrendMonths}
+              />
               {summary?.last_updated ? (
                 <Pill tone="muted" variant="soft" withDot={false}>
                   AS OF {formatHeaderTime(summary.last_updated)}
