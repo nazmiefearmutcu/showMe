@@ -14,7 +14,7 @@
  *   Search — the day-to-day FTS5 query over the local archive; never fires
  *     on mount so the empty-archive path cannot look like a broken render.
  */
-import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -125,9 +125,22 @@ export function TSARPane({ code, symbol }: FunctionPaneProps) {
   const [analysisResult, setAnalysisResult] = useState<FunctionCallResult<unknown> | null>(null);
   const [analysisState, setAnalysisState] = useState<"idle" | "loading" | "ok" | "error">("idle");
   const [analysisError, setAnalysisError] = useState<Error | null>(null);
+  // Symbol the current analysis was computed for (null for pasted text only).
+  const [analyzedSymbol, setAnalyzedSymbol] = useState<string | null>(null);
   // — Archive stats (search mode) —
   const [stats, setStats] = useState<ArchiveStats | null>(null);
   const [statsState, setStatsState] = useState<"idle" | "loading" | "error">("idle");
+
+  // UI-2: the pane is linked to `symbol`; when the link changes the input is
+  // re-synced and the analysis computed for the previous symbol is dropped so
+  // it can never be shown under the new symbol's label.
+  useEffect(() => {
+    setFilterSymbol(symbol ?? "");
+    setAnalysisResult(null);
+    setAnalysisState("idle");
+    setAnalysisError(null);
+    setAnalyzedSymbol(null);
+  }, [symbol]);
 
   const payload = useMemo<TSARPayload>(() => {
     const d = result?.data;
@@ -196,6 +209,7 @@ export function TSARPane({ code, symbol }: FunctionPaneProps) {
       if (sym) params.symbol = sym.toUpperCase();
       const res = await runFunction(code, { params });
       setAnalysisResult(res);
+      setAnalyzedSymbol(sym ? sym.toUpperCase() : null);
       setAnalysisState("ok");
     } catch (e) {
       setAnalysisError(e instanceof Error ? e : new Error(String(e)));
@@ -420,7 +434,7 @@ export function TSARPane({ code, symbol }: FunctionPaneProps) {
           title={isSentiment ? "Transcript sentiment analyzer" : "Transcript search"}
           subtitle={
             isSentiment
-              ? `${symbol ?? "pasted text"} · ${utterances.length} scored utterances · ${analysisPayload.data_mode ?? "—"}`
+              ? `${analyzedSymbol ?? "pasted text"} · ${utterances.length} scored utterances · ${analysisPayload.data_mode ?? "—"}`
               : `FTS5 over local archive · ${items.length} hits · ${stats?.total ?? "—"} stored`
           }
           trailing={
