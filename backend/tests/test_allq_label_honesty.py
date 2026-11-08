@@ -33,3 +33,13 @@ def test_allq_static_catalog_name_matches_handler() -> None:
     match = re.search(r'"code": "ALLQ",\s*"name": "([^"]+)"', text)
     assert match, "ALLQ entry missing from static-index.ts"
     assert match.group(1) == ALLQFunction.name
+
+
+_PANE = _REPO / "ui" / "src" / "functions" / "ALLQ.tsx"
+
+
+def test_allq_pane_does_not_claim_trace_proxy() -> None:
+    # ALLQ#6-RQ: the pane header comment and subtitle must not call modeled rows a TRACE proxy.
+    text = _PANE.read_text(encoding="utf-8")
+    assert "TRACE proxy" not in text, "ALLQ.tsx still labels modeled quotes as a TRACE proxy"
+    assert "indicative, modeled" in text or "modeled" in text.lower()
