@@ -25,20 +25,49 @@ export const TIER_TITLES: Record<number, string> = {
   5: "Tier 5: community or social",
 };
 
-/** Human labels for `quality_reasons` tokens (`name:+pts` / `name:-pts`). Unknown names fall back to the raw name. */
+/**
+ * Human labels for `quality_reasons` tokens (`name:+pts` / `name:-pts`, or a bare cap/reject
+ * name). Keys are the live tokens from awareness `markets/news/quality.py`. Unknown names
+ * fall back to the raw name.
+ */
 export const QUALITY_REASON_LABELS: Record<string, string> = {
+  tier1: "Tier 1 publisher",
   tier2: "Tier 2 publisher",
+  tier3: "Tier 3 publisher",
+  tier4: "Tier 4 publisher",
+  tier5: "Tier 5 publisher",
+  relevance: "Finance relevance",
   depth_body300: "Depth: 300+ word body",
-  depth_summary: "Depth: summary 140+ chars",
+  depth_body120: "Depth: 120+ word body",
+  depth_summary140: "Depth: summary 140+ chars",
+  depth_summary60: "Depth: summary 60+ chars",
   author: "Author named",
-  precise_time: "Precise publish time",
-  entity: "High-confidence entity",
+  time_precise: "Precise publish time",
+  entity_high_conf: "High-confidence entity",
   topic: "Topic identified",
   corroboration: "Corroboration",
   clickbait: "Clickbait pattern",
+  all_caps_title: "All-caps headline",
   opinion: "Opinion",
   press_release: "Press release",
   paywalled_no_summary: "Paywalled, no summary",
+  question_no_entity: "Question headline, no entity",
+  boilerplate_summary: "Boilerplate summary",
+  premium_cap: "Capped below premium",
+  low_relevance_cap: "Capped: low finance relevance",
+  tier4_cap: "Capped: tier 4 publisher",
+  tier4_release_cap: "Capped: tier 4 press release",
+  tier5_cap: "Capped: tier 5 publisher",
+  official_floor: "Official source floor",
+  unknown_publisher: "Unknown publisher",
+  missing_url: "Missing article URL",
+  missing_title: "Missing headline",
+  missing_timestamp: "Missing timestamp",
+  stale: "Too old to count",
+  future_timestamp: "Timestamp in the future",
+  title_too_short: "Headline too short",
+  non_finance: "Not finance news",
+  community_low_signal: "Community post, low signal",
 };
 
 export interface ParsedReason {

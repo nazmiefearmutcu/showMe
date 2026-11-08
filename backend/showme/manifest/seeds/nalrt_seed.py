@@ -125,7 +125,7 @@ def nalrt() -> FunctionManifest:
             "better, keeps the stories whose importance score (0-100, awareness) is at or above "
             "min_importance within the hours window, and grades them: critical at importance 85 "
             "and up, high otherwise. Each row is a real publisher article with its title, "
-            "publisher, timestamp, FinBERT sentiment and link. Nothing is synthesised: when no "
+            "publisher, timestamp, awareness sentiment (model named per row) and link. Nothing is synthesised: when no "
             "story clears the floor the response is empty, and when awareness is unreachable it "
             "is provider_unavailable."
         ),
@@ -135,7 +135,7 @@ def nalrt() -> FunctionManifest:
             "rows[].publisher": FieldDef(description="Publisher name.", source="feed"),
             "rows[].title": FieldDef(description="Headline verbatim from the publisher.", source="feed"),
             "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
-            "rows[].sentiment": FieldDef(description="positive, negative or neutral (FinBERT label).", source="finbert"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (awareness label; model named in sentiment_model).", source="finbert"),
             "rows[].importance": FieldDef(unit="0-100", description="Awareness importance score.", source="awareness"),
         },
         provenance=ProvenanceSpec(

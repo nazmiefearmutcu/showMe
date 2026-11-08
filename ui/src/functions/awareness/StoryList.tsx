@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { StoryDrawer } from "./StoryDrawer";
 import { StoryRow, openArticle } from "./StoryRow";
 import type { NewsRow } from "./news-types";
@@ -18,6 +18,10 @@ export interface StoryListProps {
 /**
  * Story-first flat list. Keyboard: j/k move row focus, o opens the focused row's article,
  * Enter (on a focused row) opens the story drawer, Esc closes the drawer.
+ *
+ * Row focus is looked up inside this list only, so j/k never move into another pane on
+ * the same board. The open drawer is tracked by the row's id, so a refresh that reorders
+ * the rows cannot switch the drawer to a different story.
  */
 export function StoryList({
   rows,
@@ -28,15 +32,18 @@ export function StoryList({
   renderLeading,
   ariaLabel,
 }: StoryListProps) {
-  const [drawerIndex, setDrawerIndex] = useState<number | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const drawerIndex = drawerId === null ? -1 : rows.findIndex((r) => r.id === drawerId);
+  const drawerOpen = drawerIndex >= 0;
 
   const focusRow = (index: number) => {
-    const el = document.querySelector<HTMLElement>(`[data-row-index="${index}"]`);
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-row-index="${index}"]`);
     el?.focus();
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (drawerIndex !== null) return;
+    if (drawerOpen) return;
     const target = e.target as HTMLElement;
     const current = Number(
       target.closest("[data-row-index]")?.getAttribute("data-row-index"),
@@ -54,7 +61,13 @@ export function StoryList({
   };
 
   return (
-    <div role="feed" aria-label={ariaLabel} className="aw-list" onKeyDown={onKeyDown}>
+    <div
+      ref={listRef}
+      role="feed"
+      aria-label={ariaLabel}
+      className="aw-list"
+      onKeyDown={onKeyDown}
+    >
       {rows.map((row, index) => (
         <StoryRow
           key={row.id}
@@ -65,10 +78,10 @@ export function StoryList({
           index={index}
           onFilter={onFilter}
           leading={renderLeading?.(row)}
-          onOpenDrawer={() => setDrawerIndex(index)}
+          onOpenDrawer={() => setDrawerId(row.id)}
         />
       ))}
-      {drawerIndex !== null && rows[drawerIndex] ? (
+      {drawerOpen ? (
         <StoryDrawer
           row={rows[drawerIndex]}
           code={code}
@@ -76,13 +89,11 @@ export function StoryList({
           nowMs={nowMs}
           hasPrev={drawerIndex > 0}
           hasNext={drawerIndex < rows.length - 1}
-          onPrev={() => setDrawerIndex((i) => (i === null ? i : Math.max(0, i - 1)))}
-          onNext={() =>
-            setDrawerIndex((i) => (i === null ? i : Math.min(rows.length - 1, i + 1)))
-          }
+          onPrev={() => setDrawerId(rows[Math.max(0, drawerIndex - 1)].id)}
+          onNext={() => setDrawerId(rows[Math.min(rows.length - 1, drawerIndex + 1)].id)}
           onClose={() => {
             const idx = drawerIndex;
-            setDrawerIndex(null);
+            setDrawerId(null);
             window.setTimeout(() => focusRow(idx), 0);
           }}
         />

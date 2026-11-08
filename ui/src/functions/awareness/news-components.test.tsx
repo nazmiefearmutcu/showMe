@@ -5,7 +5,7 @@ import { QualityPill } from "./QualityPill";
 import { SentimentChip } from "./SentimentChip";
 import { StoryDrawer } from "./StoryDrawer";
 import { StoryList } from "./StoryList";
-import { StoryRow } from "./StoryRow";
+import { StoryRow, openArticle, safeArticleUrl } from "./StoryRow";
 import { TierBadge } from "./TierBadge";
 import { EntityChip } from "./EntityChip";
 import { hhmmUtc, hourLabel, parseQualityReason, signedValue } from "./format";
@@ -246,7 +246,8 @@ describe("StoryRow", () => {
     const more = screen.getByRole("button", { name: /\+2 sources/ });
     expect(more).toHaveAttribute("aria-expanded", "false");
     const lastCallBefore = useFunctionMock.mock.calls.at(-1)?.[0];
-    expect(lastCallBefore).toMatchObject({ enabled: false, params: { story_id: "s1" } });
+    // The detail call is keyed by the row id (the lead item), not the story hash "s1".
+    expect(lastCallBefore).toMatchObject({ enabled: false, params: { story_id: "n1" } });
     useFunctionMock.mockReturnValue({
       state: "ok",
       refetch: () => undefined,
@@ -344,5 +345,263 @@ describe("StoryList and StoryDrawer", () => {
     first.focus();
     fireEvent.keyDown(first, { key: "j" });
     expect(screen.getByRole("article", { name: /Second story/ })).toHaveFocus();
+  });
+});
+
+describe("TierBadge with unknown tiers", () => {
+  it.each([[null], [undefined], [0], [9], [Number.NaN]])(
+    "shows T? with no tier title for tier %s, never a tier 5 classification",
+    (tier) => {
+      render(<TierBadge tier={tier as number} />);
+      const badge = screen.getByLabelText("Tier unknown");
+      expect(badge).toHaveTextContent("T?");
+      expect(badge).not.toHaveAttribute("title");
+      expect(screen.queryByLabelText("Tier 5")).toBeNull();
+    },
+  );
+});
+
+describe("QualityPill with a missing label", () => {
+  it("labels a missing quality label UNRATED, never STANDARD", () => {
+    render(<QualityPill label={null} score={0} reasons={[]} />);
+    expect(screen.getByText("UNRATED")).toBeInTheDocument();
+    expect(screen.queryByText("STANDARD")).toBeNull();
+  });
+});
+
+describe("quality-reason labels follow the live awareness tokens", () => {
+  it("labels the tokens quality.py actually emits", () => {
+    expect(parseQualityReason("tier3:+18").label).toBe("Tier 3 publisher");
+    expect(parseQualityReason("relevance:+12").label).toBe("Finance relevance");
+    expect(parseQualityReason("depth_body300:+20").label).toBe("Depth: 300+ word body");
+    expect(parseQualityReason("depth_summary140:+8").label).toBe(
+      "Depth: summary 140+ chars",
+    );
+    expect(parseQualityReason("author:+5").label).toBe("Author named");
+    expect(parseQualityReason("time_precise:+3").label).toBe("Precise publish time");
+    expect(parseQualityReason("entity_high_conf:+7").label).toBe("High-confidence entity");
+    expect(parseQualityReason("topic:+5").label).toBe("Topic identified");
+    expect(parseQualityReason("premium_cap").label).toBe("Capped below premium");
+  });
+
+  it("has a label for every live token (no raw names shown)", () => {
+    const tokens = [
+      "tier1:+45",
+      "tier2:+38",
+      "tier3:+18",
+      "tier4:+6",
+      "tier5:+0",
+      "relevance:+12",
+      "depth_body300:+20",
+      "depth_body120:+12",
+      "depth_summary140:+8",
+      "depth_summary60:+4",
+      "author:+5",
+      "time_precise:+3",
+      "entity_high_conf:+7",
+      "topic:+5",
+      "corroboration:+10",
+      "clickbait:-25",
+      "all_caps_title:-10",
+      "opinion:-5",
+      "press_release:-10",
+      "paywalled_no_summary:-10",
+      "question_no_entity:-5",
+      "boilerplate_summary:-3",
+      "premium_cap",
+      "low_relevance_cap",
+      "tier4_cap",
+      "tier4_release_cap",
+      "tier5_cap",
+      "official_floor",
+      "unknown_publisher",
+      "missing_url",
+      "missing_title",
+      "missing_timestamp",
+      "stale",
+      "future_timestamp",
+      "title_too_short",
+      "non_finance",
+      "community_low_signal",
+    ];
+    for (const token of tokens) {
+      const parsed = parseQualityReason(token);
+      expect(parsed.label, token).not.toBe(parsed.name);
+    }
+  });
+});
+
+describe("story detail keys and honesty", () => {
+  it("says there is no story group instead of loading forever", () => {
+    render(<StoryRow row={makeRow({ story_id: null, story_size: 2 })} code="TOP" />);
+    fireEvent.click(screen.getByRole("button", { name: /\+1 sources/ }));
+    expect(screen.getByText("No story group for this item.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading sources")).toBeNull();
+  });
+
+  it("the drawer says so for an item without a story group", () => {
+    render(
+      <StoryDrawer
+        row={makeRow({ story_id: null })}
+        code="TOP"
+        hasPrev={false}
+        hasNext={false}
+        onPrev={() => undefined}
+        onNext={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    expect(screen.getByText("No story group for this item.")).toBeInTheDocument();
+  });
+
+  it("the drawer marks only the clicked row as lead and shows each source's quality", () => {
+    useFunctionMock.mockReturnValue({
+      state: "ok",
+      refetch: () => undefined,
+      data: {
+        data: {
+          status: "ok",
+          story: {
+            id: "s1",
+            items: [
+              {
+                id: "n1",
+                title: "Chip export rules tighten for Nvidia",
+                publisher_name: "Reuters",
+                publisher_tier: 1,
+                url: "https://news.example/chips",
+                published_at: "2026-11-08T09:14:00Z",
+                quality_label: "premium",
+              },
+              {
+                id: "old",
+                title: "Earlier report",
+                publisher_name: "Blog",
+                publisher_tier: 4,
+                url: "javascript:alert(1)",
+                published_at: "2026-11-08T08:00:00Z",
+                quality_label: "low",
+              },
+              {
+                id: "x",
+                title: "Unrated item",
+                publisher_name: "Wire",
+                publisher_tier: 2,
+                url: null,
+                published_at: "2026-11-08T10:00:00Z",
+              },
+            ],
+          },
+        },
+      },
+    });
+    render(
+      <StoryDrawer
+        row={makeRow()}
+        code="TOP"
+        hasPrev={false}
+        hasNext={false}
+        onPrev={() => undefined}
+        onNext={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    const section = screen.getByLabelText("All sources");
+    expect(within(section).getByText("Reuters (lead)")).toBeInTheDocument();
+    expect(within(section).queryByText(/Blog \(lead\)/)).toBeNull();
+    expect(within(section).queryByText(/Wire \(lead\)/)).toBeNull();
+    expect(within(section).getByText("PREMIUM")).toBeInTheDocument();
+    expect(within(section).getByText("LOW")).toBeInTheDocument();
+    expect(within(section).getByText("UNRATED")).toBeInTheDocument();
+    const opens = within(section).getAllByRole("button", { name: /Open article at/ });
+    // Oldest first: Blog (unsafe URL, disabled), Reuters (safe), Wire (no URL, disabled).
+    expect(opens.map((b) => (b as HTMLButtonElement).disabled)).toEqual([
+      true,
+      false,
+      true,
+    ]);
+  });
+});
+
+describe("feed-supplied article URLs", () => {
+  it("accepts only http and https", () => {
+    expect(safeArticleUrl("https://news.example/a")).toBe("https://news.example/a");
+    expect(safeArticleUrl("http://news.example/a")).toBe("http://news.example/a");
+    expect(safeArticleUrl("javascript:alert(1)")).toBeNull();
+    expect(safeArticleUrl("data:text/html,<script>alert(1)</script>")).toBeNull();
+    expect(safeArticleUrl("/relative/path")).toBeNull();
+    expect(safeArticleUrl("not a url")).toBeNull();
+    expect(safeArticleUrl("")).toBeNull();
+    expect(safeArticleUrl(null)).toBeNull();
+  });
+
+  it("openArticle refuses an unsafe scheme even when called directly", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    openArticle("javascript:alert(1)");
+    expect(open).not.toHaveBeenCalled();
+    openArticle("https://news.example/a");
+    expect(open).toHaveBeenCalledWith(
+      "https://news.example/a",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+  });
+
+  it("disables the headline and open controls for an unsafe URL", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(
+      <StoryRow row={makeRow({ url: "javascript:alert(1)", link: null })} code="TOP" />,
+    );
+    const headline = screen.getByRole("button", {
+      name: "Chip export rules tighten for Nvidia",
+    });
+    expect(headline).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Open article at Reuters" })).toBeDisabled();
+    fireEvent.click(headline);
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+});
+
+describe("StoryList focus and drawer identity", () => {
+  it("j moves focus inside its own list, not into another list on the board", () => {
+    render(
+      <>
+        <StoryList
+          rows={[
+            makeRow({ id: "b1", title: "Other list first" }),
+            makeRow({ id: "b2", title: "Other list second" }),
+          ]}
+          code="TOP"
+          ariaLabel="Other"
+        />
+        <StoryList
+          rows={[
+            makeRow({ id: "a1", title: "Mine first" }),
+            makeRow({ id: "a2", title: "Mine second" }),
+          ]}
+          code="TOP"
+          ariaLabel="Mine"
+        />
+      </>,
+    );
+    const mine = screen.getByRole("feed", { name: "Mine" });
+    const first = within(mine).getByRole("article", { name: /Mine first/ });
+    first.focus();
+    fireEvent.keyDown(first, { key: "j" });
+    expect(within(mine).getByRole("article", { name: /Mine second/ })).toHaveFocus();
+  });
+
+  it("keeps the open drawer on the same story when a refresh reorders the rows", () => {
+    const a = makeRow({ id: "a1", title: "First headline" });
+    const b = makeRow({ id: "b1", title: "Second headline" });
+    const { rerender } = render(<StoryList rows={[a, b]} code="TOP" ariaLabel="Stories" />);
+    fireEvent.click(screen.getByRole("article", { name: /Second headline/ }));
+    rerender(<StoryList rows={[b, a]} code="TOP" ariaLabel="Stories" />);
+    const dialog = screen.getByRole("dialog", { name: "Story" });
+    expect(
+      within(dialog).getByRole("heading", { name: "Second headline" }),
+    ).toBeInTheDocument();
   });
 });

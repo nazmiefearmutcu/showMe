@@ -116,7 +116,8 @@ def cn() -> FunctionManifest:
         methodology=(
             "Awareness collects publisher articles, links each one to the entities it names "
             "(symbols), scores quality (publisher tier, timestamp precision, entity confidence, "
-            "topic evidence), labels sentiment with FinBERT (ProsusAI/finbert), scores importance "
+            "topic evidence), labels sentiment per row (sentiment_model names FinBERT ProsusAI/finbert "
+            "or the lexicon fallback aw-fin-1), scores importance "
             "0-100 and collapses duplicate reports into stories. CN asks for the symbol's entity "
             "at quality standard or better within the hours window. The symbol is normalised first: "
             "pair suffixes are removed (BTCUSDT and BTC-USD become BTC), BRK.B becomes BRK-B, and "
@@ -127,7 +128,7 @@ def cn() -> FunctionManifest:
             "rows[].publisher": FieldDef(description="Publisher name.", source="feed"),
             "rows[].title": FieldDef(description="Headline as published.", source="feed"),
             "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
-            "rows[].sentiment": FieldDef(description="positive, negative or neutral (FinBERT label).", source="finbert"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (awareness label; model named in sentiment_model).", source="finbert"),
             "rows[].importance": FieldDef(unit="0-100", description="Awareness importance score.", source="awareness"),
         },
         provenance=ProvenanceSpec(

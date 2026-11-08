@@ -179,8 +179,6 @@ def test_top_parses_get_strings_and_clamps() -> None:
     assert seen[-1].url.params["hours"] == "24"
     assert seen[-1].url.params["limit"] == "200"
     assert seen[-1].url.params["min_quality"] == "standard"
-    _run(fn.execute(min_quality="low"))  # the pane's "show low-quality" relaxer is honoured
-    assert seen[-1].url.params["min_quality"] == "low"
     _run(fn.execute(days="2"))  # legacy Welcome-feed window
     assert seen[-1].url.params["hours"] == "48"
     _run(fn.execute(hours="9999"))
@@ -189,6 +187,26 @@ def test_top_parses_get_strings_and_clamps() -> None:
     assert seen[-1].url.params["hours"] == "48"
     _run(fn.execute(hours="6", max_age_days="7"))
     assert seen[-1].url.params["hours"] == "6"
+
+
+def test_top_low_quality_floor_is_clamped_to_standard_with_a_warning() -> None:
+    # TOP never shows low-quality news: a requested low (or any other value) is clamped to
+    # standard and the result says so in warnings. The request still reaches awareness at standard.
+    client, seen = _client(_news_only([_item("a1")]))
+    fn = _fn(TOPFunction, client)
+    result = _run(fn.execute(min_quality="low"))
+    assert seen[-1].url.params["min_quality"] == "standard"
+    assert any("'low'" in w and "standard" in w for w in result.warnings)
+    assert result.data["filters"]["min_quality"] == "standard"
+    result = _run(fn.execute(min_quality="bogus"))
+    assert seen[-1].url.params["min_quality"] == "standard"
+    assert any("'bogus'" in w for w in result.warnings)
+    result = _run(fn.execute(min_quality="premium"))
+    assert seen[-1].url.params["min_quality"] == "premium"
+    assert not any("not offered" in w for w in result.warnings)
+    result = _run(fn.execute())
+    assert seen[-1].url.params["min_quality"] == "standard"
+    assert not any("not offered" in w for w in result.warnings)
 
 
 def test_top_maps_legacy_query_to_q_and_route_no_longer_injects_it() -> None:
@@ -243,6 +261,56 @@ def test_top_story_hash_resolves_through_stories_to_lead() -> None:
     assert result.data["status"] == "ok" and result.data["story"]["id"] == "s1"
 
 
+def test_story_detail_by_lead_item_id_skips_the_stories_lookup() -> None:
+    # The drawer sends the row id (the lead item). It is answered by /news/{id} directly; the
+    # /stories hash lookup (a 720 h, top-100 window) is never needed for it.
+    story = {"id": "s1", "title": "T", "corroboration": 2, "publishers": [], "items": [],
+             "first_seen_at": None, "last_updated_at": None}
+
+    def respond(path: str, params: dict[str, str], request: httpx.Request) -> tuple[int, Any]:
+        if path == "/v1/markets/news/a1":
+            return 200, {"data": {**_item("a1"), "story": story}, "meta": {"providers": OK_PROVIDERS, "notes": []}}
+        raise AssertionError(path)
+
+    client, seen = _client(respond)
+    result = _run(_fn(TOPFunction, client).execute(story_id="a1"))
+    assert result.data["status"] == "ok" and result.data["story"]["id"] == "s1"
+    assert [r.url.path for r in seen] == ["/v1/markets/news/a1"]
+
+
+def test_story_detail_encodes_the_story_id_in_the_path() -> None:
+    raw_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw_paths.append(request.url.raw_path.decode())
+        return httpx.Response(404, json={"detail": "news item not found"})
+
+    client = AwarenessClient("http://aw.test", transport=httpx.MockTransport(handler), autostart=False)
+    _run(_fn(TOPFunction, client).execute(story_id="a/b?x=1"))
+    assert raw_paths[0] == "/v1/markets/news/a%2Fb%3Fx%3D1"
+
+
+def test_bounded_int_rejects_non_finite_numbers_without_overflow() -> None:
+    from showme.engine.functions.news.awareness_news import bounded_int
+
+    assert bounded_int("inf", 24, 1, 168) == 24
+    assert bounded_int("1e309", 24, 1, 168) == 24
+    assert bounded_int(float("-inf"), 24, 1, 168) == 24
+    assert bounded_int("nan", 24, 1, 168) == 24
+    assert bounded_int("12.7", 24, 1, 168) == 12
+    assert bounded_int("9999", 24, 1, 168) == 168
+
+
+def test_top_non_finite_hours_reach_the_handler_as_the_default() -> None:
+    client, seen = _client(_news_only([]))
+    fn = _fn(TOPFunction, client)
+    result = _run(fn.execute(hours="inf"))
+    assert result.data["status"] == "empty"
+    assert seen[-1].url.params["hours"] == "24"
+    _run(fn.execute(hours="1e309"))
+    assert seen[-1].url.params["hours"] == "24"
+
+
 def test_top_story_not_found_is_empty() -> None:
     def respond(path: str, params: dict[str, str], request: httpx.Request) -> tuple[int, Any]:
         if path.startswith("/v1/markets/news/"):
@@ -287,6 +355,23 @@ def test_ni_unknown_topic_is_disclosed_not_silent() -> None:
     assert result.data["topic"] == "MACRO"
     assert "NOPE" in result.data["hidden_note"]
     assert "inflation" in seen[-1].url.params["topics"]
+
+
+def test_ni_crypto_preset_maps_to_crypto_topic_and_asset_class() -> None:
+    client, seen = _client(_news_only([_item("c1")]))
+    result = _run(_fn(NIFunction, client).execute(topic="CRYPTO"))
+    assert seen[-1].url.params["topics"] == "crypto_market"
+    assert seen[-1].url.params["asset_classes"] == "crypto"
+    assert result.data["topic"] == "CRYPTO" and result.data["hidden_note"] is None
+    assert result.data["status"] == "ok"
+
+
+def test_ni_every_preset_is_a_real_preset_with_taxonomy_tags() -> None:
+    from showme.engine.functions.news.ni import TOPIC_PRESETS
+
+    assert "CRYPTO" in TOPIC_PRESETS
+    for key, spec in TOPIC_PRESETS.items():
+        assert spec.get("topics") or spec.get("asset_classes"), key
 
 
 def test_ni_unavailable_and_stale() -> None:

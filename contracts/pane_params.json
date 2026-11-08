@@ -952,8 +952,7 @@
         "hours",
         "limit",
         "min_quality",
-        "q",
-        "symbol"
+        "q"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1322,6 +1321,7 @@
       "keys": [
         "_epoch",
         "asset_classes",
+        "countries",
         "hours",
         "limit",
         "min_quality",
@@ -1517,11 +1517,11 @@
   },
   "unresolved": [
     {
-      "where": "ui/src/functions/awareness/StoryDrawer.tsx:47",
+      "where": "ui/src/functions/awareness/StoryDrawer.tsx:49",
       "why": "code not resolvable to a registry entry"
     },
     {
-      "where": "ui/src/functions/awareness/StoryRow.tsx:65",
+      "where": "ui/src/functions/awareness/StoryRow.tsx:83",
       "why": "code not resolvable to a registry entry"
     },
     {

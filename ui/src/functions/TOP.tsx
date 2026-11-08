@@ -6,7 +6,9 @@
  * story's publishers and the drawer shows the full story. No sample data, no
  * fallback feeds: awareness down renders the unavailable state.
  *
- * Params sent: hours, limit, min_quality, topics, asset_classes, q, story_id (detail).
+ * TOP never shows low-quality news: the quality floor offers premium or standard only.
+ *
+ * Params sent: hours, limit, min_quality, topics, asset_classes, countries, q.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pane, PaneBody, PaneHeader } from "@/design-system";
@@ -26,20 +28,34 @@ import type { FunctionPaneProps } from "./registry-types";
 
 const REFRESH_MS = 60_000;
 const HOUR_OPTIONS: readonly number[] = [6, 24, 72, 168];
-const FLOOR_OPTIONS: readonly string[] = ["premium", "standard", "low"];
+// Premium or standard only. Low-quality news is never shown on TOP (the backend clamps a low request).
+const FLOOR_OPTIONS: readonly string[] = ["premium", "standard"];
+// Asset-class tags exactly as the awareness taxonomy and the TOP seed spell them.
 const ASSET_OPTIONS: readonly string[] = [
   "all",
-  "equity",
-  "rates",
+  "equities",
+  "indices",
   "fx",
+  "rates",
+  "credit",
+  "commodities",
   "crypto",
-  "commodity",
   "macro",
 ];
-const FLOOR_LABEL: Record<(typeof FLOOR_OPTIONS)[number], string> = {
+const ASSET_LABEL: Record<string, string> = {
+  all: "All",
+  equities: "Equities",
+  indices: "Indices",
+  fx: "FX",
+  rates: "Rates",
+  credit: "Credit",
+  commodities: "Commodities",
+  crypto: "Crypto",
+  macro: "Macro",
+};
+const FLOOR_LABEL: Record<string, string> = {
   premium: "Premium",
   standard: "Standard and above",
-  low: "all quality levels",
 };
 
 export function TOPPane({ code }: FunctionPaneProps) {
@@ -51,6 +67,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
     "all",
   );
   const [topic, setTopic] = useState("");
+  const [country, setCountry] = useState("");
   const [qDraft, setQDraft] = useState("");
   const [q, setQ] = useState("");
 
@@ -58,9 +75,10 @@ export function TOPPane({ code }: FunctionPaneProps) {
     const p: Record<string, unknown> = { hours, limit: 50, min_quality: floor };
     if (topic) p.topics = topic;
     if (assetClass !== "all") p.asset_classes = assetClass;
+    if (country) p.countries = country;
     if (q) p.q = q;
     return p;
-  }, [hours, floor, assetClass, topic, q]);
+  }, [hours, floor, assetClass, topic, country, q]);
 
   const { state, data, error, refetch } = useFunction<NewsPayload>({ code, params });
 
@@ -81,6 +99,14 @@ export function TOPPane({ code }: FunctionPaneProps) {
     if (topic) set.add(topic);
     return Array.from(set).sort();
   }, [rows, topic]);
+
+  const clearFilters = () => {
+    setTopic("");
+    setCountry("");
+    setAssetClass("all");
+    setQ("");
+    setQDraft("");
+  };
 
   const toolbar = (
     <div className="aw-toolbar" role="toolbar" aria-label="TOP news filters">
@@ -120,6 +146,16 @@ export function TOPPane({ code }: FunctionPaneProps) {
             onBlur={() => setQ(qDraft.trim())}
           />
         </form>
+        {country ? (
+          <button
+            type="button"
+            className="aw-chip aw-chip--filter"
+            aria-label={`Remove country filter ${country}`}
+            onClick={() => setCountry("")}
+          >
+            Country {country} {"×"}
+          </button>
+        ) : null}
         <span className="aw-toolbar__spacer" />
         <FunctionControlGroup>
           <LoadStatePill state={state} status={data?.data?.status ?? data?.status} />
@@ -134,7 +170,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
         <SegmentedControl
           label="Asset class"
           value={assetClass}
-          options={ASSET_OPTIONS}
+          options={ASSET_OPTIONS.map((v) => ({ value: v, label: ASSET_LABEL[v] ?? v }))}
           onChange={setAssetClass}
         />
         <SegmentedControl
@@ -169,19 +205,15 @@ export function TOPPane({ code }: FunctionPaneProps) {
             emptyTitle="No stories match these filters"
             emptyBody={
               <>
-                Window {hours}h, quality {FLOOR_LABEL[floor]}
+                Window {hours}h, quality {FLOOR_LABEL[floor] ?? floor}
                 {topic ? `, topic ${topic.replace(/_/g, " ")}` : ""}
                 {assetClass !== "all" ? `, asset class ${assetClass}` : ""}
+                {country ? `, country ${country}` : ""}
                 {q ? `, search "${q}"` : ""}.
               </>
             }
             emptyAction={
               <div className="aw-relaxers">
-                {floor !== "low" ? (
-                  <button type="button" className="aw-btn" onClick={() => setFloor("low")}>
-                    Lower quality floor
-                  </button>
-                ) : null}
                 {hours < 168 ? (
                   <button type="button" className="aw-btn" onClick={() => setHours(168)}>
                     Widen to 7d
@@ -190,12 +222,7 @@ export function TOPPane({ code }: FunctionPaneProps) {
                 <button
                   type="button"
                   className="aw-btn aw-btn--ghost"
-                  onClick={() => {
-                    setTopic("");
-                    setAssetClass("all");
-                    setQ("");
-                    setQDraft("");
-                  }}
+                  onClick={clearFilters}
                 >
                   Clear filters
                 </button>
@@ -204,9 +231,9 @@ export function TOPPane({ code }: FunctionPaneProps) {
             ariaLabel="Top news stories"
             onFilter={(kind, value) => {
               if (kind === "topic") setTopic(value);
+              if (kind === "country") setCountry(value);
             }}
-            summary={`${rows.length} stories in ${hours}h, quality ${FLOOR_LABEL[floor]}`}
-            onShowLow={() => setFloor("low")}
+            summary={`${rows.length} stories in ${hours}h, quality ${FLOOR_LABEL[floor] ?? floor}`}
           />
         </PaneBody>
       </Pane>

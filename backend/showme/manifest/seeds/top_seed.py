@@ -76,7 +76,7 @@ def top() -> FunctionManifest:
                 label="Quality floor",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Lowest awareness quality label kept: premium, or standard and above.",
+                description="Lowest awareness quality label kept: premium, or standard and above. Low-quality news is never shown on TOP; a requested low is clamped to standard with a warning.",
                 options=["premium", "standard"],
             ),
             InputSpec(
@@ -167,8 +167,9 @@ def top() -> FunctionManifest:
         methodology=(
             "Awareness (awareness-markets, local service) ingests keyless publisher feeds, scores "
             "each item with a quality gate (publisher tier, timestamp precision, entity confidence "
-            "and topic evidence, reported as quality_reasons), labels sentiment with FinBERT "
-            "(ProsusAI/finbert), scores importance 0-100, and clusters near-duplicate reports into "
+            "and topic evidence, reported as quality_reasons), labels sentiment per row (the row's "
+            "sentiment_model names FinBERT ProsusAI/finbert or the lexicon fallback aw-fin-1), "
+            "scores importance 0-100, and clusters near-duplicate reports into "
             "stories. TOP lists one lead per story at quality standard or better, newest first "
             "within the hours window; story_size counts the collapsed reports. Stale providers keep "
             "their data and mark the response cached_snapshot with live false."
@@ -179,8 +180,8 @@ def top() -> FunctionManifest:
             "rows[].publisher_tier": FieldDef(unit="1-5", description="Publisher trust tier (1 is highest).", source="awareness"),
             "rows[].title": FieldDef(description="Headline as published.", source="feed"),
             "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
-            "rows[].sentiment": FieldDef(description="positive, negative or neutral (FinBERT label).", source="finbert"),
-            "rows[].sentiment_score": FieldDef(unit="[-1,1]", description="FinBERT signed score.", source="finbert"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (awareness label; model named in sentiment_model).", source="finbert"),
+            "rows[].sentiment_score": FieldDef(unit="[-1,1]", description="Signed sentiment score from the model named in sentiment_model.", source="finbert"),
             "rows[].importance": FieldDef(unit="0-100", description="Awareness importance score.", source="awareness"),
             "rows[].quality_label": FieldDef(description="premium, standard, low or rejected.", source="awareness"),
             "rows[].quality_reasons": FieldDef(description="Quality gate reasons, for example tier1:+45.", source="awareness"),

@@ -36,9 +36,25 @@ export interface StoryRowProps {
   index?: number;
 }
 
+/**
+ * A feed-supplied article URL that is safe to open: only http and https. Anything else
+ * (javascript:, data:, relative or malformed) is null and its control is disabled.
+ */
+export function safeArticleUrl(url: string | null | undefined): string | null {
+  const text = (url ?? "").trim();
+  if (!text) return null;
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? text : null;
+  } catch {
+    return null;
+  }
+}
+
 export function openArticle(url: string | null | undefined) {
-  if (!url) return;
-  window.open(url, "_blank", "noopener,noreferrer");
+  const safe = safeArticleUrl(url);
+  if (!safe) return;
+  window.open(safe, "_blank", "noopener,noreferrer");
 }
 
 export function StoryRow({
@@ -53,7 +69,7 @@ export function StoryRow({
 }: StoryRowProps) {
   const [expanded, setExpanded] = useState(false);
   const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
-  const url = row.url ?? row.link ?? null;
+  const url = safeArticleUrl(row.url) ?? safeArticleUrl(row.link);
   const rel = relativeTimeLabel(row.published_at, nowMs) ?? "";
   const abs = hhmmUtc(row.published_at);
   const body = row.excerpt ?? row.summary ?? "";
@@ -62,10 +78,12 @@ export function StoryRow({
   const showLang = row.language && row.language !== "en";
   const sentimentModel = row.sentiment_model ?? null;
 
+  // The detail call is keyed by the row id (the lead item): awareness answers /news/{id}
+  // directly, while a story hash only resolves through the 720 h /stories window.
   const story = useFunction<NewsPayload>({
     code,
     symbol,
-    params: { story_id: row.story_id ?? "" },
+    params: { story_id: row.id },
     enabled: expanded && Boolean(row.story_id),
   });
   const detailItems: StoryItem[] = story.data?.data?.story?.items ?? [];
@@ -202,7 +220,9 @@ export function StoryRow({
           role="group"
           aria-label={`Other sources for ${row.title}`}
         >
-          {story.state === "loading" || story.state === "idle" ? (
+          {!row.story_id ? (
+            <div className="aw-corro__loading">No story group for this item.</div>
+          ) : story.state === "loading" || story.state === "idle" ? (
             <div className="aw-corro__loading">Loading sources</div>
           ) : story.state === "error" ? (
             <div className="aw-corro__loading">Could not load the other sources.</div>
@@ -211,25 +231,28 @@ export function StoryRow({
               No other sources returned for this story.
             </div>
           ) : (
-            detailItems.map((it) => (
-              <div key={it.id} className="aw-corro__row">
-                <span className="aw-mono">{hhmmUtc(it.published_at)}</span>
-                <TierBadge tier={it.publisher_tier} />
-                <span className="aw-corro__pub">{it.publisher_name}</span>
-                <span className="aw-corro__title" title={it.title}>
-                  {it.title}
-                </span>
-                <button
-                  type="button"
-                  className="aw-row__open"
-                  aria-label={`Open article at ${it.publisher_name}`}
-                  disabled={!it.url}
-                  onClick={() => openArticle(it.url)}
-                >
-                  {"\u2197"}
-                </button>
-              </div>
-            ))
+            detailItems.map((it) => {
+              const itemUrl = safeArticleUrl(it.url);
+              return (
+                <div key={it.id} className="aw-corro__row">
+                  <span className="aw-mono">{hhmmUtc(it.published_at)}</span>
+                  <TierBadge tier={it.publisher_tier} />
+                  <span className="aw-corro__pub">{it.publisher_name}</span>
+                  <span className="aw-corro__title" title={it.title}>
+                    {it.title}
+                  </span>
+                  <button
+                    type="button"
+                    className="aw-row__open"
+                    aria-label={`Open article at ${it.publisher_name}`}
+                    disabled={!itemUrl}
+                    onClick={() => openArticle(itemUrl)}
+                  >
+                    {"\u2197"}
+                  </button>
+                </div>
+              );
+            })
           )}
         </div>
       ) : null}

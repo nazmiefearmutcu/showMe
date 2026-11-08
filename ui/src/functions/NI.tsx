@@ -31,6 +31,9 @@ export const TOPIC_PRESETS: readonly string[] = [
   "BANKS",
   "TECH",
   "CRYPTO",
+  "WAR",
+  "M&A",
+  "IPO",
 ];
 const NI_HOURS: readonly number[] = [24, 48, 168];
 const CN_HOURS: readonly number[] = [24, 168, 720];

@@ -137,7 +137,8 @@ def nse() -> FunctionManifest:
             "NSE sends the search text to the awareness full-text index over the sourced news "
             "store (titles, summaries and excerpts), restricted to the hours window and the "
             "quality floor, collapsed to one row per story. Without search text it filters by the "
-            "entity symbol. Sentiment is FinBERT (ProsusAI/finbert) and quality is the awareness "
+            "entity symbol. Sentiment is labelled per row by awareness (sentiment_model names FinBERT "
+            "ProsusAI/finbert or the lexicon fallback aw-fin-1) and quality is the awareness "
             "quality gate. If nothing matches at standard quality the rows stay hidden: hidden_note "
             "counts the lower-quality matches and relax suggests min_quality low. The quality "
             "floor is never lowered silently."
@@ -147,7 +148,7 @@ def nse() -> FunctionManifest:
             "rows[].publisher": FieldDef(description="Publisher name.", source="feed"),
             "rows[].title": FieldDef(description="Headline as published.", source="feed"),
             "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
-            "rows[].sentiment": FieldDef(description="positive, negative or neutral (FinBERT label).", source="finbert"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (awareness label; model named in sentiment_model).", source="finbert"),
             "rows[].quality_label": FieldDef(description="premium, standard or low.", source="awareness"),
             "hidden_note": FieldDef(description="Count of matches hidden by the quality floor.", source="awareness"),
         },
