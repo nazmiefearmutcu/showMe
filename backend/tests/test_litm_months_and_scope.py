@@ -31,7 +31,8 @@ def _iso(days_ago: int) -> str:
 
 def _frame() -> pd.DataFrame:
     # A-recent (1.03) is inside every lookback; A-old (5.02) is about 400 days
-    # old, so it falls outside the default 24-month window and outside 3 months.
+    # old, so it falls outside the 3- and 12-month windows but inside the
+    # default 24-month window (about 730 days).
     return pd.DataFrame({
         "form": ["8-K", "8-K", "8-K"],
         "filingDate": [_iso(20), _iso(60), _iso(400)],
@@ -105,3 +106,32 @@ def test_payload_exposes_the_two_code_sets() -> None:
     assert result.data["kept_item_codes"] == sorted(
         set(result.data["litigation_codes"]) | set(result.data["governance_codes"])
     )
+
+
+# ------------------------------------------------------- LITM severity doc truth
+
+
+def test_seed_severity_description_lists_every_value_the_handler_emits() -> None:
+    # The handler emits 'review' on filing rows, 'none' on the empty-state rows and
+    # 'unknown' when SEC item codes are unavailable; the seed text must say so.
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    description = REGISTRY.get("LITM").field_dict["severity"].description
+    for value in ("review", "none", "unknown"):
+        assert f"'{value}'" in description, description
+
+
+def test_item_codes_unavailable_row_is_severity_unknown() -> None:
+    # Pins the 'unknown' value named in the seed text against the real handler path.
+    frame = pd.DataFrame({
+        "form": ["8-K"],
+        "filingDate": [_iso(20)],
+        "reportDate": [_iso(20)],
+        "accessionNumber": ["A-noitems"],
+        "primaryDocument": ["r.htm"],
+    })
+    deps = FunctionDeps(sec_edgar=_Edgar(frame))
+    result = asyncio.run(LITMFunction(deps).execute(instrument=AAPL, months=60))
+    assert result.data["status"] == "provider_unavailable", result.data
+    assert {row["severity"] for row in result.data["rows"]} == {"unknown"}, result.data["rows"]

@@ -128,7 +128,7 @@ def litm() -> FunctionManifest:
             "symbol": FieldDef(description="Equity ticker.", source="instrument"),
             "matters": FieldDef(description="Normalized list of disclosed litigation matters.", source="sec_edgar"),
             "matter_count": FieldDef(description="Total matters in the lookback window.", source="computed"),
-            "severity": FieldDef(description="ShowMe review flag (always 'review' or 'none'), not legal advice.", source="computed"),
+            "severity": FieldDef(description="ShowMe review flag, not legal advice: 'review' on a matched filing row, 'none' when the scan found no matching filing, 'unknown' when SEC item codes are unavailable.", source="computed"),
             "category": FieldDef(description="litigation (1.03, 1.04) or governance (3.03, 5.02, 5.03).", source="computed"),
             "latest_filing_date": FieldDef(description="Most-recent litigation-related filing date.", source="computed"),
             "filing_url": FieldDef(description="Direct EDGAR document URL for the source filing.", source="sec_edgar"),
