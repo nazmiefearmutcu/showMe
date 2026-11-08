@@ -701,13 +701,23 @@ class MARSFunction(BaseFunction):
             except Exception:
                 return pd.Series(dtype=float)
         import asyncio
+        fetch_budget = _mars_fetch_budget(params)
+
         async def _ret_with_timeout(sym: str) -> pd.Series:
             try:
-                return await asyncio.wait_for(_ret(sym), timeout=float(params.get("quote_timeout", 8)))
+                return await asyncio.wait_for(_ret(sym), timeout=fetch_budget)
             except Exception:
                 return pd.Series(dtype=float)
 
-        rs = await asyncio.gather(*(_ret_with_timeout(s) for s in proxies.values())) if self.deps.yfinance else []
+        # Factor proxies and universe legs are fetched concurrently: running them
+        # back to back could exceed the router's per-function budget.
+        proxy_fetch = (
+            asyncio.gather(*(_ret_with_timeout(s) for s in proxies.values()))
+            if self.deps.yfinance
+            else asyncio.sleep(0, result=[])
+        )
+        symbol_fetch = asyncio.gather(*(_ret_with_timeout(str(s)) for s in symbols))
+        rs, rets = await asyncio.gather(proxy_fetch, symbol_fetch)
         # Audit Q3 #7: pairwise covariance for factor regression universe.
         factors = align_return_series(zip(proxies.keys(), rs), policy="pairwise")
         warnings: list[str] = []
@@ -738,14 +748,6 @@ class MARSFunction(BaseFunction):
                 + ", ".join(loaded_proxies) + ") only."
             )
         metadata["factor_proxies_loaded"] = loaded_proxies
-        # Build return series from explicit symbols or the saved ShowMe portfolio.
-        if not symbols:
-            portfolio = PortfolioState()
-            symbols = [p.instrument.symbol for p in portfolio.positions
-                        if p.instrument.asset_class.value not in ("CRYPTO", "MACRO")]
-        if not symbols:
-            symbols = ["SPY", "TLT", "GLD"]
-        rets = await asyncio.gather(*(_ret_with_timeout(str(s)) for s in symbols))
         port_ret = align_return_series(
             zip((str(s) for s in symbols), rets), policy="pairwise"
         )
@@ -769,6 +771,23 @@ class MARSFunction(BaseFunction):
             warnings=warnings,
             metadata=metadata,
         )
+
+
+_MARS_FETCH_BUDGET_SECONDS = 8.0
+
+
+def _mars_fetch_budget(params: dict[str, Any]) -> float:
+    """Per-series live fetch budget for MARS.
+
+    The router merges a generic ``quote_timeout=3`` into every routed call,
+    which is too tight for six ETF proxies plus the universe. MARS therefore
+    floors its budget at 8 s; a larger explicit ``quote_timeout`` still wins.
+    """
+    try:
+        requested = float(params.get("quote_timeout") or 0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    return max(_MARS_FETCH_BUDGET_SECONDS, requested)
 
 
 def _truthy(value: Any) -> bool:

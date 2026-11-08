@@ -124,3 +124,29 @@ def test_mars_seed_must_have_keys_are_produced_by_handler():
     top_level = set(result.data) | {"symbol"}
     missing = [k for k in entry.output_contract.must_have if k not in top_level]
     assert missing == [], f"seed promises fields the handler never returns: {missing}"
+
+
+# ────────────────────────────────────────────────────────────────────────
+# MARS#4: the router injects quote_timeout=3 on every routed call. MARS
+# fetches six ETF proxies plus the universe, so ordinary latency must not
+# drop the proxies into the template fallback.
+# ────────────────────────────────────────────────────────────────────────
+
+
+_SIX_PROXIES = {"SPY", "IWM", "VLUE", "MTUM", "QUAL", "USMV"}
+
+
+def test_mars_router_quote_timeout_does_not_drop_live_factor_proxies():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    # 3.2 s per fetch: above the router's generic 3 s budget, well under MARS's own.
+    yf = _KeyedYfinance(delay=3.2)
+    result = _run(MARSFunction(FunctionDeps(yfinance=yf)).execute(
+        instrument=EQ, symbols=["AAPL"], live=True,
+        timeout=3, quote_timeout=3, news_timeout=3, sec_timeout=3,
+        yfinance_timeout=3, finnhub_timeout=3, fred_timeout=3, damodaran_timeout=3,
+    ))
+    assert result.metadata.get("live") is True, result.warnings
+    assert set(result.metadata.get("factor_proxies_loaded") or []) == {
+        "MKT", "SMB", "HML", "MOM", "QMJ", "BAB",
+    }
