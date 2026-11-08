@@ -155,7 +155,9 @@ def test_fxfc_manifest_name_and_contract_match_the_handler() -> None:
     from showme.engine.functions.fx._funcs import FXFCFunction
     from showme.manifest.seeds.fxfc_seed import fxfc
 
-    assert fxfc.name == "FX Forecasts"
+    # FXFC#2-RQ: the output is a CIP forward path, not a forecast; the name must not claim one.
+    assert fxfc.name == "CIP FX Forward Path"
+    assert "forecast" not in fxfc.name.lower()
     assert fxfc.name == FXFCFunction.name
     assert fxfc.chart_grammar.kind.value == "tenor_curve"
 

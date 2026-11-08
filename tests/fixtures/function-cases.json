@@ -421,7 +421,7 @@
   },
   {
     "code": "FXFC",
-    "name": "FX Forecasts",
+    "name": "CIP FX Forward Path",
     "category": "fx",
     "symbol": "EURUSD",
     "url": "#/symbol/EURUSD/FXFC"

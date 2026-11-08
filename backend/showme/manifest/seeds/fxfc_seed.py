@@ -1,4 +1,4 @@
-"""FXFC — FX Forecasts (covered-interest-parity forward carry).
+"""FXFC — CIP FX Forward Path (covered-interest-parity forward carry).
 
 CIP forward-path forecasts for one FX pair across a tenor ladder, with
 model volatility bands (spot · vol · √T). Spot comes from the live tier chain (yfinance → ECB →
@@ -39,7 +39,7 @@ from ..spec import (
 def fxfc() -> FunctionManifest:
     return FunctionManifest(
         code="FXFC",
-        name="FX Forecasts",
+        name="CIP FX Forward Path",
         category=Category.FX,
         intent=(
             "Covered-interest-parity forward path for an FX pair across the "

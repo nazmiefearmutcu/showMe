@@ -369,7 +369,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "FXFC",
-    "name": "FX Forecasts",
+    "name": "CIP FX Forward Path",
     "category": "fx",
     "description": ""
   },

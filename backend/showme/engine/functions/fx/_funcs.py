@@ -87,7 +87,7 @@ class FXFCFunction(BaseFunction):
     """FXFC - FX forecasts from forward carry plus realized-vol bands."""
 
     code = "FXFC"
-    name = "FX Forecasts"
+    name = "CIP FX Forward Path"
     asset_classes = (AssetClass.FX,)
     category = "fx"
 

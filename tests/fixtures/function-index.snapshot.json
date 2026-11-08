@@ -1661,14 +1661,14 @@
   },
   {
     "code": "FXFC",
-    "name": "FX Forecasts",
+    "name": "CIP FX Forward Path",
     "category": "fx",
     "description": "",
     "asset_classes": [
       "FX"
     ],
     "usage": {
-      "purpose": "FX Forecasts function.",
+      "purpose": "CIP FX Forward Path function.",
       "scope": "global",
       "asset_classes": [
         "FX"
