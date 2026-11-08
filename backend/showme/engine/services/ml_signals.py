@@ -15,6 +15,10 @@ import numpy as np
 import pandas as pd
 
 
+_NON_FEATURE_COLUMNS = ("target", "fwd_ret_1")
+_SIGNAL_BY_DIRECTION = {"up": "long_bias", "down": "short_bias", "flat": "neutral"}
+
+
 def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
@@ -51,6 +55,8 @@ def _bb_pct(close: pd.Series, period: int = 20, std: float = 2.0) -> pd.Series:
 
 
 def make_features(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
+    """Feature matrix plus labels. The newest bars have no forward label yet
+    (``target`` is NaN there) but are kept so the latest bar can be scored."""
     f = pd.DataFrame(index=df.index)
     f["ret_1"] = df["close"].pct_change(1)
     f["ret_3"] = df["close"].pct_change(3)
@@ -72,7 +78,8 @@ def make_features(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
     # Realised return over the NEXT bar (t -> t+1): the P&L of a position
     # decided at the close of bar t. Kept out of the feature matrix.
     f["fwd_ret_1"] = df["close"].pct_change().shift(-1)
-    return f.dropna()
+    feature_cols = [c for c in f.columns if c not in _NON_FEATURE_COLUMNS]
+    return f.dropna(subset=feature_cols)
 
 
 def _oos_sharpe(positions: np.ndarray, realised_next: pd.Series) -> float:
@@ -86,18 +93,33 @@ def _oos_sharpe(positions: np.ndarray, realised_next: pd.Series) -> float:
     return float(strat.mean() / sd * (252 ** 0.5))
 
 
+def _direction_label(value: float) -> str:
+    if value > 0:
+        return "up"
+    if value < 0:
+        return "down"
+    return "flat"
+
+
 def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
-    """Train a classifier on features (last 30% as test) and report metrics."""
-    y = features["target"]
-    X = features.drop(columns=["target", "fwd_ret_1"])
-    n = len(features)
+    """Train a classifier on the labelled rows (first 70%) and report metrics.
+
+    The latest prediction is made from the newest bar with the same model.
+    The signal is derived from that prediction; accuracy is reported separately.
+    """
+    labelled = features.loc[features["target"].notna()]
+    n = len(labelled)
     if n < 100:
         return {"error": "need at least 100 rows"}
+    y = labelled["target"]
+    X = labelled.drop(columns=list(_NON_FEATURE_COLUMNS))
+    X_latest = features.drop(columns=list(_NON_FEATURE_COLUMNS)).iloc[[-1]]
     split = int(n * 0.7)
     X_train, X_test = X.iloc[:split], X.iloc[split:]
     y_train, y_test = y.iloc[:split], y.iloc[split:]
 
     pred_test = None
+    pred_latest = None
     feat_imp: dict[str, float] = {}
     backend = "logistic"
     try:
@@ -106,6 +128,7 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
                                  learning_rate=0.05, verbose=-1)
         m.fit(X_train, y_train)
         pred_test = m.predict(X_test)
+        pred_latest = m.predict(X_latest)
         feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
         backend = "lightgbm"
     except Exception:
@@ -118,6 +141,7 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
             m.fit(X_train, y_train.replace({-1: 0, 0: 0, 1: 1}))
             # xgboost labels were 0/1 (down/not-up vs up): map to a signed position.
             pred_test = np.where(np.asarray(m.predict(X_test), dtype=float) > 0.5, 1, -1)
+            pred_latest = np.where(np.asarray(m.predict(X_latest), dtype=float) > 0.5, 1, -1)
             feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
             backend = "xgboost"
         except Exception:
@@ -128,6 +152,7 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
             m = GradientBoostingClassifier(n_estimators=200, max_depth=3, learning_rate=0.05)
             m.fit(X_train, y_train.replace({0: 1}))
             pred_test = m.predict(X_test)
+            pred_latest = m.predict(X_latest)
             feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
             backend = "sklearn_gb"
         except Exception:
@@ -141,6 +166,8 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
             beta, *_ = np.linalg.lstsq(Xt, yt, rcond=None)
             Xtest_aug = np.column_stack([np.ones(len(X_test)), X_test.values])
             pred_test = np.where(Xtest_aug @ beta > 0.5, 1, -1)
+            latest_aug = np.column_stack([np.ones(len(X_latest)), X_latest.values])
+            pred_latest = np.where(latest_aug @ beta > 0.5, 1, -1)
             feat_imp = dict(zip(X.columns, np.abs(beta[1:]).tolist()))
             backend = "lstsq_logistic"
         except Exception:
@@ -153,11 +180,19 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
     acc = float((pred_test[mask] == actual[mask]).mean()) if mask.any() else float("nan")
     # Strategy: out-of-sample position decided at bar t's close, earning the
     # realised t -> t+1 return. In-sample fitted values are never used.
-    sharpe = _oos_sharpe(pred_test, features["fwd_ret_1"].iloc[split:])
+    sharpe = _oos_sharpe(pred_test, labelled["fwd_ret_1"].iloc[split:])
+    latest_value = int(np.sign(float(np.asarray(pred_latest, dtype=float).reshape(-1)[0])))
+    direction = _direction_label(latest_value)
+    last_index = features.index[-1]
     return {
         "backend": backend,
         "test_accuracy": acc,
         "test_samples": int(len(actual)),
         "feature_importance": dict(sorted(feat_imp.items(), key=lambda kv: -kv[1])[:15]),
         "strategy_sharpe": sharpe,
+        "latest_prediction": direction,
+        "latest_prediction_value": latest_value,
+        "latest_bar": last_index.isoformat() if hasattr(last_index, "isoformat") else str(last_index),
+        "signal": _SIGNAL_BY_DIRECTION[direction],
+        "labelled_samples": n,
     }

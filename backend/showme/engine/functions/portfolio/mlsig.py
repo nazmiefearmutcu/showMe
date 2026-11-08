@@ -85,6 +85,7 @@ class MLSIGFunction(BaseFunction):
                 metadata={"days": days, "horizon": horizon, "rows": min(days, 252), "live": False, "fallback": True},
             )
         features = make_features(df, horizon=horizon)
+        labelled_rows = int(features["target"].notna().sum())
         report = fit_predict(features)
         report = _enrich_report(
             report,
@@ -93,12 +94,12 @@ class MLSIGFunction(BaseFunction):
             days=days,
             horizon=horizon,
             source_mode="live_yfinance",
-            samples=int(len(features)),
+            samples=labelled_rows,
         )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=report, sources=sources,
-            metadata={"days": days, "horizon": horizon, "rows": int(len(features)), "live": live},
+            metadata={"days": days, "horizon": horizon, "rows": labelled_rows, "live": live},
         )
 
 
@@ -152,11 +153,16 @@ def _enrich_report(
     rows = _feature_rows(feature_importance)
     accuracy = report.get("test_accuracy")
     sharpe = report.get("strategy_sharpe")
+    # The signal comes only from a live latest-bar prediction (fit_predict);
+    # test accuracy is reported separately and never sets the label.
     signal = report.get("signal")
-    if signal is None and isinstance(accuracy, (int, float)):
-        signal = "long_bias" if float(accuracy) >= 0.53 else "neutral"
+    status = "ok" if source_mode.startswith("live") else "reference"
+    if report.get("error"):
+        status = "input_error"
+        signal = None
+        reason = reason or str(report["error"])
     enriched = {
-        "status": "ok" if source_mode.startswith("live") else "reference",
+        "status": status,
         **report,
         "signal": signal,
         "symbol": symbol,
@@ -184,6 +190,14 @@ def _enrich_report(
                 "next-bar return. In-sample fitted values are never used."
             ),
             "importance": "Relative contribution reported by the selected model backend.",
+            "latest_prediction": (
+                "Direction (up / down / flat) the model predicts for the most recent bar. Null when no live "
+                "prediction was made."
+            ),
+            "signal": (
+                "long_bias when the latest prediction is up, short_bias when down, neutral when flat. Null "
+                "unless a live latest-bar prediction exists; test accuracy never sets it."
+            ),
             "horizon_days": "Forward return horizon used to build the target label.",
         },
     }
@@ -215,7 +229,9 @@ def _ml_template(symbol: str, asset_class: str, days: int, horizon: int, reason:
             "asset_class_bias": 0.11,
         },
         "strategy_sharpe": sharpe,
-        "signal": "long_bias" if accuracy >= 0.53 else "neutral",
+        # The reference profile makes no prediction for any bar, so it emits no signal.
+        "latest_prediction": None,
+        "signal": None,
         "coverage": {"symbol": symbol, "asset_class": asset_class, "mode": "local_model"},
     }
     return _enrich_report(

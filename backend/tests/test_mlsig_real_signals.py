@@ -57,11 +57,12 @@ def test_strategy_sharpe_uses_oos_positions_times_next_bar_returns(no_ml_backend
     features = make_features(df, horizon=horizon)
     report = fit_predict(features)
 
-    X = features[[c for c in features.columns if c not in ("target", "fwd_ret_1")]]
-    y = features["target"]
+    labelled = features.loc[features["target"].notna()]
+    X = labelled[[c for c in labelled.columns if c not in ("target", "fwd_ret_1")]]
+    y = labelled["target"]
     split = int(len(X) * 0.7)
     pos = _lstsq_oos_predictions(X, y, split)
-    next_ret = df["close"].pct_change().shift(-1).reindex(features.index)
+    next_ret = df["close"].pct_change().shift(-1).reindex(labelled.index)
     strat = pd.Series(pos * next_ret.iloc[split:].to_numpy(dtype=float))
     expected = float(strat.mean() / strat.std() * (252 ** 0.5))
 
@@ -100,8 +101,9 @@ def test_xgboost_positions_are_signed_not_zero_one(monkeypatch: pytest.MonkeyPat
     monkeypatch.setitem(sys.modules, "xgboost", fake)
 
     features = make_features(_random_walk_ohlcv(n=600, seed=5), horizon=1)
+    labelled = features.loc[features["target"].notna()]
     report = fit_predict(features)
-    y_test = features["target"].iloc[int(len(features) * 0.7):]
+    y_test = labelled["target"].iloc[int(len(labelled) * 0.7):]
     nonzero = y_test[y_test != 0]
 
     assert report["backend"] == "xgboost"
