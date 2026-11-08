@@ -24,9 +24,12 @@ class OpenFIGIRateLimited(Exception):
     identifiers as unresolved rather than as "no match".
     """
 
-    def __init__(self, message: str, retry_after: float | None = None) -> None:
+    def __init__(self, message: str, retry_after: float | None = None, *, local_pacing: bool = False) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+        # True when the refusal came from this process's pacing budget, so no
+        # request was sent. False when OpenFIGI itself answered HTTP 429.
+        self.local_pacing = local_pacing
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -93,8 +96,10 @@ class OpenFIGIAdapter(BaseDataSource):
         wait = start - now
         if wait > max_wait_seconds:
             raise OpenFIGIRateLimited(
-                f"pacing wait {wait:.1f}s exceeds the {max_wait_seconds:.1f}s budget",
+                "OpenFIGI rate limit pacing held the request back locally: "
+                f"a {wait:.1f} s wait exceeds the {max_wait_seconds:.1f} s budget; no request was sent",
                 retry_after=wait,
+                local_pacing=True,
             )
         if wait > 0:
             await asyncio.sleep(wait)

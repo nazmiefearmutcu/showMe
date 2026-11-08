@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -15,6 +16,10 @@ _ID_TYPES = ("ID_ISIN", "ID_CUSIP", "ID_SEDOL", "TICKER", "ID_BB_GLOBAL")
 # is 14 s, so once this budget is spent the remaining batches are reported as
 # rate-limited per identifier instead of being waited for.
 _MAX_PACING_WAIT_SECONDS = 8.0
+# Wall-clock budget for all OpenFIGI work in one call (pacing waits plus HTTP
+# latency). It sits under the 14 s function timeout with room for the rest of
+# the call. Batches that cannot finish inside it are reported per identifier.
+_CALL_WALL_BUDGET_SECONDS = 11.0
 
 
 def _isin_check_digit(s: str) -> bool:
@@ -143,6 +148,8 @@ class ISINFunction(BaseFunction):
         # One pacing budget for the whole call, not per batch: every batch may
         # only wait for what is left of it, so the call stays inside the timeout.
         pacing_deadline = time.monotonic() + _MAX_PACING_WAIT_SECONDS
+        call_deadline = time.monotonic() + _CALL_WALL_BUDGET_SECONDS
+        budget_label = f"{_CALL_WALL_BUDGET_SECONDS:g} s"
         for start in range(0, len(jobs), chunk_size):
             chunk = jobs[start:start + chunk_size]
             idxs = range(start, start + len(chunk))
@@ -150,15 +157,38 @@ class ISINFunction(BaseFunction):
                 for i in idxs:
                     failures[i] = limited_reason
                 continue
+            wall_left = call_deadline - time.monotonic()
+            if wall_left <= 0:
+                reason = (
+                    f"OpenFIGI call time budget ({budget_label}) was used up before this batch "
+                    "was sent; the identifiers were not looked up."
+                )
+                if reason not in warnings:
+                    warnings.append(reason)
+                for i in idxs:
+                    failures[i] = reason
+                continue
             remaining = max(0.0, pacing_deadline - time.monotonic())
             try:
-                got = await adapter.lookup_batch(chunk, max_wait_seconds=remaining)
+                got = await asyncio.wait_for(
+                    adapter.lookup_batch(chunk, max_wait_seconds=remaining),
+                    timeout=wall_left,
+                )
+            except asyncio.TimeoutError:
+                reason = (
+                    f"OpenFIGI did not answer within this call's {budget_label} time budget; "
+                    "the identifiers in this batch were not resolved."
+                )
+                if reason not in warnings:
+                    warnings.append(reason)
+                for i in idxs:
+                    failures[i] = reason
+                continue
             except OpenFIGIRateLimited as exc:
                 retry = f" Retry in about {exc.retry_after:.0f} s." if exc.retry_after else ""
-                limited_reason = (
-                    f"OpenFIGI rate limit reached ({exc}).{retry} "
-                    "Set OPENFIGI_API_KEY for the 250 requests/min budget."
-                )
+                # The exception text already says whether a request was sent
+                # (local pacing) or OpenFIGI answered HTTP 429.
+                limited_reason = f"{exc}.{retry} Set OPENFIGI_API_KEY for the 250 requests/min budget."
                 warnings.append(limited_reason)
                 for i in idxs:
                     failures[i] = limited_reason
