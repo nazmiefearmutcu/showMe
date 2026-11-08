@@ -83,9 +83,16 @@ _CLASS_RULE: dict[str, str] = {
 }
 
 
-def _is_crypto_perpetual(symbol: str) -> bool:
-    """True for a crypto perpetual/swap symbol (``BTC-PERP``, ``BTC-SWAP``, ccxt ``BTC/USDT:USDT``)."""
+def _is_crypto_perpetual(symbol: str, contract_type: str = "") -> bool:
+    """True for a crypto perpetual: a perp symbol (``BTC-PERP``, ``BTC-SWAP``, ccxt ``BTC/USDT:USDT``)
+    or a position whose product marker says PERPETUAL (MGN#2-RQ).
+
+    A bare pair such as ``BTCUSDT`` is not a perpetual by name: the registry does not know
+    whether it is spot or a perpetual, so only an explicit marker makes it one.
+    """
     s = str(symbol or "").upper()
+    if str(contract_type or "").strip().upper() == "PERPETUAL":
+        return True
     return s.endswith(("-PERP", "-SWAP", "PERP")) or ":" in s
 
 
@@ -93,10 +100,11 @@ def _book_class(position: dict[str, Any]) -> str:
     """Asset class used for account inference: a crypto perpetual is its own token.
 
     A perpetual is held as asset_class CRYPTO (MGN#2-RQ), so it is told apart from spot
-    CRYPTO by its symbol suffix, not by its class label.
+    CRYPTO by its product marker (contract_type) or its symbol suffix, not by its class label.
     """
     cls = str(position.get("asset_class") or "").upper()
-    if cls == "CRYPTO" and _is_crypto_perpetual(str(position.get("symbol") or "")):
+    if cls == "CRYPTO" and _is_crypto_perpetual(
+            str(position.get("symbol") or ""), str(position.get("contract_type") or "")):
         return "CRYPTO_PERP"
     return cls
 
@@ -131,6 +139,7 @@ def _position_rule(
     *,
     explicit: bool = True,
     symbol: str = "",
+    contract_type: str = "",
 ) -> dict[str, Any]:
     """Rule for one position: the account rule, unless its class has its own rule.
 
@@ -141,11 +150,11 @@ def _position_rule(
     """
     cls = str(asset_class or "").upper()
     if (cls == "DERIVATIVE" and margin_type == "crypto_futures" and not explicit
-            and not _is_crypto_perpetual(symbol)):
+            and not _is_crypto_perpetual(symbol, contract_type)):
         return dict(DEFAULT_RULES["futures"])
     # MGN#2-RQ: a crypto perpetual held as CRYPTO keeps the crypto_futures rate; only the
     # spot CRYPTO lines of the same book are priced at the crypto_spot rate.
-    if cls == "CRYPTO" and _is_crypto_perpetual(symbol):
+    if cls == "CRYPTO" and _is_crypto_perpetual(symbol, contract_type):
         return account_rule if margin_type == "crypto_futures" else dict(DEFAULT_RULES["crypto_futures"])
     mapped = _CLASS_RULE.get(cls)
     if mapped is None or mapped == margin_type:
@@ -283,7 +292,8 @@ def calc_account(
         biggest = -1.0
         for p in positions:
             p_rule = _position_rule(p.get("asset_class", ""), margin_type, rule,
-                                    explicit=explicit, symbol=str(p.get("symbol") or ""))
+                                    explicit=explicit, symbol=str(p.get("symbol") or ""),
+                                    contract_type=str(p.get("contract_type") or ""))
             i, m = _position_margin(p, p_rule)
             ip += i
             mp += m
@@ -335,11 +345,16 @@ def calc_all_accounts(
     for p in portfolio.positions:
         sym = p.instrument.symbol
         px = (prices or {}).get(sym) or p.avg_cost
-        accts.setdefault(p.account or "main", []).append({
+        row: dict[str, Any] = {
             "symbol": sym, "asset_class": p.instrument.asset_class.value,
             "quantity": p.quantity, "avg_cost": p.avg_cost, "last": px,
             "currency": p.currency,
-        })
+        }
+        # MGN#2-RQ: the position's own product marker (set by its source), if it has one.
+        contract_type = (p.instrument.metadata or {}).get("contract_type")
+        if contract_type:
+            row["contract_type"] = str(contract_type)
+        accts.setdefault(p.account or "main", []).append(row)
     # Auto-create accounts if missing. An inferred type is flagged and re-derived from
     # the current book, so a book that loses its derivative is not stuck as crypto_futures.
     # MGN#6: this is an in-memory view only; a calculation never writes margin_config.json

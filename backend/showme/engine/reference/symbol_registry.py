@@ -164,14 +164,15 @@ class SymbolRegistry:
                 return Instrument.crypto(
                     symbol=key, exchange="BINANCE", currency=q,
                     name=f"{base}/{q}",
-                    metadata={"base": base, "quote": q, "contract_type": "PERPETUAL"},
+                    # No contract_type: a bare pair does not say spot or perpetual (MGN#2-RQ).
+                    metadata={"base": base, "quote": q},
                 )
         if key in _CRYPTO_BASES:
             sym = f"{key}USDT"
             return Instrument.crypto(
                 symbol=sym, exchange="BINANCE", currency="USDT",
                 name=f"{key}/USDT",
-                metadata={"base": key, "quote": "USDT", "contract_type": "PERPETUAL"},
+                metadata={"base": key, "quote": "USDT"},
             )
         # 6) ETFs (US-listed)
         if key in _KNOWN_ETFS:
