@@ -353,6 +353,9 @@ class YASFunction(BaseFunction):
         # YAS#2: every benchmark states what it is, so the pane never shows a bare "BENCH x%".
         benchmark = None
         bench_series: str | None = None
+        # The analytics (YTM, duration, convexity) stand without the benchmark; when the
+        # spread cannot be reported, the result says so as an explicit partial state.
+        benchmark_gap: dict[str, Any] = {}
         if bench_raw is not None:
             benchmark = _rate_decimal(bench_raw, 0.0, assume_decimal=bool(params.get("assume_decimal", False)))
             bench_note = _plain_decimal_note("benchmark", bench_raw, bool(params.get("assume_decimal", False)))
@@ -367,6 +370,13 @@ class YASFunction(BaseFunction):
             if series is None:
                 metadata["benchmark"] = None
                 bench_label = f"{bench_name} · no live series"
+                benchmark_gap = {
+                    "status": "partial",
+                    "reason": (f"Benchmark {bench_name} has no live series in this build; the spread is not "
+                               "reported (no US 10Y substitute is used)."),
+                    "next_actions": ["Use a UST tenor (UST2Y, UST5Y, UST10Y or UST30Y) for a live spread, "
+                                     "or enter the benchmark as a numeric rate."],
+                }
                 warnings.append(
                     f"Benchmark {bench_name} has no live series in this build; the spread is not "
                     "reported (no US 10Y substitute is used)."
@@ -377,6 +387,11 @@ class YASFunction(BaseFunction):
                 if bench is None:
                     metadata["benchmark"] = None
                     bench_label += " unavailable"
+                    benchmark_gap = {
+                        "status": "partial",
+                        "reason": f"FRED {series} ({bench_name}) benchmark unavailable; the spread is not reported.",
+                        "next_actions": ["Retry later, or enter the benchmark as a numeric rate."],
+                    }
                     warnings.append(f"FRED {series} ({bench_name}) benchmark unavailable; the spread is not reported.")
                 else:
                     benchmark = bench[0]
@@ -390,6 +405,11 @@ class YASFunction(BaseFunction):
             bench_label = f"UST10Y (default) · FRED {_BENCHMARK_SERIES}"
             if bench is None:
                 bench_label += " unavailable"
+                benchmark_gap = {
+                    "status": "partial",
+                    "reason": "Live 10Y benchmark (FRED DGS10) unavailable; the spread is not reported.",
+                    "next_actions": ["Retry later, or enter the benchmark as a numeric rate or a UST tenor."],
+                }
                 warnings.append("Live 10Y benchmark (FRED DGS10) unavailable; the spread is not reported.")
             else:
                 benchmark = bench[0]
@@ -425,6 +445,7 @@ class YASFunction(BaseFunction):
             code=self.code, instrument=instrument,
             data={
                 "rows": rows,
+                **benchmark_gap,
                 "curve": curve,
                 "data_mode": data_mode,
                 "summary": {

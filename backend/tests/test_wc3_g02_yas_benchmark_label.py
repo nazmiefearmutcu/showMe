@@ -65,3 +65,53 @@ def test_typed_benchmark_rate_is_labelled_custom() -> None:
     s = _run("XS1234567890", price=99.0, coupon=4.0, years_to_maturity=5, benchmark=4.0).data["summary"]
     assert s["benchmark_label"] == "custom rate"
     assert s["benchmark_series"] is None
+
+
+class _FailingFRED(_FRED):
+    """FRED stub that is down for the listed series and live for the rest."""
+
+    def __init__(self, fail):
+        super().__init__()
+        self.fail = set(fail)
+
+    async def series(self, series_id, frequency="d"):
+        if series_id in self.fail:
+            self.calls.append(series_id)
+            raise RuntimeError("down")
+        return await super().series(series_id, frequency=frequency)
+
+
+def _run_failing(fail, symbol, **params):
+    deps = FunctionDeps()
+    deps.fred = _FailingFRED(fail)
+    return asyncio.run(
+        YASFunction(deps).execute(instrument=Instrument(symbol=symbol, asset_class=AssetClass.BOND), **params)
+    )
+
+
+def test_non_us_benchmark_is_an_explicit_partial_state_with_reason() -> None:
+    res = _run("XS1234567890", price=99.0, coupon=4.0, years_to_maturity=5, benchmark="DBR10Y")
+    assert res.data["status"] == "partial"
+    assert "DBR10Y" in res.data["reason"]
+    assert res.data["next_actions"]
+    assert res.data["summary"]["spread_vs_benchmark"] is None
+
+
+def test_default_benchmark_outage_is_an_explicit_partial_state() -> None:
+    res = _run_failing({"DGS10"}, "XS1234567890", price=99.0, coupon=4.0, years_to_maturity=5)
+    assert res.data["status"] == "partial"
+    assert "DGS10" in res.data["reason"]
+    assert res.data["next_actions"]
+    assert res.data["summary"]["spread_vs_benchmark"] is None
+
+
+def test_named_benchmark_outage_is_an_explicit_partial_state() -> None:
+    res = _run_failing({"DGS2"}, "US10Y", benchmark="UST2Y")
+    assert res.data["status"] == "partial"
+    assert "DGS2" in res.data["reason"]
+    assert res.data["summary"]["spread_vs_benchmark"] is None
+
+
+def test_live_benchmark_carries_no_partial_status() -> None:
+    res = _run("US10Y", benchmark="UST2Y")
+    assert res.data.get("status") in (None, "ok")
