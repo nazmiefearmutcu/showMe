@@ -155,16 +155,53 @@ def test_snapshot_full_country_name_resolves_to_its_own_premium(monkeypatch) -> 
     assert source_tr == dmod.SNAPSHOT_SOURCE
 
 
-def test_snapshot_unknown_country_stays_labelled_unmatched(monkeypatch) -> None:
+def test_snapshot_unknown_country_is_labelled_unmatched_by_the_adapter(monkeypatch) -> None:
+    # The adapter labels a country missing from its table; it is WACC that must
+    # refuse the mature-market value under that label (see the WACC tests below).
     adapter = dmod.DamodaranAdapter()
 
     async def _snapshot():
         return dict(dmod._ERP_FALLBACK), dmod.SNAPSHOT_SOURCE
 
     monkeypatch.setattr(adapter, "_erp_table", _snapshot)
-    erp, source = asyncio.run(adapter.get_erp_with_source("Atlantis"))
-    assert erp == pytest.approx(0.046)
+    _erp, source = asyncio.run(adapter.get_erp_with_source("Atlantis"))
     assert source == f"{dmod.SNAPSHOT_SOURCE}_country_unmatched"
+
+
+# ---- WACC#3-RQ: a mature-market premium is never another country's ERP -----
+
+class _UnmatchedDamo:
+    """Returns the adapter's unmatched-country answer: the mature-market value."""
+
+    async def get_erp_with_source(self, country: str = "US"):
+        return 0.046, f"{dmod.SNAPSHOT_SOURCE}_country_unmatched"
+
+
+def test_unmatched_country_erp_is_not_used_and_wacc_is_not_computed() -> None:
+    deps = FunctionDeps(yfinance=_FakeYf(), fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93}),
+                        damodaran=_UnmatchedDamo())
+    res = _run(deps)
+    assert res.data["erp"] is None
+    assert res.data["erp_source"] == "unavailable"
+    assert res.data["erp_country"] is None
+    assert res.data["input_quality"]["erp"] == "missing"
+    assert "erp" not in {k for k, v in res.data["input_quality"].items() if v == "partial"}
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["data_state"] == "provider_unavailable"
+    assert res.data["wacc"] is None
+    assert res.data["re_capm"] is None
+    assert any("mature-market" in w and "not used" in w for w in res.warnings)
+
+
+def test_unmatched_country_erp_field_dictionary_no_longer_describes_a_constant() -> None:
+    deps = FunctionDeps(yfinance=_FakeYf(), fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93}),
+                        damodaran=_UnmatchedDamo())
+    res = _run(deps)
+    dictionary = res.data["field_dictionary"]
+    assert "5.0%" not in dictionary["erp_country"]
+    assert "5.0%" not in dictionary["erp_source"]
+    assert "5.0%" not in dictionary["erp"]
+    assert "no mature-market value is substituted" in dictionary["erp_source"]
 
 
 # ---- WACC#5: assumptions are echoed; beta_window is honoured ---------------

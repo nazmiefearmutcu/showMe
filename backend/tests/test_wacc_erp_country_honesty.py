@@ -179,4 +179,8 @@ def test_erp_country_is_null_for_an_unmatched_country() -> None:
 
     res = _run(country="Zz", damo=_UnmatchedDamo())
     assert res.data["erp_country"] is None
-    assert res.data["erp_source"].endswith("_country_unmatched")
+    # WACC#3-RQ: the mature-market value is another country's premium, so it is
+    # not used; the ERP is missing and WACC is not computed.
+    assert res.data["erp"] is None
+    assert res.data["erp_source"] == "unavailable"
+    assert res.data["status"] == "provider_unavailable"

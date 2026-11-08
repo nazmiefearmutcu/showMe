@@ -3,7 +3,8 @@
 WACC = (E/V × Re) + (D/V × Rd × (1 − T))
 - Re = CAPM: rf + β × ERP
 - rf  = US 10Y FRED DGS10
-- ERP = 5.0% varsayılan (Damodaran scrape Faz 4'te eklenecek)
+- ERP = the issuer's own country's Damodaran premium, or a caller's market_premium.
+  No constant is substituted: without one, the ERP is missing and WACC is not computed.
 - Rd  = FRED ICE BofA BBB corporate yield (BAMLC0A4CBBBEY), Aaa fallback
 - T   = etkin vergi oranı (FA fonksiyonundan)
 - E,D = balance sheet (FA fonksiyonundan)
@@ -182,18 +183,25 @@ class WACCFunction(BaseFunction):
                                 timeout=float(params.get("damodaran_timeout", 8)),
                             )
                             erp_source = "damodaran"
-                        sources.append("damodaran")
-                        if not erp_source.endswith("_country_unmatched"):
+                        if erp_source.endswith("_country_unmatched"):
+                            # WACC#3-RQ: the adapter's value for a country missing
+                            # from its table is the mature-market premium, another
+                            # country's. It is not this issuer's ERP, so it is not
+                            # used and the ERP is missing (no status-ok fallback).
+                            warnings.append(
+                                f"Damodaran has no ERP for country {country}; the mature-market "
+                                "value is not used for this issuer (erp_source unavailable)"
+                            )
+                            erp = None
+                            erp_source = "unavailable"
+                        else:
+                            sources.append("damodaran")
                             erp_country = country
-                        if erp_source.startswith("damodaran_snapshot"):
-                            warnings.append(
-                                "Damodaran ERP table unavailable; the January 2025 snapshot is used "
-                                f"for {country} (erp_source {erp_source})"
-                            )
-                        elif erp_source.endswith("_country_unmatched"):
-                            warnings.append(
-                                f"Damodaran has no ERP for country {country}; the mature-market ERP is used"
-                            )
+                            if erp_source.startswith("damodaran_snapshot"):
+                                warnings.append(
+                                    "Damodaran ERP table unavailable; the January 2025 snapshot is used "
+                                    f"for {country} (erp_source {erp_source})"
+                                )
                     except Exception as e:
                         warnings.append(f"damodaran: {e}")
                         erp = None
@@ -604,8 +612,8 @@ class WACCFunction(BaseFunction):
                     "erp": "Equity risk premium as a decimal.",
                     "tax_source": "Where the tax rate came from: user_input, issuer_effective (latest annual income tax expense over pre-tax income), statutory_us_21pct (a 21% US default for US issuers only, not the issuer's rate) or unavailable (no rate for a non-US issuer; tax_rate is null).",
                     "tax_period": "Period-end date of the income statement behind issuer_effective; null otherwise.",
-                    "erp_source": "Where the ERP came from: user_input, damodaran_cache, damodaran_live, damodaran_snapshot_2025_01 (stale, January 2025 table), a *_country_unmatched label (mature-market value) or unavailable (no ERP; WACC is not computed).",
-                    "erp_country": "Issuer country whose Damodaran premium is used; null when the ERP is a user input, the 5.0% assumption, or the mature-market value for an unmatched country.",
+                    "erp_source": "Where the ERP came from: user_input, damodaran_cache, damodaran_live or damodaran_snapshot_2025_01 (stale, January 2025 table). unavailable when there is no ERP for the issuer (no Damodaran value for its country, or none at all); WACC is then not computed and no mature-market value is substituted.",
+                    "erp_country": "Issuer country whose Damodaran premium is used; null when the ERP is a user input or unavailable.",
                     "rd": "Pre-tax cost of debt proxy.",
                     "equity_weight": "Equity share of capital structure.",
                     "debt_weight": "Debt share of capital structure.",
