@@ -16,6 +16,7 @@ All providers are patched; no network is used.
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 import pandas as pd
 
@@ -65,6 +66,8 @@ def _patch(monkeypatch, fred: _Fred) -> None:
     monkeypatch.setattr(
         ecst_mod, "fred_with_keyless_fallback", lambda deps_fred, client=None: fred
     )
+    # Pin "today" so the 270-day series limit does not expire the 2026-04-01 fixture.
+    monkeypatch.setattr(coun_mod, "_today", lambda: date(2026, 11, 8))
 
 
 def _metric(result, name):
