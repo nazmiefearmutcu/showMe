@@ -59,3 +59,24 @@ async def test_cache_hit_reads_non_cp1254_transcript(tmp_path, monkeypatch):
 
     assert res["model"] == "cache"
     assert res["text"] == NON_CP1254_TEXT
+
+
+async def test_no_backend_returns_no_placeholder_transcript(tmp_path, monkeypatch):
+    """DATA POLICY: with no transcription backend the result must not carry a
+    placeholder string as transcript text (TRAN parsed it into utterances).
+    The honest state is an empty text with an explicit provider_unavailable
+    status and a reason."""
+    cache_dir = tmp_path / "transcripts"
+    monkeypatch.setattr(transcription, "_cache_dir", lambda: cache_dir)
+    monkeypatch.setitem(sys.modules, "whisper", None)
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    audio = tmp_path / "clip_none.wav"
+    audio.write_bytes(b"RIFF" + bytes(range(70)))
+
+    res = await transcription.transcribe(audio, use_singleton=False)
+
+    assert res["text"] == ""
+    assert res["status"] == "provider_unavailable"
+    assert "whisper" in res["error"] and "OPENAI_API_KEY" in res["error"]

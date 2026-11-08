@@ -7,7 +7,7 @@ Backend tier:
   1) ``whisper`` (OpenAI's official open-weight Python package, CPU-friendly)
   2) ``faster-whisper`` (CTranslate2 backend, 4× faster on CPU)
   3) OpenAI API (``OPENAI_API_KEY`` + ``audio.transcriptions``)
-  4) ``stub`` returns "[transcription unavailable]"
+  4) ``stub`` returns empty text with status ``provider_unavailable``
 
 Cache: SHA-256(audio_bytes) → runtime/transcripts/<hash>.txt — checked
 *before* any tier runs so a previously-transcribed file never re-pays the
@@ -268,8 +268,10 @@ async def transcribe(audio_path: str | Path,
         except Exception as e:
             return {"error": f"openai whisper: {e}"}
 
-    return {"text": "[transcription unavailable — install whisper or set OPENAI_API_KEY]",
-             "model": "stub"}
+    # DATA POLICY: no placeholder text is returned as a transcript. Callers
+    # (TRAN/TRQA/TSAR) read "text", so it stays empty and the reason is explicit.
+    return {"text": "", "model": "stub", "status": "provider_unavailable",
+            "error": "no transcription backend: install whisper or set OPENAI_API_KEY"}
 
 
 async def transcribe_url(url: str, *, language: str | None = None,
