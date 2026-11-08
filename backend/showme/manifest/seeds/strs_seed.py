@@ -1,9 +1,10 @@
 """STRS — Stress Test Scenarios.
 
-Run portfolio P&L under a curated set of historical or custom scenarios
-(2008 Lehman, 2020 COVID, 1987 crash, Russia 1998, custom). The scenario
-multiselect and the per-scenario factor magnitudes are exposed as
-MODEL_ASSUMPTION controls — stress tests live or die by their assumptions.
+Run portfolio P&L under hand-set parametric stress scenarios or a custom shock
+vector. Bond funds in the GFC 2008 and COVID 2020 windows use their measured
+window return. The scenario multiselect and the per-scenario magnitudes are
+exposed as MODEL_ASSUMPTION controls — stress tests live or die by their
+assumptions.
 """
 from __future__ import annotations
 
@@ -41,11 +42,13 @@ def strs() -> FunctionManifest:
         name="Stress Test Scenarios",
         category=Category.PORTFOLIO,
         intent=(
-            "Replay the portfolio through a curated set of historical "
-            "stress scenarios (1987, 1998, 2008, 2020-COVID) or a custom "
-            "factor-shock vector, reporting worst-case P&L per scenario. "
-            "The scenario set and shock magnitudes are model_assumption "
-            "controls — there is no defensible default."
+            "Apply a set of hand-set parametric stress shocks (by symbol, "
+            "sector or asset class) or a custom shock vector to today's "
+            "positions, reporting P&L per scenario and the worst case. The "
+            "engine does not use return history; the one measured input is "
+            "each bond fund's own window return in the GFC 2008 and COVID 2020 "
+            "scenarios. The scenario set and shock magnitudes are "
+            "model_assumption controls — there is no defensible default."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -81,8 +84,9 @@ def strs() -> FunctionManifest:
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
                 description=(
-                    "Curated historical stress windows plus custom shocks. "
-                    "The user must explicitly pick at least one."
+                    "Named stress scenarios (hand-set shocks; bond funds in "
+                    "GFC 2008 and COVID 2020 take their measured window return) "
+                    "plus custom shocks. The user must explicitly pick at least one."
                 ),
                 options=[
                     "black_monday_1987",
@@ -102,8 +106,9 @@ def strs() -> FunctionManifest:
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
                 description=(
-                    "Per-scenario scale factor (1.0 = historical replay; "
-                    "2.0 = doubled severity). User owns the choice."
+                    "Scale factor applied to every hand-set shock (1.0 = base "
+                    "calibration; 2.0 = doubled severity; a position cannot lose "
+                    "more than 100%). User owns the choice."
                 ),
             ),
             InputSpec(
@@ -112,11 +117,11 @@ def strs() -> FunctionManifest:
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
                 description=(
-                    "How shocks propagate across the portfolio: factor "
-                    "model (Fama-French-style), historical replay, or "
-                    "asset-class mapping."
+                    "How shocks are looked up for each position: the first "
+                    "match of symbol, then sector, then asset class. This is the "
+                    "only method the engine runs."
                 ),
-                options=["factor_model", "historical_replay", "asset_class_map"],
+                options=["hand_set_lookup"],
             ),
             InputSpec(
                 name="horizon_days",
@@ -143,7 +148,7 @@ def strs() -> FunctionManifest:
         ],
         defaults={
             "portfolio_source": "port",
-            "propagation": "historical_replay",
+            "propagation": "hand_set_lookup",
             "horizon_days": 5,
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
@@ -204,17 +209,19 @@ def strs() -> FunctionManifest:
         methodology=(
             "STRS applies hand-set parametric shocks to today's positions. Each "
             "scenario holds decimal shocks keyed by symbol, sector or asset class; "
-            "a position takes the first match in that order, and bond funds (TLT, "
-            "IEF, AGG and similar) take the BOND row. The engine does not read "
-            "return history, so the shocks are calibrations to each scenario's "
-            "narrative, not replays of the named windows. The exceptions are TLT "
-            "in GFC_2008 (+5.74%) and COVID_2020 (+14.07%), which carry measured "
-            "Yahoo close price returns over the named windows. Each shock is "
-            "multiplied by `scale` and floored at -100% per position; floored "
-            "positions are listed in warnings. Worst_case is the scenario with "
-            "the largest loss. The `scenarios`, `scenario_magnitudes` and "
-            "`propagation` inputs are declared, but the engine applies a single "
-            "shock method."
+            "a position takes the first match in that order. Treasury and "
+            "aggregate bond funds (TLT, IEF, SHY, AGG and similar) take the BOND "
+            "row in scenarios without a measured window. In GFC_2008 and "
+            "COVID_2020 they take their own measured window return: the price "
+            "return of that fund from the window's first to last close, fetched "
+            "from price history. If that return cannot be obtained the fund is "
+            "left unshocked and reported as unavailable, never estimated. The "
+            "shocks are calibrations to each scenario's narrative, not replays of "
+            "the named windows. Each shock is multiplied by `scale` and floored at "
+            "-100% per position; floored positions are listed in warnings. "
+            "Worst_case is the scenario with the largest loss. The `scenarios` and "
+            "`scenario_magnitudes` inputs are declared, but the engine applies a "
+            "single shock method."
         ),
         formula_dict={
             "ParametricShock": Formula(
