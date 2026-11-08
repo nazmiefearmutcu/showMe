@@ -115,7 +115,7 @@ def corr() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred data mode; chain may downgrade and report it.",
+                description="Requested data mode; CORR records it in metadata and reports it as not honoured (no mode selection).",
                 # CORR#7: no cached-snapshot store exists, so that mode is not offered;
                 # a direct cached_snapshot request is answered with input_error.
                 options=[
@@ -176,7 +176,11 @@ def corr() -> FunctionManifest:
         ),
         methodology=(
             "For each instrument in `universe`, CORR fetches close prices at "
-            "`frequency` for the `window` ending at `as_of`. Returns are "
+            "`frequency` for the `window` ending at `as_of` (today only; past or future "
+            "anchors are input_error). Provider order per market: a Crypto symbol tries "
+            "ccxt_failover, coingecko, then yfinance; every other market uses yfinance. "
+            "`provider_mode` is recorded in metadata as requested and not honoured, because "
+            "CORR does not select between data modes. Returns are "
             "computed per `return_type`: log → r_t = ln(p_t / p_{t-1}); "
             "simple → r_t = (p_t - p_{t-1}) / p_{t-1}. The returns matrix is "
             "asof-aligned to a common time index. Pairs with fewer than "

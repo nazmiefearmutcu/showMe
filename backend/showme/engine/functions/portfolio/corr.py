@@ -153,9 +153,17 @@ class CORRFunction(BaseFunction):
         as_of_error = _as_of_error(params.get("as_of"))
         if as_of_error:
             return _input_error_result(as_of_error, instrument, symbols)
-        if str(params.get("provider_mode") or "").strip().lower() == "cached_snapshot":
+        provider_mode_requested = str(params.get("provider_mode") or "").strip().lower() or None
+        if provider_mode_requested == "cached_snapshot":
             return _input_error_result(
                 "provider_mode cached_snapshot is not served by CORR (no snapshot store); "
+                "use live_exchange or delayed_reference, or omit it.",
+                instrument,
+                symbols,
+            )
+        if provider_mode_requested not in (None, "live_exchange", "delayed_reference"):
+            return _input_error_result(
+                f"Unsupported provider_mode {params.get('provider_mode')!r}; "
                 "use live_exchange or delayed_reference, or omit it.",
                 instrument,
                 symbols,
@@ -373,6 +381,13 @@ class CORRFunction(BaseFunction):
                 f"{int(NAN_DROP_THRESHOLD * 100)}% of expected trading sessions: "
                 f"{', '.join(dropped_symbols)}",
             )
+        if provider_mode_requested:
+            # CORR#7 review: CORR has no live-versus-delayed selector, so a requested
+            # data mode is recorded and reported as not honoured, never silently ignored.
+            warnings.append(
+                f"provider_mode {provider_mode_requested} was requested; CORR serves from its provider "
+                "chain and does not select by data mode, so the request is not honoured."
+            )
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -386,6 +401,8 @@ class CORRFunction(BaseFunction):
                 "frequency": frequency,
                 "missing_data_policy": missing_policy,
                 "correlation_method": method,
+                "provider_mode_requested": provider_mode_requested,
+                "provider_mode_honoured": False if provider_mode_requested else None,
                 "impactor_integrated": True,
             },
             warnings=warnings,
@@ -1442,10 +1459,11 @@ def _parse_symbols(raw: Any) -> list[str]:
 
 
 def _as_of_error(value: Any) -> str | None:
-    """CORR#7: an as_of anchor is honoured only when it is today or later.
+    """CORR#7: an as_of anchor is honoured only when it is today.
 
     CORR always measures the window ending at the latest close. A past anchor
-    would otherwise be silently replaced by that window, so it is refused.
+    would otherwise be silently replaced by that window, and a future anchor
+    cannot be measured, so both are refused.
     """
     if value in (None, ""):
         return None
@@ -1457,6 +1475,11 @@ def _as_of_error(value: Any) -> str | None:
     except ValueError:
         return f"Unparsable as_of {value!r}; use a date such as 2026-11-07."
     today = datetime.now(timezone.utc).date()
+    if anchor > today:
+        return (
+            f"as_of {anchor.isoformat()} is in the future; CORR cannot measure a window "
+            "that has not closed yet."
+        )
     if anchor < today:
         return (
             f"as_of {anchor.isoformat()} is before today; CORR measures the window ending at the "

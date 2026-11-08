@@ -348,3 +348,50 @@ def test_corr_r2_methodology_states_the_shared_return_calendar() -> None:
     fn = CORRFunction(FunctionDeps(yfinance=_CalendarYf()))
     res = _run(fn.execute(symbols=["AAPL", "BTCUSDT"], live_correlation=True, days=120))
     assert "shared return calendar" in res.data["methodology"]
+
+
+# ── CORR#7 review: a future as_of, an unknown provider_mode and an undeclared mode are never silent ──
+
+
+def test_corr7_as_of_after_today_is_an_explicit_input_error() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    future = (datetime.now(timezone.utc).date() + timedelta(days=3)).isoformat()
+    res = _run(CORRFunction(FunctionDeps()).execute(symbols=["SPY", "QQQ"], as_of=future))
+    assert res.data["status"] == "input_error"
+    assert "future" in res.data["reason"]
+
+
+def test_corr7_unknown_provider_mode_is_an_explicit_input_error() -> None:
+    res = _run(CORRFunction(FunctionDeps()).execute(symbols=["SPY", "QQQ"], provider_mode="turbo"))
+    assert res.data["status"] == "input_error"
+    assert "provider_mode" in res.data["reason"]
+
+
+def test_corr7_requested_provider_mode_is_reported_as_not_honoured() -> None:
+    from showme.manifest.enums import DataMode
+
+    fn = CORRFunction(FunctionDeps(yfinance=_CalendarYf()))
+    res = _run(fn.execute(
+        symbols=["AAPL", "BTCUSDT"], live_correlation=True, days=120,
+        provider_mode=DataMode.LIVE_EXCHANGE.value,
+    ))
+    assert res.metadata["provider_mode_requested"] == "live_exchange"
+    assert res.metadata["provider_mode_honoured"] is False
+    assert any("live_exchange" in w for w in res.warnings)
+
+
+def test_corr7_absent_provider_mode_is_reported_as_none() -> None:
+    fn = CORRFunction(FunctionDeps(yfinance=_CalendarYf()))
+    res = _run(fn.execute(symbols=["AAPL", "BTCUSDT"], live_correlation=True, days=120))
+    assert res.metadata["provider_mode_requested"] is None
+    assert res.metadata["provider_mode_honoured"] is None
+
+
+def test_corr7_seed_methodology_states_the_per_market_provider_order() -> None:
+    from showme.manifest.seeds.corr_seed import corr as corr_manifest
+
+    text = corr_manifest.methodology
+    assert "Crypto" in text
+    assert "ccxt_failover, coingecko, then yfinance" in text
+    assert "every other market uses yfinance" in text
