@@ -79,7 +79,9 @@ def test_srch_live_refreshes_full_configured_tenor_set(monkeypatch) -> None:
     assert result.data["status"] == "ok"
     assert len(rows) == 25
     live = [row for row in rows.values() if row.get("quote_type") == "live"]
-    assert len(live) == len(series) == 19
+    # SRCH#3: the six monthly OECD 10Y observations are dated, not live.
+    assert len(live) == 13
+    assert len(series) == 19
     assert rows["US10Y"]["yield"] == pytest.approx(
         4.0 + list(series.values()).index("DGS10") / 100
     )
@@ -87,7 +89,7 @@ def test_srch_live_refreshes_full_configured_tenor_set(monkeypatch) -> None:
     assert rows["US10Y"]["yield_source"] == "fred_csv"
     assert rows["US10Y"]["yield_cadence"] == "daily"
     assert rows["USTIPS10Y"]["quote_type"] == "live"
-    assert rows["DE10Y"]["quote_type"] == "live"
+    assert rows["DE10Y"]["quote_type"] == "monthly"
     assert rows["DE10Y"]["yield_as_of"] == "2026-09-14"
     assert rows["DE10Y"]["yield_cadence"] == "monthly"
     # Foreign 2Y tenors have no keyless provider: explicit unavailable
@@ -98,7 +100,8 @@ def test_srch_live_refreshes_full_configured_tenor_set(monkeypatch) -> None:
         assert rows[symbol]["yield"] > 0, symbol
     assert "fred_csv" in result.sources
     assert "showme_bond_reference_universe" in result.sources
-    assert result.metadata["live_rows"] == 19
+    assert result.metadata["live_rows"] == 13
+    assert result.metadata["monthly_rows"] == 6
     assert result.metadata["unavailable_rows"] == 6
 
 

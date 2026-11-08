@@ -54,6 +54,7 @@ class SRCHFunction(BaseFunction):
         reference_note: str | None = None
         status_override: str | None = None
         live_rows = 0
+        monthly_rows = 0
         if live:
             live_map, provider_warnings, provider_sources = await _collect_live_bond_yields(
                 getattr(self.deps, "ustreasury", None),
@@ -62,12 +63,15 @@ class SRCHFunction(BaseFunction):
             warnings.extend(provider_warnings)
             rows = _merge_live_yield_rows(rows, live_map)
             live_rows = sum(1 for row in rows if row.get("quote_type") == "live")
-            if live_rows:
+            monthly_rows = sum(1 for row in rows if row.get("quote_type") == "monthly")
+            if live_rows or monthly_rows:
                 sources = [*provider_sources, "showme_bond_reference_universe"]
                 reference_note = (
-                    f"{live_rows} of {len(_LIVE_BOND_TENORS)} configured live tenors refreshed"
+                    f"{live_rows} live and {monthly_rows} monthly-reference of "
+                    f"{len(_LIVE_BOND_TENORS)} configured tenors refreshed"
                     + (f" from {', '.join(provider_sources)}" if provider_sources else "")
-                    + "; durations, ratings and unmapped tenors remain curated reference values."
+                    + "; live-yield durations are par-bond approximations (duration_basis), "
+                    "other durations, ratings and unmapped tenors remain curated reference values."
                 )
             else:
                 # Total provider failure: keep the curated rows (never wipe the
@@ -85,7 +89,7 @@ class SRCHFunction(BaseFunction):
         # H-6 honesty fix (2026-09-08): when no live tenor resolved, a matched
         # filter must never report status "ok" as if these were current market
         # levels; the payload stays labelled reference.
-        return _screen_result(
+        result = _screen_result(
             self.code,
             rows,
             query=query,
@@ -93,12 +97,13 @@ class SRCHFunction(BaseFunction):
             sources=sources,
             field_dictionary=_BOND_FIELDS,
             warnings=warnings,
-            reference=live_rows == 0,
+            reference=live_rows + monthly_rows == 0,
             reference_note=reference_note,
             status=status_override,
             metadata_extra=(
                 {
                     "live_rows": live_rows,
+                    "monthly_rows": monthly_rows,
                     "unavailable_rows": sum(
                         1 for row in rows if row.get("quote_type") == "unavailable"
                     ),
@@ -107,6 +112,9 @@ class SRCHFunction(BaseFunction):
                 else None
             ),
         )
+        if live:
+            _flag_curated_yield_matches(result, rows, query)
+        return result
 
 
 @FunctionRegistry.register
@@ -656,7 +664,7 @@ _BOND_FIELDS = [
     {"field": "duration", "meaning": "Approximate interest-rate duration in years."},
     {"field": "rating", "meaning": "Reference credit rating."},
     {"field": "maturity", "meaning": "Maturity bucket or final maturity date."},
-    {"field": "quote_type", "meaning": "live when a keyless provider refreshed this tenor this cycle; unavailable when a configured live tenor had no provider answer; reference for curated-only rows."},
+    {"field": "quote_type", "meaning": "live when a keyless provider refreshed this tenor this cycle; monthly when the provider observation is a dated monthly series (not live); unavailable when a configured live tenor had no provider answer (curated value shown); reference for curated-only rows."},
     {"field": "yield_state", "meaning": "live or reference — whether the yield value shown came from a provider refresh or the curated table."},
     {"field": "yield_source", "meaning": "Provider that refreshed this row (fred_csv, yahoo_quote, ustreasury) or null."},
     {"field": "yield_as_of", "meaning": "Observation date of the refreshed yield (monthly foreign series carry their publication date)."},
@@ -1171,17 +1179,21 @@ def _merge_live_yield_rows(
         symbol = str(row.get("symbol") or "").upper()
         entry = live.get(symbol)
         if entry is not None:
+            # SRCH#3: a monthly observation (OECD long-term 10Y) is dated, not
+            # live; it gets its own quote_type and stays out of the live count.
+            monthly = entry.get("cadence") == "monthly"
             merged = {
                 **row,
                 "yield": round(float(entry["value"]), 3),
-                "yield_state": "live",
-                "quote_type": "live",
+                "yield_state": "reference" if monthly else "live",
+                "quote_type": "monthly" if monthly else "live",
                 "yield_source": entry.get("source") or None,
             }
             if entry.get("as_of"):
                 merged["yield_as_of"] = entry["as_of"]
             if entry.get("cadence"):
                 merged["yield_cadence"] = entry["cadence"]
+            _apply_duration_basis(merged, row, live_yield=not monthly)
             out.append(merged)
         elif symbol in _LIVE_BOND_TENORS:
             out.append({
@@ -1189,10 +1201,84 @@ def _merge_live_yield_rows(
                 "yield_state": "reference",
                 "quote_type": "unavailable",
                 "yield_source": None,
+                "duration_basis": "curated_reference",
             })
         else:
-            out.append({**row, "yield_state": "reference", "quote_type": "reference"})
+            out.append({
+                **row,
+                "yield_state": "reference",
+                "quote_type": "reference",
+                "duration_basis": "curated_reference",
+            })
     return out
+
+
+def _par_bond_modified_duration(yield_pct: float, tenor_years: float) -> float | None:
+    """Modified duration of a par bond (semiannual) priced at ``yield_pct``.
+
+    An approximation: the benchmark coupon is not in the reference universe,
+    so the bond is assumed to trade at par on its own yield. Returns ``None``
+    when the inputs cannot give a finite duration.
+    """
+    if not math.isfinite(yield_pct) or not math.isfinite(tenor_years) or tenor_years <= 0:
+        return None
+    y = yield_pct / 100.0
+    if abs(y) < 1e-9:
+        return tenor_years
+    base = 1.0 + y / 2.0
+    if base <= 0:
+        return None
+    value = (1.0 - base ** (-2.0 * tenor_years)) / y
+    return value if math.isfinite(value) else None
+
+
+def _apply_duration_basis(
+    merged: dict[str, Any],
+    curated_row: dict[str, Any],
+    *,
+    live_yield: bool,
+) -> None:
+    """SRCH#4: a live-yield row carries a duration derived from that yield.
+
+    The curated duration is kept as ``duration_curated``; every other row keeps
+    the curated duration and says so in ``duration_basis``.
+    """
+    merged["duration_basis"] = "curated_reference"
+    if not live_yield:
+        return
+    modelled = _par_bond_modified_duration(
+        float(merged["yield"]), float(curated_row.get("tenor_years") or 0.0)
+    )
+    if modelled is None:
+        return
+    merged["duration_curated"] = curated_row.get("duration")
+    merged["duration"] = round(modelled, 2)
+    merged["duration_basis"] = "par_bond_model_from_live_yield"
+
+
+def _flag_curated_yield_matches(
+    result: FunctionResult,
+    rows: list[dict[str, Any]],
+    query: str,
+) -> None:
+    """SRCH#2: count and warn about matched rows whose yield is curated only.
+
+    The rows stay in the payload (never dropped); the flag makes clear that a
+    yield predicate matched a curated value for a tenor no provider answered.
+    """
+    if result.data.get("status") in ("input_error", "unsupported_predicate"):
+        return
+    try:
+        filtered = _apply_screen_query(rows, _rewrite_screen_query(query))
+    except Exception:  # noqa: BLE001 — parse errors are reported by _screen_result
+        return
+    count = sum(1 for row in filtered if row.get("quote_type") == "unavailable")
+    result.metadata["curated_yield_matches"] = count
+    if count:
+        result.warnings.append(
+            f"{count} matched row(s) carry a curated yield for a tenor no live provider "
+            "answered (quote_type unavailable); the yield filter does not verify them."
+        )
 
 
 def _security_text_search(rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
