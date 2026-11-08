@@ -180,7 +180,19 @@ class TECHFunction(BaseFunction):
                 f"interval {interval!r} is not supported; choose one of "
                 f"{', '.join(_SUPPORTED_INTERVALS)}",
             )
-        days = _bounded_int(params.get("days", 365), default=365, low=7, high=3650)
+        # An absent look-back keeps the manifest default (365 days). An
+        # unparsable one is an input error, never a silent 365.
+        raw_days = params.get("days")
+        if raw_days is None or str(raw_days).strip() == "":
+            days = 365
+        else:
+            try:
+                days = int(raw_days)
+            except (TypeError, ValueError):
+                return _input_error(
+                    instrument, f"days {raw_days!r} is not a whole number of days",
+                )
+            days = max(7, min(3650, days))
         tail = _bounded_int(
             params.get("tail", params.get("bars", params.get("limit", 1000))),
             default=1000,

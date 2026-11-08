@@ -218,3 +218,26 @@ def test_unrecognised_range_does_not_inherit_generic_days():
 
     routed = server._route_function_params("TECH", {"symbol": "AAPL", "range": "bogus"})
     assert routed.get("days") in (None, 365), routed.get("days")
+
+
+# ── TECH#5 review follow-up: an unparsable days is an input error, not a silent 365 ──
+
+
+def test_unparsable_days_is_an_input_error_without_fetch():
+    """A bad look-back must be reported, never quietly replaced by the 365 default."""
+    provider = _RecordingYfinance(_ohlc(300))
+    fn = TECHFunction(FunctionDeps(yfinance=provider))
+    res = _run(fn.execute(instrument=EQ, days="abc"))
+    assert res.data["status"] == "input_error"
+    assert "abc" in res.data["reason"]
+    assert res.data["rows"] == []
+    assert provider.calls == []
+
+
+def test_absent_days_still_uses_the_manifest_window():
+    """Only an absent look-back falls back to the documented 365-day default."""
+    provider = _RecordingYfinance(_ohlc(300))
+    fn = TECHFunction(FunctionDeps(yfinance=provider))
+    res = _run(fn.execute(instrument=EQ))
+    assert res.data["status"] == "ok"
+    assert res.metadata["days"] == 365
