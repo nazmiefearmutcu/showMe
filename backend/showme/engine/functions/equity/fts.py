@@ -23,7 +23,13 @@ class FTSFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sec = getattr(self.deps, "sec_efts", None)
         base_query = params.get("query") or params.get("search") or "risk factors"
-        query = f"{instrument.symbol} {base_query}".strip() if instrument and instrument.symbol.upper() not in str(base_query).upper() else str(base_query)
+        # The router injects a default symbol with __explicit_symbol=False when
+        # the caller chose none; that symbol must not scope the search. Only a
+        # user-selected symbol (__explicit_symbol=True) is prepended.
+        user_scoped = params.get("__explicit_symbol") is True
+        query = str(base_query).strip()
+        if user_scoped and instrument and instrument.symbol.upper() not in query.upper():
+            query = f"{instrument.symbol} {query}".strip()
         if not query:
             return FunctionResult(code=self.code, instrument=instrument, data={},
                                   warnings=["empty query"])
@@ -46,7 +52,7 @@ class FTSFunction(BaseFunction):
                           "Configure the sec_efts adapter to enable live EDGAR full-text search.",
                           "Verify the symbol is an EQUITY before requesting full-text search.",
                       ],
-                      "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Query is symbol-scoped when a symbol is open.",
+                      "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Query is symbol-scoped only when the user selected a symbol.",
                       "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                 sources=["no_live_source"],
                 metadata={"query": query, "live": False, "fallback": True,
