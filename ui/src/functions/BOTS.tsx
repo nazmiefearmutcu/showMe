@@ -42,7 +42,7 @@ import { useStrategyStore } from "@/lib/strategy-store";
 import { useWorkspace } from "@/lib/workspace";
 import { navigate } from "@/lib/router";
 import { formatPrice } from "@/lib/format";
-import { formatTime } from "@/lib/timezone";
+import { formatDateTime, formatTime, safeDate } from "@/lib/timezone";
 import { isKaosRecord } from "@/lib/kaos-venues";
 import { KaosEngineBadge, VenueBadges } from "@/functions/KaosBadges";
 import {
@@ -221,15 +221,14 @@ function PermRevokedBadge() {
   );
 }
 
-/** Render an ISO/RFC-3339 timestamp in the user's local zone (BUG #6). */
+/**
+ * Render an ISO/RFC-3339 timestamp in the app timezone, 24-hour (BUG #6 and
+ * WC2-G05 UI-14: it follows the timezone setting, like every other pane).
+ */
 function formatLocalTimestamp(ts: string | undefined | null): string {
   if (!ts) return "";
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return ts.slice(0, 19);
-  // navigator.language available in jsdom + Chromium runtime; falls back to
-  // the host's default locale when undefined.
-  const locale = (typeof navigator !== "undefined" && navigator.language) || undefined;
-  return d.toLocaleString(locale);
+  if (!safeDate(ts)) return ts.slice(0, 19);
+  return formatDateTime(ts);
 }
 
 /**
