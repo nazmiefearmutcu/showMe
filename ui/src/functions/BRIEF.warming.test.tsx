@@ -65,7 +65,7 @@ describe("BRIEF pane — warming envelopes (BRIEF#4)", () => {
       data: envelope({
         status: "provider_unavailable",
         articles: [],
-        reason: "warming in background",
+        reason: "function timed out after 25s",
       }),
     });
     render(<BRIEFPane code="BRIEF" />);
@@ -95,7 +95,7 @@ describe("BRIEF pane — warming envelopes (BRIEF#4)", () => {
       data: envelope({
         status: "provider_unavailable",
         articles: [],
-        reason: "warming in background",
+        reason: "function timed out after 25s",
       }),
     });
     render(<BRIEFPane code="BRIEF" />);

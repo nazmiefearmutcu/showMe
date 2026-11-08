@@ -94,3 +94,24 @@ describe("BRIEF pane — timeout reasons (BRIEF#4 follow-up)", () => {
     expect(screen.getByText(/Briefing is warming up/i)).toBeInTheDocument();
   });
 });
+
+describe("BRIEF pane — warming text inside a provider exception (BRIEF#4 follow-up)", () => {
+  it("does not treat a provider exception that says 'warming' as warming", () => {
+    vi.useFakeTimers();
+    const refetch = vi.fn();
+    setMockFn({
+      state: "ok",
+      refetch,
+      data: envelope({
+        status: "provider_unavailable",
+        articles: [],
+        reason: "model warming up, try later",
+      }),
+    });
+    render(<BRIEFPane code="BRIEF" />);
+    expect(screen.queryByText(/Briefing is warming up/i)).toBeNull();
+    expect(screen.getByText(/No briefing returned/i)).toBeInTheDocument();
+    vi.advanceTimersByTime(30000);
+    expect(refetch).not.toHaveBeenCalled();
+  });
+});
