@@ -76,7 +76,7 @@ def alrt() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Trigger relationship.",
-                options=["above", "below", "cross_up", "cross_down"],
+                options=["above", "below"],
             ),
             InputSpec(
                 name="threshold",
