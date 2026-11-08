@@ -3,8 +3,9 @@
 Feature stack: returns lags, RSI, MACD, ATR, Bollinger %B, volume z-score,
 day-of-week one-hot. Target: sign of N-day forward return.
 
-Backend chain: LightGBM → XGBoost → sklearn GradientBoosting → logistic.
-Falls through gracefully so the function works on any environment.
+Backend chain: LightGBM → XGBoost → sklearn GradientBoosting → NumPy linear
+probability model (lstsq, thresholded at 0.5). Falls through gracefully so the
+function works on any environment; the backend that ran is always reported.
 """
 
 from __future__ import annotations

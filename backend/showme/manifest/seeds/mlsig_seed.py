@@ -155,7 +155,8 @@ def mlsig() -> FunctionManifest:
             ),
         ],
         defaults={
-            "label_horizon": 5,
+            # Matches the horizon the routed run uses (_agent_runtime sets horizon 1).
+            "label_horizon": 1,
             "label_type": "binary_updown",
             "model_family": "lightgbm",
             "train_pct": 0.7,
