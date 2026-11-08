@@ -1,0 +1,99 @@
+/* Awareness-backed panes — shared base (news task extends this file).
+   Tokens only; see the UI design spec (Desk Instrument brief). Prefix: aw- */
+
+.aw-link,
+.aw-chip--entity {
+  color: var(--accent-2);
+}
+[data-preset="papyrus"] :is(.aw-link, .aw-chip--entity),
+[data-theme="light"] :is(.aw-link, .aw-chip--entity) {
+  color: var(--accent);
+}
+
+.aw-btn {
+  font: inherit;
+  font-size: var(--font-size-sm);
+  padding: 3px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-card);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.aw-btn--ghost {
+  background: transparent;
+}
+.aw-btn:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+
+.aw-unavailable {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  max-width: 560px;
+  color: var(--text-primary);
+}
+.aw-unavailable__title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  color: var(--text-display);
+}
+.aw-unavailable__body {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+}
+.aw-unavailable__reason {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.aw-unavailable__actions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.aw-health {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: 24px;
+  padding: 0 var(--space-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-row);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+}
+.aw-health--warn {
+  background: var(--warn-soft);
+  color: var(--text-primary);
+}
+.aw-health__updated {
+  margin-left: auto;
+}
+.aw-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.aw-dot--ok {
+  background: var(--positive);
+}
+.aw-dot--warn {
+  background: var(--warn);
+}
+.aw-dot--down {
+  background: var(--negative);
+}

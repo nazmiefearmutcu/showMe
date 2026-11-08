@@ -26,6 +26,7 @@ KNOWN_PRIMARY_PROVIDERS = frozenset(
         "openfigi",
         "binance",
         "yfinance",
+        "awareness",
         "gdelt",
         "rss",
     }

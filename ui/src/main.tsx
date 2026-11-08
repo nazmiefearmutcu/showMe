@@ -5,6 +5,9 @@ import { AppErrorBoundary } from "./shell/AppErrorBoundary";
 import { toast } from "./lib/toast";
 import { listen } from "./lib/tauri";
 import "./styles/index.css";
+import "./styles/awareness.css";
+import "./styles/awareness-calendar.css";
+import "./styles/awareness-sentiment.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root missing in index.html");
