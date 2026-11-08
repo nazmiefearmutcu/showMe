@@ -443,7 +443,7 @@ class FXIPFunction(BaseFunction):
             data.update(
                 {
                     "status": "needs_input",
-                    "data_mode": "needs_input",
+                    "data_mode": "explicit_unavailable",
                     "reason": (
                         "No policy rate for "
                         + ", ".join(missing_currencies)
@@ -458,7 +458,7 @@ class FXIPFunction(BaseFunction):
             warnings.append(
                 "no reference policy rate for " + ", ".join(missing_currencies) + "; forwards and carry are null"
             )
-            metadata = {"data_mode": "needs_input"}
+            metadata = {"data_mode": "explicit_unavailable"}
         return FunctionResult(
             code=self.code,
             instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
