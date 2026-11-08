@@ -1,10 +1,11 @@
-"""BGAS — Benchmark Gasoline / refined-product futures monitor.
+"""BGAS — Natural Gas Spot (Henry Hub).
 
-Tracks the benchmark RBOB / heating oil / refined-product futures
-contracts that anchor the gasoline complex. yfinance-style futures
-tickers (RB=F, HO=F, etc.) are the primary source. Field dictionary
-declares the contract unit (USD/gal) and delivery month so the user
-cannot mistake a $/gal print for $/bbl.
+Tracks the Henry Hub natural-gas spot price. The live leg is the NYMEX
+natural-gas front-month futures ticker (NG=F, USD/MMBtu) from yfinance; when
+the EIA adapter is configured the EIA Henry Hub spot series is served instead.
+BGAS serves NG=F only: any other contract is refused with an explicit
+input_error rather than served under this natural-gas identity. Expiry is the
+computed NYMEX front-month delivery, so a roll is never mistaken for a gap.
 """
 from __future__ import annotations
 
@@ -41,12 +42,12 @@ from ..spec import (
 def bgas() -> FunctionManifest:
     return FunctionManifest(
         code="BGAS",
-        name="Benchmark Gasoline Futures",
+        name="Natural Gas Spot",
         category=Category.COMMODITIES,
         intent=(
-            "Track the benchmark RBOB / heating-oil / refined-product futures "
-            "contracts with explicit contract unit, expiry month, and front-"
-            "month roll context."
+            "Track the Henry Hub natural gas spot price: the NG=F front-month "
+            "futures contract in USD/MMBtu with its computed delivery month, or "
+            "the EIA Henry Hub spot series when configured."
         ),
         asset_classes=[AssetClass.COMMODITY, AssetClass.FUTURE],
         inputs=[
@@ -55,43 +56,30 @@ def bgas() -> FunctionManifest:
                 label="Contract",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Refined-product futures contract.",
-                options=["RB=F", "HO=F", "BZ=F", "CL=F"],
+                description="Henry Hub natural gas futures contract. BGAS serves NG=F only.",
+                options=["NG=F"],
             ),
             InputSpec(
                 name="range",
                 label="Range",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Lookback window.",
-                options=["1M", "3M", "6M", "1Y", "5Y"],
+                description="Lookback window for the daily history.",
+                options=["1M", "3M", "6M", "1Y"],
             ),
             InputSpec(
                 name="interval",
                 label="Interval",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Bar interval.",
-                options=["1h", "1d", "1wk"],
-                depends_on=["range"],
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Bar interval. BGAS serves daily bars only.",
+                options=["1d"],
             ),
         ],
         defaults={
-            "contract": "RB=F",
-            "range": "6M",
+            "contract": "NG=F",
+            "range": "1Y",
             "interval": "1d",
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="yfinance",
@@ -121,7 +109,7 @@ def bgas() -> FunctionManifest:
             kind=ChartKind.TIME_SERIES_CANDLES,
             x_axis=AxisSpec(type="time", unit="ms", label="Time"),
             y_axis=[
-                AxisSpec(type="numeric", unit="$/gal", label="Price"),
+                AxisSpec(type="numeric", unit="USD/MMBtu", label="Price"),
                 AxisSpec(type="numeric", unit="contracts", label="Volume"),
             ],
             panes=[
@@ -145,7 +133,7 @@ def bgas() -> FunctionManifest:
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="last", label="Last", kind="big_number", unit="$/gal"),
+                CardSlot(key="last", label="Last", kind="big_number", unit="USD/MMBtu"),
                 CardSlot(key="change_pct", label="Δ %", kind="trend_pill", unit="%"),
                 CardSlot(key="contract_unit", label="Unit", kind="badge"),
                 CardSlot(key="expiry_month", label="Expiry", kind="badge"),
@@ -155,14 +143,12 @@ def bgas() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "BGAS pulls the chosen refined-product futures contract from "
-            "yfinance using futures-style tickers (RB=F for RBOB, HO=F for "
-            "heating oil, etc.). The handler resolves the active front-month "
-            "expiry, exposes contract_unit ($/gal for RB/HO, $/bbl for CL/BZ) "
-            "explicitly, and renders an OHLCV chart with the volume sub-pane. "
-            "Roll context (days to expiry, prior contract close) is exposed "
-            "on the card row so operators never confuse a fresh roll for a "
-            "real gap."
+            "BGAS pulls the Henry Hub natural gas front-month futures contract "
+            "(NG=F) from yfinance, or the EIA Henry Hub spot series when EIA is "
+            "configured. Quotes are in USD/MMBtu. The delivery month is computed "
+            "from the NYMEX natural-gas last-trade rule (exchange holidays are not "
+            "modelled) and reported as expiry_month; EIA spot prints carry none. "
+            "Other contracts are refused with an explicit input_error."
         ),
         formula_dict={
             "change_pct": Formula(
@@ -171,11 +157,14 @@ def bgas() -> FunctionManifest:
             ),
         },
         field_dict={
-            "contract": FieldDef(description="Futures contract ticker (e.g. RB=F).", source="input"),
-            "contract_unit": FieldDef(description="Quoted unit (USD/gal for RBOB/HO, USD/bbl for CL/BZ).", source="curated"),
-            "expiry_month": FieldDef(description="Front-month delivery (e.g. 2026-06).", source="provider"),
-            "candles[].o": FieldDef(unit="USD/unit", description="Open price in contract unit.", source="provider"),
-            "candles[].c": FieldDef(unit="USD/unit", description="Close price in contract unit.", source="provider"),
+            "contract": FieldDef(description="Natural gas futures contract ticker (NG=F only).", source="input"),
+            "contract_unit": FieldDef(description="Quoted unit: USD/MMBtu (Henry Hub).", source="curated"),
+            "expiry_month": FieldDef(
+                description="Front-month NYMEX delivery (e.g. 2026-12), computed from the last-trade rule; null for EIA spot.",
+                source="curated",
+            ),
+            "candles[].o": FieldDef(unit="USD/MMBtu", description="Open price in USD/MMBtu.", source="provider"),
+            "candles[].c": FieldDef(unit="USD/MMBtu", description="Close price in USD/MMBtu.", source="provider"),
             "open_interest": FieldDef(unit="contracts", description="Listed open interest.", source="provider"),
         },
         provenance=ProvenanceSpec(
@@ -189,19 +178,19 @@ def bgas() -> FunctionManifest:
         ),
         semantic_tests=[
             SemanticTest(
-                name="bgas_rbob_returns_candles_with_unit",
-                description="BGAS RB=F daily returns candles plus contract_unit and expiry_month.",
-                inputs={"contract": "RB=F", "range": "6M", "interval": "1d"},
+                name="bgas_ng_returns_candles_with_unit",
+                description="BGAS NG=F daily returns candles plus contract_unit and expiry_month.",
+                inputs={"contract": "NG=F", "range": "6M", "interval": "1d"},
                 assertions=[
                     "candles_non_empty",
-                    "contract_unit_is_usd_per_gallon",
+                    "contract_unit_is_usd_per_mmbtu",
                     "expiry_month_present",
                 ],
             ),
             SemanticTest(
                 name="bgas_no_synthetic_zero_candles",
-                description="A failing contract returns warnings, not fabricated zero bars.",
-                inputs={"contract": "RB=F", "range": "MAX", "interval": "1m"},
+                description="A non-natural-gas contract returns an explicit input_error, not fabricated bars.",
+                inputs={"contract": "RB=F", "range": "1Y", "interval": "1d"},
                 assertions=[
                     "candles_empty_or_warnings_present",
                     "no_synthetic_zero_candle",

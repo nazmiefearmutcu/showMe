@@ -662,47 +662,166 @@ class BOILFunction(BaseFunction):
         )
 
 
+# BGAS identity: the Henry Hub natural-gas spot monitor. The only contract it
+# serves is NG=F; any other contract is refused with an explicit input_error
+# instead of being served (or swapped for NG=F) under the natural-gas title.
+BGAS_CONTRACT = "NG=F"
+_BGAS_UNIT = "USD/MMBtu"
+_BGAS_RANGE_DAYS: dict[str, int] = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365}
+_BGAS_INTERVALS: tuple[str, ...] = ("1d",)
+# Sanctioned data_mode values (tests/test_data_mode_vocabulary.py): EIA is an
+# official live publisher, the model row is a computed state.
+_BGAS_DATA_MODE: dict[str, str] = {
+    "live_yfinance": "live_yfinance",
+    "live_eia": "live_official",
+    "model": "modeled",
+}
+
+
+def _ng_front_month(today: Any) -> tuple[str, str]:
+    """Front NYMEX natural-gas delivery month and its last trade date.
+
+    Computed from the published contract rule: trading ends three business
+    days before the first calendar day of the delivery month. Weekends are
+    skipped; exchange holidays are not modelled, so the last-trade date can be
+    one business day late around a holiday. Returns ("YYYY-MM", "YYYY-MM-DD").
+    """
+    from datetime import date, timedelta
+
+    if isinstance(today, datetime):
+        today = today.date()
+    year, month = today.year, today.month
+    for _ in range(24):
+        first = date(year, month, 1)
+        last_trade = first
+        business_days = 0
+        while business_days < 3:
+            last_trade -= timedelta(days=1)
+            if last_trade.weekday() < 5:
+                business_days += 1
+        if last_trade >= today:
+            return f"{year:04d}-{month:02d}", last_trade.isoformat()
+        month += 1
+        if month == 13:
+            month, year = 1, year + 1
+    raise RuntimeError("no NG delivery month found within 24 months")
+
+
+def _bgas_decorate_rows(rows: list[dict[str, Any]], *, as_of_day: Any) -> list[dict[str, Any]]:
+    """Add contract_unit, expiry and data_mode to every BGAS row.
+
+    Futures rows get the computed front-month delivery; the EIA spot series has
+    no delivery month, so its expiry is explicitly null.
+    """
+    expiry_month, last_trade = _ng_front_month(as_of_day)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["contract_unit"] = _BGAS_UNIT
+        item["data_mode"] = _BGAS_DATA_MODE.get(str(item.get("source_mode")), "explicit_unavailable")
+        if item.get("source") == "eia":
+            item["expiry_month"] = None
+            item["expiry_last_trade"] = None
+            item["expiry_basis"] = "spot_no_delivery_month"
+        else:
+            item["expiry_month"] = expiry_month
+            item["expiry_last_trade"] = last_trade
+            item["expiry_basis"] = "nymex_ng_rule_weekends_only"
+        out.append(item)
+    return out
+
+
 @FunctionRegistry.register
 class BGASFunction(BaseFunction):
-    """BGAS — Henry Hub natural gas."""
+    """BGAS — Henry Hub natural gas spot (NG=F front month, or EIA HENRYHUB)."""
     code = "BGAS"
     name = "Natural Gas Spot"
+    description = (
+        "Henry Hub natural gas spot: live NG=F front-month quote with daily OHLCV "
+        "history, or the EIA Henry Hub spot series when configured. Serves NG=F "
+        "only; other contracts are refused with an explicit input_error."
+    )
     asset_classes = (AssetClass.COMMODITY,)
     category = "commodity"
 
+    def _input_error(self, contract: str, reason: str) -> FunctionResult:
+        return FunctionResult(
+            code=self.code,
+            instrument=None,
+            data={
+                "status": "input_error",
+                "reason": reason,
+                "symbol": contract,
+                "contract": BGAS_CONTRACT,
+                "contract_unit": _BGAS_UNIT,
+                "data_mode": "explicit_unavailable",
+                "rows": [],
+                "history": [],
+                "candles": [],
+                "next_actions": [f"Request contract={BGAS_CONTRACT} (Henry Hub natural gas)."],
+                "methodology": "BGAS serves the Henry Hub natural gas contract only; no other instrument is substituted.",
+                "field_dictionary": _commodity_field_dictionary(),
+            },
+            sources=[],
+            warnings=[reason],
+        )
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         live = _truthy(params.get("live", True) or params.get("live_screen"))
-        days = _int_param(params, "days", 365, 20, 1095)
-        quote_timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
-        contract = str(params.get("contract") or (instrument.symbol if instrument else "") or "NG=F").strip().upper()
-        # BUG-HUNT S01: previously a non-NG=F contract was silently
-        # reverted to NG=F. Track the override so the user knows.
-        original_contract = contract
-        symbol = contract if contract in COMMODITY_CONTRACTS else "NG=F"
-        provider_errors: list[str] = []
-        if original_contract != symbol:
-            provider_errors.append(
-                f"contract={original_contract!r} not in COMMODITY_CONTRACTS; using NG=F"
+        contract = str(params.get("contract") or (instrument.symbol if instrument else "") or BGAS_CONTRACT).strip().upper()
+        if contract != BGAS_CONTRACT:
+            return self._input_error(
+                contract,
+                f"BGAS is the Henry Hub natural gas spot monitor and serves {BGAS_CONTRACT} only; "
+                f"contract {contract!r} is not a natural gas contract and is not served here.",
             )
+        interval = str(params.get("interval") or _BGAS_INTERVALS[0]).strip().lower()
+        if interval not in _BGAS_INTERVALS:
+            return self._input_error(
+                contract,
+                f"BGAS serves daily bars only (interval=1d); got interval={interval!r}.",
+            )
+        if params.get("days") not in (None, ""):
+            days = _int_param(params, "days", 365, 20, 1095)
+        else:
+            range_key = str(params.get("range") or "1Y").strip().upper()
+            if range_key not in _BGAS_RANGE_DAYS:
+                return self._input_error(
+                    contract,
+                    f"BGAS range {range_key!r} is not supported; use one of {', '.join(_BGAS_RANGE_DAYS)}.",
+                )
+            days = _BGAS_RANGE_DAYS[range_key]
+        quote_timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
+        as_of_day = datetime.now(timezone.utc).date()
+        symbol = BGAS_CONTRACT
+        provider_errors: list[str] = []
         try:
             if self.deps.eia:
                 df = await self.deps.eia.fetch(DataRequest(
                     kind=DataKind.ECON_SERIES, symbols=["HENRYHUB"]))
                 eia_rows, eia_history = _eia_spot_rows(df, "HENRYHUB")
                 if eia_rows:
+                    rows = _bgas_decorate_rows(eia_rows, as_of_day=as_of_day)
                     return FunctionResult(
                         code=self.code,
                         instrument=None,
                         data={
                             "status": "ok",
+                            "contract": BGAS_CONTRACT,
                             "symbol": "HENRYHUB",
+                            "contract_unit": _BGAS_UNIT,
+                            "data_mode": _BGAS_DATA_MODE["live_eia"],
                             "source_mode": "live_eia",
-                            "rows": eia_rows,
+                            "as_of": rows[0].get("as_of"),
+                            "expiry_month": None,
+                            "rows": rows,
                             "history": eia_history,
+                            "candles": eia_history,
                             "methodology": (
                                 "BGAS reads Henry Hub natural gas spot data from EIA "
                                 "when configured. Change % is (last / previous period "
-                                "- 1) * 100; history is the daily EIA spot series."
+                                "- 1) * 100; history is the daily EIA spot series. "
+                                "Spot prints carry no delivery month."
                             ),
                             "field_dictionary": _commodity_field_dictionary(),
                         },
@@ -723,9 +842,8 @@ class BGASFunction(BaseFunction):
         row = None
         history: list[dict[str, Any]] = []
         if live and self.deps.yfinance:
-            # BUG-HUNT S01: preserve the EIA + contract-override errors
-            # we already accumulated; don't let _contract_snapshot's own
-            # error list overwrite them.
+            # BUG-HUNT S01: preserve the EIA errors we already accumulated;
+            # don't let _contract_snapshot's own error list overwrite them.
             row, history, snapshot_errors = await _contract_snapshot(
                 self.deps.yfinance,
                 symbol,
@@ -735,13 +853,20 @@ class BGASFunction(BaseFunction):
             )
             provider_errors.extend(snapshot_errors)
         if row:
+            rows = _bgas_decorate_rows([row], as_of_day=as_of_day)
             data = {
                 "status": "ok",
+                "contract": BGAS_CONTRACT,
                 "symbol": symbol,
+                "contract_unit": _BGAS_UNIT,
+                "data_mode": _BGAS_DATA_MODE["live_yfinance"],
                 "source_mode": "live_yfinance",
-                "rows": [row],
+                "as_of": rows[0].get("as_of"),
+                "expiry_month": rows[0].get("expiry_month"),
+                "rows": rows,
                 "history": history,
-                "methodology": "BGAS/NGAS uses the selected natural-gas futures contract, default NG=F. Change % is (last / previous close - 1) * 100; history is daily OHLCV.",
+                "candles": history,
+                "methodology": "BGAS reports the NG=F front-month natural-gas futures contract. Change % is (last / previous close - 1) * 100; history is daily OHLCV. Expiry is computed from the NYMEX natural-gas last-trade rule (holidays not modelled).",
                 "field_dictionary": _commodity_field_dictionary(),
             }
             return FunctionResult(
@@ -752,15 +877,24 @@ class BGASFunction(BaseFunction):
                 warnings=provider_errors,
             )
         if not live:
-            model = _model_row("NG=F")
+            # The model row is the NG=F reference, which is the only contract
+            # this function serves, so the requested contract is preserved.
+            rows = _bgas_decorate_rows([_model_row(BGAS_CONTRACT)], as_of_day=as_of_day)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data={
                     "status": "reference_model",
-                    "symbol": "NG=F",
+                    "contract": BGAS_CONTRACT,
+                    "symbol": BGAS_CONTRACT,
+                    "contract_unit": _BGAS_UNIT,
+                    "data_mode": _BGAS_DATA_MODE["model"],
                     "source_mode": "model",
-                    "rows": [model],
+                    "as_of": rows[0].get("as_of"),
+                    "expiry_month": rows[0].get("expiry_month"),
+                    "rows": rows,
+                    "history": [],
+                    "candles": [],
                     "methodology": "Deterministic reference row used only when live=false.",
                     "field_dictionary": _commodity_field_dictionary(),
                 },
@@ -774,12 +908,17 @@ class BGASFunction(BaseFunction):
                 data={
                     "status": "provider_unavailable",
                     "reason": "Natural gas quote provider returned no usable live quote.",
+                    "contract": BGAS_CONTRACT,
+                    "contract_unit": _BGAS_UNIT,
+                    "data_mode": "unavailable",
                     "rows": [],
+                    "history": [],
+                    "candles": [],
                     "next_actions": [
                         "Retry BGAS/NGAS after the public quote provider recovers.",
                         "Run without live=true for the deterministic local market model.",
                     ],
-                    "methodology": "BGAS/NGAS only reports OK when NG=F or the selected gas contract returns a usable last price or chart close.",
+                    "methodology": "BGAS/NGAS only reports OK when NG=F returns a usable last price or chart close.",
                     "field_dictionary": _commodity_field_dictionary(),
                 },
                 sources=["yfinance_futures"],

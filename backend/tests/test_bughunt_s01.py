@@ -421,16 +421,16 @@ def test_bgas_captures_eia_failure_in_provider_errors() -> None:
                for e in errors), errors
 
 
-def test_bgas_warns_when_contract_overridden_to_ngas() -> None:
-    """Passing a contract not in COMMODITY_CONTRACTS used to be silently
-    reverted to NG=F. Now we surface the override in provider_errors."""
+def test_bgas_refuses_contract_instead_of_reverting_to_ngas() -> None:
+    """A contract BGAS does not serve used to be silently reverted to NG=F
+    (with only a provider_errors note). BGAS is the natural-gas monitor, so
+    the request is now refused explicitly and NG=F is not substituted."""
     fn = BGASFunction()
     fn.deps = FunctionDeps()
-    # FAKE=F is not in COMMODITY_CONTRACTS; the function must report the
-    # silent revert to NG=F.
     result = _run(fn.execute(contract="FAKE=F"))
-    errors = result.metadata.get("provider_errors") or []
-    assert any("FAKE=F" in str(e) and "NG=F" in str(e) for e in errors), errors
+    assert result.data["status"] == "input_error"
+    assert result.data["rows"] == []
+    assert "FAKE=F" in str(result.data.get("reason", ""))
 
 
 # ── APPL ────────────────────────────────────────────────────────────────────
