@@ -61,24 +61,42 @@ def test_erc_respects_custom_target() -> None:
     assert info["converged"] is True
 
 
-class _NoDeps:
-    yfinance = None
-    fred = None
+class _HistoryProvider:
+    """Test provider: a seeded price path per symbol (no network, no fallback).
 
-    def __getattr__(self, item):  # pragma: no cover
-        return None
+    RPAR no longer builds weights from synthetic returns when the provider is
+    missing (RPAR#4), so the ERC path is exercised through a provider that
+    returns history, as in production.
+    """
+
+    async def fetch(self, request, *_a, **_kw):
+        import numpy as np
+        import pandas as pd
+
+        sym = request.instrument.symbol
+        rng = np.random.default_rng(sum(map(ord, sym)))
+        vol = {"AAPL": 0.020, "MSFT": 0.017, "GLD": 0.009, "TLT": 0.011}.get(sym, 0.015)
+        rets = rng.normal(0.0003, vol, 300)
+        idx = pd.bdate_range(end="2026-10-30", periods=300)
+        return pd.DataFrame({"close": 100.0 * np.exp(np.cumsum(rets))}, index=idx)
+
+
+def _deps():
+    from showme.engine.core.base_function import FunctionDeps
+
+    return FunctionDeps(yfinance=_HistoryProvider())
 
 
 def test_rpar_function_erc_output_has_equal_risk_shares() -> None:
-    fn = RPARFunction(deps=_NoDeps())
-    out = asyncio.run(fn.execute(symbols="AAPL,MSFT,GLD,TLT", method="erc"))
+    fn = RPARFunction(deps=_deps())
+    out = asyncio.run(fn.execute(symbols="AAPL,MSFT,GLD,TLT", method="erc", live_risk=True))
     shares = [row["risk_contribution_pct"] for row in out.data["rows"]]
     assert out.data["info"]["converged"] is True
     assert shares == pytest.approx([25.0] * 4, abs=1e-3)
 
 
 def test_rpar_function_warns_when_erc_does_not_converge() -> None:
-    fn = RPARFunction(deps=_NoDeps())
-    out = asyncio.run(fn.execute(symbols="AAPL,MSFT,GLD,TLT", method="erc", max_iter=1))
+    fn = RPARFunction(deps=_deps())
+    out = asyncio.run(fn.execute(symbols="AAPL,MSFT,GLD,TLT", method="erc", max_iter=1, live_risk=True))
     assert out.data["info"]["converged"] is False
     assert any("did not converge" in w for w in out.warnings)
