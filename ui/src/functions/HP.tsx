@@ -153,9 +153,17 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
       .map((r) => r.close ?? r.adj_close ?? r.adjClose)
       .filter((v): v is number => v != null);
     if (!closes.length) return null;
+    // Range extremes are the bar highs and lows ("Range high/low" labels);
+    // a bar missing its high/low falls back to its close.
+    const highs = rows
+      .map((r) => r.high ?? r.close ?? r.adj_close ?? r.adjClose)
+      .filter((v): v is number => v != null);
+    const lows = rows
+      .map((r) => r.low ?? r.close ?? r.adj_close ?? r.adjClose)
+      .filter((v): v is number => v != null);
     // UA-CRITICAL-01: stack-safe; closes can be 10k+ rows on intraday history.
-    const high = maxOf(closes);
-    const low = minOf(closes);
+    const high = maxOf(highs);
+    const low = minOf(lows);
     const first = closes[closes.length - 1];
     const last = closes[0];
     const totalPct = first ? ((last - first) / first) * 100 : null;
