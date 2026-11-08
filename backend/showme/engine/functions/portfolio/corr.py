@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -129,11 +130,29 @@ class CORRFunction(BaseFunction):
     description = "Pearson + Spearman + downside correlation for a symbol set."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        symbols = _parse_symbols(params.get("symbols")) or list(DEFAULT_IMPACT_SYMBOLS)
-        days = _bounded_int(params.get("days", 365), 30, 2520, 365)
-        return_method = _normalize_return_method(params.get("return_method") or params.get("returns"))
-        frequency = _normalize_frequency(params.get("frequency"))
+        # CORR#7: read the declared seed inputs (universe, return_type, window,
+        # min_overlap) as well as the pane parameters, and never ignore them silently.
+        symbols = _parse_symbols(params.get("symbols") or params.get("universe")) or list(DEFAULT_IMPACT_SYMBOLS)
+        days = _resolve_days(params)
+        if days is None:
+            return _input_error_result(
+                f"Unsupported window {params.get('window')!r}; use a day count such as 90d or a year count such as 1Y.",
+                instrument,
+                symbols,
+            )
+        raw_frequency = str(params.get("frequency") or "daily").strip().lower()
+        if raw_frequency in {"1h", "h", "hourly", "1hour"}:
+            return _input_error_result(
+                "Hourly frequency is not supported by CORR; use 1d, 1wk or 1mo.",
+                instrument,
+                symbols,
+            )
+        return_method = _normalize_return_method(
+            params.get("return_method") or params.get("returns") or params.get("return_type")
+        )
+        frequency = _normalize_frequency(raw_frequency)
         missing_policy = _normalize_missing_policy(params.get("missing_data_policy") or params.get("missing_policy"))
+        min_overlap = _bounded_int(params.get("min_overlap", 30), 10, 500, 30)
         live = _truthy(params.get("live_correlation") or params.get("live"))
         sources = ["computed_return_model"]
         coverage_status: dict[str, dict[str, Any]] = {}
@@ -291,6 +310,7 @@ class CORRFunction(BaseFunction):
             live=live,
             sources=sources,
             coverage_status=coverage_status,
+            min_overlap=min_overlap,
         )
         # B6: surface the dropped list both on the payload and as a warning
         # so the UI can render a chip.
@@ -302,6 +322,17 @@ class CORRFunction(BaseFunction):
             for item in data.get("impactor", {}).get("bug_analysis", [])
             if item.get("severity") in {"warning", "critical"}
         ][:8]
+        rejected_pairs = data.get("rejected_pairs") or []
+        if rejected_pairs:
+            warnings.insert(
+                0,
+                f"Rejected {len(rejected_pairs)} pair(s) with fewer than {min_overlap} overlapping "
+                "observations; their correlations are null.",
+            )
+        if not data.get("downside_observations"):
+            warnings.append(
+                "Downside matrix unavailable: no negative equal-weight universe days, so downside cells are null."
+            )
         if dropped_live:
             warnings.insert(
                 0,
@@ -500,6 +531,7 @@ def _correlation_payload(
     live: bool,
     sources: list[str],
     coverage_status: dict[str, dict[str, Any]],
+    min_overlap: int = 30,
 ) -> dict[str, Any]:
     ordered_symbols = [symbol for symbol in symbols if symbol in frame.columns]
     if not ordered_symbols:
@@ -514,6 +546,11 @@ def _correlation_payload(
     pearson = _df_to_nested_dict(pearson_df)
     spearman = _df_to_nested_dict(spearman_df)
     downside = _df_to_nested_dict(downside_df)
+    # CORR#7: min_overlap is enforced per pair. A pair with too few overlapping
+    # observations gets null cells in every matrix and a rejected_pairs entry.
+    rejected = _thin_pairs(frame, ordered_symbols, min_overlap)
+    for matrix in (pearson, spearman, downside):
+        _null_pairs(matrix, rejected)
     impactor = _build_impactor_payload(
         symbols=ordered_symbols,
         days=days,
@@ -526,6 +563,8 @@ def _correlation_payload(
         live=live,
         sources=sources,
         coverage_status=coverage_status,
+        rejected_pairs=rejected,
+        min_overlap=min_overlap,
     )
     return {
         "symbols": ordered_symbols,
@@ -538,6 +577,17 @@ def _correlation_payload(
         # rows for symbols removed from the live matrix universe.
         "coverage_status": coverage_status,
         "surface": _matrix_surface(pearson, spearman, downside),
+        "rejected_pairs": [
+            {
+                "left": left,
+                "right": right,
+                "observations": observations,
+                "reason": f"fewer than {min_overlap} overlapping observations",
+            }
+            for left, right, observations in rejected
+        ],
+        "min_overlap": min_overlap,
+        "downside_observations": int(down.shape[0]),
         "rows": [
             {
                 "symbol": symbol,
@@ -588,9 +638,16 @@ def _build_impactor_payload(
     live: bool,
     sources: list[str],
     coverage_status: dict[str, dict[str, Any]],
+    rejected_pairs: list[tuple[str, str, int]] | None = None,
+    min_overlap: int = 30,
 ) -> dict[str, Any]:
     price_by_symbol = {series["asset"]["symbol"]: series for series in price_series}
     matrix = _impactor_matrix(frame, symbols)
+    rejected_keys = {frozenset((left, right)) for left, right, _ in (rejected_pairs or [])}
+    for cell in matrix:
+        if cell["left"] != cell["right"] and frozenset((cell["left"], cell["right"])) in rejected_keys:
+            cell["correlation"] = None
+            cell["covariance"] = None
     observation_values = [int(cell["observations"]) for cell in matrix]
     observation_range = {
         "min": min(observation_values) if observation_values else 0,
@@ -638,6 +695,7 @@ def _build_impactor_payload(
             "missing_data_policy": missing_policy,
             "source_mode": "live_with_transparent_fallback" if live else "computed_reference",
             "sources": sources,
+            "min_overlap": min_overlap,
         },
         "provider_contract": {
             "asset": ["symbol", "name", "market", "currency", "venue"],
@@ -1325,11 +1383,73 @@ def _normalize_return_method(value: Any) -> str:
 
 def _normalize_frequency(value: Any) -> str:
     text = str(value or "daily").strip().lower()
-    if text in {"weekly", "week", "w"}:
+    if text in {"weekly", "week", "w", "1wk"}:
         return "weekly"
-    if text in {"monthly", "month", "m"}:
+    if text in {"monthly", "month", "m", "1mo"}:
         return "monthly"
     return "daily"
+
+
+_WINDOW_DAYS_RE = re.compile(r"^(\d+)\s*(d|y)$")
+
+
+def _resolve_days(params: dict[str, Any]) -> int | None:
+    """Lookback in days: the pane's ``days`` wins, else the seed ``window``.
+
+    Returns None when ``window`` is present but unparsable, so the caller can
+    return an explicit input error instead of silently using the default.
+    """
+    if params.get("days") not in (None, ""):
+        return _bounded_int(params.get("days"), 30, 2520, 365)
+    window = params.get("window")
+    if window in (None, ""):
+        return 365
+    match = _WINDOW_DAYS_RE.match(str(window).strip().lower())
+    if not match:
+        return None
+    count = int(match.group(1)) * (365 if match.group(2) == "y" else 1)
+    return max(30, min(2520, count))
+
+
+def _input_error_result(message: str, instrument: Instrument | None, symbols: list[str]) -> FunctionResult:
+    return FunctionResult(
+        code="CORR",
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": message,
+            "symbols": list(symbols),
+            "next_actions": ["Correct the input and run CORR again."],
+        },
+        sources=[],
+        metadata={"live": False, "impactor_integrated": True},
+        warnings=[message],
+    )
+
+
+def _thin_pairs(
+    frame: pd.DataFrame,
+    symbols: list[str],
+    min_overlap: int,
+) -> list[tuple[str, str, int]]:
+    """CORR#7: unordered pairs whose overlapping observation count is below min_overlap."""
+    cols = [symbol for symbol in symbols if symbol in frame.columns]
+    valid = frame[cols].notna() if cols else pd.DataFrame()
+    out: list[tuple[str, str, int]] = []
+    for index, left in enumerate(cols):
+        for right in cols[index + 1 :]:
+            observations = int((valid[left] & valid[right]).sum())
+            if observations < min_overlap:
+                out.append((left, right, observations))
+    return out
+
+
+def _null_pairs(matrix: dict[str, dict[str, float | None]], pairs: list[tuple[str, str, int]]) -> None:
+    for left, right, _ in pairs:
+        if left in matrix and right in matrix[left]:
+            matrix[left][right] = None
+        if right in matrix and left in matrix[right]:
+            matrix[right][left] = None
 
 
 def _normalize_missing_policy(value: Any) -> str:

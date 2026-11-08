@@ -132,13 +132,15 @@ def corr() -> FunctionManifest:
             "min_overlap": 30,
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
+        # CORR#7: the chain names the adapters the handler really calls. yfinance
+        # serves every symbol; crypto symbols try ccxt_failover and coingecko
+        # first (see _live_adapter_candidates). There is no cached snapshot path.
         provider_chain=ProviderChain(
-            primary="binance",
-            fallbacks=["yfinance", "cached_snapshot"],
+            primary="yfinance",
+            fallbacks=["ccxt_failover", "coingecko"],
             acceptable_modes=[
                 DataMode.LIVE_EXCHANGE,
                 DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=900, scope="per_input", persist=True),
