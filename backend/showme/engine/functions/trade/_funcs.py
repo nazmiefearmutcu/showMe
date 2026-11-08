@@ -476,7 +476,13 @@ class FXGOFunction(EMSXFunction):
         # ``pairs`` cannot smuggle path segments / query chars into the Yahoo
         # chart URL. Returns "" when nothing alphabetic survives so the caller
         # can skip the pair rather than request a malformed ``=X`` symbol.
-        base = re.sub(r"[^A-Za-z]", "", pair).upper().replace("=X", "")
+        # The Yahoo ``=X`` suffix must be removed BEFORE the non-letter strip:
+        # the strip deletes "=" first, so ``GBPUSD=X`` used to become
+        # ``GBPUSDX`` and requested the non-existent ``GBPUSDX=X`` (404).
+        text = str(pair or "").strip().upper()
+        if text.endswith("=X"):
+            text = text[:-2]
+        base = re.sub(r"[^A-Z]", "", text)
         if not base:
             return ""
         return f"{base}=X"
