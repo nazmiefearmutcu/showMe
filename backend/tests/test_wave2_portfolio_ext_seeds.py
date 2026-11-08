@@ -105,10 +105,12 @@ def test_risk_surface_has_model_assumption_input(code: str) -> None:
     )
 
 
-# Research surfaces that default paper_mode=True.
+# Research surfaces that default paper_mode=True. MARS is deliberately absent:
+# its seed was a mean-reversion allocator (order-adjacent, paper_mode) and was
+# replaced by the factor-regression contract the handler ships. That is an
+# analysis-only surface with no orders, so it carries no paper_mode control.
 _PAPER_SAFE_DEFAULTS = (
     "RPAR",
-    "MARS",
     "PSC",
     "REBA",
     "TLH",

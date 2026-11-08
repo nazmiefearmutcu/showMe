@@ -93,3 +93,34 @@ def test_mars_router_default_live_true_still_fetches_live():
     ))
     assert yf.asked, "live=true must attempt the live provider"
     assert result.metadata.get("live") is True
+
+
+# ────────────────────────────────────────────────────────────────────────
+# MARS#6: the manifest seed describes a different function (Mean-Reverting
+# Allocation) and its must_have fields are not produced by the handler.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def _mars_seed():
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    return REGISTRY.get("MARS")
+
+
+def test_mars_seed_names_the_shipped_handler():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    entry = _mars_seed()
+    assert entry.name == MARSFunction.name == "Multi-Asset Risk"
+    assert "reversion" not in entry.intent.lower()
+
+
+def test_mars_seed_must_have_keys_are_produced_by_handler():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    entry = _mars_seed()
+    result = _run(MARSFunction(FunctionDeps()).execute(instrument=EQ, reference=True))
+    top_level = set(result.data) | {"symbol"}
+    missing = [k for k in entry.output_contract.must_have if k not in top_level]
+    assert missing == [], f"seed promises fields the handler never returns: {missing}"

@@ -1,9 +1,10 @@
-"""MARS — Mean-reverting allocation.
+"""MARS — Multi-Asset Risk (ETF-proxy factor regression).
 
-Allocates to a universe whose return signal is assumed to revert to a
-slow-moving anchor (e.g. cross-sectional or pairwise z-score reversion).
-Lookback, regime detector, and half-life ride MODEL_ASSUMPTION controls.
-Paper-safe by default.
+Regresses a multi-asset daily return series on six ETF total-return proxies
+and reports factor betas, R-squared, volatility and 95% VaR / ETL. Live
+ETF proxies by default; ``reference=true`` serves the labelled template
+series. Analysis only: no orders are generated, so there is no paper-mode
+control.
 """
 from __future__ import annotations
 
@@ -38,123 +39,71 @@ from ..spec import (
 def mars() -> FunctionManifest:
     return FunctionManifest(
         code="MARS",
-        name="Mean-Reverting Allocation",
+        name="Multi-Asset Risk",
         category=Category.PORTFOLIO,
         intent=(
-            "Allocate to a universe under a mean-reversion assumption: long "
-            "the most-oversold, short the most-overbought, sized by the "
-            "estimated half-life of reversion. Half-life, regime assumption, "
-            "and lookback ride model_assumption controls."
+            "Regress a multi-asset return series on six ETF total-return proxies "
+            "to estimate factor betas, R-squared, volatility and 95% VaR / ETL; "
+            "live by default, labelled template only on request."
         ),
         asset_classes=[
             AssetClass.EQUITY,
             AssetClass.ETF,
-            AssetClass.CRYPTO,
-            AssetClass.FX,
-            AssetClass.COMMODITY,
         ],
         inputs=[
             InputSpec(
-                name="universe",
+                name="symbols",
                 label="Universe",
-                control=ControlKind.MULTISELECT,
-                required=True,
-                description="Instruments to score and allocate.",
-            ),
-            InputSpec(
-                name="lookback_window",
-                label="Lookback window",
-                control=ControlKind.MODEL_ASSUMPTION,
-                required=True,
-                description="History used to estimate the z-score anchor.",
-                options=["30d", "60d", "90d", "180d", "1Y"],
-            ),
-            InputSpec(
-                name="reversion_half_life",
-                label="Reversion half-life (days)",
-                control=ControlKind.MODEL_ASSUMPTION,
-                required=True,
-                description=(
-                    "Assumed half-life over which the signal decays back to "
-                    "its anchor. Drives leverage sizing."
-                ),
-                min=1,
-                max=120,
-                step=1,
-                unit="days",
-            ),
-            InputSpec(
-                name="regime_assumption",
-                label="Regime assumption",
-                control=ControlKind.MODEL_ASSUMPTION,
-                required=True,
-                description="Stationarity model used to qualify the signal.",
-                options=["stationary", "trending_filter", "ou_process"],
-            ),
-            InputSpec(
-                name="signal",
-                label="Signal",
-                control=ControlKind.SELECT,
+                control=ControlKind.TEXT,
                 required=False,
-                description="Underlying mean-reversion signal.",
-                options=["zscore", "rsi_extreme", "ou_residual"],
+                description=(
+                    "Comma-separated tickers whose equal-weight return series is "
+                    "regressed. Defaults to the handler universe when empty."
+                ),
             ),
             InputSpec(
-                name="gross_leverage_cap",
-                label="Gross leverage cap",
+                name="years",
+                label="History (years)",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Σ|w_i| ceiling.",
-                min=0.5,
-                max=4.0,
-                step=0.1,
+                description="Calendar years of daily history to regress on.",
+                min=1,
+                max=10,
+                step=1,
+                unit="years",
             ),
             InputSpec(
-                name="paper_mode",
-                label="Paper mode (safe)",
+                name="reference",
+                label="Labelled template (MODEL)",
                 control=ControlKind.BOOLEAN,
-                required=True,
-                description="Research-only by default.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred data mode for the price history.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description=(
+                    "true serves the labelled template return series instead of "
+                    "live ETF proxies; regression statistics are then not estimated."
+                ),
             ),
         ],
         defaults={
-            "lookback_window": "90d",
-            "reversion_half_life": 10,
-            "regime_assumption": "stationary",
-            "signal": "zscore",
-            "gross_leverage_cap": 2.0,
-            "paper_mode": True,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
+            "years": 3,
+            "reference": False,
         },
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["yfinance", "binance", "cached_snapshot"],
+            primary="yfinance",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.DELAYED_REFERENCE,
                 DataMode.MODELED,
-                DataMode.CACHED_SNAPSHOT,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=True),
         output_contract=OutputContract(
             must_have=[
-                "as_of",
-                "weights",
-                "signal_scores",
-                "expected_half_life_days",
-                "gross_exposure",
-                "data_mode",
+                "alpha_annualized",
+                "factor_loadings",
+                "r_squared",
+                "annualized_volatility",
+                "var_95_daily_loss",
+                "samples",
             ],
             rows=True,
             series=False,
@@ -164,67 +113,61 @@ def mars() -> FunctionManifest:
         ),
         chart_grammar=ChartGrammar(
             kind=ChartKind.BAR_LADDER,
-            x_axis=AxisSpec(type="category", unit="", label="Symbol"),
-            y_axis=AxisSpec(type="numeric", unit="z", label="Signal score"),
+            x_axis=AxisSpec(type="category", unit="", label="Factor"),
+            y_axis=AxisSpec(type="numeric", unit="", label="Regression beta"),
             panes=[],
-            overlay_support=True,
+            overlay_support=False,
             compare_support=False,
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="symbol", label="Symbol", kind="text"),
-                ColumnSpec(key="signal", label="Signal", kind="number", format="%.2f"),
-                ColumnSpec(key="weight", label="Weight", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="side", label="Side", kind="tag"),
-                ColumnSpec(key="half_life_days", label="Half-life", kind="number", unit="d", format="%.1f"),
+                ColumnSpec(key="factor", label="Factor", kind="text"),
+                ColumnSpec(key="loading", label="Loading", kind="number", format="%.4f"),
+                ColumnSpec(key="abs_loading", label="|Loading|", kind="number", format="%.4f"),
+                ColumnSpec(key="meaning", label="Meaning", kind="text"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="gross_exposure", label="Gross", kind="big_number", unit="%"),
-                CardSlot(key="net_exposure", label="Net", kind="kpi", unit="%"),
-                CardSlot(key="expected_half_life_days", label="Half-life", kind="kpi", unit="d"),
-                CardSlot(key="signal_range", label="Signal Δ", kind="kpi"),
-                CardSlot(key="paper_mode", label="Mode", kind="badge"),
+                CardSlot(key="r_squared", label="R²", kind="kpi"),
+                CardSlot(key="annualized_volatility", label="Vol (ann.)", kind="kpi"),
+                CardSlot(key="var_95_daily_loss", label="VaR 95 (1d loss)", kind="kpi"),
+                CardSlot(key="samples", label="Samples", kind="kpi"),
                 CardSlot(key="data_mode", label="Data", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "MARS computes a per-asset mean-reversion score over the chosen "
-            "lookback. For zscore, the score is (price - rolling_mean) / "
-            "rolling_std; for ou_residual it is the residual of an "
-            "Ornstein-Uhlenbeck fit; rsi_extreme converts RSI distance from "
-            "50 into a z-equivalent. The regime_assumption guards entry: "
-            "stationary always enters; trending_filter rejects assets in a "
-            "strong trend; ou_process requires a significant mean-reversion "
-            "fit (p-value < 0.05). Weights are proportional to -score "
-            "(buy the oversold), scaled so Σ|w_i| ≤ gross_leverage_cap. The "
-            "expected_half_life_days is the assumption echoed back to the "
-            "user — actual realized half-life is observed, not predicted. "
-            "Research surface: paper_mode defaults true."
+            "MARS regresses the daily return series of the universe on six ETF "
+            "total-return proxies by ordinary least squares with an intercept: "
+            "MKT=SPY, SMB=IWM, HML=VLUE, MOM=MTUM, QMJ=QUAL, BAB=USMV. These are "
+            "long-only ETFs, not Fama-French long-short premia, and they are highly "
+            "correlated, so individual betas are not separable exposures. Alpha is "
+            "annualized as 252 x daily alpha. VaR and ETL are reported as positive "
+            "daily losses. reference=true serves the labelled template series."
         ),
         formula_dict={
-            "ZScore": Formula(
-                expression=r"z_i = (p_i - \mu_i) / \sigma_i",
-                variables={"μ_i": "Rolling mean", "σ_i": "Rolling std"},
+            "OLS": Formula(
+                expression=r"r_{p,t} = \alpha + \sum_k \beta_k f_{k,t} + \varepsilon_t",
+                variables={
+                    "r_{p,t}": "Portfolio daily return",
+                    "f_{k,t}": "ETF proxy daily return for factor k",
+                    "\\beta_k": "Factor loading",
+                },
             ),
-            "OUHalfLife": Formula(
-                expression=r"\tau_{1/2} = \ln 2 / \theta",
-                variables={"θ": "Mean-reversion speed of OU fit"},
-            ),
-            "Weight": Formula(
-                expression=r"w_i = -z_i / \sum_j |z_j| \cdot L",
-                variables={"L": "Gross leverage cap"},
+            "AnnualizedAlpha": Formula(
+                expression=r"\alpha_{ann} = 252 \cdot \alpha_{daily}",
+                variables={"\\alpha_{daily}": "Intercept of the daily regression"},
             ),
         },
         field_dict={
-            "weights": FieldDef(unit="decimal", description="Long-short weight vector, sums to ~0 by construction.", source="optimizer"),
-            "signal_scores": FieldDef(unit="z", description="Per-asset reversion signal score.", source="computed"),
-            "expected_half_life_days": FieldDef(unit="days", description="User-supplied half-life, echoed for traceability.", source="input"),
-            "gross_exposure": FieldDef(unit="decimal", description="Σ|w_i| at the returned weights.", source="optimizer"),
+            "alpha_annualized": FieldDef(unit="decimal", description="Annualized regression intercept (252 x daily).", source="computed"),
+            "factor_loadings": FieldDef(unit="beta", description="OLS betas to the named ETF proxies.", source="computed"),
+            "r_squared": FieldDef(unit="decimal", description="Share of portfolio return variance explained by the proxies.", source="computed"),
+            "var_95_daily_loss": FieldDef(unit="decimal", description="5th-percentile daily loss, positive number.", source="computed"),
+            "samples": FieldDef(unit="count", description="Overlapping daily observations used in the regression.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -234,32 +177,22 @@ def mars() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="mars_lookback_half_life_regime_are_model_assumptions",
-                description="The three MARS assumptions ride model_assumption controls.",
+                name="mars_factor_proxies_are_etf_total_return",
+                description="The factor set is six ETF total-return proxies, not Fama-French premia.",
                 inputs={},
-                assertions=[
-                    "input 'lookback_window' has control == model_assumption",
-                    "input 'reversion_half_life' has control == model_assumption",
-                    "input 'regime_assumption' has control == model_assumption",
-                ],
+                assertions=["factor_proxies == ['SPY', 'IWM', 'VLUE', 'MTUM', 'QUAL', 'USMV']"],
             ),
             SemanticTest(
-                name="mars_paper_mode_defaults_true",
-                description="Research surface ships paper-safe.",
+                name="mars_reference_is_labelled_not_live",
+                description="reference=true never claims a live data mode.",
+                inputs={"reference": True},
+                assertions=["metadata.live == False", "metadata.data_mode == 'modeled'"],
+            ),
+            SemanticTest(
+                name="mars_partial_factor_coverage_is_labelled",
+                description="Any missing ETF proxy downgrades the labels and names the proxy.",
                 inputs={},
-                assertions=["defaults.paper_mode == True"],
-            ),
-            SemanticTest(
-                name="mars_oversold_long_overbought_short",
-                description="Most-negative score must produce a long weight; most-positive a short.",
-                inputs={"universe": ["A", "B"]},
-                assertions=["w_min_score > 0", "w_max_score < 0"],
-            ),
-            SemanticTest(
-                name="mars_gross_cap_respected",
-                description="Σ|w_i| ≤ gross_leverage_cap within numeric tolerance.",
-                inputs={"gross_leverage_cap": 1.0},
-                assertions=["sum_abs_weights <= 1.0 + 1e-6"],
+                assertions=["missing proxy -> metadata.live == False", "warnings name the missing proxy"],
             ),
         ],
     )
