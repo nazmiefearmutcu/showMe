@@ -65,10 +65,38 @@ def test_reference_template_envelope_is_not_status_ok() -> None:
     assert out.data["status"] == "model", out.data["status"]
     assert out.data["status"] != "ok"
     assert out.metadata.get("live") is False
-    assert all(row["market_state"] == "model" for row in out.data["rows"])
+    # WEI#3 follow-up: the template must not invent levels. Rows keep identity
+    # only; every market field is null and labelled unavailable.
+    rows = out.data["rows"]
+    assert rows, "reference path must still show the universe"
+    for row in rows:
+        assert row["name"] and row["region"], row
+        for field in ("last", "change", "change_pct", "high", "low", "prev_close"):
+            assert row.get(field) is None, (row["symbol"], field, row.get(field))
+        assert row["market_state"] == "unavailable", row
     # The request clock is not a data freshness stamp for a deterministic model.
     assert "as_of" not in out.data
     assert out.data.get("generated_at")
+    assert out.data.get("reason")
+    assert out.data.get("next_actions")
+
+
+def test_provider_down_fallback_rows_carry_no_invented_levels() -> None:
+    """WEI#3: the live provider-unavailable envelope must not paint model levels."""
+
+    class _EmptyProvider:
+        name = "yfinance"
+
+        async def fetch(self, request: object) -> None:
+            return None
+
+    out = asyncio.run(WEIFunction(deps=FunctionDeps(yfinance=_EmptyProvider())).execute())
+    assert out.data["status"] == "provider_unavailable"
+    assert out.data["rows"], "fallback must still list the universe"
+    for row in out.data["rows"]:
+        for field in ("last", "change_pct", "high", "low"):
+            assert row.get(field) is None, (row["symbol"], field, row.get(field))
+    assert out.data.get("reason") and out.data.get("next_actions")
 
 
 def test_region_param_filters_rows_server_side() -> None:

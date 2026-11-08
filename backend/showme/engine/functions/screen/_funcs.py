@@ -663,7 +663,7 @@ class WEIFunction(BaseFunction):
                     "generated_at": _utc_now_iso(),
                     "next_actions": [
                         "Retry WEI after the public quote provider recovers.",
-                        "Rows shown are a deterministic world-index model, not live quotes.",
+                        "Rows carry symbol and name only; no level is modelled for the unavailable quotes.",
                     ],
                 },
                 metadata={
@@ -693,6 +693,14 @@ class WEIFunction(BaseFunction):
                 "source_mode": "world_index_template",
                 # Model generation time, not a market or quote time.
                 "generated_at": _utc_now_iso(),
+                "reason": (
+                    "Reference path: no world-index quotes were requested, so no levels are shown."
+                    if not live
+                    else "World index quote provider is not configured; no levels are shown."
+                ),
+                "next_actions": [
+                    "Call WEI without reference=true to request live index quotes.",
+                ],
             },
             metadata={"live": False, "fallback": True, "degraded": degraded, "universe_size": len(indices)},
             sources=["showme_local_baseline"],
@@ -2826,24 +2834,6 @@ _WORLD_INDEX_META: dict[str, dict[str, str]] = {
     "^CASE30": {"name": "EGX 30 (Egypt)", "region": "mea"},
 }
 
-# Deterministic baseline levels for the offline / provider-down template.
-# Coarse round numbers — these are explicitly NOT live quotes (rows carry
-# market_state="model"); they exist only so the UI has structure to show
-# while clearly labelled as model data.
-_WORLD_INDEX_BASELINE: dict[str, float] = {
-    "^GSPC": 5200.0, "^DJI": 39000.0, "^IXIC": 16500.0, "^RUT": 2050.0,
-    "^GSPTSE": 22000.0, "^BVSP": 128000.0, "^MXX": 56000.0,
-    "^FTSE": 8200.0, "^GDAXI": 18400.0, "^FCHI": 8100.0, "^STOXX50E": 5000.0,
-    "^IBEX": 11000.0, "^AEX": 900.0, "^SSMI": 12000.0, "FTSEMIB.MI": 34000.0,
-    "^OMX": 2500.0, "WIG20.WA": 4100.0, "^BFX": 5720.0, "OBX.OL": 2035.0,
-    "^N225": 39200.0, "^HSI": 18100.0, "^KS11": 2700.0, "^TWII": 22000.0,
-    "^BSESN": 80000.0, "^NSEI": 24000.0, "^AXJO": 7800.0, "^STI": 3400.0,
-    "^JKSE": 7200.0, "000001.SS": 3000.0, "^KLSE": 1600.0,
-    "399001.SZ": 13300.0, "^SET": 7600.0, "PSEI.PS": 6010.0, "^NZ50": 13480.0,
-    "XU100.IS": 9800.0, "^TA125.TA": 2000.0, "^J203.JO": 80000.0, "^CASE30": 28000.0,
-}
-
-
 def _region_world_rows(rows: list[dict[str, Any]], region: str | None) -> list[dict[str, Any]]:
     """WEI region filter over already-built rows (``None`` keeps every row)."""
     if region is None:
@@ -2903,31 +2893,26 @@ def _complete_world_index_rows(quote_rows: list[dict[str, Any]]) -> list[dict[st
 
 
 def _world_index_template() -> list[dict[str, Any]]:
-    """Deterministic offline / provider-down model for the full universe.
+    """Identity-only world-index rows for the reference and provider-down paths.
 
-    Derived from ``_WORLD_INDEX_META`` so it never drifts from the live
-    set. Every row is labelled ``market_state="model"`` — these are NOT
-    live quotes and the UI must surface them as model data.
+    No level is modelled: ``last``, ``change``, ``change_pct``, ``high`` and
+    ``low`` are null and every row is labelled ``market_state="unavailable"``.
+    A baseline level or a pseudo-move would present invented market data
+    (WEI#3 follow-up; DATA POLICY).
     """
     rows: list[dict[str, Any]] = []
     for sym in _world_index_symbols():
         meta = _WORLD_INDEX_META[sym]
-        base = _WORLD_INDEX_BASELINE.get(sym, 1000.0)
-        # Stable, deterministic pseudo-move from the symbol so the model
-        # table isn't a wall of zeros, while staying clearly synthetic.
-        seed = sum(ord(ch) for ch in sym)
-        change_pct = round(((seed % 11) - 5) * 0.08, 2)
-        last = round(base * (1 + change_pct / 100), 2)
-        high = round(last * 1.004, 2)
-        low = round(last * 0.996, 2)
         rows.append({
             "symbol": sym,
             "name": meta["name"],
             "region": meta["region"],
-            "last": last,
-            "change_pct": change_pct,
-            "high": high,
-            "low": low,
-            "market_state": "model",
+            "last": None,
+            "prev_close": None,
+            "change": None,
+            "change_pct": None,
+            "high": None,
+            "low": None,
+            "market_state": "unavailable",
         })
     return rows
