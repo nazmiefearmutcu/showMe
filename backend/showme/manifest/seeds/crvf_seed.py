@@ -73,8 +73,8 @@ def crvf() -> FunctionManifest:
                 control=ControlKind.BOOLEAN,
                 required=False,
                 description=(
-                    "When true and country=US, pull yields from FRED's DGS* series."
-                    " Otherwise the curve_model template is returned with an explicit"
+                    "Default true: for country=US, pull yields from FRED's DGS* series."
+                    " false returns the curve_model template with an explicit"
                     " source_mode label."
                 ),
             ),
@@ -94,7 +94,7 @@ def crvf() -> FunctionManifest:
         defaults={
             "country": "US",
             "tenors": ["3M", "6M", "1Y", "2Y", "5Y", "10Y", "30Y"],
-            "live_curve": False,
+            "live_curve": True,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
@@ -147,8 +147,11 @@ def crvf() -> FunctionManifest:
         ),
         methodology=(
             "CRVF fans out FRED DGS* series for the requested tenors when ``live_curve=true`` and"
-            " ``country=US``; for non-US countries (or with live off) the engine returns a labelled"
-            " ``computed_model`` template so the pane never silently fakes live data. Rows are sorted"
+            " ``country=US``; with live off the engine returns a labelled ``computed_model`` template."
+            " Non-US countries return ``status=provider_unavailable`` with no rows, because no curve is"
+            " wired for them and the US levels are never shown under another country's label. Each row's"
+            " ``as_of`` is its FRED observation date (null when the provider does not report one)."
+            " Rows are sorted"
             " by ``tenor_years`` ascending — the renderer reads ``tenor_years`` as the x value, never"
             " the row index, so the chart shape reflects real maturity geometry. Slope KPIs are"
             " computed client-side from the visible curve (2s10s = 10Y - 2Y; 3M-10Y = 10Y - 3M)."
@@ -202,15 +205,15 @@ def crvf() -> FunctionManifest:
                 assertions=["provider_chain_used_fred"],
             ),
             SemanticTest(
-                name="crvf_non_us_live_falls_back_with_warning",
+                name="crvf_non_us_is_provider_unavailable",
                 description=(
-                    "Live request for a non-US sovereign falls back to curve_model and surfaces a"
-                    " warning explaining the gap rather than silently faking a FRED row."
+                    "A non-US sovereign returns status provider_unavailable with no rows and a reason,"
+                    " never the US curve_model levels under the requested country label."
                 ),
                 inputs={"country": "TR", "live_curve": True},
                 assertions=[
-                    "source_mode_equals_computed_model_or_curve_model",
-                    "warning_present_about_non_us_fred_gap",
+                    "status_provider_unavailable_for_non_us",
+                    "no_us_fixture_rows_under_non_us_label",
                 ],
             ),
         ],

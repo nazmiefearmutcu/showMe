@@ -144,11 +144,14 @@ def test_crpr_user_input_overrides_status(deps):
 
 # ── CRVF country + source honesty ────────────────────────────────────
 
-def test_crvf_non_us_live_admits_fallback(deps):
+def test_crvf_non_us_live_is_unavailable_not_us_fixture(deps):
+    """p2a-g04 CRVF#1: a non-US request must not receive the US fixture under
+    its own country label. It gets an explicit provider_unavailable state."""
     res = _run(CRVFFunction(deps).execute(country="DE", live=True))
-    assert res.sources == ["computed_model"]
-    assert res.data["summary"]["source_mode"] == "computed_model"
-    assert any("DE" in w or "computed_model" in w for w in res.warnings)
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["rows"] == []
+    assert res.sources == []
+    assert any("DE" in w for w in res.warnings)
 
 
 def test_crvf_us_live_without_fred_admits_fallback(deps):
