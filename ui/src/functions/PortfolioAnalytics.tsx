@@ -125,8 +125,8 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     supportsLive: true,
   },
   BTFW: {
-    title: "Backtest Forward",
-    subtitle: "Forward-looking portfolio template run",
+    title: "Walk-Forward Backtest",
+    subtitle: "Historical out-of-sample folds, stitched OOS equity curve",
     defaultSymbol: "AAPL",
     usesSymbol: true,
     supportsLive: true,

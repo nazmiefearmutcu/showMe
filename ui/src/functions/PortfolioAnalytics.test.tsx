@@ -181,6 +181,14 @@ describe("PORTX classifier coverage for placeholder/sample payloads (F3)", () =>
     expect(badge.getAttribute("data-mode")).toBe("sample");
   });
 
+  it("titles BTFW as the historical walk-forward backtest it is (BTFW#5)", () => {
+    mockOk({ status: "ok", rows: LIVE_ROWS });
+    const { container } = render(<PortfolioAnalyticsPane code="BTFW" symbol="" />);
+    expect(container.textContent).toContain("Walk-Forward Backtest");
+    expect(container.textContent).not.toContain("Backtest Forward");
+    expect(container.textContent).not.toContain("Forward-looking portfolio template run");
+  });
+
   it("badges the MGN sample margin book on status + source_mode", () => {
     mockOk(
       {
