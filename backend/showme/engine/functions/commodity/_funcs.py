@@ -486,7 +486,8 @@ async def _contract_snapshot(
                 timeout=timeout + 0.5,
             )
         except Exception as exc:
-            errors.append(f"{symbol} quote: {exc}")
+            # GLCO#1-RQ: a timeout has an empty message; name the exception type.
+            errors.append(f"{symbol} quote: {exc or type(exc).__name__}")
         if include_history:
             history, history_errors = await _symbol_history(
                 yfinance, symbol, days=days, timeout=timeout,
@@ -1494,10 +1495,14 @@ class GLCOFunction(BaseFunction):
         symbols = ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F", "GC=F", "SI=F", "HG=F", "ZC=F", "ZW=F", "ZS=F", "KC=F", "SB=F", "CT=F"]
         rows: list[dict[str, Any]] = []
         provider_errors: list[str] = []
+        # symbol -> why it is absent from a live board (GLCO#1-RQ).
+        missing_reasons: dict[str, str] = {}
         live = _truthy(params.get("live", True))
         if self.deps.yfinance:
             quote_timeout = self._bounded_timeout(params, "quote_timeout", 2.0, 1.0, 4.0)
             screen_timeout = self._bounded_timeout(params, "screen_timeout", 5.0, 2.0, 7.0)
+
+            symbol_errors: dict[str, list[str]] = {}
 
             async def _one(sym: str) -> dict[str, Any] | None:
                 row, _history, errors = await _contract_snapshot(
@@ -1508,6 +1513,7 @@ class GLCOFunction(BaseFunction):
                     include_history=False,
                 )
                 provider_errors.extend(errors)
+                symbol_errors[sym] = list(errors)
                 return row
 
             if live:
@@ -1530,12 +1536,23 @@ class GLCOFunction(BaseFunction):
                 done, pending = await asyncio.wait(tasks, timeout=screen_timeout)
                 for task in pending:
                     task.cancel()
-                for task in done:
-                    if task.cancelled():
+                # GLCO#1-RQ: every contract that does not make the board is named
+                # with its reason; nothing is dropped silently.
+                for sym, task in zip(symbols, tasks):
+                    if task not in done or task.cancelled():
+                        missing_reasons[sym] = (
+                            f"no quote within the {screen_timeout:g}s screen cutoff"
+                        )
                         continue
                     row = task.result()
                     if row:
                         rows.append(row)
+                    else:
+                        errs = symbol_errors.get(sym) or []
+                        missing_reasons[sym] = (
+                            "; ".join(errs) if errs
+                            else "provider returned no usable price"
+                        )
                 history_grace = max(0.25, min(1.0, screen_timeout * 0.2))
                 history_done, history_pending = await asyncio.wait(
                     history_tasks, timeout=history_grace,
@@ -1594,15 +1611,32 @@ class GLCOFunction(BaseFunction):
             )
         for live_row in rows:
             self._mark_unpublished_fields(live_row)
+        served_count = len(rows)
+        missing = [
+            {"symbol": sym, "reason": missing_reasons[sym]}
+            for sym in symbols if sym in missing_reasons
+        ]
         rows = _filter_sector(rows, params.get("sector"))
         rows.sort(key=lambda row: abs(float(row.get("change_pct") or 0)), reverse=True)
+        # GLCO#1-RQ: a board with missing contracts is partial, never ok.
+        board_status = "partial" if missing else "ok"
+        board_reason = (
+            f"{len(missing)} of {len(symbols)} contracts not served by the live quote "
+            "feed: " + ", ".join(entry["symbol"] for entry in missing)
+            + ". Each is listed under missing with its reason; no other contract's price is substituted."
+            if missing else None
+        )
         return FunctionResult(
             code=self.code,
             instrument=None,
             data={
-                "status": "ok",
+                "status": board_status,
+                "reason": board_reason,
                 "source_mode": "live_yfinance",
                 "rows": rows,
+                "missing": missing,
+                "served_count": served_count,
+                "requested_count": len(symbols),
                 "methodology": "GLCO ranks front-month commodity futures by absolute percent move. Change % is (last / previous close - 1) * 100. Each live row carries a real daily close history (last ~30 calendar days, keyless Yahoo chart data) in row.history when available; absence of history where the provider did not answer.",
                 "field_dictionary": _commodity_field_dictionary(),
             },

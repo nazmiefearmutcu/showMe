@@ -105,6 +105,16 @@ export function GLCOPane({ code }: FunctionPaneProps) {
     typeof payload?.methodology === "string" ? payload.methodology : "";
   const sources =
     data?.sources?.join(", ") || String(payload?.source_mode ?? "showMe engine");
+  // GLCO#1-RQ: contracts the live feed did not serve, each with its reason.
+  const missing = useMemo(
+    () =>
+      Array.isArray(payload?.missing)
+        ? (payload?.missing as Array<{ symbol?: string; reason?: string }>).filter(
+            (m) => typeof m?.symbol === "string",
+          )
+        : [],
+    [payload],
+  );
 
   const rows = useMemo(() => {
     const all = normalizeRows(data?.data);
@@ -292,7 +302,11 @@ export function GLCOPane({ code }: FunctionPaneProps) {
                 tone={isLive ? "positive" : "warn"}
                 variant="soft"
               >
-                {isLive ? "live" : sourceModeRaw || status || "stale"}
+                {isLive
+                  ? "live"
+                  : status === "partial"
+                    ? `partial · ${missing.length} missing`
+                    : sourceModeRaw || status || "stale"}
               </Pill>
               <LoadStatePill state={state} />
               <RefreshButton loading={state === "loading"} onClick={refetch} />
@@ -317,7 +331,16 @@ export function GLCOPane({ code }: FunctionPaneProps) {
               icon="!"
             />
           ) : rows.length === 0 ? (
-            <Empty title="No contracts" body={`No GLCO rows for ${sector}.`} />
+            <Empty
+              title="No contracts"
+              body={
+                missing.length > 0
+                  ? `No served contract in ${sector}. Not served: ${missing
+                      .map((m) => m.symbol)
+                      .join(", ")}.`
+                  : `No GLCO rows for ${sector}.`
+              }
+            />
           ) : (
             <div className="u-grid-gap-14">
               {status && status !== "ok" ? (
@@ -327,6 +350,15 @@ export function GLCOPane({ code }: FunctionPaneProps) {
                     {reason ||
                       "Commodity provider returned a labelled fallback state."}
                   </span>
+                  {missing.length > 0 ? (
+                    <ul style={hintList}>
+                      {missing.map((m) => (
+                        <li key={m.symbol} className="u-text-mute">
+                          {m.symbol}: {m.reason ?? "not served"}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </section>
               ) : null}
               <KPIRibbon stats={stats} stamp={utcStamp} sector={sector} />
@@ -713,6 +745,14 @@ const noticeStyle: CSSProperties = {
   display: "grid",
   gap: 4,
   fontSize: "var(--font-size-md)",
+};
+
+const hintList: CSSProperties = {
+  margin: 0,
+  paddingLeft: 18,
+  fontSize: "var(--font-size-xs)",
+  display: "grid",
+  gap: 2,
 };
 
 const railStyle: CSSProperties = {
