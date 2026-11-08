@@ -140,9 +140,7 @@ class CORRFunction(BaseFunction):
         dropped_live: list[str] = []
 
         if live:
-            price_series, coverage_status, used_yfinance = await self._live_price_series(symbols, days)
-            if used_yfinance:
-                sources = ["yfinance"]
+            price_series, coverage_status, _used_live = await self._live_price_series(symbols, days)
             missing_symbols = [s for s in symbols if s not in {series["asset"]["symbol"] for series in price_series}]
             if missing_symbols:
                 # HNT-04 (2026-09-23 bug hunt): a failed live fetch used to be
@@ -279,6 +277,8 @@ class CORRFunction(BaseFunction):
                 ),
             }
         active_symbols = [s for s in symbols if s not in dropped_symbols]
+        # CORR#6: provenance follows the providers that served each symbol's closes.
+        sources = _provenance_sources(coverage_status, live)
 
         data = _correlation_payload(
             symbols=active_symbols if active_symbols else symbols,
@@ -411,6 +411,24 @@ class CORRFunction(BaseFunction):
         return price_series, coverage_status, used_yfinance
 
 
+def _provenance_sources(coverage_status: dict[str, dict[str, Any]], live: bool) -> list[str]:
+    """CORR#6: the real providers behind the matrix, read from per-symbol coverage.
+
+    Live mode lists the adapter that served each live symbol (for example yfinance
+    or ccxt_failover). Model mode lists only the computed reference model.
+    """
+    if not live:
+        return ["computed_return_model"]
+    names: list[str] = []
+    for status in coverage_status.values():
+        if status.get("status") != "live":
+            continue
+        source = str(status.get("source") or "")
+        if source and source not in names:
+            names.append(source)
+    return names
+
+
 def _live_unavailable_result(
     symbols: list[str],
     days: int,
@@ -446,7 +464,6 @@ def _live_unavailable_result(
             "next_actions": [
                 "Retry once the live price provider recovers.",
                 "Check that the requested symbols resolve on the configured providers.",
-                "Run with live_correlation=false for the deterministic reference matrix.",
             ],
             "methodology": (
                 "CORR live mode requires real close series; when the live providers "
@@ -1483,8 +1500,9 @@ def _matrix_surface(
                     "peer": right,
                     "correlation": corr,
                     "pearson": corr,
-                    "spearman": (spearman.get(left) or {}).get(right, corr),
-                    "downside": (downside.get(left) or {}).get(right, corr),
+                    # CORR#5: a missing Spearman/downside cell is null, never the Pearson value.
+                    "spearman": (spearman.get(left) or {}).get(right),
+                    "downside": (downside.get(left) or {}).get(right),
                 }
             )
     return rows
