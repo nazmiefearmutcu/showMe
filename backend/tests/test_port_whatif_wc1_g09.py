@@ -153,6 +153,21 @@ def test_overdrawn_cash_is_reported() -> None:
     assert any("cash would be -5,000.00" in warning for warning in result.warnings)
 
 
+# ── PORT_WHATIF#3: a blank or zero cost is never a zero-cost gain ───────────
+
+
+@pytest.mark.parametrize("cost", ["", None, 0, 0.0, -5, "0"])
+def test_blank_zero_or_negative_cost_is_needs_input_and_runs_no_port(cost) -> None:
+    # The pane sends a blank Entry as an empty or zero cost; neither may price a
+    # position at cost 0 (which would show the whole market value as gain).
+    _SEED["cash"] = {"USD": 25000.0}
+    result = _run({"quantity": 10, "cost": cost})
+    assert result.data.get("status") == "needs_input"
+    assert "cost" in result.data.get("missing", [])
+    assert "summary" not in result.data
+    assert _SEEN == []
+
+
 # ── PORT_WHATIF#4: lots merge and sells reduce the holding ───────────────────
 
 
@@ -213,6 +228,81 @@ def test_quotes_are_fetched_once_per_symbol_across_both_port_runs() -> None:
     result = _run({"quantity": 10, "cost": 120}, deps=FunctionDeps(yfinance=quotes))
     assert result.data["summary"]["quantity"] == pytest.approx(10.0)
     assert sorted(quotes.calls) == ["AAPL", "NVDA"]
+
+
+class _SlowQuotes(_CountingQuotes):
+    """Quote adapter whose fetch suspends, as a real network quote does."""
+
+    async def fetch(self, request: DataRequest) -> Any:
+        await asyncio.sleep(0)
+        return await super().fetch(request)
+
+
+class _ConcurrentPort:
+    """PORT stand-in that prices every lot at once, as PORT's own gather does."""
+
+    def __init__(self, deps=None):
+        self.deps = deps
+
+    async def execute(self, _portfolio_override=None, **_params):
+        positions = list(getattr(_portfolio_override, "positions", []))
+        if self.deps is not None and self.deps.yfinance is not None:
+            await asyncio.gather(*(
+                self.deps.yfinance.fetch(DataRequest(kind=DataKind.QUOTE, instrument=p.instrument))
+                for p in positions
+            ))
+        totals = {"market_value": 0.0, "unrealized_pnl": 0.0, "n_positions": len(positions),
+                  "cash": None, "total_equity": None}
+        return FunctionResult(code="PORT", instrument=None, data={"totals": totals},
+                              sources=["fake_portfolio"])
+
+
+def test_concurrent_lots_of_one_symbol_share_one_quote_fetch(monkeypatch) -> None:
+    # Two lots of AAPL (say, two accounts) priced concurrently must not each fetch.
+    monkeypatch.setattr(port_mod, "PORTFunction", _ConcurrentPort)
+    _SEED["positions"] = [_lot(AAPL, 10, 100.0), _lot(AAPL, 5, 110.0), _lot(NVDA, 5, 130.0)]
+    _SEED["cash"] = {"USD": 50000.0}
+    quotes = _SlowQuotes()
+    _run({"quantity": 10, "cost": 120}, deps=FunctionDeps(yfinance=quotes))
+    assert sorted(quotes.calls) == ["AAPL", "NVDA"]
+
+
+class _TolerantPort:
+    """PORT stand-in that skips a lot whose quote fails, as the real book does."""
+
+    def __init__(self, deps=None):
+        self.deps = deps
+
+    async def execute(self, _portfolio_override=None, **_params):
+        positions = list(getattr(_portfolio_override, "positions", []))
+        failed = 0
+        for pos in positions:
+            try:
+                await self.deps.yfinance.fetch(DataRequest(kind=DataKind.QUOTE, instrument=pos.instrument))
+            except Exception:
+                failed += 1
+        totals = {"market_value": 0.0, "unrealized_pnl": 0.0, "n_positions": len(positions),
+                  "cash": None, "total_equity": None}
+        return FunctionResult(code="PORT", instrument=None, data={"totals": totals},
+                              sources=["fake_portfolio"])
+
+
+def test_failed_quote_is_not_remembered_so_the_second_run_retries_it(monkeypatch) -> None:
+    class _FlakyOnce(_CountingQuotes):
+        async def fetch(self, request: DataRequest) -> Any:
+            self.calls.append(request.instrument.symbol)
+            if len(self.calls) == 1:
+                raise RuntimeError("transient quote failure")
+            price = _SEED["prices"][request.instrument.symbol]
+            return type("Quote", (), {"last": price, "close_prev": None})()
+
+    monkeypatch.setattr(port_mod, "PORTFunction", _TolerantPort)
+    _SEED["positions"] = [_lot(AAPL, 10, 100.0)]
+    _SEED["cash"] = {"USD": 50000.0}
+    quotes = _FlakyOnce()
+    _run({"quantity": 10, "cost": 120}, deps=FunctionDeps(yfinance=quotes))
+    # Baseline run failed, scenario run fetched again and succeeded.
+    assert quotes.calls == ["AAPL", "AAPL"]
 
 
 # ── PORT_WHATIF#7: the function describes itself ─────────────────────────────

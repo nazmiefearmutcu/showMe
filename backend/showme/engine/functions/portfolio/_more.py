@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import uuid
@@ -285,18 +286,28 @@ class _MemoQuoteAdapter:
     """Serves repeat fetches of one identical request from memory within one what-if call.
 
     PORT runs twice (before and after the trade), so without this every quote is
-    fetched twice. A failed fetch is not remembered, so the second run retries it.
+    fetched twice. Concurrent identical requests (two lots of one symbol priced in
+    one gather) share one in-flight fetch. A failed fetch is forgotten, so a later
+    request retries it.
     """
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
-        self._memo: dict[str, Any] = {}
+        self._memo: dict[str, asyncio.Future[Any]] = {}
 
     async def fetch(self, request: Any) -> Any:
         key = repr(request)
-        if key not in self._memo:
-            self._memo[key] = await self._inner.fetch(request)
-        return self._memo[key]
+        task = self._memo.get(key)
+        if task is None:
+            task = asyncio.ensure_future(self._inner.fetch(request))
+            self._memo[key] = task
+        try:
+            # shield: one caller being cancelled must not cancel the shared fetch.
+            return await asyncio.shield(task)
+        except Exception:
+            if self._memo.get(key) is task:
+                del self._memo[key]
+            raise
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
