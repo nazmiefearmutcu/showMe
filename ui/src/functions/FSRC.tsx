@@ -61,6 +61,9 @@ interface FSRCRow {
   quote_state?: string;
   aum_state?: string;
   ytd_state?: string;
+  // Curated reference values with no provider as-of date.
+  expense_state?: string;
+  dividend_state?: string;
 }
 
 /** Small marker for curated reference values (no provider as-of date). */
