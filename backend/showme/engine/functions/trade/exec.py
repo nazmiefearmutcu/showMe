@@ -57,7 +57,7 @@ def _error_result(code: str, action: str, reason: str, *, fields: list[str] | No
 # product claim, though, is broader: "track parent-order execution
 # slice-by-slice … for TWAP/VWAP/ICEBERG/SNIPER algos". ``action=plan`` delivers that by
 # driving the real ``algos.{TWAP,VWAP,Iceberg,Sniper}`` schedulers against
-# *live* intraday OHLCV (Binance for crypto, Yahoo for listed assets), so each
+# recent intraday OHLCV (Binance for crypto, Yahoo for listed assets), so each
 # slice carries the price/volume bar it would execute against plus an honest,
 # real-data bar typical-price benchmark and schedule curve.
 
@@ -359,7 +359,7 @@ class EXECFunction(BaseFunction):
             symbol=params.get("symbol"),
             limit=int(params.get("limit", 50)))
         # When nothing is being monitored but the caller pointed us at a symbol,
-        # build a *live* execution schedule instead of an empty placeholder so
+        # build an execution schedule over recent bars instead of an empty placeholder so
         # EXEC fulfils its "slice-by-slice for TWAP/VWAP/ICEBERG/SNIPER algos" claim.
         symbol_hint = (params.get("symbol") or "").strip()
         if not rows and (symbol_hint or (instrument is not None and getattr(instrument, "symbol", None))):
@@ -402,7 +402,7 @@ class EXECFunction(BaseFunction):
                               sources=["exec_monitor"])
 
     async def _plan(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        """Build a real VWAP/TWAP/Iceberg/Sniper slice schedule against live
+        """Build a real VWAP/TWAP/Iceberg/Sniper slice schedule against recent
         intraday OHLCV (Binance for crypto, Yahoo for listed assets).
 
         Returns real per-slice rows: each slice maps to an actual market bar and
@@ -516,7 +516,7 @@ class EXECFunction(BaseFunction):
         bar_s_nominal = _BAR_SECONDS[interval]
         provider = "binance" if asset_class == "CRYPTO" else "yfinance"
 
-        # --- fetch live intraday bars (graceful network-failure fallback) ----
+        # --- fetch recent intraday bars (graceful network-failure fallback) ---
         try:
             want_bars = max(slices * 2, 60, horizon_s // bar_s_nominal + 2)
             # 5m bars: ~5 days covers a deep intraday window on both venues.
