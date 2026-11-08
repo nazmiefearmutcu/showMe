@@ -80,7 +80,8 @@ def test_ngas1_ttf_request_is_unsupported_not_served_as_henry_hub(
     result = asyncio.run(
         NGASFunction(FunctionDeps(yfinance=object())).execute(contract="TTF=F")
     )
-    assert result.data["status"] == "unsupported_contract"
+    assert result.data["status"] == "input_error"
+    assert result.data["error_kind"] == "unsupported_contract"
     assert result.data["rows"] == []
     assert result.data["history"] == []
     assert result.data["reason"]

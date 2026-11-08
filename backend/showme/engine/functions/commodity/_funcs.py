@@ -1040,7 +1040,10 @@ class NGASFunction(BGASFunction):
                 code=self.code,
                 instrument=None,
                 data={
-                    "status": "unsupported_contract",
+                    # Same contract rule as BGAS: an unserved contract is an input
+                    # error (error_kind says which), never a substituted quote.
+                    "status": "input_error",
+                    "error_kind": "unsupported_contract",
                     "reason": (
                         f"{contract} is not served by NGAS. NGAS only serves the "
                         "Henry Hub contract (NG=F, USD/MMBtu); no other contract's "

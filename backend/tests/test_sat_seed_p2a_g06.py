@@ -75,9 +75,15 @@ def test_sat_handler_output_satisfies_seed_must_have() -> None:
     async def _down(*_a, **_k):
         raise RuntimeError("offline test")
 
+    async def _unreachable(*_a, **_k):
+        # The merged handler resolves tiles through _resolve_tile (PNG-decoded
+        # walk-back, SAT#2); patch it so the test never reaches the network.
+        return {"state": "unreachable", "capture_date": None, "tile_url": None, "checks": [],
+                "reason": "offline test"}
+
     handler = SATFunction()
     handler._fetch_conditions = _down  # type: ignore[method-assign]
-    handler._probe_tile = _down  # type: ignore[method-assign]
+    handler._resolve_tile = _unreachable  # type: ignore[method-assign]
     result = asyncio.run(handler.execute(aoi="cushing_ok", layer="true_color"))
     for key in sat.output_contract.must_have:
         assert key in result.data, f"must_have {key} missing"

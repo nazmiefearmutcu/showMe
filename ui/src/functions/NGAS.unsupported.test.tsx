@@ -43,7 +43,8 @@ function unsupportedPayload() {
   return {
     data: {
       data: {
-        status: "unsupported_contract",
+        status: "input_error",
+        error_kind: "unsupported_contract",
         reason:
           "TTF=F is not served by NGAS. NGAS only serves the Henry Hub contract (NG=F, USD/MMBtu); no other contract's rows are substituted.",
         contract: "TTF=F",

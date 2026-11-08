@@ -179,7 +179,8 @@
     },
     "CHGS": {
       "keys": [
-        "days"
+        "days",
+        "interval"
       ],
       "conditional": [],
       "dynamic": false,
@@ -855,7 +856,8 @@
       "keys": [
         "days",
         "limit",
-        "live"
+        "live",
+        "universe"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1473,7 +1475,7 @@
       "why": "params expression not resolvable (AsExpression)"
     },
     {
-      "where": "ui/src/functions/commodity-spot.tsx:120",
+      "where": "ui/src/functions/commodity-spot.tsx:131",
       "why": "code not resolvable to a registry entry"
     },
     {

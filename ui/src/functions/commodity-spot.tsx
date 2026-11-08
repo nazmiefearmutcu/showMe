@@ -65,6 +65,8 @@ interface SpotHistoryPoint {
 
 interface SpotData {
   status?: string;
+  /** Which input problem an input_error is (e.g. unsupported_contract). */
+  error_kind?: string;
   reason?: string;
   source_mode?: string;
   rows?: SpotRow[];
@@ -165,7 +167,9 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
   const isProviderDown = status === "provider_unavailable";
   // NGAS#1: a contract the pane cannot serve is an explicit state, never a
   // substituted quote. The backend sends the reason; the pane shows it.
-  const isUnsupported = status === "unsupported_contract";
+  const isUnsupported =
+    status === "unsupported_contract" ||
+    (status === "input_error" && payload?.error_kind === "unsupported_contract");
   // Honesty: "live" is earned by the backend's live_* source modes only
   // (live_yfinance, live_eia, …). Model/fallback envelopes never claim it.
   const isLive = status === "ok" && /^live_/.test(sourceMode);
