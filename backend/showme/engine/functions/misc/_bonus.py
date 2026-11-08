@@ -538,6 +538,17 @@ class CHGSFunction(BaseFunction):
                 "reason": "; ".join(result.warnings) or "no price data provider is configured",
                 "next_actions": ["Configure a price provider or try again later."],
             }
+        else:
+            # CHGS#5: the generic card renderer reads top-level keys only, so
+            # the card slots get copies of the TECH scalars they name. Values
+            # are copied from the live TECH envelope, never derived here.
+            summary = data.get("summary") or {}
+            data = {
+                **data,
+                "last_price": summary.get("last_price"),
+                "rsi": summary.get("rsi"),
+                "data_mode": (result.metadata or {}).get("data_mode"),
+            }
         return FunctionResult(
             code=self.code,
             instrument=result.instrument,

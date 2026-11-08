@@ -132,3 +132,22 @@ def test_chgs_without_price_provider_is_explicit_outage() -> None:
     assert result.data.get("reason"), "outage must carry a reason"
     assert result.warnings
     assert (result.metadata or {}).get("alias_of") == "TECH"
+
+
+def test_chgs_card_slots_resolve_on_live_payload() -> None:
+    # The generic card renderer reads top-level payload keys only (no dotted
+    # paths), so every card slot must name a key the live payload carries.
+    load_seeds()
+    manifest = REGISTRY.get("CHGS")
+    result = _run(CHGSFunction(FunctionDeps(yfinance=_FakeYf(_ohlcv()))).execute(instrument=EQ))
+    top_level = set(result.data)
+    missing = [slot.key for slot in manifest.card_schema.slots if slot.key not in top_level]
+    assert missing == [], missing
+
+
+def test_chgs_seed_docstring_makes_no_template_claim() -> None:
+    from showme.manifest.seeds import chgs_seed
+
+    doc = chgs_seed.__doc__ or ""
+    assert "small template" not in doc
+    assert "provider_unavailable" in doc

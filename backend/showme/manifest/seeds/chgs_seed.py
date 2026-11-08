@@ -3,10 +3,9 @@
 A study-focused chart launcher that wraps TECH with a fixed preset of
 overlays + sub-pane studies and a faster turnaround for the workspace's
 "throw a chart up with sensible defaults" need. CHGS aliases TECH on the
-live path; the offline path returns a small template so the pane still
-renders when no data adapter is wired. Honesty (CHGS#1/#5): the offline path
-returns an explicit provider_unavailable / no_price_history state, and
-reference=true returns an empty state, never a template.
+live path. Honesty (CHGS#1/#5): when no price provider answers, the offline
+path returns an explicit provider_unavailable / no_price_history state with a
+reason, and reference=true returns an empty state, never a template.
 """
 from __future__ import annotations
 
@@ -147,12 +146,9 @@ def chgs() -> FunctionManifest:
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="last", label="Last", kind="big_number", unit="quote_ccy"),
-                CardSlot(key="rsi_14", label="RSI(14)", kind="kpi"),
-                CardSlot(key="sma_20", label="SMA(20)", kind="kpi"),
-                CardSlot(key="sma_50", label="SMA(50)", kind="kpi"),
+                CardSlot(key="last_price", label="Last", kind="big_number", unit="quote_ccy"),
+                CardSlot(key="rsi", label="RSI(14)", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
