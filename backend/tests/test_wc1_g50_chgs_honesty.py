@@ -151,3 +151,32 @@ def test_chgs_seed_docstring_makes_no_template_claim() -> None:
     doc = chgs_seed.__doc__ or ""
     assert "small template" not in doc
     assert "provider_unavailable" in doc
+
+
+class _RaisingYf:
+    async def fetch(self, *args: Any, **kwargs: Any) -> pd.DataFrame:
+        raise RuntimeError("yahoo unreachable")
+
+
+class _EmptyYf:
+    async def fetch(self, *args: Any, **kwargs: Any) -> pd.DataFrame:
+        return pd.DataFrame()
+
+
+def test_chgs_non_live_paths_carry_every_manifest_contract_key() -> None:
+    # Convention (LOTS, FXH): every must_have key is present on empty and
+    # outage states too, as an explicit empty value, never as figures.
+    load_seeds()
+    must_have = list(REGISTRY.get("CHGS").output_contract.must_have)
+    paths = {
+        "reference": _run(CHGSFunction(FunctionDeps(yfinance=_FakeYf(_ohlcv()))).execute(instrument=EQ, reference=True)),
+        "no_provider": _run(CHGSFunction(FunctionDeps()).execute(instrument=EQ)),
+        "fetch_failed": _run(CHGSFunction(FunctionDeps(yfinance=_RaisingYf())).execute(instrument=EQ)),
+        "empty_history": _run(CHGSFunction(FunctionDeps(yfinance=_EmptyYf())).execute(instrument=EQ)),
+    }
+    for label, result in paths.items():
+        missing = [key for key in must_have if key not in result.data]
+        assert missing == [], (label, missing)
+        assert result.data["status"] != "ok", label
+        assert not result.data.get("bars"), label
+        assert not result.data.get("indicators"), label

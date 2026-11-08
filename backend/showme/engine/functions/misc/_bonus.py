@@ -506,6 +506,9 @@ class CHGSFunction(BaseFunction):
                     "data_mode": "empty",
                     "symbol": instrument.symbol,
                     "rows": [],
+                    "bars": [],
+                    "indicators": {},
+                    "summary": {},
                     "reason": "reference_mode_has_no_figures",
                     "next_actions": ["Turn reference mode off to load live TECH studies"],
                 },
@@ -549,6 +552,7 @@ class CHGSFunction(BaseFunction):
                 "rsi": summary.get("rsi"),
                 "data_mode": (result.metadata or {}).get("data_mode"),
             }
+        data = _chgs_contract_keys(data)
         return FunctionResult(
             code=self.code,
             instrument=result.instrument,
@@ -790,6 +794,19 @@ def _taxonomy_rows(
     if len(rows) <= 5:
         rows.append({"level": "Asset class", "classification": instrument.asset_class.value, "source_mode": "instrument_registry"})
     return rows
+
+
+def _chgs_contract_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """CHGS#5: every manifest must_have key is present on every path.
+
+    Keys a path has no figures for (outage, empty history) carry explicit
+    empty values; nothing is derived or filled with numbers here.
+    """
+    filled = dict(data)
+    filled.setdefault("bars", [])
+    filled.setdefault("indicators", {})
+    filled.setdefault("summary", {})
+    return filled
 
 
 def _parse_symbol_list(raw: Any) -> list[str]:
