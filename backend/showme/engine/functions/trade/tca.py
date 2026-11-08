@@ -395,7 +395,10 @@ class TCAFunction(BaseFunction):
                     "cards": self._cards(summary={}, benchmark=benchmark,
                                          as_of=as_of, data_mode="provider_unavailable"),
                     "summary": {"benchmark": benchmark, "fill_count": 0, "reason": reason},
-                    "excluded_orders": {"total": 0, "reasons": {}},
+                    # TCA-R1: the fill loaders never completed, so no exclusion
+                    # count was measured. Null, with an explicit status.
+                    "excluded_orders": {"total": None, "reasons": None,
+                                        "status": "not_measured", "reason": reason},
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "next_actions": [

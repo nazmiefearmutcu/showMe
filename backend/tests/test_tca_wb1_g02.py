@@ -128,6 +128,11 @@ def test_timeout_cards_are_null_not_zero_means(tmp_path, monkeypatch):
     assert cards["avg_is_bps"] is None, cards
     assert cards["worst_slippage_bps"] is None, cards
     assert cards["total_cost_usd"] is None, cards
+    # TCA-R1: the fill ledger was never read, so the exclusion count is not
+    # measured. It must not be reported as a measured zero.
+    excluded = res.data["excluded_orders"]
+    assert excluded["total"] is None, excluded
+    assert excluded["status"] == "not_measured", excluded
 
 
 def test_unbenchmarked_fill_is_not_plotted_as_zero_slippage(tmp_path, monkeypatch):
