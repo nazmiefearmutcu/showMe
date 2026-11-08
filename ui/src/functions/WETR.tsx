@@ -80,6 +80,14 @@ const LOCATION_IDS = LOCATIONS.map((l) => l.id);
 const DAY_OPTIONS = ["3", "5", "10", "14"] as const;
 type DayOption = (typeof DAY_OPTIONS)[number];
 
+/** Data modes offered by the WETR manifest (`provider_mode` input). */
+const DATA_MODE_OPTIONS = [
+  { id: "live_official", label: "Live" },
+  { id: "modeled", label: "Modeled" },
+] as const;
+type DataModeOption = (typeof DATA_MODE_OPTIONS)[number]["id"];
+const DATA_MODE_IDS = DATA_MODE_OPTIONS.map((m) => m.id);
+
 const REFRESH_MS = 60_000;
 
 /** Friendly provider names for the backend `source_mode` values. */
@@ -100,6 +108,13 @@ export function WETRPane({ code }: FunctionPaneProps) {
     DAY_OPTIONS,
     "10",
   );
+  // WETR#4-RQ: the manifest's provider_mode input is a real control (Live or
+  // the labelled Modeled seasonal model), not a hidden default.
+  const [providerMode, setProviderMode] = usePersistentOption<DataModeOption>(
+    "showme.wetr-provider-mode",
+    DATA_MODE_IDS,
+    "live_official",
+  );
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
 
@@ -108,7 +123,7 @@ export function WETRPane({ code }: FunctionPaneProps) {
     // Audit A4-M: the tick must stay OUT of params — useFunction fingerprints
     // params into the fetch key, so a tick here re-keyed every poll into a
     // fresh load (skeleton flash + cleared rows). Poll via refetch() instead.
-    params: { location, days: Number(days) },
+    params: { location, days: Number(days), provider_mode: providerMode },
   });
   useEffect(() => {
     if (tick === 0) return; // initial mount handled by useFunction's own load
@@ -260,6 +275,15 @@ export function WETRPane({ code }: FunctionPaneProps) {
               items={DAY_OPTIONS.map((d) => ({ id: d, label: `${d}d` }))}
               active={days}
               onChange={(id) => setDays(id as DayOption)}
+            />
+          </div>
+          <div style={{ marginTop: 6 }}>
+            <Tabs
+              variant="segmented"
+              ariaLabel="Data mode"
+              items={DATA_MODE_OPTIONS.map((m) => ({ id: m.id, label: m.label }))}
+              active={providerMode}
+              onChange={(id) => setProviderMode(id as DataModeOption)}
             />
           </div>
         </div>

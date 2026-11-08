@@ -1666,7 +1666,42 @@ class WETRFunction(BaseFunction):
         # default. The keyless Open-Meteo adapter is bound by FunctionFactory,
         # so WETR no longer needs an OpenWeatherMap key to serve live rows;
         # ``reference=true`` opts back into the labelled seasonal model.
-        reference = _truthy(params.get("reference"))
+        # WETR#4-RQ: the manifest's provider_mode input is honoured. "modeled" is
+        # the labelled seasonal model (same as reference=true); "live_official" is
+        # the live chain. Any other value is an explicit input error, never a
+        # silent live or model fallback.
+        provider_mode = str(params.get("provider_mode") or "").strip().lower()
+        allowed_modes = ("live_official", "modeled")
+        if provider_mode and provider_mode not in allowed_modes:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "field": "provider_mode",
+                    "value": provider_mode,
+                    "allowed": list(allowed_modes),
+                    "reason": (
+                        f"provider_mode {provider_mode!r} is not supported; "
+                        "use live_official or modeled."
+                    ),
+                    "location": location_key,
+                    "lat": None,
+                    "lon": None,
+                    "commodity_context": None,
+                    "source_mode": "unsupported_provider_mode",
+                    "rows": [],
+                    "history": [],
+                    "risk_flags": [],
+                    "methodology": "WETR honours provider_mode=live_official or modeled only.",
+                    "field_dictionary": {},
+                    "next_actions": ["Pick Live or Modeled in the data mode control."],
+                },
+                sources=[],
+                warnings=[f"unsupported provider_mode {provider_mode}"],
+                metadata={"allowed_provider_modes": list(allowed_modes)},
+            )
+        reference = _truthy(params.get("reference")) or provider_mode == "modeled"
         provider, provider_name = self._live_weather_provider()
         if reference or provider is None:
             return self._seasonal_model_result(
