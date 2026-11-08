@@ -92,7 +92,9 @@ class STRSFunction(BaseFunction):
                 sector_lookup=sector_lookup,
                 scale=scale,
             )
+            compare_warnings = _unique_warnings(row.get("warnings", []) for row in data)
             return FunctionResult(code=self.code, instrument=None,
+                                  warnings=compare_warnings,
                                   data={"comparisons": data,
                                         "rows": data,
                                         "summary": {
@@ -115,6 +117,7 @@ class STRSFunction(BaseFunction):
             )
             data = stress.apply_scenario(positions_payload, sc, sector_lookup=sector_lookup, scale=scale)
             return FunctionResult(code=self.code, instrument=None,
+                                  warnings=list(data.get("warnings", [])),
                                   data={**data, "rows": data.get("positions", []),
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()},
@@ -127,6 +130,7 @@ class STRSFunction(BaseFunction):
                                   warnings=[f"unknown scenario {key}"])
         data = stress.apply_scenario(positions_payload, sc, sector_lookup=sector_lookup, scale=scale)
         return FunctionResult(code=self.code, instrument=None,
+                              warnings=list(data.get("warnings", [])),
                               data={**data, "rows": data.get("positions", []),
                                     "methodology": _methodology(),
                                     "field_dictionary": _field_dictionary()},
@@ -182,6 +186,15 @@ def _asset_class_for_quote(symbol: str) -> AssetClass:
     if len(upper) == 6 and upper.endswith(("USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD")):
         return AssetClass.FX
     return AssetClass.EQUITY
+
+
+def _unique_warnings(groups: Any) -> list[str]:
+    seen: list[str] = []
+    for group in groups:
+        for warning in group or []:
+            if warning not in seen:
+                seen.append(warning)
+    return seen
 
 
 def _truthy(value: Any) -> bool:

@@ -12,6 +12,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# Smallest shock a long position can take (a full loss of its market value).
+MIN_SHOCK = -1.0
+
+
 @dataclass
 class StressScenario:
     name: str
@@ -199,6 +203,7 @@ def apply_scenario(
     rows: list[dict[str, Any]] = []
     total_pre = 0.0
     total_post = 0.0
+    warnings: list[str] = []
     for p in positions:
         sym = p["symbol"]
         ac = p.get("asset_class", "EQUITY").upper()
@@ -210,11 +215,21 @@ def apply_scenario(
             shock = scenario.sector_shocks.get(sector)
         if shock is None:
             shock = scenario.asset_class_shocks.get(ac, 0.0)
-        shock = float(shock) * scale
+        raw_shock = float(shock) * scale
+        # A long position cannot lose more than its market value: floor the
+        # scaled shock at -100% and say so, instead of returning negative MV.
+        floored = raw_shock < MIN_SHOCK
+        shock = max(raw_shock, MIN_SHOCK)
+        if floored:
+            warnings.append(
+                f"{sym}: scaled shock {raw_shock:+.1%} floored to {MIN_SHOCK:+.0%} "
+                "(a position cannot lose more than its market value)"
+            )
         mv_post = mv * (1.0 + shock)
         rows.append({
             "symbol": sym, "asset_class": ac, "sector": sector,
-            "shock": shock, "market_value_pre": mv,
+            "shock": shock, "shock_unfloored": raw_shock, "floored": floored,
+            "market_value_pre": mv,
             "market_value_post": mv_post,
             "pnl": mv_post - mv,
         })
@@ -230,6 +245,7 @@ def apply_scenario(
         "total_pnl": total_post - total_pre,
         "total_return_pct": (total_post / total_pre - 1.0) * 100 if total_pre else 0.0,
         "positions": rows,
+        "warnings": warnings,
     }
 
 
@@ -252,6 +268,7 @@ def compare_scenarios(
             "horizon_days": sc.horizon_days,
             "total_pnl": r["total_pnl"],
             "total_return_pct": r["total_return_pct"],
+            "warnings": r["warnings"],
         })
     out.sort(key=lambda x: x["total_pnl"])
     return out
