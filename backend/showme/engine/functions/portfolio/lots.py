@@ -169,14 +169,21 @@ class LOTSFunction(BaseFunction):
             return FunctionResult(code=self.code, instrument=None, data=data,
                                   sources=["local_tax_lot_ledger"])
         if action == "sell":
+            # LOTS#4: named lot_ids select exactly those lots. The service only
+            # honours them under method=SPECIFIC, so naming lots switches to
+            # SPECIFIC; otherwise FIFO would silently ignore the caller's choice.
+            lot_ids = _lot_ids(params.get("lot_ids"))
+            method = "SPECIFIC" if lot_ids else params.get("method", "FIFO")
             res = tax_lots.sell(
                 symbol=symbol,
                 quantity=quantity,
                 price=price,
-                method=params.get("method", "FIFO"),
+                method=method,
                 account=params.get("account"),
-                specific_lot_ids=params.get("lot_ids"),
+                specific_lot_ids=lot_ids or None,
             )
+            if lot_ids:
+                res["method_note"] = "lot_ids were given, so the lots were selected by id (SPECIFIC); the method input was not used."
             return FunctionResult(code=self.code, instrument=None, data=res)
         if action == "summary":
             year = params.get("year")
