@@ -83,6 +83,19 @@ def test_fxh_forward_uses_act_360_like_frd_and_fxfc() -> None:
     assert forward_rate(spot=1.0, home_rate=0.10, base_rate=0.0, days=360) == pytest.approx(1.10, abs=1e-12)
 
 
+def test_fxh_and_frd_agree_on_the_same_named_tenor() -> None:
+    """XCON-4-RQ: the same pair and tenor must price the same forward in FXH and FRD.
+
+    FRD maps 3M to 0.25 of a 365-day year (91.25 days). FXH used a flat 90 days
+    for 3M, so the two panes disagreed by about 0.37 pip for EURUSD.
+    """
+    frd = _run(fx.FRDFunction().execute(base="EUR", quote="USD", tenor="3M", spot=1.10, live=False,
+                                        r_base=0.035, r_quote=0.045))
+    fxh = _run(FXHFunction().execute(pair="EURUSD", spot_rate=1.10, base_rate=0.035, home_rate=0.045,
+                                     tenor="3M"))
+    assert frd.data["forward_rate"] == pytest.approx(fxh.data["rows"][0]["forward_rate"], abs=1e-6)
+
+
 def test_fxh_and_frd_agree_for_the_same_number_of_days() -> None:
     from showme.engine.services.fx_hedge import forward_rate
 

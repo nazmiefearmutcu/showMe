@@ -78,7 +78,7 @@ DAY_COUNT_BASIS = 360.0
 
 
 def forward_rate(*, spot: float, home_rate: float, base_rate: float,
-                 days: int) -> float:
+                 days: float) -> float:
     """CIP forward, simple interest on ACT/360: F = S(1 + r_quote T)/(1 + r_base T)."""
     T = days / DAY_COUNT_BASIS
     return spot * (1 + home_rate * T) / (1 + base_rate * T)
@@ -87,7 +87,7 @@ def forward_rate(*, spot: float, home_rate: float, base_rate: float,
 def hedge_one(
     exp: FXExposure, *,
     hedge_ratio: float = 1.0,
-    days: int = 90,
+    days: float = 90,
     usd_shock_pct: float = 0.05,
 ) -> dict[str, Any]:
     fwd = forward_rate(spot=exp.spot_rate, home_rate=exp.home_rate,
@@ -133,7 +133,7 @@ def hedge_one(
 def hedge_book(
     exposures: list[FXExposure], *,
     hedge_ratio: float = 1.0,
-    days: int = 90,
+    days: float = 90,
     usd_shock_pct: float = 0.05,
 ) -> dict[str, Any]:
     rows = [hedge_one(e, hedge_ratio=hedge_ratio, days=days,

@@ -25,8 +25,18 @@ DEFAULT_BASE_RATE = 0.035
 DEFAULT_HOME_RATE = 0.045
 # Manifest default for the hedge bid-ask (pips), used for hedge_cost.
 DEFAULT_BID_ASK_PIPS = 2.0
-# Manifest tenor options (see fxh_seed.py) mapped to calendar days.
-TENOR_DAYS: dict[str, int] = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
+# Manifest tenor options (see fxh_seed.py) mapped to days. XCON-4-RQ: the same
+# year-fraction convention as FRD (tenor = months/12 or weeks*7/365 of a 365-day
+# year), so FXH and FRD price one pair and tenor identically. 3M is 91.25 days,
+# not a flat 90, and the fractional days feed the ACT/360 accrual unrounded.
+_TENOR_YEAR_DAYS = 365.0
+TENOR_DAYS: dict[str, float] = {
+    "1W": 7.0,
+    "1M": _TENOR_YEAR_DAYS / 12.0,
+    "3M": _TENOR_YEAR_DAYS / 4.0,
+    "6M": _TENOR_YEAR_DAYS / 2.0,
+    "1Y": _TENOR_YEAR_DAYS,
+}
 
 
 @FunctionRegistry.register
