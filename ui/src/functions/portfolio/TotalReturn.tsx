@@ -86,7 +86,8 @@ const OBSERVATION_COLUMNS: DataGridColumn<Row>[] = [
   },
   {
     key: "growth_of_1",
-    header: "Growth of 1",
+    // TRA#2: growth_of_1 compounds closes only, so it is always price basis.
+    header: "Growth of 1 (price)",
     width: 104,
     align: "right",
     numeric: true,
@@ -183,7 +184,7 @@ export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
           <section className="portfolio-analytics-summary">
             <div className="portfolio-analytics-summary__hero">
               <span className="portfolio-analytics-label">
-                {effectiveSymbol} · growth of 1
+                {effectiveSymbol} · growth of 1 (price only)
               </span>
               <strong>
                 {latestGrowth == null ? "—" : `${latestGrowth.toFixed(3)}×`}
@@ -242,7 +243,7 @@ export function TotalReturnPane({ code, symbol }: FunctionPaneProps) {
 
           <div className="portfolio-analytics-grid">
             <section className="portfolio-table-panel">
-              <SectionHead title="Growth of $1" meta={`${points.length} sampled point(s)`} />
+              <SectionHead title="Growth of $1 (price only)" meta={`${points.length} sampled point(s)`} />
               <GrowthChart points={points} symbol={effectiveSymbol} />
             </section>
 

@@ -83,3 +83,15 @@ describe("TRA basis labels and max drawdown", () => {
     expect(tile?.textContent ?? "").toContain("—");
   });
 });
+
+describe("TRA growth-of-1 readouts are labelled price only", () => {
+  it("labels the hero, chart and observation column as price basis, whatever the TWR basis", () => {
+    // TRA#2 residual: series growth_of_1 is compounded from closes only, so beside
+    // "TWR (total return)" it must not read as the total-return growth figure.
+    ok({ ...BASE, total_return_basis: "dividends_reinvested", max_drawdown: -0.25 });
+    render(<TotalReturnPane code="TRA" />);
+    expect(screen.getByText("AAPL · growth of 1 (price only)")).toBeInTheDocument();
+    expect(screen.getByText("Growth of $1 (price only)")).toBeInTheDocument();
+    expect(screen.getByText("Growth of 1 (price)")).toBeInTheDocument();
+  });
+});
