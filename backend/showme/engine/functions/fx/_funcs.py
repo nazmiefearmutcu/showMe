@@ -250,7 +250,7 @@ class WCRSFunction(BaseFunction):
         # History gate mirrors the matrix live gate: an explicit ``live=false``
         # turns both off, so a pure reference matrix never mixes in live
         # change values.
-        live_enabled = _truthy(params.get("live_fx") or params.get("live", True))
+        live_enabled = _wcrs_fx_live(params)
         if live_enabled:
             # The per-currency history legs run concurrently with the matrix
             # fetch so the bounded history budget (max 3s) cannot stack on
@@ -1110,13 +1110,27 @@ def _tenor_to_years(label: str) -> float:
         return 0.0
 
 
+def _wcrs_fx_live(params: dict[str, Any]) -> bool:
+    """WCRS live-FX gate: an explicit ``live_fx`` (true or false) wins.
+
+    Only when ``live_fx`` is absent does the generic ``live`` flag (default
+    on) decide. The old ``_truthy(params.get("live_fx") or params.get("live",
+    True))`` turned an explicit ``live_fx=false`` into True, so the opt-out
+    was silently ignored.
+    """
+    raw = params.get("live_fx")
+    if raw is None or raw == "":
+        raw = params.get("live", True)
+    return _truthy(raw)
+
+
 async def _cross_matrix(
     fn: BaseFunction,
     bases: list[str],
     quotes: list[str],
     params: dict[str, Any],
 ) -> tuple[dict[str, dict[str, float]], str, list[str]]:
-    if _truthy(params.get("live", True)) and fn.deps.exchangerate_host:
+    if _truthy(params.get("live", True)) and _wcrs_fx_live(params) and fn.deps.exchangerate_host:
         timeout = float(params.get("timeout", 4))
 
         async def fetch_base(base: str) -> tuple[str, dict[str, float] | None]:
@@ -1143,8 +1157,9 @@ async def _cross_matrix(
     # currency Frankfurter does not carry disables the tier, so no cell can
     # mix live and seeded levels under a live label.
     # R3 L-4: same gate expression as the spot tier — `live=false` turns the
-    # tier off, `live_fx=true` alone opts in, default on.
-    if _truthy(params.get("live_fx") or params.get("live", True)):
+    # tier off, `live_fx=true` alone opts in, default on; an explicit
+    # `live_fx=false` also turns it off (see _wcrs_fx_live).
+    if _wcrs_fx_live(params):
         timeout = float(params.get("timeout", 4))
 
         async def fetch_base_frankfurter(base: str) -> tuple[str, dict[str, float] | None]:
