@@ -113,7 +113,7 @@ def yas() -> FunctionManifest:
                 label="Benchmark",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Sovereign curve point to compute spread against.",
+                description="Sovereign curve point to compute spread against. UST tenors use the live FRED constant-maturity yield; DBR10Y, JGB10Y and GILT10Y have no live series here, so no spread is reported for them (no US 10Y substitute).",
                 options=["UST2Y", "UST5Y", "UST10Y", "UST30Y", "DBR10Y", "JGB10Y", "GILT10Y"],
             ),
         ],
@@ -185,7 +185,9 @@ def yas() -> FunctionManifest:
             " annual yield (about 421 for a 30y 4% quarterly par bond). The freq² normalization keeps"
             " quarterly bonds (freq=4) from drifting. Spread vs benchmark = (ytm - benchmark_yield) ×"
             " 10,000 basis points. The benchmark is the live FRED DGS10 10-year constant-maturity yield"
-            " unless a benchmark rate is supplied; when neither is available the spread is not reported."
+            " unless a benchmark rate is supplied or a UST tenor is named (UST2Y, UST5Y, UST30Y use DGS2,"
+            " DGS5, DGS30). A named benchmark with no live series (DBR10Y, JGB10Y, GILT10Y) reports no spread."
+            " When the chosen benchmark is unavailable the spread is not reported."
         ),
         formula_dict={
             "ytm": Formula(
@@ -208,7 +210,7 @@ def yas() -> FunctionManifest:
             ),
             "spread_vs_benchmark": Formula(
                 expression=r"spread_{bp} = (y_{bond} - y_{benchmark}) \times 10000",
-                variables={"y_bond": "Bond YTM (%)", "y_benchmark": "Sovereign benchmark yield (%)"},
+                variables={"y_bond": "Bond YTM (decimal)", "y_benchmark": "Sovereign benchmark yield (decimal)"},
             ),
         },
         field_dict={
@@ -255,7 +257,7 @@ def yas() -> FunctionManifest:
             ),
             SemanticTest(
                 name="yas_spread_vs_benchmark_in_bp",
-                description="Spread is computed as (ytm - benchmark_yield) × 100 and surfaced as bp.",
+                description="Spread is computed as (ytm - benchmark_yield), both decimals, then × 10,000 and surfaced as basis points.",
                 inputs={"benchmark": "UST10Y"},
                 assertions=["spread_unit_is_bp", "spread_sign_matches_ytm_minus_benchmark"],
             ),

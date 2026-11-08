@@ -173,6 +173,15 @@ def generic_treasury(symbol: str) -> tuple[str, float] | None:
     return series, (n / 12.0 if match.group(2) == "M" else n)
 
 
+def _benchmark_series(name: str) -> str | None:
+    """FRED CMT series for a named US benchmark (``UST2Y``/``US2Y``); ``None`` when none is live."""
+    key = str(name).strip().upper()
+    if key.startswith("UST"):
+        key = "US" + key[3:]
+    generic = generic_treasury(key)
+    return generic[0] if generic else None
+
+
 @FunctionRegistry.register
 class YASFunction(BaseFunction):
     code = "YAS"
@@ -222,10 +231,13 @@ class YASFunction(BaseFunction):
         coupon_raw = _first_param(params, "coupon")
         maturity = _first_param(params, "maturity_years", "years_to_maturity", "years")
         bench_raw = _first_param(params, "benchmark_rate", "benchmark", "ust10y")
-        try:
-            float(bench_raw) if bench_raw is not None else None
-        except (TypeError, ValueError):
-            bench_raw = None  # a name such as "UST10Y" selects the live 10Y benchmark
+        bench_name: str | None = None
+        if bench_raw is not None:
+            try:
+                float(bench_raw)
+            except (TypeError, ValueError):
+                bench_name = str(bench_raw)  # a name such as "UST10Y" or "DBR10Y"
+                bench_raw = None
 
         sources: list[str] = []
         warnings: list[str] = []
@@ -289,6 +301,26 @@ class YASFunction(BaseFunction):
         if bench_raw is not None:
             benchmark = _rate_decimal(bench_raw, 0.0, assume_decimal=bool(params.get("assume_decimal", False)))
             metadata["benchmark"] = "input"
+        elif bench_name is not None:
+            # A named benchmark is the series it names, never a silent US 10Y substitute.
+            metadata["benchmark_requested"] = bench_name
+            series = _benchmark_series(bench_name)
+            if series is None:
+                metadata["benchmark"] = None
+                warnings.append(
+                    f"Benchmark {bench_name} has no live series in this build; the spread is not "
+                    "reported (no US 10Y substitute is used)."
+                )
+            else:
+                bench = await self._cmt(series, timeout)
+                if bench is None:
+                    metadata["benchmark"] = None
+                    warnings.append(f"FRED {series} ({bench_name}) benchmark unavailable; the spread is not reported.")
+                else:
+                    benchmark = bench[0]
+                    metadata.update({"benchmark": series, "benchmark_date": bench[1]})
+                    if "fred" not in sources:
+                        sources.append("fred")
         else:
             bench = await self._cmt(_BENCHMARK_SERIES, timeout)
             if bench is None:
@@ -349,7 +381,8 @@ class YASFunction(BaseFunction):
                     "constant-maturity yield for that tenor; other bonds need price, coupon and maturity. "
                     "YAS solves yield-to-maturity with Newton iteration (bisection fallback), then computes "
                     "Macaulay duration, modified duration, convexity, and the spread versus the live 10Y CMT "
-                    "benchmark (or a supplied one). Coupon and benchmark inputs accept decimals (0.0425) or "
+                    "benchmark by default, a named UST tenor's live CMT (UST2Y, UST5Y, UST10Y, UST30Y), or a supplied "
+                    "rate; a named benchmark with no live series reports no spread. Coupon and benchmark inputs accept decimals (0.0425) or "
                     "percentages (4.25); frequency is coupon payments per year."
                 ),
                 "field_dictionary": {

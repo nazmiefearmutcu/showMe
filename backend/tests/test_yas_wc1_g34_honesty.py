@@ -22,8 +22,10 @@ class _FRED:
 
     def __init__(self, table=CMT):
         self.table = table
+        self.calls: list[str] = []
 
     async def series(self, series_id, frequency="d"):
+        self.calls.append(series_id)
         if series_id not in self.table:
             raise RuntimeError("down")
         idx = pd.to_datetime(["2026-11-05", "2026-11-06"])
@@ -108,3 +110,61 @@ def test_yas5_spread_unit_text_is_basis_points_not_times_100() -> None:
     yas = REGISTRY.get("YAS")
     assert "× 100 bp" not in yas.methodology
     assert "10,000" in yas.methodology or "10000" in yas.methodology
+
+
+# ---- YAS benchmark: a named benchmark is honoured or reported unsupported ---
+
+
+def _run_with_fred(fred, **params):
+    deps = FunctionDeps()
+    deps.fred = fred
+    return asyncio.run(YASFunction(deps).execute(
+        instrument=Instrument(symbol="XS1234567890", asset_class=AssetClass.BOND), **params))
+
+
+def test_yas_named_ust2y_benchmark_uses_the_two_year_series() -> None:
+    fred = _FRED()
+    res = _run_with_fred(fred, price=99.5, coupon=0.0425, years_to_maturity=10, benchmark="UST2Y")
+    assert "DGS2" in fred.calls
+    assert "DGS10" not in fred.calls
+    assert res.data["summary"]["benchmark_rate"] == pytest.approx(0.0362)
+    assert res.metadata["benchmark"] == "DGS2"
+
+
+def test_yas_unsupported_sovereign_benchmark_is_not_replaced_by_the_us_10y() -> None:
+    fred = _FRED()
+    res = _run_with_fred(fred, price=99.5, coupon=0.0425, years_to_maturity=10, benchmark="DBR10Y")
+    assert "DGS10" not in fred.calls
+    assert res.data["summary"]["spread_vs_benchmark"] is None
+    assert res.data["summary"]["benchmark_rate"] is None
+    assert any("DBR10Y" in w for w in res.warnings)
+
+
+def test_yas_named_benchmark_outage_is_not_replaced_by_the_us_10y() -> None:
+    fred = _FRED()
+    res = _run_with_fred(fred, price=99.5, coupon=0.0425, years_to_maturity=10, benchmark="UST30Y")
+    assert "DGS10" not in fred.calls
+    assert res.data["summary"]["spread_vs_benchmark"] is None
+    assert any("DGS30" in w for w in res.warnings)
+
+
+def test_yas_default_benchmark_is_the_labelled_us_10y() -> None:
+    fred = _FRED()
+    res = _run_with_fred(fred, price=99.5, coupon=0.0425, years_to_maturity=10)
+    assert res.metadata["benchmark"] == "DGS10"
+    assert res.data["summary"]["benchmark_rate"] == pytest.approx(0.0411)
+
+
+def test_yas_seed_semantic_test_states_basis_points_not_times_100() -> None:
+    load_seeds()
+    yas = REGISTRY.get("YAS")
+    spread_test = next(t for t in yas.semantic_tests if t.name == "yas_spread_vs_benchmark_in_bp")
+    assert "× 100 and" not in spread_test.description
+    assert "10,000" in spread_test.description or "basis points" in spread_test.description
+
+
+def test_yas_seed_says_named_benchmarks_without_a_live_series_report_no_spread() -> None:
+    load_seeds()
+    bench = next(i for i in REGISTRY.get("YAS").inputs if i.name == "benchmark")
+    assert "DBR10Y" in (bench.options or [])
+    assert "no live series" in bench.description or "not reported" in bench.description
