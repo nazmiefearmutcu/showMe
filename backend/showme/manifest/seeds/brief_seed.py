@@ -184,8 +184,8 @@ def brief() -> FunctionManifest:
             ),
             SemanticTest(
                 name="brief_no_synthetic_summary_when_no_news",
-                description="When READ returns zero articles, asserts status='provider_unavailable', markdown lists 'No live watchlist headlines were returned' (no invented quotes), and next_actions explains the empty result.",
-                inputs={"_mock": "read_empty"},
+                description="When TOP and the symbol headline calls return zero articles, asserts status='provider_unavailable', markdown lists 'No live watchlist headlines were returned' (no invented quotes), and next_actions explains the empty result. READ is not called by BRIEF.",
+                inputs={"_mock": "news_empty"},
                 assertions=[
                     "status_equals_provider_unavailable_when_empty",
                     "markdown_has_no_synthetic_quotes",

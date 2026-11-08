@@ -105,3 +105,13 @@ def test_explicit_watchlist_param_still_wins(offline):
     res = _run(brief_mod.BRIEFFunction(None).execute(watchlist=["ibm"]))
     assert res.data["watchlist"] == ["IBM"]
     assert res.data["watchlist_source"] == "input"
+
+
+def test_brief_semantic_tests_describe_the_methodology_not_read():
+    """BRIEF does not call READ; its semantic-test text must not say it does."""
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    for test in REGISTRY.get("BRIEF").semantic_tests:
+        assert "READ returns" not in test.description, test.name
+        assert "READ()" not in test.description or "not called" in test.description, test.name
