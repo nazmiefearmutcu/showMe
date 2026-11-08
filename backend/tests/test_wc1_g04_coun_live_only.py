@@ -269,3 +269,20 @@ def test_worldbank_gdp_fallback_is_labelled_constant_2015_usd_not_chained(monkey
     assert gdp[0]["value"] == 23000.0
     assert gdp[0]["unit"] == "bn constant 2015 USD"
     assert "chained" not in gdp[0]["unit"]
+
+
+def test_history_honours_metrics_input(monkeypatch):
+    """Minor cross-cutting: history[] follows the metrics subset like rows and cards do."""
+    live = {
+        "GDPC1": [("2025-07-01", 24000.0), ("2026-07-01", 24611.077)],
+        "UNRATE": [("2026-10-01", 4.1)],
+    }
+    _patch(monkeypatch, _Fred(live=live))
+
+    unfiltered = _run(COUNFunction(FunctionDeps()).execute(country="US", live=True))
+    assert unfiltered.data["history"], "GDP level history expected without a metrics filter"
+
+    filtered = _run(
+        COUNFunction(FunctionDeps()).execute(country="US", live=True, metrics=["unemployment"])
+    )
+    assert filtered.data["history"] == []

@@ -98,7 +98,7 @@ class COUNFunction(BaseFunction):
         data: dict[str, Any] = {
             "country": country,
             "rows": rows,
-            "history": history[-80:],
+            "history": _filter_by_key(history, requested)[-80:],
             "cards": _filter_by_key(
                 _country_cards(country, policy_row, fresh_indicator_rows), requested
             ),
@@ -475,6 +475,7 @@ def _series_row(
         points = [
             {
                 "date": row.get("date"),
+                "key": spec.key,
                 "metric": spec.label,
                 "value": row.get("value"),
                 "unit": _unit_for(spec, row.get("source_mode")),
