@@ -82,11 +82,10 @@ def bql() -> FunctionManifest:
         # honest empty state rather than returning synthetic rows.
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=["yfinance", "cached_snapshot"],
+            fallbacks=["yfinance"],
             acceptable_modes=[
-                DataMode.MODELED,
                 DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
+                DataMode.PROVIDER_UNAVAILABLE,
                 DataMode.NOT_CONFIGURED,
             ],
         ),
@@ -139,7 +138,11 @@ def bql() -> FunctionManifest:
             "mode": FieldDef(description="live / unavailable.", source="bql"),
             "rows[].symbol": FieldDef(description="Instrument symbol from the for([...]) clause.", source="bql"),
             "rows[].date": FieldDef(description="Provider timestamp for the OHLCV row.", source="provider"),
-            "rows[].close": FieldDef(unit="quote", description="Closing/last price.", source="provider"),
+            "rows[].close": FieldDef(
+                unit="quote",
+                description="Closing price from the yfinance OHLCV row (px_last, last and price alias to close).",
+                source="yfinance",
+            ),
             "rows[].volume": FieldDef(unit="shares_or_base", description="Session volume.", source="provider"),
         },
         provenance=ProvenanceSpec(
