@@ -119,11 +119,15 @@ class TestPeopReferenceSearch:
             ).lower()
 
 
-class TestNseLiveFalsePath:
-    """NSE ``live=false`` must not invent a placeholder article."""
+class TestNseNoInventedRows:
+    """NSE must not invent a placeholder article when there is nothing to search.
+
+    The old ``live=false`` toggle is gone: NSE is awareness full-text search. With
+    no search text and no symbol it answers input_required and never a news dump.
+    """
 
     @pytest.mark.asyncio
-    async def test_live_false_returns_empty_data_with_synthetic_source(self):
+    async def test_no_query_returns_input_required_without_rows(self):
         from showme.engine.functions.news.nse import NSEFunction
 
         class _StubDeps:
@@ -132,10 +136,10 @@ class TestNseLiveFalsePath:
             cache = None
 
         fn = NSEFunction(deps=_StubDeps())  # type: ignore[arg-type]
-        result = await fn.execute(query="AAPL", live=False)
-        assert result.data == []
-        assert "local_news_template" in result.sources
-        assert _is_synthetic_source(result.sources[0]) is True
+        result = await fn.execute(live=False)
+        assert result.data["status"] == "input_required"
+        assert result.data["rows"] == []
+        assert result.sources == []
 
 
 class TestOmonResolveSpot:

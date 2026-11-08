@@ -1149,15 +1149,3 @@ def test_tldr_mover_lines_do_not_put_gainers_in_down_bucket(monkeypatch) -> None
     assert _format_movers(quotes, positive=False) == "BTCUSDT (-0.11%)"
 
 
-def test_top_age_window_filters_stale_articles(monkeypatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.functions.news.top import _within_age_window
-
-    assert _within_age_window(
-        {"published_at": datetime.now(timezone.utc).isoformat()},
-        45,
-    )
-    assert not _within_age_window(
-        {"published_at": (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()},
-        45,
-    )

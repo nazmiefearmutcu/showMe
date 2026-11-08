@@ -112,6 +112,11 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             task = asyncio.ensure_future(_execute_showme_function(code, params))
             home_swr_track(swr_key, task)
             done, _pending = await asyncio.wait({task}, timeout=1.0)
+            if task not in done and code.upper() == "TOP":
+                # Awareness answers TOP in tens of milliseconds, so a cold call
+                # that is still pending after the head start is only slow, not
+                # down: give it a further 4 s before the warming envelope.
+                done, _pending = await asyncio.wait({task}, timeout=4.0)
             if task not in done:
                 home_swr_capture(code, params, swr_key, task)
                 return fallback_function_payload(

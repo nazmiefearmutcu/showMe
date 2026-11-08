@@ -1,10 +1,7 @@
-"""TOP — Top News (cross-asset, freshness-aware, deduped, impact-scored).
+"""TOP — Top News (sourced story leads from the Awareness news service).
 
-Live top-news pane that surfaces what's actually moving markets right
-now across all asset classes. Backend handler is
-``engine/functions/news/top.py`` which runs a unified RSS + GDELT
-pipeline with NER-lite ticker tagging, FinBERT-derived sentiment, and
-SimHash dedupe.
+Backend handler is ``engine/functions/news/top.py``. Rows are awareness story
+leads at quality >= standard, read through ``GET /v1/markets/news?story=true``.
 """
 from __future__ import annotations
 
@@ -16,7 +13,6 @@ from ..enums import (
 )
 from ..registry import manifest
 from ..spec import (
-    AlertingSpec,
     CachingPolicy,
     CardSchema,
     CardSlot,
@@ -39,9 +35,9 @@ def top() -> FunctionManifest:
         name="Top News",
         category=Category.NEWS_INTEL,
         intent=(
-            "Surface what is actually moving markets right now across all asset classes with "
-            "deduplication, freshness windows, source provenance, optional sentiment/impact scoring, "
-            "and one-click drilldowns into CN/DES/GP per ticker."
+            "Surface the sourced stories that matter right now across asset classes: one row per "
+            "story at quality standard or better, ranked by awareness importance, with publisher "
+            "tier, quality reasons, FinBERT sentiment and corroboration."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -55,97 +51,91 @@ def top() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="freshness",
-                label="Freshness",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Max age of items to surface.",
-                options=["15m", "1h", "6h", "24h", "7d"],
-            ),
-            InputSpec(
-                name="asset_filter",
-                label="Asset classes",
-                control=ControlKind.MULTISELECT,
+                name="hours",
+                label="Window (hours)",
+                control=ControlKind.NUMBER,
                 required=False,
-                description="Restrict to items tagged with these asset classes.",
-                options=[
-                    "equity", "crypto", "fx", "commodity",
-                    "bond", "rate", "macro",
-                ],
+                description="Look-back window in hours for story leads (1 to 168).",
+                min=1.0,
+                max=168.0,
+                step=1.0,
+                unit="hours",
             ),
             InputSpec(
-                name="topic_filter",
+                name="limit",
+                label="Rows",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Maximum number of story rows (1 to 200).",
+                min=1.0,
+                max=200.0,
+                step=1.0,
+            ),
+            InputSpec(
+                name="min_quality",
+                label="Quality floor",
+                control=ControlKind.SELECT,
+                required=False,
+                description="Lowest awareness quality label kept: premium, or standard and above.",
+                options=["premium", "standard"],
+            ),
+            InputSpec(
+                name="topics",
                 label="Topics",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="Restrict to editorial topic tags.",
+                description="Awareness taxonomy topics; a story matches when it carries any of them.",
                 options=[
-                    "earnings", "m&a", "central_bank",
-                    "geopolitics", "regulatory", "macro",
-                    "crypto_protocol",
+                    "earnings", "guidance", "m_and_a", "ipo", "dividends_buybacks", "analyst_rating",
+                    "central_bank", "inflation", "employment", "growth_recession", "trade_tariffs",
+                    "sanctions", "geopolitics", "regulation", "energy", "metals", "crypto_market",
+                    "supply_chain", "cyber_outage", "fiscal_policy",
                 ],
             ),
             InputSpec(
-                name="min_impact",
-                label="Min impact",
-                control=ControlKind.SELECT,
+                name="asset_classes",
+                label="Asset classes",
+                control=ControlKind.MULTISELECT,
                 required=False,
-                description="Drop items with computed impact below this floor.",
-                options=["low", "medium", "high"],
+                description="Awareness asset-class tags; combined with topics by AND.",
+                options=["equities", "indices", "fx", "rates", "credit", "commodities", "crypto", "macro"],
             ),
             InputSpec(
-                name="dedupe",
-                label="Dedupe similar",
-                control=ControlKind.BOOLEAN,
-                required=True,
-                description="Cluster near-duplicate stories via SimHash.",
+                name="countries",
+                label="Countries",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Comma-separated ISO-2 country codes (for example US,TR).",
             ),
             InputSpec(
-                name="sentiment_overlay",
-                label="Sentiment",
-                control=ControlKind.BOOLEAN,
+                name="q",
+                label="Search",
+                control=ControlKind.TEXT,
                 required=False,
-                description="Show FinBERT pos/neu/neg labels in each row.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Optional full-text search over titles and summaries.",
             ),
         ],
         defaults={
-            "freshness": "6h",
-            "asset_filter": [],
-            "topic_filter": [],
-            "min_impact": "low",
-            "dedupe": True,
-            "sentiment_overlay": True,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
+            "hours": 24,
+            "limit": 50,
+            "min_quality": "standard",
+            "topics": [],
+            "asset_classes": [],
+            "countries": "",
+            "q": "",
         },
-        # Real handler defaults source_order to ["rss"] and optionally
-        # adds gdelt on deep=True — but the spec's design treats GDELT
-        # as the canonical primary, so manifest-time chain order reflects
-        # the spec (rss is fallback when GDELT rate-limits).
         provider_chain=ProviderChain(
-            primary="gdelt",
-            fallbacks=["rss", "cached_snapshot"],
+            primary="awareness",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.DELAYED_REFERENCE,
                 DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["as_of", "items", "data_mode"],
+            must_have=["status", "rows", "meta"],
             rows=True,
             series=False,
             cards=True,
@@ -154,110 +144,78 @@ def top() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="published_utc", label="Time", kind="datetime", format="rel-time"),
-                ColumnSpec(key="source", label="Source", kind="tag"),
-                ColumnSpec(key="title", label="Title", kind="text"),
-                ColumnSpec(key="tickers", label="Tickers", kind="tag"),
-                ColumnSpec(key="asset_class", label="Class", kind="tag"),
-                ColumnSpec(key="topic", label="Topic", kind="tag"),
+                ColumnSpec(key="published_at", label="Time", kind="datetime", format="rel-time"),
+                ColumnSpec(key="publisher", label="Publisher", kind="tag"),
+                ColumnSpec(key="publisher_tier", label="Tier", kind="number", format="%d"),
+                ColumnSpec(key="title", label="Headline", kind="text"),
+                ColumnSpec(key="symbols", label="Symbols", kind="tag"),
                 ColumnSpec(key="sentiment", label="Sentiment", kind="tag"),
-                ColumnSpec(key="sentiment_score", label="Score", kind="number", format="%.2f"),
-                ColumnSpec(key="impact", label="Impact", kind="tag"),
-                ColumnSpec(key="dedupe_cluster_size", label="Dup ×", kind="number", format="%d"),
-                ColumnSpec(key="link", label="", kind="action"),
+                ColumnSpec(key="importance", label="Importance", kind="number", format="%.0f"),
+                ColumnSpec(key="story_size", label="Sources", kind="number", format="%d"),
+                ColumnSpec(key="url", label="", kind="action"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="total_items", label="Total", kind="kpi"),
-                CardSlot(key="high_impact_count", label="High Impact", kind="kpi"),
-                CardSlot(key="sources_active", label="Sources", kind="kpi"),
-                CardSlot(key="top_topic", label="Top Topic", kind="badge"),
+                CardSlot(key="count", label="Stories", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "TOP runs a unified ingestion pipeline: GDELT DOC search with a top-domain whitelist plus "
-            "parallel RSS pulls from a curated list of official + reputable financial sources, then "
-            "normalize each item to {published_utc, source, title, body_snippet, url, raw_tickers, "
-            "raw_topics}. Tickers are tagged via a fast NER-lite (regex + cashtag + symbol dictionary in "
-            "DuckDB); asset class via the symbol->asset_class map (OpenFIGI for ambiguous cases); topic "
-            "via a keyword classifier; sentiment via FinBERT (label + score). Impact is a heuristic that "
-            "combines source authority, topic weight, sentiment magnitude, and freshness decay. SimHash "
-            "(4-shingle on title) plus a URL-domain check collapse near-duplicates into a single "
-            "representative item with dedupe_cluster_size. Items older than the freshness input are "
-            "dropped; remaining items are sorted by published_utc desc (impact tie-break). No item is "
-            "ever surfaced without a verifiable source URL."
+            "Awareness (awareness-markets, local service) ingests keyless publisher feeds, scores "
+            "each item with a quality gate (publisher tier, timestamp precision, entity confidence "
+            "and topic evidence, reported as quality_reasons), labels sentiment with FinBERT "
+            "(ProsusAI/finbert), scores importance 0-100, and clusters near-duplicate reports into "
+            "stories. TOP lists one lead per story at quality standard or better, newest first "
+            "within the hours window; story_size counts the collapsed reports. Stale providers keep "
+            "their data and mark the response cached_snapshot with live false."
         ),
         field_dict={
-            "items[].published_utc": FieldDef(unit="iso8601", description="Original publication time.", source="feed"),
-            "items[].source": FieldDef(description="Source domain (e.g. reuters.com).", source="derived"),
-            "items[].title": FieldDef(description="Article headline.", source="feed"),
-            "items[].tickers": FieldDef(description="Detected canonical tickers; empty when uncertain.", source="ner"),
-            "items[].asset_class": FieldDef(description="Tagged asset class.", source="symbol_map"),
-            "items[].topic": FieldDef(description="Editorial topic tag.", source="classifier"),
-            "items[].sentiment": FieldDef(description="FinBERT pos/neu/neg label.", source="finbert"),
-            "items[].sentiment_score": FieldDef(unit="[-1,1]", description="Normalized FinBERT score.", source="finbert"),
-            "items[].impact": FieldDef(description="Heuristic impact bucket: low/medium/high.", source="scorer"),
-            "items[].dedupe_cluster_size": FieldDef(unit="count", description="How many near-duplicates collapsed into this row.", source="simhash"),
-            "items[].link": FieldDef(unit="url", description="Original article URL.", source="feed"),
+            "rows[].published_at": FieldDef(unit="iso8601", description="Publisher timestamp (UTC).", source="feed"),
+            "rows[].publisher": FieldDef(description="Publisher name as registered in awareness.", source="feed"),
+            "rows[].publisher_tier": FieldDef(unit="1-5", description="Publisher trust tier (1 is highest).", source="awareness"),
+            "rows[].title": FieldDef(description="Headline as published.", source="feed"),
+            "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (FinBERT label).", source="finbert"),
+            "rows[].sentiment_score": FieldDef(unit="[-1,1]", description="FinBERT signed score.", source="finbert"),
+            "rows[].importance": FieldDef(unit="0-100", description="Awareness importance score.", source="awareness"),
+            "rows[].quality_label": FieldDef(description="premium, standard, low or rejected.", source="awareness"),
+            "rows[].quality_reasons": FieldDef(description="Quality gate reasons, for example tier1:+45.", source="awareness"),
+            "rows[].story_size": FieldDef(unit="count", description="Reports collapsed into this story.", source="awareness"),
+            "rows[].story_id": FieldDef(description="Story identifier for the drawer.", source="awareness"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
             require_as_of=True,
             require_latency_ms=True,
         ),
-        alerting=AlertingSpec(
-            conditions=[
-                "new_high_impact_for_tickers",
-                "central_bank_press_release",
-                "regulatory_action_for_tickers",
-            ],
-            delivery=["tray", "notification", "log"],
-        ),
         semantic_tests=[
             SemanticTest(
-                name="top_returns_items_within_freshness_window",
-                description="Every item's published_utc is within the configured freshness window.",
-                inputs={"freshness": "6h"},
-                assertions=["all_items_within_freshness_window"],
+                name="top_rows_are_story_leads_at_standard_quality",
+                description="Every row is a story lead whose quality_label is premium or standard.",
+                inputs={"hours": 24, "min_quality": "standard"},
+                assertions=["every_row_quality_at_least_standard", "one_row_per_story_id"],
             ),
             SemanticTest(
-                name="top_dedupe_collapses_duplicates",
-                description="Two near-identical headlines from different sources collapse into one row with dedupe_cluster_size=2.",
-                inputs={"dedupe": True},
-                assertions=["dedupe_cluster_size_equals_2"],
+                name="top_rows_within_hours_window",
+                description="Every row's published_at lies inside the requested hours window.",
+                inputs={"hours": 6},
+                assertions=["all_rows_published_within_hours"],
             ),
             SemanticTest(
-                name="top_no_silent_ticker_guess",
-                description="An ambiguous headline (e.g. apple as a metaphor) yields tickers=[] rather than a guess.",
+                name="top_no_rss_or_model_rows_when_awareness_down",
+                description="When awareness is unreachable, rows is empty and status is provider_unavailable with the client reason.",
                 inputs={},
-                assertions=["tickers_empty_on_ambiguous_headline"],
+                assertions=["rows_empty_when_unavailable", "status_provider_unavailable"],
             ),
             SemanticTest(
-                name="top_sentiment_uses_finbert_not_placeholder",
-                description="Sentiment scores across known bull/bear test headlines align with FinBERT reference.",
-                inputs={"sentiment_overlay": True},
-                assertions=["sentiment_score_matches_finbert_reference"],
-            ),
-            SemanticTest(
-                name="top_filter_impact_high_excludes_low",
-                description="With min_impact=high every returned item has impact == high.",
-                inputs={"min_impact": "high"},
-                assertions=["all_items_impact_equals_high"],
-            ),
-            SemanticTest(
-                name="top_no_stale_or_synthetic_rows_when_providers_down",
-                description="When both GDELT and RSS fail, items=[] and data_mode=provider_unavailable with a warning explaining both failed.",
+                name="top_stale_provider_marks_cached_snapshot",
+                description="A down or degraded awareness provider keeps the rows but sets data_mode cached_snapshot and live false.",
                 inputs={},
-                assertions=[
-                    "items_is_empty_array_when_all_providers_down",
-                    "data_mode_equals_provider_unavailable",
-                    "warning_lists_both_providers",
-                ],
+                assertions=["data_mode_cached_snapshot_when_stale", "live_false_when_stale"],
             ),
         ],
     )

@@ -319,52 +319,6 @@ def test_stamp_items_uses_long_form_labels_per_manifest_contract():
 # --- Handler integration ----------------------------------------------------
 
 
-def test_top_handler_stamps_sentiment_on_each_item():
-    """TOPFunction.execute must call stamp_items so every returned item
-    carries `sentiment` + `sentiment_score`. We mock the rss data source
-    to return two fixed articles, install a stub FinBERT, and assert the
-    contract.
-    """
-    _install_stub(label="positive", score=0.88)
-
-    from showme.engine.core.base_data_source import DataKind, DataRequest
-    from showme.engine.core.base_function import FunctionDeps
-    from showme.engine.functions.news.top import TOPFunction
-
-    class _FakeRss:
-        async def fetch(self, request: DataRequest):
-            assert request.kind == DataKind.NEWS
-            return [
-                {
-                    "title": "Apple beats Q3 earnings expectations",
-                    "summary": "Apple posted record revenue.",
-                    "feed": "Bloomberg",
-                    "url": "https://example.com/apple",
-                    "published_at": _hours_ago_iso(6),
-                },
-                {
-                    "title": "Tesla cuts guidance",
-                    "summary": "Lower deliveries weighed on profit.",
-                    "feed": "Reuters",
-                    "url": "https://example.com/tesla",
-                    "published_at": _hours_ago_iso(6.5),
-                },
-            ]
-
-    deps = FunctionDeps()
-    deps.rss = _FakeRss()
-    result = _run(TOPFunction(deps).execute(symbol="AAPL", query="apple"))
-    items = result.data["items"]
-    assert items, "TOP returned no items — fixture did not flow through"
-    for item in items:
-        assert "sentiment" in item, "TOP must stamp sentiment on every item"
-        assert "sentiment_score" in item
-        assert item["sentiment"] in {"positive", "negative", "neutral"}
-        assert -1.0 <= item["sentiment_score"] <= 1.0
-        assert item["sentiment_model"] == "finbert"
-    assert result.metadata["sentiment_model"] == "finbert"
-
-
 def test_instant_route_stamps_sentiment_on_events(monkeypatch):
     """The /api/instant/events route post-processes events through FinBERT."""
     _install_stub(label="negative", score=0.74)

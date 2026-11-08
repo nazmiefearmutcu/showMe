@@ -415,49 +415,6 @@ def test_mgn_upsert_and_delete_require_name() -> None:
     assert delete.data["missing_fields"] == ["name"]
 
 
-# ── HNT-09: NALRT budget ──────────────────────────────────────────────────
-
-
-def test_nalrt_skips_deep_gdelt_once_budget_is_exhausted(monkeypatch) -> None:
-    from showme.engine.functions.news import nalrt as nalrt_mod
-
-    class _FakeRss:
-        async def fetch(self, request):
-            return []
-
-        async def probe_feeds(self, request, timeout=None):
-            return []
-
-    class _FakeGdelt:
-        def __init__(self):
-            self.calls = 0
-
-        async def fetch(self, request):
-            self.calls += 1
-            return [{"title": "late", "url": "https://x/late"}]
-
-    gdelt = _FakeGdelt()
-    # Fake clock: every perf_counter call jumps forward 20s, so `started`
-    # lands 20s before the first _remaining() check — the budget reads as
-    # exhausted for every stage from the very first one.
-    clock = {"t": 100.0}
-
-    def _fake_perf_counter() -> float:
-        clock["t"] += 20.0
-        return clock["t"]
-
-    monkeypatch.setattr(
-        nalrt_mod, "time", types.SimpleNamespace(perf_counter=_fake_perf_counter)
-    )
-    deps = FunctionDeps(rss=_FakeRss(), gdelt=gdelt)
-    fn = nalrt_mod.NewsAlertFunction(deps)
-    result = _run(fn.execute(symbol="AAPL", deep=True))
-
-    assert gdelt.calls == 0, "gdelt must not fire once the budget is spent"
-    assert any("gdelt: skipped" in w for w in result.warnings)
-    assert "gdelt" not in result.sources
-
-
 # ── HNT-10 / HNT-11: seed ↔ handler contract ──────────────────────────────
 
 

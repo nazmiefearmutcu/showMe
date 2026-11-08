@@ -1,9 +1,7 @@
-"""NSE — News Search Engine.
+"""NSE — News Search Engine (Awareness full-text search over sourced stories).
 
-Full-text search across the unified news index — GDELT primary, RSS
-fallback. Supports phrase queries, boolean operators, source whitelist,
-ticker / topic / date-range filters; returns paginated hits with
-highlighted matches and direct article links.
+Backend handler is ``engine/functions/news/nse.py``. Full-text search runs in awareness,
+so company names ("Berkshire") and ticker-style words both resolve without a local index.
 """
 from __future__ import annotations
 
@@ -37,15 +35,14 @@ def nse() -> FunctionManifest:
         name="News Search Engine",
         category=Category.NEWS_INTEL,
         intent=(
-            "Full-text search across the unified news index — GDELT primary, RSS fallback. "
-            "Supports phrase queries, boolean operators, source whitelist, ticker / topic / "
-            "date-range filters; returns paginated hits with highlighted matches and direct "
-            "article links to the source publisher."
+            "Search sourced news by company name, ticker or topic words over a chosen window; "
+            "rows are publisher stories with sentiment and quality, and a hidden-rows note when "
+            "the quality floor hides matches."
         ),
         asset_classes=[
             AssetClass.EQUITY,
-            AssetClass.CRYPTO,
             AssetClass.ETF,
+            AssetClass.CRYPTO,
             AssetClass.FX,
             AssetClass.COMMODITY,
             AssetClass.BOND,
@@ -54,92 +51,62 @@ def nse() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="query",
-                label="Query",
+                name="q",
+                label="Search",
                 control=ControlKind.TEXT,
-                required=True,
-                description="Full-text query. Supports phrases (\"foo bar\"), boolean operators (AND / OR / NOT), and field-scoped terms (title:foo, source:reuters.com).",
+                required=False,
+                description="Full-text search, for example a company name such as Berkshire or a topic phrase.",
             ),
             InputSpec(
-                name="sources",
-                label="Source whitelist",
-                control=ControlKind.MULTISELECT,
+                name="symbol",
+                label="Symbol",
+                control=ControlKind.SYMBOL_PICKER,
                 required=False,
-                description="Restrict to these publisher domains.",
+                description="Optional entity filter, used when no search text is given.",
             ),
             InputSpec(
-                name="tickers",
-                label="Tickers",
-                control=ControlKind.MULTISELECT,
+                name="hours",
+                label="Window (hours)",
+                control=ControlKind.NUMBER,
                 required=False,
-                description="Restrict to items tagged with these tickers.",
+                description="Look-back window in hours (1 to 1440).",
+                min=1.0,
+                max=1440.0,
+                step=1.0,
+                unit="hours",
             ),
             InputSpec(
-                name="topics",
-                label="Topics",
-                control=ControlKind.MULTISELECT,
+                name="min_quality",
+                label="Quality floor",
+                control=ControlKind.SELECT,
                 required=False,
-                description="Restrict to editorial topic tags.",
-                options=[
-                    "earnings",
-                    "m&a",
-                    "central_bank",
-                    "geopolitics",
-                    "regulatory",
-                    "macro",
-                    "crypto_protocol",
-                ],
-            ),
-            InputSpec(
-                name="date_range",
-                label="Date range",
-                control=ControlKind.DATE_RANGE,
-                required=False,
-                description="Restrict by article published_utc.",
+                description="Lowest quality label kept. Standard by default; low must be chosen explicitly.",
+                options=["premium", "standard", "low"],
             ),
             InputSpec(
                 name="limit",
-                label="Page size",
+                label="Rows",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Hits per page (1..200).",
-                min=1,
-                max=200,
-                step=10,
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Maximum number of story rows (1 to 200).",
+                min=1.0,
+                max=200.0,
+                step=1.0,
             ),
         ],
-        defaults={
-            "query": "",
-            "sources": [],
-            "tickers": [],
-            "topics": [],
-            "date_range": "last_30d",
-            "limit": 50,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
-        },
+        defaults={"q": "", "symbol": "", "hours": 720, "min_quality": "standard", "limit": 50},
         provider_chain=ProviderChain(
-            primary="gdelt",
-            fallbacks=["rss", "cached_snapshot"],
+            primary="awareness",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=120, scope="per_input", persist=False),
+        caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["as_of", "query", "hits", "total_estimate", "data_mode"],
+            must_have=["status", "rows", "meta"],
             rows=True,
             series=False,
             cards=True,
@@ -148,84 +115,65 @@ def nse() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="published_utc", label="Time", kind="datetime", format="rel-time"),
-                ColumnSpec(key="source", label="Source", kind="tag"),
-                ColumnSpec(key="title_highlighted", label="Title", kind="text"),
-                ColumnSpec(key="snippet_highlighted", label="Snippet", kind="text"),
-                ColumnSpec(key="tickers", label="Tickers", kind="tag"),
-                ColumnSpec(key="topic", label="Topic", kind="tag"),
-                ColumnSpec(key="link", label="", kind="action"),
+                ColumnSpec(key="published_at", label="Time", kind="datetime", format="rel-time"),
+                ColumnSpec(key="publisher", label="Publisher", kind="tag"),
+                ColumnSpec(key="title", label="Headline", kind="text"),
+                ColumnSpec(key="symbols", label="Symbols", kind="tag"),
+                ColumnSpec(key="sentiment", label="Sentiment", kind="tag"),
+                ColumnSpec(key="quality_label", label="Quality", kind="tag"),
+                ColumnSpec(key="url", label="", kind="action"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="total_estimate", label="Total Hits", kind="kpi"),
-                CardSlot(key="returned_count", label="Returned", kind="kpi"),
-                CardSlot(key="sources_active", label="Sources", kind="kpi"),
+                CardSlot(key="count", label="Matches", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "NSE parses the query string into the GDELT DOC query DSL — phrases stay quoted, "
-            "boolean operators (AND/OR/NOT) and field-scoped terms (title:, source:) are "
-            "translated to GDELT's syntax, free terms become an implicit AND. The request also "
-            "passes the date_range and source whitelist through GDELT's startdatetime / "
-            "enddatetime / domain filters so the index does the filtering instead of "
-            "post-filtering in Python. RSS is consulted as a fallback when GDELT rate-limits or "
-            "is unavailable; the RSS path runs a substring scan over the curated feed cache "
-            "with the same filters. Highlights are server-side regex matches wrapped with "
-            "<mark> tags. `total_estimate` is GDELT's reported count (RSS reports the post-"
-            "filter hit count). When both providers fail, hits=[] with a warning listing both "
-            "adapters — no synthetic results are ever returned."
+            "NSE sends the search text to the awareness full-text index over the sourced news "
+            "store (titles, summaries and excerpts), restricted to the hours window and the "
+            "quality floor, collapsed to one row per story. Without search text it filters by the "
+            "entity symbol. Sentiment is FinBERT (ProsusAI/finbert) and quality is the awareness "
+            "quality gate. If nothing matches at standard quality the rows stay hidden: hidden_note "
+            "counts the lower-quality matches and relax suggests min_quality low. The quality "
+            "floor is never lowered silently."
         ),
         field_dict={
-            "query": FieldDef(description="Echoed input query string.", source="input"),
-            "hits[].published_utc": FieldDef(unit="iso8601", description="Article publish time.", source="feed"),
-            "hits[].source": FieldDef(description="Publisher domain.", source="derived"),
-            "hits[].title_highlighted": FieldDef(description="Title with <mark>...</mark> around matched terms.", source="computed"),
-            "hits[].snippet_highlighted": FieldDef(description="Snippet excerpt with <mark>...</mark> around matched terms.", source="computed"),
-            "hits[].tickers": FieldDef(description="Detected tickers; empty when uncertain.", source="ner"),
-            "hits[].topic": FieldDef(description="Editorial topic tag.", source="classifier"),
-            "hits[].link": FieldDef(unit="url", description="Direct link to the source article.", source="feed"),
-            "total_estimate": FieldDef(unit="count", description="Estimated total hits (GDELT count or RSS post-filter count).", source="adapter"),
-            "returned_count": FieldDef(unit="count", description="Number of hits in this page.", source="derived"),
+            "rows[].published_at": FieldDef(unit="iso8601", description="Publisher timestamp (UTC).", source="feed"),
+            "rows[].publisher": FieldDef(description="Publisher name.", source="feed"),
+            "rows[].title": FieldDef(description="Headline as published.", source="feed"),
+            "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (FinBERT label).", source="finbert"),
+            "rows[].quality_label": FieldDef(description="premium, standard or low.", source="awareness"),
+            "hidden_note": FieldDef(description="Count of matches hidden by the quality floor.", source="awareness"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
             require_as_of=True,
             require_latency_ms=True,
         ),
-        alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="nse_query_required_and_echoed",
-                description="Asserts an empty query returns a 400-equivalent warning AND when query is set it is echoed in the response.",
-                inputs={"query": "Federal Reserve"},
-                assertions=["query_echoed_in_response"],
+                name="nse_company_name_search_returns_sourced_rows",
+                description="A company-name query returns only rows with a publisher URL.",
+                inputs={"q": "Berkshire"},
+                assertions=["every_row_has_url", "rows_match_query_text_or_entity"],
             ),
             SemanticTest(
-                name="nse_highlights_match_terms",
-                description="For query='earnings', asserts every hit's title_highlighted or snippet_highlighted contains <mark>earnings</mark> (case-insensitive).",
-                inputs={"query": "earnings"},
-                assertions=["every_hit_has_mark_around_match"],
+                name="nse_quality_floor_not_silently_lowered",
+                description="With no rows at standard, hidden_note explains the floor and relax is min_quality low; rows stay empty.",
+                inputs={"q": "obscure", "min_quality": "standard"},
+                assertions=["rows_empty_at_standard", "relax_hint_present", "hidden_note_present"],
             ),
             SemanticTest(
-                name="nse_source_whitelist_restricts_hits",
-                description="With sources=['reuters.com'], asserts every hit.source ends with 'reuters.com'.",
-                inputs={"query": "fed", "sources": ["reuters.com"]},
-                assertions=["every_hit_source_in_whitelist"],
-            ),
-            SemanticTest(
-                name="nse_no_synthetic_hits_on_provider_outage",
-                description="When both GDELT and RSS fail, asserts hits=[] and warning lists both adapters.",
-                inputs={"query": "x", "_mock": "all_news_down"},
-                assertions=[
-                    "hits_empty_array",
-                    "warning_lists_both_providers",
-                ],
+                name="nse_empty_query_is_input_required",
+                description="A call with neither q nor symbol returns status input_required, never a broad news dump.",
+                inputs={},
+                assertions=["status_input_required"],
             ),
         ],
     )
