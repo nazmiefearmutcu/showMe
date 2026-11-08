@@ -682,7 +682,7 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     };
   }
   if (upper === "WB") {
-    return { countries: splitCsv(values.countries || "US, DE, JP, GB, FR, IT, ES, AU").map((item) => item.toUpperCase()), live_bonds: true };
+    return { countries: splitCsv(values.countries || "US, DE, JP, GB, FR, IT, ES, AU").map((item) => item.toUpperCase()), reference: false };
   }
   if (upper === "YAS") {
     // Only typed overrides are sent: generic US tenors use the live FRED CMT

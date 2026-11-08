@@ -45,6 +45,16 @@ _SOVEREIGN_FRED_IDS = {
 # were observed on the request date.
 _MODEL_TEMPLATE_VINTAGE = "2025-12-31"
 
+# WB#3: the region buckets the seed exposes (all | dm | em). The pane buckets
+# the same countries client-side; the backend must filter on the same sets.
+_DEVELOPED_CODES = frozenset({"US", "DE", "JP", "GB", "CA", "FR", "IT", "ES", "AU"})
+_EMERGING_CODES = frozenset({"TR", "BR", "MX", "ZA", "IN", "CN", "RU", "ID"})
+_REGION_BUCKETS: dict[str, frozenset[str] | None] = {
+    "all": None,
+    "dm": _DEVELOPED_CODES,
+    "em": _EMERGING_CODES,
+}
+
 # WB#1: a live row whose last FRED observation is older than this is flagged
 # ``stale`` so it is never presented as a current reading.
 _STALE_AFTER_DAYS = 120
@@ -139,17 +149,35 @@ class WBFunction(BaseFunction):
             for item in (raw_countries if isinstance(raw_countries, (list, tuple, set)) else str(raw_countries or "").split(","))
             if str(item).strip()
         }
-        fred_ids = {
-            country: fred_id
-            for country, fred_id in _SOVEREIGN_FRED_IDS.items()
-            if not country_filter or country in country_filter
+        region = str(params.get("region") or "all").strip().lower()
+        if region not in _REGION_BUCKETS:
+            # Data policy: an unknown input is an explicit input error, never a silent "all".
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={"status": "input_error", "reason": f"Unknown region {region!r} (use all, dm or em).",
+                      "next_actions": ["Pick region all, dm or em."], "rows": []},
+                warnings=[f"unknown region {region!r}"],
+            )
+        bucket = _REGION_BUCKETS[region]
+        selected = {
+            country
+            for country in _SOVEREIGN_FRED_IDS
+            if (not country_filter or country in country_filter) and (bucket is None or country in bucket)
         }
+        if not selected:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={"status": "empty", "reason": "No sovereign series match the requested region and countries.",
+                      "next_actions": ["Widen the region or the country list."], "rows": []},
+                warnings=["no sovereign series match region/countries"],
+            )
+        fred_ids = {country: _SOVEREIGN_FRED_IDS[country] for country in selected}
         # Default-polarity flip + keyless FRED CSV (survey S2 c#3, item 4):
         # WB pulls live sovereign yields by default — keyed adapter when
         # wired, otherwise the keyless fredgraph.csv endpoint — and serves
         # the labelled template only behind ``reference=true``.
         if _truthy(params.get("reference")):
-            data = {country: value for country, value in _world_bond_template().items() if not country_filter or country in country_filter}
+            data = {country: value for country, value in _world_bond_template().items() if country in selected}
             return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(data, "sovereign_yield_model"),
                                   sources=["sovereign_yield_model"],
                                   warnings=["reference=true; serving the labelled sovereign yield template."])
@@ -185,7 +213,7 @@ class WBFunction(BaseFunction):
         missing_countries = sorted(c for c, y in out.items() if y != y)
         out = {c: y for c, y in out.items() if y == y}
         if not out:
-            out = _world_bond_template()
+            out = {country: value for country, value in _world_bond_template().items() if country in selected}
             return FunctionResult(code=self.code, instrument=None, data=_rows_from_yields(out, "sovereign_yield_model"), sources=["sovereign_yield_model"],
                                   warnings=["Live sovereign yields unavailable (keyed FRED adapter or keyless CSV); showing the labelled reference template.",
                                             *provider_errors])

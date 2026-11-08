@@ -59,13 +59,13 @@ def wb() -> FunctionManifest:
                 options=["all", "dm", "em"],
             ),
             InputSpec(
-                name="live_bonds",
-                label="Live FRED",
+                name="reference",
+                label="Labelled template",
                 control=ControlKind.BOOLEAN,
                 required=False,
                 description=(
-                    "If true, pull live sovereign yields from FRED. When false the"
-                    " pane shows labelled template rows from the sovereign_yield_model."
+                    "Default false: pull live sovereign yields from FRED (keyless CSV). If true,"
+                    " serve the labelled sovereign_yield_model reference template instead."
                 ),
             ),
             InputSpec(
@@ -84,7 +84,7 @@ def wb() -> FunctionManifest:
         ],
         defaults={
             "region": "all",
-            "live_bonds": False,
+            "reference": False,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
@@ -140,10 +140,12 @@ def wb() -> FunctionManifest:
         ),
         methodology=(
             "WB ships a curated country roster split into developed (US/DE/JP/GB/FR/IT/ES/AU/CA) and"
-            " emerging (TR/BR/MX/ZA/IN/CN/RU/ID) buckets. With ``live_bonds=true`` the engine fans out"
-            " FRED long-rate series IDs (DGS10, IRLTLT01* family) per country and pins them into the"
-            " grid with as_of dates. With ``live_bonds=false`` (default) the response carries labelled"
-            " ``source_mode=sovereign_yield_model`` rows so the pane never silently fakes a live read."
+            " emerging (TR/BR/MX/ZA/IN/CN/RU/ID) buckets. ``region`` (all/dm/em) filters those buckets"
+            " on the backend. With ``reference=false`` (default) the engine fans out FRED long-rate series"
+            " IDs (DGS10, IRLTLT01* family) per country and pins them into the grid with each FRED"
+            " observation date as as_of; countries whose series fail are listed in missing_countries."
+            " With ``reference=true`` the response carries labelled ``source_mode=sovereign_yield_model``"
+            " rows so the pane never silently fakes a live read."
             " Δ-vs-US is computed client-side as (country_yield - US_yield) × 100 bp; rank intensity"
             " uses the visible min/max so the heatmap rescales when the region tab is switched."
         ),
@@ -176,8 +178,8 @@ def wb() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="wb_template_mode_is_labelled",
-                description="With live_bonds=false rows carry source_mode=sovereign_yield_model.",
-                inputs={"live_bonds": False},
+                description="With reference=true rows carry source_mode=sovereign_yield_model.",
+                inputs={"reference": True},
                 assertions=[
                     "rows_non_empty",
                     "every_row_source_mode_equals_sovereign_yield_model",
@@ -185,8 +187,8 @@ def wb() -> FunctionManifest:
             ),
             SemanticTest(
                 name="wb_live_mode_routes_to_fred",
-                description="With live_bonds=true the chain hits FRED and rows are flagged source_mode=fred.",
-                inputs={"live_bonds": True},
+                description="With reference=false (default) the chain hits FRED and rows are flagged source_mode=fred.",
+                inputs={"reference": False},
                 assertions=[
                     "provider_chain_used_fred",
                     "at_least_one_row_source_mode_equals_fred",
