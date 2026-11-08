@@ -162,6 +162,16 @@ describe("TAUC pane — load states", () => {
     expect(screen.getByText(/No auctions returned/i)).toBeInTheDocument();
   });
 
+  it("does not assert an empty calendar when TreasuryDirect rows are missing", () => {
+    setMockFn({
+      state: "ok",
+      data: { data: { status: "ok", rows: [], summary: { source_mode: "treasurydirect" } } },
+    });
+    render(<TAUCPane code="TAUC" />);
+    expect(screen.getByText(/TreasuryDirect returned no upcoming auction rows/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No upcoming Treasury auctions/i)).toBeNull();
+  });
+
   it("renders rows + totals when ok", () => {
     setMockFn({ state: "ok", ...payloadWith("treasurydirect") });
     const { container } = render(<TAUCPane code="TAUC" />);
