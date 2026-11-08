@@ -245,7 +245,10 @@ class CRPRFunction(BaseFunction):
         "CRPR derives a MODEL-IMPLIED credit profile from the issuer's latest SEC EDGAR "
         "companyfacts (XBRL): gross debt = LongTermDebt(+Current) + ShortTermBorrowings; "
         "EBITDA proxy = OperatingIncomeLoss + DepreciationDepletionAndAmortization; "
-        "interest coverage = EBITDA / InterestExpense. Leverage (debt/EBITDA) and coverage "
+        "interest coverage = EBIT (OperatingIncomeLoss) / InterestExpense. Only annual (about "
+        "365-day) flow facts are used, and interest and D&A must share the EBIT fiscal period. "
+        "A missing input is reported as null with a warning, never as zero, and no rating is "
+        "derived without both leverage and coverage. Leverage (debt/EBITDA) and coverage "
         "are mapped to a coarse, transparent rating bucket (AA..CCC). This is implied from "
         "financials, NOT a paid S&P/Moody's/Fitch feed. If the caller pins a ``rating`` dict "
         "it is echoed verbatim. Sovereign issuers (no SEC CIK) get a labelled reference profile."
@@ -378,23 +381,44 @@ class CRPRFunction(BaseFunction):
         lt_debt_cur = _crpr_pick(facts, ("LongTermDebtCurrent", "DebtCurrent"), flow=False)
         short_debt = _crpr_pick(facts, ("ShortTermBorrowings",), flow=False)
 
-        gross_debt = sum(x[0] for x in (lt_debt, lt_debt_cur, short_debt) if x is not None)
-        ebitda = (op_income[0] if op_income else 0.0) + (dep_amort[0] if dep_amort else 0.0)
-        leverage = round(gross_debt / ebitda, 3) if ebitda > 0 else None
-        coverage = round(ebitda / interest[0], 3) if interest and interest[0] > 0 else None
-        fin_date = next((x[1] for x in (op_income, lt_debt, interest) if x is not None), _as_of())
-        coverage_warnings: list[str] = []
-        if op_income is not None and interest is None:
-            latest_interest = _crpr_pick(facts, interest_concepts, flow=True)
-            if latest_interest is not None:
-                coverage_warnings.append(
-                    f"Interest expense has no annual entry for the EBIT period ending {period_end} "
-                    f"(latest annual interest ends {latest_interest[1]}); interest coverage is not computed."
-                )
-            else:
-                coverage_warnings.append("No annual interest expense reported; interest coverage is not computed.")
+        # The LongTermDebt fallback is the total including the current portion
+        # (Apple: 78.114bn = 68.208bn noncurrent + 9.906bn current), so the current
+        # portion is added only when the noncurrent figure or no long-term figure was used.
+        term_debt_parts = [lt_debt[0]] if lt_debt is not None else []
+        if lt_debt_cur is not None and (lt_debt is None or lt_debt[2] != "LongTermDebt"):
+            term_debt_parts.append(lt_debt_cur[0])
+        gross_debt = sum(term_debt_parts) + (short_debt[0] if short_debt is not None else 0.0)
 
-        if gross_debt <= 0 and ebitda <= 0:
+        # A missing input stays None. It is never read as zero.
+        ebit = op_income[0] if op_income is not None else None
+        ebitda = (ebit + dep_amort[0]) if (ebit is not None and dep_amort is not None) else None
+        leverage = round(gross_debt / ebitda, 3) if ebitda is not None and ebitda > 0 else None
+        # Coverage is EBIT / interest expense, the conventional definition.
+        coverage = round(ebit / interest[0], 3) if ebit is not None and interest is not None and interest[0] > 0 else None
+        fin_date = next((x[1] for x in (op_income, lt_debt, interest) if x is not None), _as_of())
+        input_warnings: list[str] = []
+        if op_income is None:
+            input_warnings.append(
+                "No annual OperatingIncomeLoss (EBIT) reported; EBITDA, leverage and interest coverage are not computed."
+            )
+        else:
+            if dep_amort is None:
+                input_warnings.append(
+                    f"No annual D&A for the EBIT period ending {period_end}; EBITDA and leverage are not computed."
+                )
+            if interest is None:
+                latest_interest = _crpr_pick(facts, interest_concepts, flow=True)
+                if latest_interest is not None:
+                    input_warnings.append(
+                        f"Interest expense has no annual entry for the EBIT period ending {period_end} "
+                        f"(latest annual interest ends {latest_interest[1]}); interest coverage is not computed."
+                    )
+                else:
+                    input_warnings.append("No annual interest expense reported; interest coverage is not computed.")
+        if ebitda is not None and ebitda <= 0:
+            input_warnings.append("EBITDA is not positive, so leverage is not meaningful.")
+
+        if gross_debt <= 0 and (ebitda or 0.0) <= 0:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -416,10 +440,11 @@ class CRPRFunction(BaseFunction):
             "interest_expense_usd": interest[0] if interest else None,
             "interest_period_end": interest[1] if interest else None,
         }
-        if coverage is None:
+        if leverage is None or coverage is None:
             # A null input must not reach the bucket map, which would score it as CCC.
-            reason = coverage_warnings[0] if coverage_warnings else (
-                "Interest coverage is not positive, so no implied rating is derived from these filings."
+            reason = "; ".join(input_warnings) or (
+                "Required inputs (EBIT, D&A and interest for one annual period, with positive EBITDA) "
+                "are not all available, so no implied rating is derived from these filings."
             )
             return FunctionResult(
                 code=self.code,
@@ -446,7 +471,7 @@ class CRPRFunction(BaseFunction):
                     "next_actions": ["Provide a ``rating`` override, or retry when the filings report matching annual interest expense."],
                 },
                 sources=["sec_edgar"],
-                warnings=[reason],
+                warnings=list(input_warnings) or [reason],
                 metadata={"latency_ms": latency_ms, "data_mode": "empty", "as_of": fin_date},
             )
 

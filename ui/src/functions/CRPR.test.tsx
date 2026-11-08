@@ -264,6 +264,14 @@ describe("CRPR pane — D1 rating drivers as KPI cards", () => {
     expect(screen.getByText("5.6×")).toBeInTheDocument();
   });
 
+  it("labels interest coverage as EBIT over interest expense, not EBITDA", () => {
+    setMockFn({ state: "ok", ...corporatePayload() });
+    render(<CRPRPane code="CRPR" />);
+    const card = screen.getByText("Interest coverage").closest(".stat-card");
+    expect(card?.textContent ?? "").toContain("EBIT ÷ interest expense");
+    expect(card?.textContent ?? "").not.toContain("EBITDA");
+  });
+
   it("renders the issuer scale (gross debt / EBITDA) as compact currency", () => {
     setMockFn({ state: "ok", ...corporatePayload() });
     render(<CRPRPane code="CRPR" />);
