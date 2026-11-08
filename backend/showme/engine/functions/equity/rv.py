@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import statistics
 from typing import Any
 
 
@@ -35,6 +36,10 @@ _FIELD_DICTIONARY = {
     "rank_pe": "Ascending PE rank within peer set.",
     "percentile_pe": "Peer percentile for PE, lower is cheaper.",
     "peer_source": "Where the peer set came from: user_input, finnhub, or reference_sector_map.",
+    "peer_count": "Number of peers (target excluded) that returned multiples. Under three draws a warning.",
+    "peer_median": "Median of each metric across the peers (target excluded); P/E uses positive values only.",
+    "peer_median_pe": "Peer median trailing P/E.",
+    "pe_vs_peer_pct": "Target P/E premium (+) or discount (-) to the peer median P/E, in percent.",
 }
 
 
@@ -55,10 +60,27 @@ class RVFunction(BaseFunction):
         metadata: dict[str, Any] = {"peers": peers, "peer_source": peer_source}
         ranked = [by_symbol[s] for s in [target] + peers if s in by_symbol]
         reason: str | None = None
+        warnings: list[str] = []
+        peer_count: int | None = None
+        peer_median: dict[str, float] = {}
+        peer_median_pe: float | None = None
+        pe_vs_peer_pct: float | None = None
         if target in by_symbol and len(ranked) > 1:
             status = "ok"
             rows = _rank_rows(ranked, target)
             sources = _sources(peer_source, live=True)
+            peer_rows = [r for r in rows if not r.get("is_target")]
+            peer_count = len(peer_rows)
+            peer_median = _peer_medians(peer_rows)
+            peer_median_pe = peer_median.get("pe")
+            target_pe = finite(by_symbol[target].get("pe"))
+            if target_pe is not None and target_pe > 0 and peer_median_pe:
+                pe_vs_peer_pct = (target_pe / peer_median_pe - 1.0) * 100.0
+            if peer_count < 3:
+                warnings.append(
+                    f"Only {peer_count} peer(s) returned multiples; the peer median is "
+                    "unreliable with fewer than three peers."
+                )
         else:
             status = "provider_unavailable"
             if not self.deps.yfinance:
@@ -98,6 +120,12 @@ class RVFunction(BaseFunction):
             "rows": rows,
             "peers": peers,
             "peer_source": peer_source,
+            # Peer statistics exclude the target. They are None (not zero or a
+            # guess) when no peer set could be priced.
+            "peer_count": peer_count,
+            "peer_median": peer_median or None,
+            "peer_median_pe": peer_median_pe,
+            "pe_vs_peer_pct": pe_vs_peer_pct,
             "methodology": _METHODOLOGY,
             "field_dictionary": dict(_FIELD_DICTIONARY),
         }
@@ -111,6 +139,7 @@ class RVFunction(BaseFunction):
             code=self.code, instrument=instrument,
             data=data,
             sources=sources,
+            warnings=warnings,
             metadata=metadata,
         )
 
@@ -261,3 +290,24 @@ def _rank_rows(rows: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
             row["percentile_pe"] = round(rank[1] * 100, 2)
         row["is_target"] = row.get("symbol") == target
     return rows
+
+
+_PEER_MEDIAN_KEYS = (
+    "pe", "fwd_pe", "pb", "ps", "ev_ebitda", "roe", "roa", "debt_equity", "div_yield", "marketCap",
+)
+
+
+def _peer_medians(peer_rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Median per metric across the peer rows (target excluded).
+
+    Only finite values take part. P/E uses positive values only, matching the
+    ranking: a negative P/E means loss-making, not cheap. A metric no peer
+    supplies gets no key rather than a zero.
+    """
+    out: dict[str, float] = {}
+    for key in _PEER_MEDIAN_KEYS:
+        values = [finite(r.get(key)) for r in peer_rows]
+        usable = [v for v in values if v is not None and (v > 0 if key == "pe" else True)]
+        if usable:
+            out[key] = float(statistics.median(usable))
+    return out
