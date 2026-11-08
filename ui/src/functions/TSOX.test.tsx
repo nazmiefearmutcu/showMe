@@ -1,14 +1,22 @@
 /**
- * TSOX pane — ticket input honesty (wb1-g10 UI-8).
+ * TSOX pane — ticket input honesty (wb1-g10 UI-8) and honest preview state
+ * (WB1-G16, TSOX#3 / TSOX#4).
  *
  * Pins:
  *  - a blank or zero quantity and a blank LIMIT price never reach the
  *    sidecar as 0 (Number('') is 0 and finite): Preview stays disabled;
  *  - a valid ticket sends real numbers and always submit=false;
  *  - the ticket symbol follows the linked symbol prop instead of freezing
- *    at the first render.
+ *    at the first render;
+ *  - an `input_error` preview renders as an input error, never as a valid
+ *    preview (the backend sends broker "paper" on these, so the old
+ *    `broker === "paper"` check would have shown it as OK);
+ *  - bond analytics the backend reports as `not_computed` are labelled as
+ *    not computed rather than left silently absent.
+ *
+ * `runFunction` is mocked; there is no sidecar transport in these tests.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { runFunctionMock } = vi.hoisted(() => ({
@@ -100,5 +108,74 @@ describe("TSOX pane — ticket input honesty", () => {
     expect(screen.getByLabelText("Symbol / CUSIP")).toHaveValue("ZB=F");
     rerender(<TSOXPane code="TSOX" symbol="ZN=F" />);
     expect(screen.getByLabelText("Symbol / CUSIP")).toHaveValue("ZN=F");
+  });
+});
+
+function payload(data: Record<string, unknown>) {
+  return { data, sources: ["paper_ticket"], elapsed_ms: 2, warnings: [] };
+}
+
+function previewPayload() {
+  return payload({
+    broker: "paper",
+    status: "preview",
+    submit: false,
+    symbol: "ZN=F",
+    asset_class: "BOND",
+    side: "BUY",
+    quantity: 1,
+    order_type: "LIMIT",
+    time_in_force: "GTC",
+    price: 100.0625,
+    next_actions: [],
+    analytics: {
+      status: "not_computed",
+      reason: "DV01 needs the bond's modified duration, which the ticket does not carry.",
+      not_computed: ["dv01"],
+    },
+  });
+}
+
+function inputErrorPayload() {
+  return payload({
+    status: "input_error",
+    reason: "LIMIT tickets need a limit price greater than 0.",
+    field: "price",
+    broker: "paper",
+    submit: false,
+    symbol: "ZN=F",
+    asset_class: "BOND",
+    side: "BUY",
+    quantity: 1,
+    order_type: "LIMIT",
+    time_in_force: "GTC",
+    price: null,
+    next_actions: ["Correct the price field in the ticket controls and preview again."],
+  });
+}
+
+describe("TSOX pane — honest preview state", () => {
+  it("renders an input_error as an input error, not a valid preview", async () => {
+    runFunctionMock.mockResolvedValue(inputErrorPayload());
+    render(<TSOXPane code="TSOX" symbol="ZN=F" />);
+    fireEvent.click(screen.getByRole("button", { name: /Preview ticket/i }));
+    await waitFor(() => expect(runFunctionMock).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Input error")).toBeInTheDocument();
+    expect(
+      screen.getByText("LIMIT tickets need a limit price greater than 0."),
+    ).toBeInTheDocument();
+    // The KPI strip that presents a ticket as previewed must not render.
+    expect(screen.queryByLabelText("Ticket KPIs")).toBeNull();
+  });
+
+  it("labels bond analytics the backend reports as not computed", async () => {
+    runFunctionMock.mockResolvedValue(previewPayload());
+    render(<TSOXPane code="TSOX" symbol="ZN=F" />);
+    fireEvent.click(screen.getByRole("button", { name: /Preview ticket/i }));
+    expect(await screen.findByText("Bond analytics not computed")).toBeInTheDocument();
+    expect(
+      screen.getByText("DV01 needs the bond's modified duration, which the ticket does not carry."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Ticket KPIs")).toBeInTheDocument();
   });
 });

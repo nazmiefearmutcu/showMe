@@ -45,6 +45,7 @@ interface TSOXPayload {
   tif?: string;
   price?: number;
   next_actions?: string[];
+  analytics?: { status?: string; reason?: string; not_computed?: string[] };
 }
 
 const TENOR_PRESETS = [
@@ -119,7 +120,10 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
   }, [code, side, orderType, tif, qtyNumber, priceNumber, ticketReady, ticketSymbol]);
 
   const inputRequired = payload.status === "input_required";
-  const previewOk = payload.status === "preview" || (payload.broker === "paper" && !inputRequired);
+  // WB1-G16 TSOX#4: an invalid ticket is input_error and must never read as a valid preview.
+  const inputError = payload.status === "input_error";
+  const previewOk =
+    payload.status === "preview" || (payload.broker === "paper" && !inputRequired && !inputError);
 
   return (
     <div className="u-pane-host">
@@ -272,11 +276,14 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
                 title="No ticket previewed yet"
                 body="Set the ticket fields and press Preview to round-trip through the sidecar."
               />
-            ) : inputRequired ? (
+            ) : inputRequired || inputError ? (
               <div style={warningBox}>
-                <strong className="u-text-warn">Input required</strong>
+                <strong className="u-text-warn">{inputError ? "Input error" : "Input required"}</strong>
                 <span className="u-text-secondary">
-                  {payload.reason ?? "Trade ticket needs a positive quantity."}
+                  {payload.reason ??
+                    (inputError
+                      ? "The ticket has an invalid field. Nothing was sent to a broker."
+                      : "Trade ticket needs a positive quantity.")}
                 </span>
               </div>
             ) : (
@@ -307,6 +314,12 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
                     tone="neutral"
                   />
                 </section>
+                {payload.analytics?.status === "not_computed" ? (
+                  <div style={hintBox}>
+                    <strong className="u-text-secondary">Bond analytics not computed</strong>
+                    <span className="u-text-mute">{payload.analytics.reason}</span>
+                  </div>
+                ) : null}
                 {payload.next_actions?.length ? (
                   <div style={hintBox}>
                     <strong className="u-text-secondary">Next actions</strong>
