@@ -26,6 +26,11 @@ from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.portfolio.state import PortfolioState
+from showme.engine.services.watchlist_store import list_watchlists
+
+# Symbol-scoped headline searches are capped; the rest are listed, not searched.
+_MAX_SYMBOL_SEARCHES = 12
 
 
 @FunctionRegistry.register
@@ -35,12 +40,24 @@ class BRIEFFunction(BaseFunction):
     category = "news"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        watchlist = params.get("watchlist") or ["AAPL", "MSFT", "BTCUSDT"]
-        if isinstance(watchlist, str):
-            watchlist = [s.strip() for s in watchlist.split(",") if s.strip()]
-        watchlist = [str(s).upper() for s in watchlist if str(s).strip()]
+        # Watchlist precedence: explicit input, else the user's own portfolio
+        # positions plus saved watchlists. Never a hard-coded demo list.
+        portfolio_symbols, watch_symbols, source_errors = _portfolio_and_watchlist_symbols()
+        explicit = params.get("watchlist")
+        if explicit:
+            if isinstance(explicit, str):
+                explicit = [s.strip() for s in explicit.split(",") if s.strip()]
+            watchlist = _normalise_symbols(explicit)
+            watchlist_source = "input"
+        else:
+            watchlist = _normalise_symbols([*portfolio_symbols, *watch_symbols])
+            watchlist_source = "positions_and_watchlists" if watchlist else "none"
         if instrument and instrument.symbol and instrument.symbol.upper() not in watchlist:
             watchlist = [instrument.symbol.upper(), *watchlist]
+            if watchlist_source == "none":
+                watchlist_source = "instrument"
+        positions_set = set(portfolio_symbols)
+        positions_covered = len([s for s in watchlist if s in positions_set])
         # ``live`` defaults to True (manifest default). It is now an OPT-OUT
         # toggle, not an opt-in: the brief composes from real surfaces by
         # default. Passing live=false explicitly is the only way to skip the
@@ -49,6 +66,7 @@ class BRIEFFunction(BaseFunction):
         live = _truthy(params.get("live_news"), params.get("live"), default=True)
         limit = _clamp_int(params.get("limit"), default=25, min_value=1, max_value=50)
         timeout = params.get("news_timeout", params.get("timeout", 8))
+        base_warnings = [f"{err}" for err in source_errors]
 
         if not live:
             markdown = _no_compose_markdown(watchlist)
@@ -63,14 +81,42 @@ class BRIEFFunction(BaseFunction):
                     "article_count": 0,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
-                    "cards": _cards(watchlist, 0, "off"),
+                    "cards": _cards(watchlist, 0, "off", positions_covered),
+                    "watchlist_source": watchlist_source,
                     "next_actions": [
                         "Pass live=true (default) to compose the brief from real watchlist headlines.",
                     ],
                 },
                 sources=["watchlist_brief_builder"],
-                warnings=["Live composition disabled (live=false); no headlines fetched."],
+                warnings=[*base_warnings, "Live composition disabled (live=false); no headlines fetched."],
                 metadata={"format": "markdown", "live": False, "data_mode": "off"},
+            )
+
+        if not watchlist:
+            # No positions, no saved watchlists, no input: say so and fetch nothing.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "needs_input",
+                    "markdown": _needs_input_markdown(),
+                    "articles": [],
+                    "rows": [],
+                    "watchlist": [],
+                    "watchlist_source": "none",
+                    "symbols_searched": [],
+                    "article_count": 0,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], 0, "needs_input", 0),
+                    "next_actions": [
+                        "Add positions in PORT (or run the legacy-crypto import).",
+                        "Save a watchlist, or pass watchlist=AAPL,MSFT to brief specific symbols.",
+                    ],
+                },
+                sources=["portfolio_state", "watchlist_store"],
+                warnings=[*base_warnings, "No portfolio positions or watchlist symbols to brief on."],
+                metadata={"format": "markdown", "live": False, "data_mode": "needs_input"},
             )
 
         # ---- LIVE COMPOSITION (default) -------------------------------------
@@ -102,7 +148,12 @@ class BRIEFFunction(BaseFunction):
 
         top_fn = TOPFunction(self.deps)
         # General macro headlines + per-symbol watchlist headlines, concurrently.
-        wl_symbols = watchlist[:6]
+        wl_symbols = watchlist[:_MAX_SYMBOL_SEARCHES]
+        if len(watchlist) > len(wl_symbols):
+            base_warnings.append(
+                f"Symbol headlines searched for the first {len(wl_symbols)} of "
+                f"{len(watchlist)} symbols."
+            )
         per_symbol = max(3, min(limit // max(1, len(wl_symbols) + 1), 10))
 
         async def _macro() -> tuple[str, Any]:
@@ -149,8 +200,10 @@ class BRIEFFunction(BaseFunction):
         _, finbert_warning = await stamp_items(articles)
         if finbert_warning:
             warnings.append(finbert_warning)
+        warnings = [*base_warnings, *warnings]
 
-        markdown = _compose_markdown(watchlist, articles)
+        source_label = _SOURCE_LABELS.get(watchlist_source, "Watchlist")
+        markdown = _compose_markdown(watchlist, articles, source_label)
         status = "ok" if articles else "provider_unavailable"
         if not sources:
             sources = ["watchlist_brief_builder"]
@@ -172,10 +225,17 @@ class BRIEFFunction(BaseFunction):
                 "articles": articles,
                 "rows": articles,
                 "watchlist": watchlist,
+                "watchlist_source": watchlist_source,
+                "symbols_searched": wl_symbols,
                 "article_count": len(articles),
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
-                "cards": _cards(watchlist, len(articles), "live_official" if articles else "provider_unavailable"),
+                "cards": _cards(
+                    watchlist,
+                    len(articles),
+                    "live_official" if articles else "provider_unavailable",
+                    positions_covered,
+                ),
                 "next_actions": next_actions,
             },
             sources=sources,
@@ -194,8 +254,10 @@ class BRIEFFunction(BaseFunction):
 
 _METHODOLOGY = (
     "BRIEF composes the briefing from existing surfaces — it does NOT call an LLM "
-    "and does NOT fabricate prose. It merges the input watchlist (or the default "
-    "set), then calls TOP() once for cross-asset top news and once per watchlist "
+    "and does NOT fabricate prose. The watchlist is the input list when one is "
+    "passed; otherwise it is the user's portfolio positions plus saved watchlists. "
+    "With neither, status is needs_input and no news is fetched. It then calls "
+    "TOP() once for cross-asset top news and once per watchlist "
     "symbol for symbol-scoped headlines (both reading TOP's ranked live RSS/GDELT "
     "items), de-duplicates by URL/title, and renders each headline as a markdown "
     "bullet whose link is the evidence cite. The structured `articles` array "
@@ -212,17 +274,87 @@ _FIELD_DICTIONARY: dict[str, str] = {
     "articles[].url": "Direct HTTPS link to the source article — the evidence cite.",
     "articles[].source": "Publisher / source name.",
     "articles[].matched_symbol": "Symbol this article was tagged to (MACRO for cross-asset TOP news).",
-    "watchlist": "Effective watchlist used (input + instrument).",
+    "watchlist": "Effective watchlist used (input, or positions plus saved watchlists, plus instrument).",
+    "watchlist_source": "input / positions_and_watchlists / instrument / none.",
+    "symbols_searched": "Symbols that received a symbol-scoped headline search (capped).",
     "article_count": "Number of cited articles.",
     "next_actions": "Suggested follow-up actions when no live headlines were returned.",
 }
 
 
-def _cards(watchlist: list[str], article_count: int, data_mode: str) -> list[dict[str, Any]]:
+_SOURCE_LABELS = {
+    "input": "Watchlist",
+    "positions_and_watchlists": "Positions + saved watchlists",
+    "instrument": "Instrument",
+    "none": "Watchlist",
+}
+
+
+def _normalise_symbols(values: list[Any]) -> list[str]:
+    out: list[str] = []
+    for raw in values:
+        sym = str(raw or "").strip().upper()
+        if sym and sym not in out:
+            out.append(sym)
+    return out
+
+
+def _portfolio_and_watchlist_symbols() -> tuple[list[str], list[str], list[str]]:
+    """Portfolio position symbols, saved-watchlist symbols, and any read errors.
+
+    Errors go to the warnings list. A failed read is never replaced by a demo list.
+    """
+    portfolio_symbols: list[str] = []
+    watch_symbols: list[str] = []
+    errors: list[str] = []
+    try:
+        portfolio = PortfolioState()
+        portfolio.import_legacy_crypto()
+        portfolio_symbols = _normalise_symbols([p.instrument.symbol for p in portfolio.positions])
+    except Exception as exc:  # reported honestly, not hidden
+        errors.append(f"Portfolio positions unavailable: {type(exc).__name__}: {exc}")
+    try:
+        for entry in list_watchlists():
+            watch_symbols.extend(entry.get("symbols") or [])
+        watch_symbols = _normalise_symbols(watch_symbols)
+    except Exception as exc:
+        errors.append(f"Saved watchlists unavailable: {type(exc).__name__}: {exc}")
+    return portfolio_symbols, watch_symbols, errors
+
+
+def _needs_input_markdown() -> str:
+    return "\n".join(
+        [
+            f"# ShowMe Daily Brief — {datetime.now(timezone.utc):%Y-%m-%d}",
+            "",
+            "**Symbols:** none",
+            "",
+            "## Top Stories",
+            "",
+            "- No portfolio positions or saved watchlist symbols to brief on.",
+            "",
+            "## Next actions",
+            "",
+            "- Add positions in PORT, or save a watchlist.",
+            "- Or pass a watchlist input to brief specific symbols.",
+        ]
+    )
+
+
+def _cards(
+    watchlist: list[str],
+    article_count: int,
+    data_mode: str,
+    positions_covered: int | None = None,
+) -> list[dict[str, Any]]:
     return [
         {"key": "article_count", "label": "Stories", "value": article_count},
         {"key": "watchlist_size", "label": "Watchlist", "value": len(watchlist)},
-        {"key": "positions_covered", "label": "Positions", "value": len(watchlist)},
+        {
+            "key": "positions_covered",
+            "label": "Positions",
+            "value": len(watchlist) if positions_covered is None else positions_covered,
+        },
         {"key": "data_mode", "label": "Mode", "value": data_mode},
         {"key": "as_of", "label": "As of", "value": datetime.now(timezone.utc).isoformat()},
     ]
@@ -276,11 +408,13 @@ def _strip_html(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _compose_markdown(watchlist: list[str], articles: list[dict[str, Any]]) -> str:
+def _compose_markdown(
+    watchlist: list[str], articles: list[dict[str, Any]], source_label: str = "Watchlist"
+) -> str:
     lines = [
         f"# ShowMe Daily Brief — {datetime.now(timezone.utc):%Y-%m-%d}",
         "",
-        f"**Watchlist:** {', '.join(watchlist)}",
+        f"**{source_label}:** {', '.join(watchlist)}",
         "",
         "## Top Stories",
         "",

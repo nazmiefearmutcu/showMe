@@ -161,6 +161,39 @@ describe("BRIEF pane — load states", () => {
   });
 });
 
+describe("BRIEF pane — default watchlist source (BRIEF#1)", () => {
+  it("labels a positions-sourced list as positions, not as a hand-picked watchlist", () => {
+    const lp = livePayload();
+    const sourced = {
+      watchlist: ["AAPL", "NVDA"],
+      watchlist_source: "positions_and_watchlists",
+    };
+    lp.data.data = { ...lp.data.data, ...sourced };
+    setMockFn({ state: "ok", ...lp });
+    render(<BRIEFPane code="BRIEF" />);
+    expect(screen.getByText(/Positions \+ saved watchlists: AAPL, NVDA/)).toBeInTheDocument();
+    expect(screen.queryByText(/^Watchlist: AAPL, NVDA/)).toBeNull();
+  });
+
+  it("shows an honest needs-input state with the next action when nothing is watched", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "needs_input",
+          articles: [],
+          watchlist: [],
+          next_actions: ["Add positions in PORT (or run the legacy-crypto import)."],
+        },
+      },
+    });
+    render(<BRIEFPane code="BRIEF" />);
+    expect(screen.getByText(/Nothing to brief yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/Add positions in PORT/)).toBeInTheDocument();
+    expect(screen.queryByText(/AAPL/)).toBeNull();
+  });
+});
+
 describe("BRIEF pane — live payload", () => {
   it("links headlines via `link`, cites sources, and flags link-less rows", () => {
     setMockFn({ state: "ok", ...livePayload() });

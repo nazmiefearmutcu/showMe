@@ -145,10 +145,7 @@ def brief() -> FunctionManifest:
         ),
         methodology=(
             "BRIEF composes the briefing from existing surfaces — it does NOT call an LLM and "
-            "does NOT fabricate prose. (1) Read positions from engine.portfolio.state, (2) "
-            "merge with the input watchlist (or WATCH's persisted list), (3) call READ() to "
-            "fetch headlines for that symbol set, (4) call TOP() for cross-asset top news, (5) "
-            "call ECO() for the next 24h calendar. The markdown output lists each section as a "
+            "does NOT fabricate prose. (1) With no watchlist input, read the symbols of the user's portfolio positions (engine.portfolio.state) and of the saved watchlists (watchlist store), and merge them; an explicit watchlist input replaces that default. With no symbols at all the status is 'needs_input' and no news is fetched. (2) Call TOP() for cross-asset top news and once per symbol (capped) for symbol-scoped headlines. READ() and ECO() are not called. The markdown output lists each section as a "
             "bulleted set of headlines with the source publisher in parentheses and a direct "
             "link to the original article — every bullet is a cite. The structured `articles` "
             "array carries the same rows so downstream callers can re-render without re-parsing "
