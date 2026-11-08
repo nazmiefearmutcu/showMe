@@ -90,28 +90,6 @@ class DDMFunction(BaseFunction):
                 },
                 sources=list(set(sources)), warnings=warnings,
             )
-            # No positive dividend means no Gordon value: report the missing
-            # input explicitly instead of a fake 0.0 fair value with status ok.
-            return FunctionResult(
-                code=self.code, instrument=instrument,
-                data={"status": "needs_input",
-                      "reason": "No positive trailing dividend for this instrument; DDM needs dividend_ttm to value it.",
-                      "next_actions": [
-                          "Pass dividend_ttm explicitly to value the shares on a Gordon basis.",
-                          "Use DCF for non-dividend payers.",
-                      ],
-                      "dividend_ttm": None, "next_dividend": None,
-                      "growth": g, "required_return": None,
-                      "fair_value_per_share": None,
-                      "assumptions": {"required_return": None, "growth": g, "dividend_ttm": None},
-                      "rows": [], "surface": [],
-                      "methodology": "Gordon Growth DDM: P = D1 / (r - g). Not computed without a positive trailing dividend.",
-                      "field_dictionary": {
-                          "dividend_ttm": "Trailing annual dividend per share from provider or user override.",
-                          "fair_value_per_share": "The dividend-implied value per share; null when no dividend is available.",
-                      }},
-                sources=list(set(sources)), warnings=warnings,
-            )
         # Required return: WACC if not specified
         if r is None:
             # Data policy: never substitute a constant required return. When
