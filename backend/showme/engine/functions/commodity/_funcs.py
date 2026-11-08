@@ -556,21 +556,23 @@ def _provider_unavailable_payload(reason: str, next_actions: list[str]) -> dict[
     }
 
 
-def _withhold_repeated_volume(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """BOIL#6: null the volume of a bar that repeats the previous session's.
+_BOIL_EQUAL_VOLUME_FLAG = "equal_to_adjacent_bar"
 
-    Upstream daily bars sometimes copy the previous session's volume while the
-    prices differ, so an equal volume on consecutive bars is a copy, not a
-    print. The bar keeps its prices and is flagged; the volume is withheld.
+
+def _flag_repeated_volume(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """BOIL#6: flag both bars of an equal consecutive volume pair; keep values.
+
+    Upstream daily bars sometimes show the same volume on consecutive sessions
+    while the prices differ. The upstream data does not say which bar of the
+    pair is the duplicate, so no value is nulled and neither bar is labelled as
+    the copy; both carry the flag so the pair is visible as unverified.
     """
-    out: list[dict[str, Any]] = []
-    previous: float | None = None
-    for point in points:
-        volume = point.get("volume")
-        if volume is not None and volume > 0 and volume == previous:
-            point = {**point, "volume": None, "volume_flag": "repeats_previous_session"}
-        out.append(point)
-        previous = volume
+    out = [dict(point) for point in points]
+    for i in range(1, len(out)):
+        volume = out[i].get("volume")
+        if volume is not None and volume > 0 and volume == out[i - 1].get("volume"):
+            out[i - 1]["volume_flag"] = _BOIL_EQUAL_VOLUME_FLAG
+            out[i]["volume_flag"] = _BOIL_EQUAL_VOLUME_FLAG
     return out
 
 
@@ -629,11 +631,14 @@ class BOILFunction(BaseFunction):
             results = await asyncio.gather(*tasks)
             for sym, (row, history, errors) in zip(symbols, results):
                 provider_errors.extend(errors)
-                history = _withhold_repeated_volume(history)
+                history = _flag_repeated_volume(history)
                 if row:
                     if row.get("source") == "yfinance_chart" and history:
-                        # Row built from the last history bar: same withholding.
-                        row["volume"] = history[-1].get("volume")
+                        # Row built from the last history bar: same volume and flag.
+                        last_bar = history[-1]
+                        row["volume"] = last_bar.get("volume")
+                        if "volume_flag" in last_bar:
+                            row["volume_flag"] = last_bar["volume_flag"]
                     rows.append(row)
                 history_by_symbol[sym] = history
                 if not chart_history and history:

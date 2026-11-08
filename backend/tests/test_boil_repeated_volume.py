@@ -1,9 +1,10 @@
-"""BOIL#6 — a volume that repeats the previous session is withheld, not served.
+"""BOIL#6 — an equal volume on consecutive bars is flagged, not rewritten.
 
-Upstream daily bars for CL=F, BZ=F and NG=F repeat the previous session's
-volume exactly on consecutive days (2026-11-05 and 2026-11-06 both show
-335754 for CL=F) while prices differ, so the repeated volume is a copy, not a
-print. BOIL nulls that bar's volume, flags it, and keeps the prices.
+Upstream daily bars for CL=F, BZ=F and NG=F show the same volume on
+consecutive sessions (2026-11-05 and 2026-11-06 both show 335754 for CL=F)
+while prices differ. The upstream bars do not say which of the two is the
+copy, so BOIL keeps every reported value and flags both bars of the pair.
+Nothing is nulled and nothing is labelled as a copy.
 
 No live network: the yfinance provider is a stub.
 """
@@ -25,6 +26,7 @@ from showme.engine.functions.commodity._funcs import BOILFunction
 DATES = ["2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"]
 CLOSES = {"CL=F": [88.0, 96.8, 88.1, 90.8], "BZ=F": [104.4, 94.6, 98.3, 98.3]}
 VOLUMES = {"CL=F": [400000, 454113, 335754, 335754], "BZ=F": [60000, 64348, 53411, 53411]}
+FLAG = "equal_to_adjacent_bar"
 
 
 class _Provider:
@@ -64,14 +66,16 @@ def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def test_repeated_session_volume_is_withheld_and_flagged() -> None:
+def test_equal_adjacent_volume_is_kept_and_both_bars_flagged() -> None:
     fn = BOILFunction(deps=FunctionDeps(yfinance=_Provider()))
     inst = Instrument(symbol="CL=F", asset_class=AssetClass.COMMODITY)
     data = _run(fn.execute(instrument=inst)).data
     wti = data["history_by_symbol"]["CL=F"]
-    assert [p["volume"] for p in wti] == [400000, 454113, 335754, None]
-    assert wti[3].get("volume_flag") == "repeats_previous_session"
-    assert "volume_flag" not in wti[2]
+    assert [p["volume"] for p in wti] == [400000, 454113, 335754, 335754]
+    assert "volume_flag" not in wti[0]
+    assert "volume_flag" not in wti[1]
+    assert wti[2].get("volume_flag") == FLAG
+    assert wti[3].get("volume_flag") == FLAG
 
 
 def test_prices_are_kept_on_flagged_bars() -> None:
@@ -81,11 +85,12 @@ def test_prices_are_kept_on_flagged_bars() -> None:
         assert [p["close"] for p in data["history_by_symbol"][symbol]] == closes
 
 
-def test_fallback_row_volume_does_not_repeat_a_copied_bar() -> None:
-    # Quote unavailable: the row is built from the last history bar, which is
-    # the repeated one for CL=F, so its volume must be withheld too.
+def test_fallback_row_keeps_volume_and_flag_of_its_bar() -> None:
+    # Quote unavailable: the row is built from the last history bar, which
+    # shares its volume with the bar before it, so the row carries the flag.
     fn = BOILFunction(deps=FunctionDeps(yfinance=_Provider(quote_ok=False)))
     data = _run(fn.execute()).data
     wti_row = next(row for row in data["rows"] if row["symbol"] == "CL=F")
     assert wti_row["source"] == "yfinance_chart"
-    assert wti_row["volume"] is None
+    assert wti_row["volume"] == 335754
+    assert wti_row.get("volume_flag") == FLAG
