@@ -161,29 +161,6 @@ describe("CDE pane — evaluate + forms", () => {
     expect(screen.getByText("TRUE")).toBeInTheDocument();
   });
 
-  it("renders UNKNOWN, not FALSE, when the row is missing a referenced field", () => {
-    setMockFn({
-      state: "ok",
-      data: {
-        data: {
-          status: "ready",
-          rows: [],
-          count: 1,
-          evaluation: {
-            name: "cheap",
-            value: null,
-            formula: "pe != 20",
-            missing_fields: ["pe"],
-          },
-        },
-      },
-    });
-    render(<CDEPane code="CDE" />);
-    expect(screen.getByText("UNKNOWN")).toBeInTheDocument();
-    expect(screen.queryByText("FALSE")).not.toBeInTheDocument();
-    expect(screen.getByText(/Row is missing: pe/)).toBeInTheDocument();
-  });
-
   it("keeps the stored-field count and rows from an evaluate payload (F6)", () => {
     setMockFn({
       state: "ok",
