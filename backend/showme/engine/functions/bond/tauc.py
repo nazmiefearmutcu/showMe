@@ -51,19 +51,14 @@ class TAUCFunction(BaseFunction):
                 },
             )
         if not self.deps.treasury_auctions:
-            items = _filter_security_type(_template_auctions(action, limit), security_filter)
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data=_auction_payload(action, horizon, items, "treasury_auction_model", security_filter),
-                sources=["treasury_auction_model"],
+            return _unavailable_result(
+                self.code, action, horizon, security_filter,
+                reason="TreasuryDirect adapter is not configured, so no auction rows were fetched.",
+                next_actions=[
+                    "Configure the treasury_auctions adapter.",
+                    "Pass reference=true to see the labelled illustrative calendar model instead.",
+                ],
                 warnings=["no treasury_auctions adapter"],
-                metadata={
-                    "live": False,
-                    "fallback": True,
-                    "degraded": True,
-                    "data_mode": "modeled",
-                },
             )
         timeout = float(params.get("auction_timeout", params.get("timeout", 6)))
         try:
@@ -78,39 +73,65 @@ class TAUCFunction(BaseFunction):
                     timeout=timeout,
                 )
         except Exception as exc:
-            items = _filter_security_type(_template_auctions(action, limit), security_filter)
-            return FunctionResult(
-                code=self.code,
-                instrument=None,
-                data=_auction_payload(action, horizon, items, "treasury_auction_fallback", security_filter),
-                sources=["treasury_auction_fallback"],
-                warnings=[f"treasurydirect: {type(exc).__name__}: {exc}"],
-                metadata={
-                    "live": False,
-                    "fallback": True,
-                    "degraded": True,
-                    "data_mode": "modeled",
-                    "provider_errors": [f"treasurydirect: {type(exc).__name__}: {exc}"],
-                },
+            error = f"treasurydirect: {type(exc).__name__}: {exc}"
+            return _unavailable_result(
+                self.code, action, horizon, security_filter,
+                reason=f"TreasuryDirect did not return auction rows ({error}).",
+                next_actions=["Retry later, or pass reference=true for the labelled illustrative calendar model."],
+                warnings=[error],
             )
+        # Rows the adapter returned are already inside the requested window, so
+        # a non-zero raw count means the feed answered and the filter removed them.
+        raw_count = len(items)
         items = _filter_security_type(items, security_filter)
         payload = _auction_payload(action, horizon, items, "treasurydirect", security_filter)
         if not items:
-            # The live feed answered but no row falls in the window: say so
-            # explicitly instead of returning a bare ok with zero rows.
+            # The live feed answered but no row survives: say which of the two
+            # cases happened instead of returning a bare ok with zero rows.
             window = "look-back" if action == "recent" else "upcoming"
+            if raw_count:
+                payload["reason"] = (
+                    f"TreasuryDirect returned {raw_count} {action} auction row(s) in the {horizon}-day "
+                    f"{window} window, but none match security_type={security_filter!r}."
+                )
+                payload["next_actions"] = ["Clear the security_type filter to see every auction in the window."]
+            else:
+                payload["reason"] = (
+                    f"TreasuryDirect returned no {action} auction rows in the {horizon}-day "
+                    f"{window} window (feed answered; rows with no usable auction date are excluded)."
+                )
+                payload["next_actions"] = ["Retry later, or widen the horizon."]
             payload["status"] = "empty"
-            payload["reason"] = (
-                f"TreasuryDirect returned no {action} auction rows in the {horizon}-day "
-                f"{window} window (feed answered; rows with no usable auction date are excluded)."
-            )
-            payload["next_actions"] = ["Retry later, or widen the horizon."]
         return FunctionResult(
             code=self.code, instrument=None,
             data=payload,
             sources=["treasurydirect"],
             metadata={"live": True, "data_mode": "live_official"},
         )
+
+
+def _unavailable_result(
+    code: str,
+    action: str,
+    horizon: int,
+    security_filter: str,
+    *,
+    reason: str,
+    next_actions: list[str],
+    warnings: list[str],
+) -> FunctionResult:
+    """Honest no-data state: no rows are invented when the live feed cannot answer."""
+    payload = _auction_payload(action, horizon, [], "treasurydirect_unavailable", security_filter)
+    payload["status"] = "provider_unavailable"
+    payload["reason"] = reason
+    payload["next_actions"] = next_actions
+    return FunctionResult(
+        code=code, instrument=None,
+        data=payload,
+        sources=["treasurydirect"],
+        warnings=warnings,
+        metadata={"live": False, "degraded": True, "data_mode": "unavailable"},
+    )
 
 
 def _auction_payload(action: str, horizon: int, items: list[dict[str, Any]], source_mode: str, security_filter: str = "") -> dict[str, Any]:
@@ -132,7 +153,7 @@ def _auction_payload(action: str, horizon: int, items: list[dict[str, Any]], sou
         "by_type": list(by_type.values()),
         "horizon_days": horizon,
         "summary": {"action": tag, "horizon_days": horizon, "auctions": len(items), "source_mode": source_mode, "security_filter": security_filter or "all"},
-        "methodology": "TAUC lists Treasury auction rows with actual calendar-style dates. Live TreasuryDirect rows are used when available; fallback rows use current-date-relative dates and are labelled by source_mode rather than template placeholders.",
+        "methodology": "TAUC lists live TreasuryDirect auction rows; the auction day is competitiveAuctionCloseDate when auctionDate is null. When the feed is unavailable no rows are invented. The labelled reference model (reference=true or live_auctions=false) is illustrative, not live, and is labelled by source_mode.",
         "field_dictionary": {
             "security_type": "Bill, Note, Bond, TIPS, or FRN.",
             "term": "Auction security term.",
