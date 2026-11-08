@@ -148,3 +148,23 @@ describe("HP#3 — retracement levels are labelled with their method", () => {
     expect(railValue(container, "Fib 78.6%")).not.toBeNull();
   });
 });
+
+/* ── HP#2 — a bar-cap shortfall is disclosed, not silently shown ───── */
+
+describe("HP#2 — the requested window is disclosed when the bar cap cuts it", () => {
+  it("shows a shortfall notice when 1000 intraday bars cover far less than the range", () => {
+    // 1000 one-minute bars span ~16.7 hours, against a 3M range.
+    mockState.payload = payloadWith({}, makeMinuteRows(1000));
+    render(<HPPane code="HP" symbol="AAPL" />);
+    const notice = screen.getByTestId("hp-window-truncated");
+    expect(notice.textContent).toMatch(/3M/);
+    expect(notice.textContent).toMatch(/1000 bars/);
+    expect(notice.textContent).toMatch(/hours/);
+  });
+
+  it("stays silent when the loaded rows cover the requested window", () => {
+    mockState.payload = payloadWith({}, makeRows(30));
+    render(<HPPane code="HP" symbol="AAPL" />);
+    expect(screen.queryByTestId("hp-window-truncated")).toBeNull();
+  });
+});

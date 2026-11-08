@@ -94,6 +94,46 @@ function mapInterval(interval: IntervalId): string {
   return interval;
 }
 
+/**
+ * Detects a bar-cap shortfall. The alias keeps the newest `bars` rows inside
+ * the requested window, so a full cap (rows.length >= barCap) whose span is
+ * well short of the requested days means the cap cut the window. Returns the
+ * measured span, or null when the window is covered or cannot be measured.
+ */
+export function historyWindowShortfall(
+  rows: HPRow[],
+  requestedDays: number,
+  barCap: number,
+): { spanDays: number; requestedDays: number } | null {
+  if (rows.length < barCap || !(requestedDays > 0)) return null;
+  let minMs = Number.POSITIVE_INFINITY;
+  let maxMs = Number.NEGATIVE_INFINITY;
+  for (const r of rows) {
+    const t = Date.parse(r.date ?? r.ts ?? "");
+    if (!Number.isFinite(t)) continue;
+    if (t < minMs) minMs = t;
+    if (t > maxMs) maxMs = t;
+  }
+  if (!Number.isFinite(minMs) || !Number.isFinite(maxMs) || maxMs <= minMs) {
+    return null;
+  }
+  const spanDays = (maxMs - minMs) / 86_400_000;
+  return spanDays < requestedDays * 0.9 ? { spanDays, requestedDays } : null;
+}
+
+function fmtSpanDays(days: number): string {
+  if (days >= 365) return `${(days / 365).toFixed(1)} years`;
+  if (days >= 1) return `${days.toFixed(1)} days`;
+  return `${(days * 24).toFixed(1)} hours`;
+}
+
+const windowShortfallStyle: CSSProperties = {
+  padding: "6px 12px",
+  fontSize: 12,
+  color: "var(--text-secondary)",
+  borderBottom: "1px solid var(--border-subtle, rgba(127,127,127,0.25))",
+};
+
 function mapStyle(style: ChartStyle): "candles" | "line" | "area" {
   return style === "candle" ? "candles" : style;
 }
@@ -124,6 +164,11 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
   });
 
   const rows = useMemo(() => decorate(normalizeRows(data?.data)), [data]);
+  const windowShortfall = useMemo(
+    () => historyWindowShortfall(rows, days, DEFAULT_BARS),
+    [rows, days],
+  );
+  const rangeLabel = RANGES.find((r) => r.id === range)?.label ?? range;
   // S12 HP live-data wiring: HP subscribes to the canonical live quote
   // channel (`useLiveQuote`) so the header strip reports honest transport
   // state (RT LIVE / RECONNECTING / STALE / SNAPSHOT ONLY / OFFLINE) and
@@ -318,6 +363,18 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
             />
           </div>
         </div>
+
+        {windowShortfall ? (
+          <div
+            role="status"
+            data-testid="hp-window-truncated"
+            style={windowShortfallStyle}
+          >
+            Only {fmtSpanDays(windowShortfall.spanDays)} of the {rangeLabel} window is
+            loaded: HP requests at most {DEFAULT_BARS} bars at this interval, so older
+            bars are cut. A coarser interval covers a longer span.
+          </div>
+        ) : null}
 
         <PaneBody className="u-p-0 u-flex u-min-h-0">
           {!effectiveSymbol ? (
