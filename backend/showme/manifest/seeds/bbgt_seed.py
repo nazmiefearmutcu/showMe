@@ -168,6 +168,7 @@ def bbgt() -> FunctionManifest:
             "status": FieldDef(description="preview / submitted / input_error / input_required / provider_unavailable.", source="bbgt"),
             "notional": FieldDef(unit="quote currency", description="quantity x limit price (notional_basis=limit_price) or x indicative last quote (notional_basis=indicative_last_quote, notional_indicative=true); null with notional_reason when no reference price exists.", source="bbgt"),
             "notional_basis": FieldDef(description="limit_price | indicative_last_quote | unavailable.", source="bbgt"),
+            "notional_currency_reason": FieldDef(description="Why notional_currency is null for a non-FX listing whose currency is not explicitly known (Instrument currency defaults to USD).", source="bbgt"),
             "broker": FieldDef(description="Broker adapter used; 'paper' on preview.", source="bbgt"),
             "side": FieldDef(description="BUY or SELL.", source="bbgt"),
             "quantity": FieldDef(unit="base", description="Order size.", source="bbgt"),

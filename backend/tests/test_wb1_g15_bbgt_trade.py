@@ -123,10 +123,44 @@ def test_bbgt_limit_preview_emits_notional_from_limit_price() -> None:
     data = res.data
     assert data["status"] == "preview"
     assert data["notional"] == pytest.approx(2975.0)
-    assert data["notional_currency"] == "USD"
+    # The default Instrument currency is not an explicit listing currency,
+    # so the label is withheld with a reason rather than assumed.
+    assert data["notional_currency"] is None
+    assert data["notional_currency_reason"]
     assert data["notional_basis"] == "limit_price"
     assert data["notional_indicative"] is False
     assert data["reference_price"] == 425.0
+
+
+def test_bbgt_non_fx_notional_currency_null_for_non_us_listing_with_default_currency() -> None:
+    """A London listing built without a currency must not be labelled USD."""
+    vod = Instrument(symbol="VOD.L", asset_class=AssetClass.EQUITY, exchange="LSE")
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    res = _run(fn.execute(instrument=vod, quantity=100, side="BUY", type="LIMIT", price=70.0, tif="DAY"))
+    data = res.data
+    assert data["status"] == "preview"
+    assert data["notional"] == pytest.approx(7000.0)
+    assert data["notional_currency"] is None
+    assert "VOD.L" in data["notional_currency_reason"]
+
+
+def test_bbgt_non_fx_notional_uses_explicit_listing_currency() -> None:
+    vod = Instrument(symbol="VOD.L", asset_class=AssetClass.EQUITY, exchange="LSE", currency="GBP")
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    res = _run(fn.execute(instrument=vod, quantity=100, side="BUY", type="LIMIT", price=70.0, tif="DAY"))
+    assert res.data["notional_currency"] == "GBP"
+    assert res.data["notional_currency_reason"] is None
+
+
+def test_bbgt_non_fx_notional_us_venue_is_usd() -> None:
+    msft = Instrument(symbol="MSFT", asset_class=AssetClass.EQUITY, exchange="NASDAQ")
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    res = _run(fn.execute(instrument=msft, quantity=7, side="SELL", type="LIMIT", price=425.0, tif="DAY"))
+    assert res.data["notional_currency"] == "USD"
+    assert res.data["notional_currency_reason"] is None
 
 
 def test_bbgt_market_notional_is_null_without_quote_adapter() -> None:

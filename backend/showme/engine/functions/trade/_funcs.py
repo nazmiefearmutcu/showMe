@@ -1033,11 +1033,29 @@ class BBGTFunction(EMSXFunction):
         source = getattr(quote, "source", None) or "yfinance"
         return last, as_of, str(source), None
 
+    _US_VENUES = frozenset({"NASDAQ", "NYSE", "AMEX", "ARCA", "NYSEARCA", "BATS"})
+
+    @classmethod
+    def _listing_currency(cls, instrument: Instrument) -> tuple[str | None, str | None]:
+        """(currency, reason) for a non-FX notional. Labelled only when explicitly known:
+        a non-default instrument currency, or a US venue. Otherwise null with a reason,
+        because Instrument.currency silently defaults to USD."""
+        currency = str(instrument.currency or "").strip().upper()
+        if currency and currency != "USD":
+            return currency, None
+        if str(instrument.exchange or "").strip().upper() in cls._US_VENUES:
+            return "USD", None
+        return None, (
+            f"Listing currency for {instrument.symbol} is not explicitly known "
+            "(the instrument carries the default currency); notional currency is not labelled."
+        )
+
     async def _notional_fields(
         self, instrument: Instrument, quantity: float, limit_price: float | None,
     ) -> dict[str, Any]:
         """Pre-trade notional = quantity x (limit price, else indicative last), never a fabricated value."""
         fee_note = "No commission or fee estimate: no free fee source is wired."
+        currency_reason: str | None = None
         if instrument.asset_class == AssetClass.FX:
             # An FX notional is denominated in the pair's quote leg, which is not
             # always instrument.currency (that field defaults to USD).
@@ -1053,17 +1071,19 @@ class BBGTFunction(EMSXFunction):
                     "notional_as_of": None,
                     "notional_source": None,
                     "notional_reason": "FX quote currency could not be derived from the symbol; notional not computed.",
+                    "notional_currency_reason": None,
                     "notional_note": fee_note,
                 }
             currency = quote_ccy
         else:
-            currency = str(instrument.currency or "USD")
+            currency, currency_reason = self._listing_currency(instrument)
         if limit_price is not None:
             return {
                 "reference_price": limit_price,
                 "reference_price_basis": "limit_price",
                 "notional": round(quantity * limit_price, 6),
                 "notional_currency": currency,
+                "notional_currency_reason": currency_reason,
                 "notional_basis": "limit_price",
                 "notional_indicative": False,
                 "notional_as_of": _utc_now_iso(),
@@ -1078,6 +1098,7 @@ class BBGTFunction(EMSXFunction):
                 "reference_price_basis": None,
                 "notional": None,
                 "notional_currency": currency,
+                "notional_currency_reason": currency_reason,
                 "notional_basis": "unavailable",
                 "notional_indicative": None,
                 "notional_as_of": None,
@@ -1090,6 +1111,7 @@ class BBGTFunction(EMSXFunction):
             "reference_price_basis": "indicative_last_quote",
             "notional": round(quantity * last, 6),
             "notional_currency": currency,
+            "notional_currency_reason": currency_reason,
             "notional_basis": "indicative_last_quote",
             "notional_indicative": True,
             "notional_as_of": as_of,
