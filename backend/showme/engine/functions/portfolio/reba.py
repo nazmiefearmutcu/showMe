@@ -277,6 +277,7 @@ class REBAFunction(BaseFunction):
                     "notional_delta": -cur_value[sym],
                     "current_weight_pct": cur_weights[sym] * 100,
                     "target_weight_pct": 0,
+                    "drift_pct": -cur_weights[sym] * 100,
                 })
         if fractional_syms:
             warnings.append(
