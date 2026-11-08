@@ -210,8 +210,10 @@ _MASTER_SECTOR_LABELS: dict[str, str] = {"Technology": "Information Technology"}
 def _sector_members(sector: str) -> list[tuple[str, str, str | None]] | None:
     """Every S&P 500 name in ``sector`` from the bundled security master.
 
-    Returns None when the bundled S&P 500 list or the master is unreadable, so
-    the caller can label the curated fallback as partial instead.
+    Returns None unless every bundled S&P 500 symbol is found in the master. The
+    master loader silently substitutes a 13-row fallback when the generated file
+    is missing, so a partial match is treated as "master unavailable" and the
+    caller labels the curated fallback as partial instead.
     """
     from showme.engine.functions.screen._funcs import _load_security_master
 
@@ -219,7 +221,7 @@ def _sector_members(sector: str) -> list[tuple[str, str, str | None]] | None:
     if not symbols:
         return None
     master = {str(row.get("symbol") or "").upper(): row for row in _load_security_master()}
-    if not master:
+    if not master or any(symbol not in master for symbol in symbols):
         return None
     curated = {symbol: (company, sub) for symbol, company, sub in _SECTOR_CONSTITUENTS[sector]}
     members: list[tuple[str, str, str | None]] = []

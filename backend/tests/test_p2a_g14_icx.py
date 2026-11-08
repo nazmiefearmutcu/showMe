@@ -85,3 +85,22 @@ def test_every_sp500_name_appears_in_exactly_one_sector() -> None:
 def test_curated_sub_industry_is_kept_where_available() -> None:
     rows = {r["symbol"]: r for r in _run(sector="Information Technology").data["rows"]}
     assert rows["AAPL"]["sub_industry"] == "Technology Hardware, Storage & Peripherals"
+
+
+def test_missing_security_master_never_serves_partial_sector_as_full(monkeypatch, tmp_path) -> None:
+    # Missing master: _read_security_master silently returns the 13-row fallback.
+    # The sector must not be presented as the full S&P 500 membership.
+    from showme.engine.functions.screen import _funcs
+
+    monkeypatch.setattr(_funcs, "_SECURITY_MASTER_PATH", tmp_path / "missing_master.json")
+    monkeypatch.setattr(_funcs, "_SECURITY_MASTER_CACHE", None)
+    res = _run(sector="Information Technology")
+    data = res.data
+    assert data["status"] == "partial"
+    assert data["coverage"] == {
+        "listed": len(data["rows"]), "official": None, "complete": False,
+    }
+    assert data["summary"]["coverage"] == data["coverage"]
+    assert "showme_gics_reference" in res.sources
+    assert "showme_security_master" not in res.sources
+    assert len(data["rows"]) == len(icx_mod._SECTOR_CONSTITUENTS["Information Technology"])
