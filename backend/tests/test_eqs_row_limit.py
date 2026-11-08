@@ -77,3 +77,11 @@ def test_limit_larger_than_matches_returns_all_matches() -> None:
 def test_missing_limit_does_not_cap_rows() -> None:
     result = _screen(limit=None)
     assert len(result.data) == 5
+
+
+@pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "1e400", float("inf"), float("nan")])
+def test_non_finite_limit_means_no_cap_and_does_not_crash(raw) -> None:
+    assert eqs_mod._row_limit({"limit": raw}) is None
+    result = _screen(limit=raw)
+    assert len(result.data) == 5
+    assert result.metadata["matched"] == 5

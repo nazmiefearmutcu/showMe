@@ -788,10 +788,13 @@ def _row_limit(params: dict[str, Any]) -> int | None:
     if raw is None or isinstance(raw, bool) or raw == "":
         return None
     try:
-        number = int(float(raw))
+        number = float(raw)
     except (TypeError, ValueError):
         return None
-    return number if number > 0 else None
+    # inf/-inf/nan cannot be converted to int (OverflowError/ValueError): no cap.
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return int(number) if number >= 1 else None
 
 
 def _truthy(value: Any) -> bool:
