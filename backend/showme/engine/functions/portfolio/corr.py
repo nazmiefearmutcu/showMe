@@ -1125,14 +1125,20 @@ def _returns_from_prices(
     prices: pd.DataFrame,
     return_method: str,
     missing_policy: str,
+    frequency: str = "daily",
 ) -> pd.DataFrame:
-    """Per-symbol returns on each symbol's own observed closes.
+    """Returns for every symbol on one shared calendar.
 
-    CORR#1: returns are taken between a symbol's consecutive observed closes,
-    not between consecutive rows of the joined calendar. Otherwise the first
-    weekday after a weekend would be NaN for every weekday-only series. The
-    joined index then only carries calendar gaps, which the missing-data check
-    no longer counts. ``forward_fill`` keeps the explicit union-calendar fill.
+    CORR-R2: the old per-symbol returns spanned each symbol's own consecutive
+    closes, so a Monday equity return covered three days while a 24/7 crypto
+    return covered one. Correlations then compared unequal horizons. Returns are
+    now taken between consecutive dates on which every anchor symbol has a close.
+    Anchor symbols are those within the null-heavy threshold; a heavier symbol
+    stays in the frame (so it is still reported as dropped) but does not shrink
+    the shared calendar. Weekend dates drop out automatically when a weekday-only
+    symbol is in the universe, and holidays drop out for everyone.
+
+    ``forward_fill`` keeps the explicit union-calendar fill the user asked for.
     """
     if prices.empty:
         return pd.DataFrame()
@@ -1143,12 +1149,17 @@ def _returns_from_prices(
             index=filled.index,
         )
     else:
+        gap_ratios = _calendar_gap_ratios(prices, frequency)
+        anchors = [col for col in prices.columns if gap_ratios.get(str(col), 1.0) <= NAN_DROP_THRESHOLD]
+        if not anchors:
+            anchors = list(prices.columns)
+        shared_index = prices[anchors].dropna(how="any").index
         columns = {
-            col: _series_returns(prices[col].dropna(), return_method)
+            col: _series_returns(prices.loc[shared_index, col], return_method)
             for col in prices.columns
             if prices[col].notna().any()
         }
-        returns = pd.DataFrame(columns, index=prices.index)
+        returns = pd.DataFrame(columns, index=shared_index)
     returns = returns.replace([np.inf, -np.inf], np.nan)
     if missing_policy == "intersection":
         returns = returns.dropna(how="any")
@@ -1194,7 +1205,7 @@ def _build_return_frame(
     missing_policy: str,
 ) -> pd.DataFrame:
     prices = _price_frame(price_series, frequency)
-    return _returns_from_prices(prices, return_method, missing_policy)
+    return _returns_from_prices(prices, return_method, missing_policy, frequency)
 
 
 def _generate_sample_price_series(assets: list[dict[str, Any]], days: int) -> list[dict[str, Any]]:
