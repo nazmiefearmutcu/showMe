@@ -69,13 +69,16 @@ interface SOSCNews {
   series?: SeriesBucket[];
 }
 
+/** Flat headline shape from the backend: label string + score + model id. */
 interface SOSCHeadline {
   title?: string | null;
   publisher?: string | null;
   publisher_name?: string | null;
   published_at?: string | null;
   url?: string | null;
-  sentiment?: number | null;
+  sentiment?: string | null;
+  sentiment_score?: number | null;
+  sentiment_model?: string | null;
 }
 
 interface SOSCSocial {
@@ -312,8 +315,11 @@ export function SOSCPane({ code, symbol }: FunctionPaneProps) {
                       {h.publisher_name ?? h.publisher ?? ""}
                     </span>
                   </span>
-                  <span style={{ ...monoStrongStyle, color: toneColor(h.sentiment) }}>
-                    {fmtSigned(h.sentiment)}
+                  <span
+                    style={{ ...monoStrongStyle, color: toneColor(h.sentiment_score) }}
+                    title={h.sentiment_model ?? "model not reported"}
+                  >
+                    {`${h.sentiment ?? "—"} ${fmtSigned(h.sentiment_score)}`}
                   </span>
                 </li>
               ))}

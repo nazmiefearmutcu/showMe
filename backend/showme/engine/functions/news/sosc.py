@@ -70,6 +70,15 @@ def _trend(value: Any) -> str | None:
     return "bullish" if v > 0.05 else "bearish" if v < -0.05 else "flat"
 
 
+def _tone_trend(value: Any) -> str | None:
+    """GDELT tone is on its native scale (roughly -10 to +10), so the +/-0.05 band of
+    ``_trend`` would call almost every sample bullish or bearish. Use a band of 1."""
+    if value is None:
+        return None
+    v = float(value)
+    return "bullish" if v > 1.0 else "bearish" if v < -1.0 else "flat"
+
+
 def _mention_trend(change_pct: Any) -> str | None:
     if change_pct is None:
         return None
@@ -78,6 +87,8 @@ def _mention_trend(change_pct: Any) -> str | None:
 
 
 def _headline(item: dict[str, Any]) -> dict[str, Any]:
+    """Flat headline shape (payload contract, label + score form): ``sentiment`` is the
+    label string, ``sentiment_score`` the score in [-1, +1], ``sentiment_model`` the id."""
     sentiment = item.get("sentiment") or {}
     return {
         "id": item.get("id"),
@@ -108,14 +119,39 @@ def _social_match(social: Any, base: str) -> dict[str, Any] | None:
     return None
 
 
-def _methodology(base: str, window: str, bucket: str, model: str | None) -> str:
-    scored_by = model or "the FinBERT model recorded per item by Awareness"
+_MODEL_NAMES = {"finbert": "FinBERT", "lexicon": "lexicon"}
+
+
+def _model_family(model: str) -> str:
+    return model.split(":", 1)[0].strip().lower()
+
+
+def _scored_by(headlines: list[dict[str, Any]]) -> tuple[list[str], str | None]:
+    """Distinct model ids on the returned headlines, and the display name for the row label:
+    ``FinBERT``, ``lexicon``, or ``mixed: finbert+lexicon`` when the headlines differ."""
+    models = sorted({h["sentiment_model"] for h in headlines if h.get("sentiment_model")})
+    if not models:
+        return [], None
+    families = sorted({_model_family(m) for m in models})
+    if len(families) == 1:
+        return models, _MODEL_NAMES.get(families[0], families[0])
+    return models, "mixed: " + "+".join(families)
+
+
+def _methodology(base: str, window: str, bucket: str, models: list[str]) -> str:
+    if models:
+        scored_by = (
+            f"the model Awareness recorded for it ({', '.join(models)}), as named on the "
+            "headlines returned"
+        )
+    else:
+        scored_by = "the model Awareness recorded for it (no returned item named a model)"
     return (
         f"SOSC reports Awareness entity sentiment for {base} over the last {window} "
         f"({bucket} buckets). Each Awareness-collected news item is scored by {scored_by}, "
         "giving a sentiment score in [-1, +1] per item. news.mean is the arithmetic mean of "
         "those item scores in each bucket and overall; news.weighted_mean weights each item by "
-        "its FinBERT confidence times its source-quality score, as computed by Awareness. "
+        "its model confidence times its source-quality score, as computed by Awareness. "
         "positive_share and negative_share are the fractions of items labelled positive or "
         "negative; momentum_z and dispersion are Awareness statistics and are null when there "
         "are too few observations. headlines are the newest items behind the score. social is "
@@ -166,7 +202,7 @@ class SOSCFunction(BaseFunction):
                     "reason": "Pass a symbol to score.",
                     "rows": [],
                     "next_actions": ["Enter a ticker, for example AAPL or BTC."],
-                    "methodology": _methodology("the symbol", DEFAULT_WINDOW, "1h", None),
+                    "methodology": _methodology("the symbol", DEFAULT_WINDOW, "1h", []),
                     "field_dictionary": _FIELD_DICT,
                 },
                 sources=[],
@@ -184,7 +220,7 @@ class SOSCFunction(BaseFunction):
                     "symbol": base,
                     "rows": [],
                     "next_actions": ["Use window 1d, 7d or 30d."],
-                    "methodology": _methodology(base, DEFAULT_WINDOW, "1h", None),
+                    "methodology": _methodology(base, DEFAULT_WINDOW, "1h", []),
                     "field_dictionary": _FIELD_DICT,
                 },
                 sources=[],
@@ -216,7 +252,7 @@ class SOSCFunction(BaseFunction):
 
         body = entity.data if isinstance(entity.data, dict) else {}
         headlines = [_headline(h) for h in (body.get("headlines") or []) if isinstance(h, dict)][:HEADLINE_LIMIT]
-        model = next((h["sentiment_model"] for h in headlines if h.get("sentiment_model")), None)
+        models, model_name = _scored_by(headlines)
         count = int(body.get("count") or 0)
         mean = body.get("mean")
         news = {
@@ -236,7 +272,8 @@ class SOSCFunction(BaseFunction):
 
         rows: list[dict[str, Any]] = []
         if count > 0:
-            rows.append({"platform": "News (FinBERT)", "mentions": count, "sentiment": mean, "trend": _trend(mean)})
+            platform = f"News ({model_name or 'model not reported'})"
+            rows.append({"platform": platform, "mentions": count, "sentiment": mean, "trend": _trend(mean)})
         if social is not None:
             rows.append({
                 "platform": "Reddit (ApeWisdom)",
@@ -246,7 +283,7 @@ class SOSCFunction(BaseFunction):
             })
         if gdelt_tone:
             last = gdelt_tone[-1].get("value")
-            rows.append({"platform": "GDELT tone", "mentions": None, "sentiment": last, "trend": _trend(last)})
+            rows.append({"platform": "GDELT tone", "mentions": None, "sentiment": last, "trend": _tone_trend(last)})
 
         stale = list(entity.stale_providers)
         if social_resp is not None:
@@ -274,7 +311,7 @@ class SOSCFunction(BaseFunction):
                 "social": social,
                 "gdelt_tone": gdelt_tone,
                 "rows": rows,
-                "methodology": _methodology(base, window, bucket, model),
+                "methodology": _methodology(base, window, bucket, models),
                 "field_dictionary": _FIELD_DICT,
                 "meta": meta,
             },
@@ -314,7 +351,7 @@ class SOSCFunction(BaseFunction):
                 "gdelt_tone": [],
                 "social": None,
                 "next_actions": list(UNAVAILABLE_NEXT_ACTIONS),
-                "methodology": _methodology(base, window, bucket, None),
+                "methodology": _methodology(base, window, bucket, []),
                 "field_dictionary": _FIELD_DICT,
                 "meta": {"providers": [], "generated_at": None, "notes": [], "feed_health": None},
             },

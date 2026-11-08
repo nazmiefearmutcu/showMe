@@ -706,6 +706,7 @@ function NewsCard({
         <SentimentBars
           series={series.map((s) => ({ ts: s.ts, mean: s.mean }))}
           tone={tone}
+          toneLabel="GDELT tone, native scale"
           ariaLabel={`${ticker} news sentiment buckets with GDELT tone`}
         />
         <dl className="aw-stat-grid">

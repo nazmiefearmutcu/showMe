@@ -66,7 +66,9 @@ function okPayload() {
         publisher_name: "Reuters",
         published_at: "2026-11-08T10:00:00Z",
         url: "https://example.com/a",
-        sentiment: 0.42,
+        sentiment: "positive",
+        sentiment_score: 0.42,
+        sentiment_model: "finbert:ProsusAI/finbert",
       },
     ],
     social: { rank: 3, mentions: 800, mention_change_pct: 4.5, rank_change: 1 },
@@ -139,6 +141,29 @@ describe("SOSC pane — sentiment payload", () => {
     // Latest tone sample is +3.1 on GDELT's own scale, not clamped to [-1, 1].
     expect(container.textContent).toContain("+3.10");
     expect(screen.getByTestId("gdelt-tone-line")).toBeInTheDocument();
+  });
+
+  it("renders each headline's label and signed score from the flat shape", () => {
+    setMockFn({ state: "ok", data: { data: okPayload() } });
+    render(<SOSCPane code="SOSC" symbol="AAPL" />);
+    expect(screen.getByText("positive +0.42")).toBeInTheDocument();
+  });
+
+  it("names a mixed-model window in its source row", () => {
+    const payload = {
+      ...okPayload(),
+      rows: [
+        {
+          platform: "News (mixed: finbert+lexicon)",
+          mentions: 22,
+          sentiment: 0.1,
+          trend: "bullish",
+        },
+      ],
+    };
+    setMockFn({ state: "ok", data: { data: payload } });
+    render(<SOSCPane code="SOSC" symbol="AAPL" />);
+    expect(screen.getByText("News (mixed: finbert+lexicon)")).toBeInTheDocument();
   });
 
   it("renders the per-source table", () => {
