@@ -102,19 +102,16 @@ def test_resolve_invalid_user_override_falls_through_to_quote():
 
 
 def test_ivol_reference_branch_uses_live_spot():
-    """The explicit ``reference=true`` surface must still anchor strikes around
-    the real SPY price, not 100. (The default path no longer templates: with no
-    option chain it returns provider_unavailable, see the WC1 IVOL tests.)"""
+    """``reference=true`` no longer serves the constant-IV template (T10), even with a
+    live spot. It reports the real spot and an explicit provider_unavailable state with
+    no surface, see the WC1 IVOL tests."""
     fn = IVOLFunction(deps=_StubDeps(yfinance=_StubYf(last=525.42)))
     result = asyncio.run(fn.execute(instrument=_spy(), reference=True))
     assert result.data["spot"] == pytest.approx(525.42)
     assert result.data["data_state"] == "live_quote"
-    # Strikes should be anchored around the real spot — first strike
-    # is 0.8 * spot, last is 1.2 * spot.
-    strikes = sorted({row["strike"] for row in result.data["calls_grid"]})
-    assert min(strikes) > 100, f"reference surface still anchored at 100 default: {strikes}"
-    assert min(strikes) == pytest.approx(round(525.42 * 0.8, 2))
-    assert max(strikes) == pytest.approx(round(525.42 * 1.2, 2))
+    assert result.data["status"] == "provider_unavailable"
+    assert "calls_grid" not in result.data and "puts_grid" not in result.data
+    assert result.data["surface"] == []
 
 
 def test_ivol_marks_synthetic_anchor_when_no_quote():

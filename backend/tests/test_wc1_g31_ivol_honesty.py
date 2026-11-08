@@ -199,3 +199,34 @@ def test_reference_branch_without_live_spot_returns_honest_state_not_template() 
     findings = truth.check_response_placeholders(
         body, request_params={"reference": True}, cfg=truth.load_config(), code="IVOL")
     assert findings == []
+
+
+def test_reference_branch_with_live_spot_returns_no_template() -> None:
+    """reference=true with a live spot must not serve the constant-IV template either.
+
+    RED before fix: a live spot (735.29) produced status 'reference', 30 cells of constant IV
+    on invented expiry labels 30d/60d/90d, and the black_scholes_reference_formula source.
+    """
+    calls = _frame([(735, 0.17, 10.00, 10.40)])
+    puts = _frame([(735, 0.18, 9.00, 9.40)])
+    chain = _chain_yf("2026-12-18", calls, puts)
+
+    class _Quoted:
+        async def fetch(self, request: DataRequest) -> Any:
+            if request.kind == DataKind.QUOTE:
+                return type("Q", (), {"last": SPOT})()
+            return await chain.fetch(request)
+
+    result = asyncio.run(IVOLFunction(deps=_Deps(yfinance=_Quoted())).execute(instrument=_spy(), reference=True))
+    body = result.data
+    assert body["status"] == "provider_unavailable"
+    assert body["spot"] == pytest.approx(SPOT)
+    assert body["data_state"] == "live_quote"
+    assert body["surface"] == [] and body["rows"] == [] and body["series"] == []
+    assert "calls_grid" not in body and "puts_grid" not in body
+    assert "black_scholes_reference_formula" not in result.sources
+    assert "30d" not in body.get("expiries", [])
+    assert body["reason"] and body["next_actions"]
+    findings = truth.check_response_placeholders(
+        body, request_params={"reference": True}, cfg=truth.load_config(), code="IVOL")
+    assert findings == []

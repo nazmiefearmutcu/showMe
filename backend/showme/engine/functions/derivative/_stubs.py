@@ -118,38 +118,6 @@ async def _resolve_ivol_spot(
     return 100.0, "synthetic_anchor"
 
 
-def _surface_template(spot: float) -> dict[str, Any]:
-    expiries = ["30d", "60d", "90d"]
-    strikes = [round(spot * m, 2) for m in (0.8, 0.9, 1.0, 1.1, 1.2)]
-    calls = []
-    puts = []
-    for e_idx, expiry in enumerate(expiries):
-        for k_idx, strike in enumerate(strikes):
-            skew = abs(k_idx - 2) * 0.025
-            calls.append({"expiry": expiry, "strike": strike, "iv": round(0.32 + skew + e_idx * 0.015, 4), "volume": 0})
-            puts.append({"expiry": expiry, "strike": strike, "iv": round(0.35 + skew + e_idx * 0.018, 4), "volume": 0})
-    surface = _surface_rows(calls, puts, spot=spot)
-    stats, series = _ivol_atm_term_and_skew(surface)
-    return {
-        "status": "reference",
-        "spot": spot,
-        "expiries": expiries,
-        "rows": surface,
-        "surface": surface,
-        "series": series,
-        "calls_grid": calls,
-        "puts_grid": puts,
-        "summary": {
-            "contracts": len(surface),
-            "expiries": len(expiries),
-            "source_mode": "reference",
-            **stats,
-        },
-        "methodology": "Reference surface generated from Black-Scholes-style skew assumptions when live chains are not requested.",
-        "field_dictionary": _IVOL_FIELDS,
-    }
-
-
 def _finite(value: Any) -> float | None:
     try:
         num = float(value)
@@ -759,25 +727,16 @@ class IVOLFunction(BaseFunction):
         # as live. Genuine provider failure returns the explicit
         # provider_unavailable shape below, never a template.
         if _truthy(params.get("reference")):
-            if spot_state == "synthetic_anchor":
-                # T10 placeholder_value: the template needs a real underlying to anchor strikes.
-                # With no live price the 100 anchor would be published as spot, so report the gap.
-                return _ivol_unavailable(
-                    instrument, spot=spot, spot_state=spot_state,
-                    reason="reference=true needs a live underlying price to anchor the template; none was returned, so no surface is shown.",
-                    next_actions=["Retry when the quote adapter responds, or pass an explicit spot."],
-                    sources=["yfinance"], provider_errors=["no live underlying price"],
-                )
-            synthetic = _surface_template(spot)
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data={**synthetic, "spot": spot, "data_state": spot_state},
-                sources=["black_scholes_reference_formula"],
-                metadata={"live": False, "mode": "reference",
-                          "calls": len(synthetic["calls_grid"]),
-                          "puts": len(synthetic["puts_grid"]),
-                          "spot_source": spot_state},
+            # T10 placeholder_value: the constant-IV reference template is retired. It was built from
+            # assumed skew offsets, not market data, so it is never served, whatever spot is known.
+            return _ivol_unavailable(
+                instrument, spot=spot, spot_state=spot_state,
+                reason=("reference=true asked for the offline reference surface, which is retired: it was "
+                        "built from constant skew assumptions, not market data. No surface is shown."),
+                next_actions=["Call IVOL without reference=true to request the live option chain.",
+                              "Retry when the option-chain adapter responds."],
+                sources=["yfinance"] if spot_state == "live_quote" else [],
+                provider_errors=["reference surface retired (constant-IV template)"],
             )
         if not self.deps.yfinance:
             return _ivol_unavailable(
