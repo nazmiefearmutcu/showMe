@@ -13,7 +13,7 @@
  * provider outages arrive as status "provider_unavailable" and are surfaced
  * verbatim — the brief never renders a fake "all quiet today" summary.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, type CSSProperties } from "react";
 import {
   Empty,
   Pane,
@@ -88,6 +88,21 @@ const SECTION_LABELS: Record<string, string> = {
   top_stories: "Top stories",
 };
 
+/** Delay between automatic retries while the brief is still composing. */
+const WARM_RETRY_MS = 2500;
+/** Upper bound on automatic retries, so a stuck provider cannot poll forever. */
+const MAX_WARM_RETRIES = 6;
+
+/**
+ * BRIEF#4: a cold call answers provider_unavailable with a reason saying the
+ * brief is still composing ("warming in background") or that the call timed
+ * out while it keeps running and is cached for the next call. Neither is an
+ * outage, so it is shown as warming rather than as an empty briefing.
+ */
+function isWarmingPayload(status: string | undefined, reason: string | undefined): boolean {
+  return status === "provider_unavailable" && /warming|timed out/i.test(reason ?? "");
+}
+
 export function BRIEFPane({ code }: FunctionPaneProps) {
   const [section, setSection] = usePersistentOption<SectionFilter>(
     "showme.brief.section",
@@ -103,6 +118,25 @@ export function BRIEFPane({ code }: FunctionPaneProps) {
     [payload],
   );
   const status = payload?.status ?? "—";
+
+  // BRIEF#4: while the brief is warming, retry on our own (bounded) instead of
+  // leaving the user on an empty briefing.
+  const warming = payload != null && isWarmingPayload(payload.status, payload.reason);
+  const refetchRef = useRef(refetch);
+  refetchRef.current = refetch;
+  const warmRetries = useRef(0);
+  useEffect(() => {
+    if (!warming) {
+      warmRetries.current = 0;
+      return;
+    }
+    if (warmRetries.current >= MAX_WARM_RETRIES) return;
+    const timer = window.setTimeout(() => {
+      warmRetries.current += 1;
+      refetchRef.current();
+    }, WARM_RETRY_MS);
+    return () => window.clearTimeout(timer);
+  }, [warming, data]);
 
   // Generated-at stamp from the payload's as_of card (fallback: envelope).
   const generatedAt = useMemo(() => {
@@ -166,11 +200,19 @@ export function BRIEFPane({ code }: FunctionPaneProps) {
     />
   ) : articles.length === 0 ? (
     <Empty
-      title={status === "needs_input" ? "Nothing to brief yet" : "No briefing returned"}
+      title={
+        status === "needs_input"
+          ? "Nothing to brief yet"
+          : warming
+            ? "Briefing is warming up"
+            : "No briefing returned"
+      }
       body={
-        payload?.next_actions?.[0] ??
-        payload?.reason ??
-        "No live headlines were available — the brief never invents a quiet-day summary."
+        warming
+          ? "Live headlines are still loading. The pane retries automatically."
+          : (payload?.next_actions?.[0] ??
+            payload?.reason ??
+            "No live headlines were available — the brief never invents a quiet-day summary.")
       }
       action={
         <button onClick={refetch} className="btn">
@@ -319,12 +361,7 @@ function ArticleItem({ article }: { article: BRIEFArticle }) {
         )}
       </div>
       <div className="u-text-mute" style={citationStyle}>
-        {[
-          article.source ?? "—",
-          article.feed ?? "—",
-          fmtStamp(article.published_at ?? ""),
-          article.matched_symbol ?? "—",
-        ].join(" · ")}
+        {citationParts(article).join(" · ")}
       </div>
       {article.summary ? (
         <p className="u-text-mute" style={summaryStyle}>
@@ -333,6 +370,23 @@ function ArticleItem({ article }: { article: BRIEFArticle }) {
       ) : null}
     </li>
   );
+}
+
+/**
+ * Citation line parts: source · feed · published · matched symbol. The feed is
+ * left out when it repeats the publisher (an RSS feed titled after its
+ * publisher would otherwise read "Reuters · Reuters").
+ */
+function citationParts(article: BRIEFArticle): string[] {
+  const source = article.source?.trim() ?? "";
+  const feed = article.feed?.trim() ?? "";
+  const feedPart = feed && feed !== source ? feed : null;
+  return [
+    source || "—",
+    feedPart,
+    fmtStamp(article.published_at ?? ""),
+    article.matched_symbol ?? "—",
+  ].filter((p): p is string => p != null);
 }
 
 /**
