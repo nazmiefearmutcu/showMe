@@ -58,3 +58,36 @@ def test_colon_inside_a_sentence_is_not_a_speaker_label() -> None:
     utts = _segment(text)
     speakers = {u["speaker"] for u in utts}
     assert speakers == {"John Ternus, CEO"}, speakers
+
+
+def test_prose_label_after_sentence_end_is_not_a_speaker() -> None:
+    """A single-word prose label such as 'Guidance:' or 'Note:' is not a speaker."""
+    text = (
+        "John Ternus, CEO: We delivered strong results this quarter. "
+        "Guidance: we raise the range for the year."
+    )
+    utts = _segment(text)
+    assert {u["speaker"] for u in utts} == {"John Ternus, CEO"}, utts
+    assert any("raise the range" in u["utterance"] for u in utts), utts
+    assert all(u["speaker"] == "John Ternus, CEO" for u in utts), utts
+
+
+def test_note_label_after_sentence_end_is_not_a_speaker() -> None:
+    text = (
+        "John Ternus, CEO: We delivered strong results. "
+        "Note: this excludes FX effects."
+    )
+    utts = _segment(text)
+    assert {u["speaker"] for u in utts} == {"John Ternus, CEO"}, utts
+    assert any("excludes FX effects" in u["utterance"] for u in utts), utts
+
+
+def test_known_single_word_speaker_inline_is_still_split() -> None:
+    """'Operator' opened a line earlier, so an inline 'Operator:' label is a real speaker."""
+    text = (
+        "Operator: Welcome to the call. "
+        "John Ternus, CEO: Thanks. Operator: Our next question comes from Jane Doe."
+    )
+    utts = _segment(text)
+    by_text = {u["utterance"]: u["speaker"] for u in utts}
+    assert by_text.get("Our next question comes from Jane Doe.") == "Operator", by_text
