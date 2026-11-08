@@ -80,6 +80,7 @@ class WHALFunction(BaseFunction):
                 threshold_usd=threshold_usd,
                 row_limit=limit,
                 trade_limit=trade_limit,
+                lookback_hours=lookback_hours,
                 timeout=timeout,
             )
         else:
@@ -136,6 +137,7 @@ async def _crypto_whales(
     threshold_usd: float,
     row_limit: int,
     trade_limit: int,
+    lookback_hours: int,
     timeout: float,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     pair = _binance_pair(symbol, chain)
@@ -159,7 +161,24 @@ async def _crypto_whales(
                 warnings.append(str(exc))
                 continue
 
-            rows = _shape_binance_trades(trades, pair, venue, threshold_usd, row_limit)
+            # Binance returns only the latest `trade_limit` trades, which can be
+            # minutes of flow. Keep only trades inside the requested lookback and
+            # report what they really cover, instead of implying the full window.
+            cutoff_ms = (time.time() - lookback_hours * 3600.0) * 1000.0
+            in_window = [
+                item for item in (trades if isinstance(trades, list) else [])
+                if isinstance(item, dict) and (_to_float(item.get("T"), 0.0) or 0.0) >= cutoff_ms
+            ]
+            window = _trade_window(in_window, lookback_hours)
+            covered = window["covered_hours"]
+            if covered is None or covered < lookback_hours - 1:
+                covered_text = f"{covered:.1f}h" if covered is not None else "0h"
+                warnings.append(
+                    f"Binance returns the latest {trade_limit} aggregate trades per venue, which "
+                    f"cover {covered_text} of the {lookback_hours}h lookback; earlier trades in the "
+                    "window are not checked against the threshold."
+                )
+            rows = _shape_binance_trades(in_window, pair, venue, threshold_usd, row_limit)
             history = _shape_binance_klines(klines, pair, venue)
             if rows or history:
                 threshold_hits = sum(1 for row in rows if row.get("threshold_crossed"))
@@ -171,6 +190,7 @@ async def _crypto_whales(
                         "provider_symbol": pair,
                         "rows": rows,
                         "history": history,
+                        "window": window,
                         "cards": [
                             {"label": "Provider", "value": f"Binance {venue}"},
                             {"label": "Rows", "value": len(rows)},
@@ -410,6 +430,25 @@ def _covered_window(bars: list[dict[str, Any]], lookback_hours: int) -> dict[str
         return {"lookback_hours": lookback_hours, "covered_from": None,
                 "covered_to": None, "covered_hours": None}
     stamps = [_iso_timestamp(row.get("timestamp")) for row in bars]
+    first, last = min(stamps), max(stamps)
+    return {
+        "lookback_hours": lookback_hours,
+        "covered_from": datetime.fromtimestamp(first, tz=timezone.utc).isoformat(),
+        "covered_to": datetime.fromtimestamp(last, tz=timezone.utc).isoformat(),
+        "covered_hours": round((last - first) / 3600.0, 2),
+    }
+
+
+def _trade_window(trades: list[dict[str, Any]], lookback_hours: int) -> dict[str, Any]:
+    """Span covered by Binance aggregate trades (``T`` in epoch ms), next to the lookback."""
+    stamps = [
+        ts / 1000.0
+        for ts in (_to_float(item.get("T")) for item in trades if isinstance(item, dict))
+        if ts is not None
+    ]
+    if not stamps:
+        return {"lookback_hours": lookback_hours, "covered_from": None,
+                "covered_to": None, "covered_hours": None}
     first, last = min(stamps), max(stamps)
     return {
         "lookback_hours": lookback_hours,
