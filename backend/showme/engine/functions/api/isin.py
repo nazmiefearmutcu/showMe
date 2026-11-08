@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -10,8 +11,9 @@ from showme.engine.data_sources.reference.openfigi_adapter import OpenFIGIRateLi
 
 
 _ID_TYPES = ("ID_ISIN", "ID_CUSIP", "ID_SEDOL", "TICKER", "ID_BB_GLOBAL")
-# Pacing budget for one call: the function timeout is 14 s, so the adapter
-# may wait at most this long before reporting the rest as rate-limited.
+# Total pacing wait for one call across all of its batches: the function timeout
+# is 14 s, so once this budget is spent the remaining batches are reported as
+# rate-limited per identifier instead of being waited for.
 _MAX_PACING_WAIT_SECONDS = 8.0
 
 
@@ -138,6 +140,9 @@ class ISINFunction(BaseFunction):
         limited_reason: str | None = None
         # OpenFIGI takes up to max_jobs_per_request identifiers per POST, so one
         # call covers a whole batch. Anonymous budget: 10 jobs/request, 25 requests/min.
+        # One pacing budget for the whole call, not per batch: every batch may
+        # only wait for what is left of it, so the call stays inside the timeout.
+        pacing_deadline = time.monotonic() + _MAX_PACING_WAIT_SECONDS
         for start in range(0, len(jobs), chunk_size):
             chunk = jobs[start:start + chunk_size]
             idxs = range(start, start + len(chunk))
@@ -145,8 +150,9 @@ class ISINFunction(BaseFunction):
                 for i in idxs:
                     failures[i] = limited_reason
                 continue
+            remaining = max(0.0, pacing_deadline - time.monotonic())
             try:
-                got = await adapter.lookup_batch(chunk, max_wait_seconds=_MAX_PACING_WAIT_SECONDS)
+                got = await adapter.lookup_batch(chunk, max_wait_seconds=remaining)
             except OpenFIGIRateLimited as exc:
                 retry = f" Retry in about {exc.retry_after:.0f} s." if exc.retry_after else ""
                 limited_reason = (
