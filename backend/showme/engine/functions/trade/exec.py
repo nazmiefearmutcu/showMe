@@ -1,4 +1,4 @@
-"""EXEC — VWAP/TWAP execution monitor function."""
+"""EXEC — TWAP/VWAP/ICEBERG/SNIPER execution monitor and schedule replay."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def _error_result(code: str, action: str, reason: str, *, fields: list[str] | No
 # The monitor actions (open/slice/close/get/list) only echo whatever fills the
 # caller has recorded — with an empty store EXEC has nothing live to show. The
 # product claim, though, is broader: "track parent-order execution
-# slice-by-slice … for VWAP/TWAP/POV algos". ``action=plan`` delivers that by
+# slice-by-slice … for TWAP/VWAP/ICEBERG/SNIPER algos". ``action=plan`` delivers that by
 # driving the real ``algos.{TWAP,VWAP,Iceberg,Sniper}`` schedulers against
 # *live* intraday OHLCV (Binance for crypto, Yahoo for listed assets), so each
 # slice carries the price/volume bar it would execute against plus an honest,
@@ -260,7 +260,7 @@ class EXECFunction(BaseFunction):
     code = "EXEC"
     name = "Execution Monitor"
     category = "trade"
-    description = "Live VWAP/TWAP slice-by-slice fill quality + pace tracking."
+    description = "TWAP/VWAP/ICEBERG/SNIPER slice schedule replay and parent-order fill-quality monitor."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         action = (params.get("action") or "list").lower()
@@ -274,13 +274,37 @@ class EXECFunction(BaseFunction):
                     fields=missing,
                 )
         if action == "open":
+            # EXEC#7: the monitor records only algo tags the engine schedules. An
+            # unscheduled tag is refused before anything is stored, never kept as a
+            # label the parent does not follow.
+            algo = str(params.get("algo") or "TWAP").strip().upper()
+            if algo not in _PLAN_SUPPORTED_ALGOS:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=None,
+                    data={
+                        "status": "unsupported_algo",
+                        "action": "open",
+                        "algo": algo,
+                        "reason": (
+                            f"algo '{algo}' is not scheduled by EXEC; "
+                            f"supported: {', '.join(_PLAN_SUPPORTED_ALGOS)}"
+                        ),
+                        "supported_algos": list(_PLAN_SUPPORTED_ALGOS),
+                        "next_actions": [
+                            "Re-open with one of the supported algos: " + ", ".join(_PLAN_SUPPORTED_ALGOS) + ".",
+                        ],
+                    },
+                    sources=["exec_monitor"],
+                    metadata={"error": True, "status": "unsupported_algo"},
+                )
             try:
                 pid = exec_monitor.open_parent(
                     parent_id=params["parent_id"],
                     symbol=params["symbol"], side=params["side"],
                     target_qty=float(params["target_qty"]),
                     arrival_price=params.get("arrival_price"),
-                    algo=params.get("algo", "TWAP"),
+                    algo=algo,
                     horizon_seconds=int(params.get("horizon_seconds", 600)),
                     metadata=params.get("metadata") or {},
                 )
@@ -333,7 +357,7 @@ class EXECFunction(BaseFunction):
             limit=int(params.get("limit", 50)))
         # When nothing is being monitored but the caller pointed us at a symbol,
         # build a *live* execution schedule instead of an empty placeholder so
-        # EXEC fulfils its "slice-by-slice for VWAP/TWAP/POV algos" claim.
+        # EXEC fulfils its "slice-by-slice for TWAP/VWAP/ICEBERG/SNIPER algos" claim.
         symbol_hint = (params.get("symbol") or "").strip()
         if not rows and (symbol_hint or (instrument is not None and getattr(instrument, "symbol", None))):
             return await self._plan(instrument, **params)

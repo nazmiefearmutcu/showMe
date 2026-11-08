@@ -226,6 +226,7 @@ def exec_() -> FunctionManifest:
                 ColumnSpec(key="arrival_price", label="Arrival", kind="currency", unit="quote", format="%.4f"),
                 ColumnSpec(key="is_bps", label="IS bps", kind="number", format="%.1f"),
                 ColumnSpec(key="pace_pct", label="Pace %", kind="percent", unit="%", format="%.1f"),
+                ColumnSpec(key="schedule_pct", label="Sched %", kind="percent", unit="%", format="%.1f"),
                 ColumnSpec(key="status", label="Status", kind="tag"),
                 ColumnSpec(key="opened_at", label="Opened", kind="datetime"),
             ],
