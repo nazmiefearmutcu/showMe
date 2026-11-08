@@ -87,6 +87,7 @@ DAPI_CURATED_ROUTES: list[dict[str, str]] = [
     {"method": "POST", "path": "/api/x/classify", "purpose": "Classify ad-hoc posts.", "request_body": "{ posts }", "response_shape": "XClassification[]", "mutates_state": "no", "example": "/api/x/classify"},
     {"method": "GET", "path": "/api/x/symbol_chip", "purpose": "Compact symbol-level sentiment chip data.", "request_body": "-", "response_shape": "{ bullish, mentions }", "mutates_state": "no", "example": "/api/x/symbol_chip?symbol=AAPL"},
     {"method": "GET", "path": "/api/x/instant_events", "purpose": "X-derived events for INSTANT feed.", "request_body": "-", "response_shape": "InstantEvent[]", "mutates_state": "no", "example": "/api/x/instant_events"},
+    {"method": "GET", "path": "/api/sentiment/market-gauge", "purpose": "CNN Fear & Greed gauge for the Welcome screen, read from Awareness.", "request_body": "-", "response_shape": "{ ok, score?, rating?, as_of?, source?, previous_close? } | { ok: false, reason }", "mutates_state": "no", "example": "/api/sentiment/market-gauge"},
     # ── streaming ──
     {"method": "GET", "path": "/api/stream/stats", "purpose": "WebSocket stream statistics.", "request_body": "-", "response_shape": "{ connections, by_topic }", "mutates_state": "no", "example": "/api/stream/stats"},
     # ── proxy ──

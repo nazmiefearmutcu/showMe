@@ -58,11 +58,14 @@ WAVE2_EQUITIES_CODES: tuple[str, ...] = (
 
 
 SEC_EDGAR_PRIMARY: frozenset[str] = frozenset(
-    {"FORM4", "FTS", "HDS", "HFS", "CACT", "SPLC", "LITM"}
+    {"FORM4", "FTS", "HDS", "HFS", "SPLC", "LITM"}
 )
 YFINANCE_PRIMARY: frozenset[str] = frozenset(
-    {"APPL", "PIB", "DPF", "DVD", "ANR", "RV", "DARK"}
+    {"APPL", "PIB", "DPF", "ANR", "RV", "DARK"}
 )
+# Corporate-calendar functions moved to the Awareness service (dividends, splits, 8-K filings).
+# yfinance and SEC remain secondary inputs inside their handlers, not the declared primary.
+AWARENESS_PRIMARY: frozenset[str] = frozenset({"CACT", "DVD"})
 # F14 seed-truth resync: EE (Finnhub historical earnings, Yahoo calendar as
 # fallback) and EREV (Finnhub recommendation buckets only) were listed under
 # YFINANCE_PRIMARY, but the shipped handlers read Finnhub as their primary
@@ -135,6 +138,15 @@ def test_yfinance_primary_chain(code: str) -> None:
     entry = REGISTRY.get(code)
     assert entry.provider_chain.primary == "yfinance", (
         f"{code} must declare primary=yfinance (yfinance-backed group), "
+        f"got primary={entry.provider_chain.primary!r}"
+    )
+
+
+@pytest.mark.parametrize("code", sorted(AWARENESS_PRIMARY))
+def test_awareness_primary_chain(code: str) -> None:
+    entry = REGISTRY.get(code)
+    assert entry.provider_chain.primary == "awareness", (
+        f"{code} must declare primary=awareness (Awareness corporate calendar), "
         f"got primary={entry.provider_chain.primary!r}"
     )
 

@@ -11,8 +11,8 @@ shape-quality bar, and honours the spec's per-code semantic invariants:
   * GMM must render as a bar_ladder chart and use FRED as primary.
   * REGM must lead with the internal model and expose at least one
     `model_assumption` control input.
-  * TRDH must declare no chart grammar (table-only) and use `internal`
-    as primary (curated calendar).
+  * TRDH must declare no chart grammar (table-only) and use `awareness`
+    as primary (Awareness exchange sessions and closures).
   * AV methodology must mention "playable archive" — not a placeholder list.
   * BRIEF must declare an `evidence_links_present` semantic test.
   * NI must declare an `impact_is_a_tag` style test asserting impact is
@@ -161,14 +161,14 @@ def test_regm_primary_provider_is_internal_with_model_assumption_input() -> None
     )
 
 
-def test_trdh_is_table_only_and_internal() -> None:
-    """TRDH is a curated calendar; no chart, primary is internal."""
+def test_trdh_is_table_only_and_awareness() -> None:
+    """TRDH is a table-only calendar; no chart, and its sessions/closures come from Awareness."""
     trdh = REGISTRY.get("TRDH")
     assert trdh.chart_grammar is None, (
         "TRDH must declare no chart_grammar (table-only)"
     )
-    assert trdh.provider_chain.primary == "internal", (
-        f"TRDH primary must be 'internal' (curated calendar), "
+    assert trdh.provider_chain.primary == "awareness", (
+        f"TRDH primary must be 'awareness' (Awareness exchange calendar), "
         f"got {trdh.provider_chain.primary!r}"
     )
 

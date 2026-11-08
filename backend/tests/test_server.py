@@ -957,26 +957,54 @@ def test_brief_live_composes_from_top_items_and_returns_articles(monkeypatch) ->
     )
 
 
+def _evts_client(handler):
+    import httpx
+
+    from showme.engine.data_sources.awareness import AwarenessClient
+
+    return AwarenessClient("http://aw.test", transport=httpx.MockTransport(handler), autostart=False)
+
+
 def test_evts_empty_provider_returns_actionable_status(monkeypatch) -> None:
+    """EVTS reads Awareness only (the yfinance-only path was removed). When Awareness answers
+    with an empty window the status is ``empty`` with an actionable reason, never ``ok`` and never
+    a fabricated row. A real outage is covered by the ``provider_unavailable`` test below."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.core.base_data_source import DataKind
+    import httpx
+
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.news.evts import EVTSFunction
 
-    class EmptyYFinance:
-        async def fetch(self, request):
-            assert request.kind == DataKind.EVENTS
-            return {
-                "calendar": {},
-                "earnings_dates": pd.DataFrame(),
-                "actions": pd.DataFrame(),
-                "dividends": pd.Series(dtype=float),
-                "splits": pd.Series(dtype=float),
-            }
+    def _empty(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [], "meta": {"providers": [], "notes": [], "generated_at": None}})
 
+    fn = EVTSFunction(FunctionDeps())
+    fn._awareness = _evts_client(_empty)
     instrument = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = asyncio.run(EVTSFunction(FunctionDeps(yfinance=EmptyYFinance())).execute(instrument, live=True))
+    result = asyncio.run(fn.execute(instrument, live=True))
+
+    assert result.data["status"] == "empty"
+    assert result.data["rows"] == []
+    assert result.data["reason"]
+    assert "AAPL" in result.data["reason"]
+
+
+def test_evts_awareness_down_returns_provider_unavailable(monkeypatch) -> None:
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
+    import httpx
+
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.core.instrument import AssetClass, Instrument
+    from showme.engine.functions.news.evts import EVTSFunction
+
+    def _down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated awareness outage", request=request)
+
+    fn = EVTSFunction(FunctionDeps())
+    fn._awareness = _evts_client(_down)
+    instrument = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    result = asyncio.run(fn.execute(instrument, live=True))
 
     assert result.data["status"] == "provider_unavailable"
     assert result.data["rows"] == []

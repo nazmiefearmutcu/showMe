@@ -59,6 +59,7 @@ KNOWN_PRIMARY_PROVIDERS = frozenset(
         "ccxt_broker",
         "cboe_options",
         "fx_vol_otc",
+        "awareness",  # local awareness-markets service (calendar/sentiment/news backbone)
     },
 )
 
@@ -282,7 +283,7 @@ def test_yas_uses_bar_ladder_or_no_chart() -> None:
     ("CRPR", "internal"),
     ("ALLQ", "internal"),
     ("PEOP", "internal"),
-    ("MEET", "internal"),
+    ("MEET", "awareness"),
     ("DDIS", "sec_edgar"),
     ("TECH", "yfinance"),
     ("CHGS", "yfinance"),
