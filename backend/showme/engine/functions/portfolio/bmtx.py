@@ -76,11 +76,14 @@ class BMTXFunction(BaseFunction):
         fee_bps = float(params.get("fee_bps", 5.0))
         sources = ["yfinance"]
         if not _truthy(params.get("live_backtest") or params.get("live")):
+            # BMTX residual: without live OHLCV no backtest runs, so the grid
+            # carries requested labels with null metrics and needs_input status.
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data=_matrix_template(symbols, strategies),
-                sources=["local_backtest_model"],
+                sources=[],
+                warnings=[_OFFLINE_REASON],
                 metadata={"days": days, "fee_bps": fee_bps, "live": False},
             )
         else:
@@ -251,55 +254,72 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+_OFFLINE_REASON = (
+    "Live backtest data was not requested, so no backtest ran and no metrics are shown. "
+    "Set live_backtest=true to run backtests on live OHLCV history."
+)
+
+
 def _matrix_template(symbols: list[str], strategies: list[str]) -> dict[str, Any]:
-    cells: list[dict[str, Any]] = []
-    for i, sym in enumerate(symbols[:8]):
-        for j, strat in enumerate(strategies[:5]):
-            cells.append({
-                "label": f"{sym} {strat}",
-                "symbol": sym,
-                "strategy": strat,
-                "sharpe": round(1.05 + i * 0.04 - j * 0.03, 3),
-                "total_return": round(0.08 + i * 0.012 - j * 0.006, 4),
-                "max_drawdown": round(-0.05 - j * 0.008, 4),
-                "trades": 6 + i + j,
-                "final_equity": round(10000 * (1.08 + i * 0.012 - j * 0.006), 2),
-            })
-    best_per_symbol: dict[str, dict[str, Any]] = {}
-    for cell in cells:
-        sym = cell["symbol"]
-        if sym not in best_per_symbol or cell["sharpe"] > best_per_symbol[sym]["sharpe"]:
-            best_per_symbol[sym] = cell
-    cells.sort(key=lambda item: -item["sharpe"])
+    """Offline grid of the requested labels. Metric fields are explicit nulls.
+
+    BMTX residual: the previous template invented Sharpe, return, drawdown and
+    equity values under the requested tickers. No metric is computed or
+    hard-coded here; only the labels the caller asked for are echoed.
+    """
+    syms = symbols[:8]
+    strats = strategies[:5]
+    cells: list[dict[str, Any]] = [
+        {
+            "label": f"{sym} {strat}",
+            "symbol": sym,
+            "strategy": strat,
+            "sharpe": None,
+            "total_return": None,
+            "max_drawdown": None,
+            "trades": None,
+            "final_equity": None,
+        }
+        for sym in syms
+        for strat in strats
+    ]
     return {
-        "status": "reference",
-        "symbols": symbols[:8],
-        "strategies": strategies[:5],
+        "status": "needs_input",
+        "reason": _OFFLINE_REASON,
+        "symbols": syms,
+        "strategies": strats,
         "cells": cells,
         "surface": [
             {
                 "label": cell["label"],
                 "symbol": cell["symbol"],
                 "strategy": cell["strategy"],
-                "sharpe": cell["sharpe"],
-                "total_return": cell["total_return"],
-                "max_drawdown": cell["max_drawdown"],
+                "sharpe": None,
+                "total_return": None,
+                "max_drawdown": None,
             }
             for cell in cells
         ],
-        "best_per_symbol": best_per_symbol,
+        "best_per_symbol": {},
         "top_10_by_sharpe": cells[:10],
         "summary": {
-            "symbols": len(symbols[:8]),
-            "strategies": len(strategies[:5]),
-            "runs": len(cells),
-            "source_mode": "reference_model",
+            "symbols": len(syms),
+            "strategies": len(strats),
+            "runs": 0,
+            "best_sharpe": None,
+            "source_mode": "needs_live_input",
         },
-        "methodology": "Reference strategy-by-symbol matrix used when live backtest data is not requested or unavailable.",
+        "next_actions": [
+            "Set live_backtest=true to compute backtests from live OHLCV history.",
+        ],
+        "methodology": (
+            "No backtest was run. The grid lists the requested symbols and strategies with "
+            "no metric values until live OHLCV history is requested."
+        ),
         "field_dictionary": {
-            "sharpe": "Annualized return/risk score from the backtest equity curve.",
-            "total_return": "Final equity divided by initial equity minus one.",
-            "max_drawdown": "Worst peak-to-trough equity decline during the test.",
+            "sharpe": "Annualized return/risk score from the backtest equity curve. Null without live data.",
+            "total_return": "Final equity divided by initial equity minus one. Null without live data.",
+            "max_drawdown": "Worst peak-to-trough equity decline during the test. Null without live data.",
             "surface": "Strategy-by-symbol grid used by the heatmap.",
         },
     }
