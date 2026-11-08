@@ -877,7 +877,8 @@ def _bgas_reconcile_prev(
         return row
     if len(history) < 2:
         return _bgas_unreconciled(row, warnings, "fewer than two daily bars")
-    quote_day = str(row.get("as_of") or "")[:10]
+    # NGAS#2: the session day is the US Eastern trade day, not the UTC date.
+    quote_day = _exchange_trade_day(row.get("as_of"))
     dates = [str(h.get("date") or "")[:10] for h in history]
     bar_prev: float | None = None
     bar_day: str | None = None
@@ -903,6 +904,8 @@ def _bgas_reconcile_prev(
             f"{bar_prev} for {bar_day}; the change is computed from the daily bars."
         )
     last = _finite(row.get("last"))
+    # Keep the quote's own value so a later check (NGAS) labels the replacement.
+    row["quote_previous_close"] = quote_prev
     row["prev"] = bar_prev
     row["prev_source"] = "daily_bars"
     row["prev_as_of"] = bar_day
@@ -1165,7 +1168,9 @@ def _ngas_verify_previous_close(result: FunctionResult) -> FunctionResult:
         if as_of_day and str(bar.get("date") or "") < as_of_day and _finite(bar.get("close")) is not None
     ]
     bar_prev = _finite(prior_bars[-1].get("close")) if prior_bars else None
-    quote_prev = _finite(row.get("prev"))
+    # The shared BGAS body may already have replaced a disagreeing quote value
+    # with the daily bar; judge the quote's own previousClose, not the replacement.
+    quote_prev = _finite(row["quote_previous_close"]) if "quote_previous_close" in row else _finite(row.get("prev"))
     warnings = list(result.warnings or [])
     if bar_prev is None:
         if quote_prev is None:
@@ -1178,10 +1183,11 @@ def _ngas_verify_previous_close(result: FunctionResult) -> FunctionResult:
         prev, source, check = quote_prev, "quote_previous_close", "matches_daily_bar"
     else:
         prev, source, check = bar_prev, "daily_bar_prior_close", "quote_previous_close_disagrees"
-        warnings.append(
-            f"NGAS previousClose {quote_prev} disagrees with the daily bar close {bar_prev} "
-            f"for {prior_bars[-1].get('date')}; change uses the daily bar."
-        )
+        if not any("disagrees with the daily bar close" in w for w in warnings):
+            warnings.append(
+                f"NGAS previousClose {quote_prev} disagrees with the daily bar close {bar_prev} "
+                f"for {prior_bars[-1].get('date')}; change uses the daily bar."
+            )
     last = _finite(row.get("last"))
     row["prev"] = prev
     row["prev_source"] = source
