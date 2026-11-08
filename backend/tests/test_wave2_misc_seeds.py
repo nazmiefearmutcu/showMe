@@ -87,7 +87,10 @@ def test_misc_seed_shape(code: str) -> None:
         f"{code}: must declare Category.MISC (got {entry.category!r})"
     )
     assert entry.inputs, f"{code}: at least one input control required"
-    assert entry.provider_chain.primary in ALLOWED_PRIMARY_PROVIDERS, (
+    # DINE is the one MISC pane whose data comes from a real public provider
+    # (OpenStreetMap Nominatim); its seed must say so rather than claim internal.
+    allowed_primary = ALLOWED_PRIMARY_PROVIDERS | ({"openstreetmap_nominatim"} if code == "DINE" else set())
+    assert entry.provider_chain.primary in allowed_primary, (
         f"{code}: provider_chain.primary={entry.provider_chain.primary!r} "
         f"not in {ALLOWED_PRIMARY_PROVIDERS} — MISC panes must be honest about "
         f"having no first-class external provider."

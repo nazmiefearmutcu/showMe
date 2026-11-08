@@ -359,19 +359,35 @@ class FLYFunction(BaseFunction):
 
 @FunctionRegistry.register
 class DINEFunction(BaseFunction):
-    """DINE — Restaurant info (Yelp Fusion)."""
+    """DINE — Restaurant lookup via OpenStreetMap Nominatim (no ratings or prices)."""
     code = "DINE"
     name = "Restaurants"
     category = "misc"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        location = str(params.get("location") or "New York").strip()
+        location = str(params.get("location") or "").strip()
+        if not location:
+            # No default place: an unknown location must not be silently
+            # replaced by another city's restaurants.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "needs_input",
+                    "reason": "No location given; DINE does not guess a city.",
+                    "rows": [],
+                    "next_actions": ["Enter a place name such as 'SoHo New York' or 'Istanbul'."],
+                },
+                sources=[],
+            )
         query = str(params.get("query") or "restaurant").strip()
+        cuisine = str(params.get("cuisine") or "any").strip().casefold()
         # Nominatim's documented maximum is 40 (provider policy, not a
         # local choice) — request denser result sets up to that cap.
         limit = max(1, min(int(params.get("limit") or 25), _NOMINATIM_MAX_LIMIT))
+        geo_match: dict[str, Any] = {}
         try:
-            rows = await _nominatim_restaurants(query, location, limit)
+            rows = await _nominatim_restaurants(query, location, limit, geo_out=geo_match)
         except Exception as exc:
             return FunctionResult(
                 code=self.code,
@@ -380,18 +396,37 @@ class DINEFunction(BaseFunction):
                     "status": "provider_unavailable",
                     "reason": f"OpenStreetMap lookup failed: {exc}",
                     "rows": [],
-                    "next_actions": ["Try a more specific location such as 'SoHo New York' or connect a restaurant ratings provider."],
+                    "next_actions": ["Retry shortly (Nominatim allows about one request per second).", "Try a more specific location such as 'SoHo New York'."],
                 },
                 sources=["openstreetmap_nominatim"],
             )
+        cuisine_filter: dict[str, Any] | None = None
+        if cuisine and cuisine != "any":
+            # OSM only carries cuisine as a mapper-supplied tag, so the
+            # filter is applied to the places Nominatim returned for this
+            # search (up to ``limit``) — it never invents a match.
+            matched_rows = [row for row in rows if _dine_matches_cuisine(row, cuisine)]
+            cuisine_filter = {
+                "requested": cuisine,
+                "matched": len(matched_rows),
+                "scope": "places returned by Nominatim for this search (up to the requested limit)",
+            }
+            rows = matched_rows
         if not rows:
+            reason = f"No OpenStreetMap restaurants matched {query!r} near {location!r}."
+            if cuisine_filter is not None:
+                reason = (
+                    f"No returned OpenStreetMap place for {query!r} near {location!r} carries "
+                    f"cuisine {cuisine!r} (OSM cuisine tag or type)."
+                )
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data={
                     "status": "empty",
-                    "reason": f"No OpenStreetMap restaurants matched {query!r} near {location!r}.",
+                    "reason": reason,
                     "rows": [],
+                    **({"cuisine_filter": cuisine_filter} if cuisine_filter else {}),
                 },
                 sources=["openstreetmap_nominatim"],
             )
@@ -402,6 +437,11 @@ class DINEFunction(BaseFunction):
                 "status": "live",
                 "location": location,
                 "query": query,
+                "location_match": {
+                    "display_name": geo_match.get("geocoded_as"),
+                    "addresstype": geo_match.get("geocoded_addresstype"),
+                },
+                "cuisine_filter": cuisine_filter,
                 "rows": rows,
                 "surface": [
                     {"name": row["name"], "distance_km": row.get("distance_km"), "value": row.get("distance_km")}
@@ -414,12 +454,14 @@ class DINEFunction(BaseFunction):
                 ],
                 "methodology": (
                     "DINE searches OpenStreetMap Nominatim bounded to a viewbox around the requested "
-                    "location (the city is geocoded first, then the place query runs with bounded=1 so "
-                    "results are inside the area, not name matches anywhere on the planet). Amenity "
-                    "keywords such as 'restaurant' use Nominatim's tagged-object search; other keywords "
-                    "fall back to text matching. Results are cached ~5 minutes in-process, requests are "
-                    "throttled to the provider's 1 req/sec policy, and ratings/prices are never fabricated "
-                    "— those fields stay blank unless a ratings provider is connected."
+                    "location (the place is geocoded first; a city-level match is preferred over a "
+                    "state or country match; the place query runs with bounded=1 so results are inside "
+                    "the area, not name matches anywhere on the planet). Amenity keywords such as "
+                    "'restaurant' use Nominatim's tagged-object search; other keywords fall back to text "
+                    "matching. Distances are measured from the geocoded point of the chosen match. "
+                    "Results are cached ~5 minutes in-process, requests are throttled to the provider's "
+                    "1 req/sec policy, and ratings/prices are never fabricated — the rating and price "
+                    "fields stay blank because OSM does not carry them."
                 ),
                 "field_dictionary": {
                     "name": "Restaurant/place name from OSM.",
@@ -432,11 +474,20 @@ class DINEFunction(BaseFunction):
                     "cuisine": "OSM cuisine tag when the mapper supplied one.",
                     "opening_hours": "OSM opening_hours tag when the mapper supplied one.",
                     "osm_type": "OSM object type.",
-                    "distance_km": "Approximate distance from the bounded search area's centre (city centre).",
+                    "distance_km": "Approximate great-circle distance from the geocoded point of the location match (not a route).",
                 },
             },
             sources=["openstreetmap_nominatim"],
         )
+
+
+def _dine_matches_cuisine(row: dict[str, Any], cuisine: str) -> bool:
+    """True when the OSM cuisine tag (``;``-separated list) or OSM type equals ``cuisine``."""
+    tag = str(row.get("cuisine") or "")
+    tags = {part.strip().casefold() for part in tag.split(";") if part.strip()}
+    if cuisine in tags:
+        return True
+    return str(row.get("type") or "").casefold() == cuisine
 
 
 def _truthy(value: Any) -> bool:
@@ -642,27 +693,55 @@ async def _nominatim_get(params: dict[str, Any]) -> list[dict[str, Any]]:
     return payload if isinstance(payload, list) else []
 
 
-async def _nominatim_viewbox(location: str) -> dict[str, Any]:
-    """Geocode ``location`` once → ``{"viewbox": ..., "center": (lat, lon)}``.
+# Nominatim ``addresstype`` values that name a city-level place, most specific
+# first. A free-text "New York" otherwise matches both the city and the state.
+_NOMINATIM_CITY_ADDRESSTYPES = ("city", "town", "village", "municipality", "borough")
 
+
+def _nominatim_pick_match(payload: list[Any]) -> dict[str, Any] | None:
+    """Choose the geocode match: a city-level result with a usable bbox, else the first usable one."""
+    candidates = [item for item in payload if isinstance(item, dict)]
+
+    def _rank(item: dict[str, Any]) -> int:
+        addresstype = str(item.get("addresstype") or "")
+        if addresstype in _NOMINATIM_CITY_ADDRESSTYPES:
+            return _NOMINATIM_CITY_ADDRESSTYPES.index(addresstype)
+        return len(_NOMINATIM_CITY_ADDRESSTYPES)
+
+    # ``sorted`` is stable, so provider order breaks ties within a rank.
+    for item in sorted(candidates, key=_rank):
+        bbox = item.get("boundingbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            return item
+    return None
+
+
+async def _nominatim_viewbox(location: str) -> dict[str, Any]:
+    """Geocode ``location`` once → ``{"viewbox", "center": (lat, lon), "geocoded_as", "geocoded_addresstype"}``.
+
+    ``center`` is the geocoded point of the chosen match (not the bbox midpoint).
     Empty dict when Nominatim has no usable bounding box for the string,
     in which case the caller falls back to the legacy free-text search.
     """
-    payload = await _nominatim_get({"q": location, "format": "jsonv2", "limit": 1})
-    if not payload or not isinstance(payload[0], dict):
+    payload = await _nominatim_get({"q": location, "format": "jsonv2", "limit": 5})
+    match = _nominatim_pick_match(payload)
+    if match is None:
         return {}
-    bbox = payload[0].get("boundingbox")
-    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
-        return {}
+    bbox = match.get("boundingbox")
     south = _num(bbox[0])
     north = _num(bbox[1])
     west = _num(bbox[2])
     east = _num(bbox[3])
     if None in (south, north, west, east) or south >= north or west >= east:
         return {}
+    point_lat = _num(match.get("lat"))
+    point_lon = _num(match.get("lon"))
+    center = (point_lat, point_lon) if point_lat is not None and point_lon is not None else None
     return {
         "viewbox": f"{west},{south},{east},{north}",
-        "center": ((south + north) / 2.0, (west + east) / 2.0),
+        "center": center,
+        "geocoded_as": match.get("display_name"),
+        "geocoded_addresstype": match.get("addresstype"),
     }
 
 
@@ -690,12 +769,21 @@ def _nominatim_address(item: dict[str, Any]) -> str | None:
     return compact or None
 
 
-async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[dict[str, Any]]:
+async def _nominatim_restaurants(
+    query: str,
+    location: str,
+    limit: int,
+    geo_out: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Bounded Nominatim place search. ``geo_out`` (if given) receives the geocode match used."""
     limit = max(1, min(int(limit or 25), _NOMINATIM_MAX_LIMIT))
     cache_key = f"search|{query.casefold()}|{location.casefold()}|{limit}"
     cached = _nominatim_cache_get(cache_key)
     if cached is not None:
-        return [dict(row) for row in cached]
+        cached_rows, cached_geo = cached
+        if geo_out is not None:
+            geo_out.update(cached_geo)
+        return [dict(row) for row in cached_rows]
 
     # 1) Geocode the location (cached separately) so the place search can
     #    be bounded to the area instead of name-matching the whole planet.
@@ -704,6 +792,12 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
     if geo is None:
         geo = await _nominatim_viewbox(location)
         _nominatim_cache_set(geo_key, geo)
+    geo_info = {
+        "geocoded_as": geo.get("geocoded_as") if isinstance(geo, dict) else None,
+        "geocoded_addresstype": geo.get("geocoded_addresstype") if isinstance(geo, dict) else None,
+    }
+    if geo_out is not None:
+        geo_out.update(geo_info)
 
     keyword = query.strip().casefold().replace(" ", "_")
     viewbox = geo.get("viewbox") if isinstance(geo, dict) else None
@@ -736,12 +830,11 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
             "limit": limit,
         })
 
+    # Distances originate at the geocoded point of the location match. With no
+    # geocode point there is no honest origin, so distance_km stays None.
     center = geo.get("center") if isinstance(geo, dict) else None
     if center:
         origin_lat, origin_lon = center
-    elif payload:
-        origin_lat = _num(payload[0].get("lat"))
-        origin_lon = _num(payload[0].get("lon"))
     else:
         origin_lat, origin_lon = None, None
 
@@ -783,7 +876,9 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
         })
         if len(rows) >= limit:
             break
-    _nominatim_cache_set(cache_key, rows)
+    _nominatim_cache_set(cache_key, (rows, geo_info))
+    if geo_out is not None:
+        geo_out.update(geo_info)
     return [dict(row) for row in rows]
 
 
