@@ -10,7 +10,7 @@
  *   - Lists `warnings` and the resolved `sources` so the user can tell
  *     when the function fell back to FRED-default stubs.
  */
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -73,6 +73,14 @@ interface WACCPayload {
   field_dictionary?: Record<string, string>;
   beta_source?: string;
   beta_window?: string | null;
+  erp_source?: string;
+  tax_source?: string;
+  assumptions?: {
+    market_premium?: number | null;
+    beta_window?: string | null;
+    beta_window_applied?: string | null;
+    tax_rate_override?: number | null;
+  };
   data_state?: string;
 }
 
@@ -82,10 +90,26 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
   // symbol, mirroring every other equity pane.
   const resolvedSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY"]);
 
+  // WACC#5: the assumptions the manifest declares. Rates are typed in percent
+  // and sent as decimals; null means "not set", so the function resolves it.
+  const [marketPremium, setMarketPremium] = useState<number | null>(null);
+  const [betaWindow, setBetaWindow] = useState<string>("");
+  const [betaInput, setBetaInput] = useState<number | null>(null);
+  const [rf, setRf] = useState<number | null>(null);
+  const [rd, setRd] = useState<number | null>(null);
+  const [taxOverride, setTaxOverride] = useState<number | null>(null);
+
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol: resolvedSymbol,
-    params: {},
+    params: {
+      market_premium: marketPremium ?? undefined,
+      beta_window: betaWindow || undefined,
+      beta: betaInput ?? undefined,
+      rf: rf ?? undefined,
+      rd: rd ?? undefined,
+      tax_rate_override: taxOverride ?? undefined,
+    },
   });
 
   const payload = useMemo<WACCPayload>(
@@ -214,6 +238,75 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
           }
         />
         <PaneBody>
+          <section style={inputGrid} aria-label="WACC assumptions">
+            <OptionalNumberField
+              label="ERP %"
+              ariaLabel="Equity risk premium (ERP) %"
+              value={marketPremium}
+              scale={100}
+              min={2}
+              max={12}
+              step={0.25}
+              placeholder="Damodaran"
+              onCommit={setMarketPremium}
+            />
+            <label style={inputField}>
+              <span style={inputLabel}>Beta window</span>
+              <select
+                aria-label="Beta window"
+                value={betaWindow}
+                onChange={(e) => setBetaWindow(e.target.value)}
+                style={inputControl}
+              >
+                <option value="">auto (5Y, 2Y, 1Y)</option>
+                <option value="252d">252d (1Y)</option>
+                <option value="504d">504d (2Y)</option>
+              </select>
+            </label>
+            <OptionalNumberField
+              label="β"
+              ariaLabel="Beta (β)"
+              value={betaInput}
+              min={0}
+              max={5}
+              step={0.01}
+              placeholder="BetaFunction"
+              onCommit={setBetaInput}
+            />
+            <OptionalNumberField
+              label="rf %"
+              ariaLabel="Risk-free rate (rf) %"
+              value={rf}
+              scale={100}
+              min={0}
+              max={20}
+              step={0.05}
+              placeholder="FRED DGS10"
+              onCommit={setRf}
+            />
+            <OptionalNumberField
+              label="Rd %"
+              ariaLabel="Pre-tax cost of debt (Rd) %"
+              value={rd}
+              scale={100}
+              min={0}
+              max={30}
+              step={0.05}
+              placeholder="issuer / FRED"
+              onCommit={setRd}
+            />
+            <OptionalNumberField
+              label="Tax override %"
+              ariaLabel="Tax rate override %"
+              value={taxOverride}
+              scale={100}
+              min={0}
+              max={45}
+              step={0.5}
+              placeholder="issuer / statutory"
+              onCommit={setTaxOverride}
+            />
+          </section>
           {state === "loading" || state === "idle" ? (
             <Skeleton height={300} />
           ) : state === "error" ? (
@@ -287,6 +380,13 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
                   <span>{payload.methodology}</span>
                 </div>
               ) : null}
+              <div style={methodologyBox} aria-label="WACC assumptions applied">
+                <strong className="u-text-secondary">Assumptions applied</strong>
+                <span className="u-text-mute" style={{ fontSize: "var(--font-size-xs)" }}>
+                  ERP {payload.erp_source ?? "—"} · β window {payload.beta_window ?? payload.assumptions?.beta_window_applied ?? "—"}
+                  {" "}· tax {payload.tax_source ?? "—"}
+                </span>
+              </div>
             </div>
           )}
         </PaneBody>
@@ -346,6 +446,81 @@ function SensitivitySurface({ cells, baseWacc }: { cells: WACCSurfaceCell[]; bas
         })}
       </div>
     </section>
+  );
+}
+
+/**
+ * Optional assumption field. Commits on blur or Enter. An empty field clears
+ * the override (null, so nothing is sent). A value is clamped to [min, max] in
+ * display units and sent as value / scale (a percent field sends a decimal).
+ */
+function OptionalNumberField({
+  label,
+  ariaLabel,
+  value,
+  scale = 1,
+  min,
+  max,
+  step,
+  placeholder,
+  onCommit,
+}: {
+  label: string;
+  ariaLabel: string;
+  value: number | null;
+  scale?: number;
+  min: number;
+  max: number;
+  step: number;
+  placeholder: string;
+  onCommit: (next: number | null) => void;
+}) {
+  const shown = value == null ? "" : String(Number((value * scale).toFixed(6)));
+  const [draft, setDraft] = useState(shown);
+  const [lastShown, setLastShown] = useState(shown);
+  if (shown !== lastShown) {
+    // The committed value changed outside this field: resync the draft.
+    setLastShown(shown);
+    setDraft(shown);
+  }
+  const commit = () => {
+    if (draft.trim() === "") {
+      if (value !== null) onCommit(null);
+      return;
+    }
+    const n = Number(draft);
+    if (!Number.isFinite(n)) {
+      setDraft(shown);
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, n));
+    const next = clamped / scale;
+    if (value == null || Number((value * scale).toFixed(6)) !== clamped) {
+      onCommit(next);
+    } else {
+      setDraft(shown);
+    }
+  };
+  return (
+    <label style={inputField}>
+      <span style={inputLabel}>{label}</span>
+      <input
+        type="number"
+        aria-label={ariaLabel}
+        value={draft}
+        min={min}
+        max={max}
+        step={step}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") setDraft(shown);
+        }}
+        style={inputControl}
+      />
+    </label>
   );
 }
 
@@ -453,6 +628,37 @@ const surfaceCellLabel: CSSProperties = {
   fontFamily: "JetBrains Mono, monospace",
   fontSize: "var(--font-size-xs)",
   color: "var(--text-mute)",
+};
+
+const inputGrid: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+  gap: 8,
+  padding: "8px 0",
+};
+
+const inputField: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  minWidth: 0,
+};
+
+const inputLabel: CSSProperties = {
+  fontSize: "var(--font-size-xs)",
+  color: "var(--text-mute)",
+};
+
+const inputControl: CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "4px 6px",
+  borderRadius: "var(--radius-sm)",
+  border: "1px solid var(--border-subtle)",
+  background: "var(--surface-2)",
+  color: "var(--text-primary)",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-xs)",
+  fontVariantNumeric: "tabular-nums",
 };
 
 const methodologyBox: CSSProperties = {
