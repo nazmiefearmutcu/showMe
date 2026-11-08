@@ -502,6 +502,14 @@ class OMONFunction(BaseFunction):
         total_put_oi = sum(r["put_oi"] for r in rows if r.get("put_oi"))
 
         warnings: list[str] = []
+        if risk_free_source == "default":
+            # XCON-3: GREEKS prices with the live 3M T-bill (FRED DGS3MO); OMON's rate is
+            # a fixed assumption, so the same option can differ between the two panes.
+            warnings.append(
+                f"Risk-free rate {risk_free * 100:g}% is a fixed assumption, not a live yield; "
+                "GREEKS uses the live 3-month T-bill (FRED DGS3MO), so theta and rho can differ "
+                "between the two panes. Pass risk_free (decimal) to set the rate."
+            )
         if spot_unavailable:
             warnings.append(
                 "Underlying spot price unavailable (no live quote and no spot "
