@@ -171,7 +171,9 @@ class TECHFunction(BaseFunction):
             wanted = _requested_families(params.get("studies"))
         except ValueError as exc:
             return _input_error(instrument, str(exc))
-        interval = str(params.get("interval", "1d") or "1d").strip().lower()
+        # Case-sensitive on purpose: '1M' must not be lowercased into '1m'
+        # (minute bars). Anything outside the list is rejected, never mapped.
+        interval = str(params.get("interval", "1d") or "1d").strip()
         if interval not in _SUPPORTED_INTERVALS:
             return _input_error(
                 instrument,

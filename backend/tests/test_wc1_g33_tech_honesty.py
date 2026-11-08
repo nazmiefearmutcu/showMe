@@ -187,3 +187,34 @@ def test_deep_history_follows_fetched_history_not_requested_tail():
     long = TECHFunction(FunctionDeps(yfinance=_RecordingYfinance(_ohlc(300))))
     # Only 60 bars are shown, but 300 were fetched: the history is deep.
     assert _run(long.execute(instrument=EQ, tail=60)).data["deep_history"] is True
+
+
+# ── TECH#5 review follow-up: interval must be validated case-sensitively ──
+
+
+def test_uppercase_monthly_alias_is_rejected_not_fetched_as_minutes():
+    """'1M' (monthly in some UIs) must not be lowercased into '1m' (minute bars)."""
+    provider = _RecordingYfinance(_ohlc(300))
+    fn = TECHFunction(FunctionDeps(yfinance=provider))
+    res = _run(fn.execute(instrument=EQ, interval="1M"))
+    assert res.data["status"] == "input_error"
+    assert "1M" in res.data["reason"]
+    assert provider.calls == []
+
+
+def test_supported_monthly_interval_is_fetched_as_monthly():
+    provider = _RecordingYfinance(_ohlc(300))
+    fn = TECHFunction(FunctionDeps(yfinance=provider))
+    _run(fn.execute(instrument=EQ, interval="1mo"))
+    assert len(provider.calls) == 1
+    assert provider.calls[0].interval == "1mo"
+
+
+# ── TECH#4 review follow-up: an unrecognised range must not inherit days=120 ──
+
+
+def test_unrecognised_range_does_not_inherit_generic_days():
+    from showme import server
+
+    routed = server._route_function_params("TECH", {"symbol": "AAPL", "range": "bogus"})
+    assert routed.get("days") in (None, 365), routed.get("days")
