@@ -302,10 +302,15 @@ class EXECFunction(BaseFunction):
                     metadata={"error": True, "status": "unsupported_algo"},
                 )
             try:
+                # EXEC#6: NaN, inf and zero/negative quantities must never be
+                # stored as the parent quantity (every pace figure divides by it).
+                target_qty = float(params["target_qty"])
+                if not math.isfinite(target_qty) or target_qty <= 0:
+                    raise ValueError("target_qty must be a finite number greater than 0")
                 pid = exec_monitor.open_parent(
                     parent_id=params["parent_id"],
                     symbol=params["symbol"], side=params["side"],
-                    target_qty=float(params["target_qty"]),
+                    target_qty=target_qty,
                     arrival_price=params.get("arrival_price"),
                     algo=algo,
                     horizon_seconds=int(params.get("horizon_seconds", 600)),
