@@ -73,7 +73,7 @@ function forecastRow(
     lower_band: forecast - band,
     upper_band: forecast + band,
     forward_points: forecast - spot,
-    confidence: 78 - years * 9,
+    vol_annualized: 0.085,
     source_mode: sourceMode,
   };
 }
@@ -209,8 +209,53 @@ describe("FXFC pane — data honesty", () => {
     setMockFn({ state: "ok", data: payload });
     render(<FXFCPane code="FXFC" symbol="USDJPY" />);
     // Without a 3M row the pane used rows[1]; it must say "6M", not "3M".
-    expect(screen.getByText("6M forecast")).toBeInTheDocument();
-    expect(screen.queryByText("3M forecast")).toBeNull();
+    expect(screen.getByText("6M CIP forward")).toBeInTheDocument();
+    expect(screen.queryByText("3M CIP forward")).toBeNull();
+  });
+
+  it("labels the forward levels as CIP forwards, not forecasts", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    // Column header and the curve legend both say CIP forward.
+    expect(screen.getAllByText("CIP forward").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Forecast")).toBeNull();
+    expect(screen.queryByText(/3M forecast/)).toBeNull();
+  });
+
+  it("drops the tenor-only confidence column", () => {
+    setMockFn({ state: "ok", data: livePayload() });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.queryByText("Conf.")).toBeNull();
+  });
+
+  it("shows an unavailable band vol instead of a fabricated percent", () => {
+    const payload = livePayload();
+    payload.data.vol_annualized = null as unknown as number;
+    payload.data.forecast = payload.data.forecast.map((r) => ({
+      ...r,
+      lower_band: null as unknown as number,
+      upper_band: null as unknown as number,
+      vol_annualized: null as unknown as number,
+    }));
+    setMockFn({ state: "ok", data: payload });
+    const { container } = render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(screen.getByText("NO VOL SOURCE · BANDS UNAVAILABLE")).toBeInTheDocument();
+    // A null vol must render as a dash, never as "—%" or "0.00%".
+    expect(container.textContent).not.toMatch(/—%/);
+    expect(container.textContent).not.toMatch(/0\.00%/);
+  });
+
+  it("captions the band vol as live realized when the backend says so", () => {
+    const base = livePayload();
+    const payload = {
+      ...base,
+      data: { ...base.data, vol_source: "live_realized_vol" },
+    };
+    setMockFn({ state: "ok", data: payload });
+    render(<FXFCPane code="FXFC" symbol="USDJPY" />);
+    expect(
+      screen.getByText("LIVE REALIZED VOL · MODEL BANDS (spot·vol·√T)"),
+    ).toBeInTheDocument();
   });
 
   it("never claims vendor analyst forecasts (model note)", () => {

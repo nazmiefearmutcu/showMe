@@ -3,17 +3,17 @@
  *
  * Header: pair segmented control (persisted) + source honesty pill +
  * status + refresh. Body: warning banner when the backend fell back to
- * the labelled reference spot + KPI ribbon (spot, 3M forecast, rate
- * differential, vol assumption) + forecast-vs-spot curve (dashed spot
- * overlay) + the horizon table: forecast level, forecast-vs-spot delta
- * (F − S), model bands (spot·vol·√T), confidence, and the per-row
+ * the labelled reference spot + KPI ribbon (spot, 3M CIP forward, rate
+ * differential, band vol) + forward-vs-spot curve (dashed spot overlay)
+ * + the horizon table: CIP forward level, forward-vs-spot delta (F − S),
+ * model bands (spot·vol·√T, null when no vol source), and the per-row
  * source_mode pill.
  *
- * Model note (honesty): forecasts are the CIP forward path and the bands
- * are MODEL bands (spot·vol·√T) — not vendor analyst forecasts. When the
- * live spot cannot be fetched the backend labels rows `reference_model`;
- * the pane mirrors that as a "reference spot" pill + banner instead of
- * pretending the curve is live.
+ * Model note (honesty): the forward levels are CIP forwards (no-arbitrage,
+ * not a consensus forecast) and the bands are MODEL bands on live realized
+ * vol — not vendor analyst forecasts. When the live spot cannot be fetched
+ * the backend labels rows `reference_model`; the pane mirrors that as a
+ * "reference spot" pill + banner instead of pretending the curve is live.
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -30,7 +30,6 @@ import {
   StatusDivider,
   StatusSection,
 } from "@/design-system";
-import { formatNumberPlain } from "@/lib/format";
 import { useFunction } from "@/lib/useFunction";
 import {
   FunctionControlGroup,
@@ -47,21 +46,26 @@ interface FXFCRow {
   tenor_years?: number;
   spot?: number;
   forecast?: number;
-  lower_band?: number;
-  upper_band?: number;
+  lower_band?: number | null;
+  upper_band?: number | null;
   forward_points?: number;
-  confidence?: number;
+  vol_annualized?: number | null;
   source_mode?: string;
 }
 
 interface FXFCData {
+  status?: string;
+  reason?: string | null;
   pair?: string;
   base?: string;
   quote?: string;
   spot?: number;
+  spot_fetched_at?: string;
+  fx_market_open_at_fetch?: boolean;
   base_rate?: number;
   quote_rate?: number;
-  vol_annualized?: number;
+  vol_annualized?: number | null;
+  vol_source?: string;
   source_mode?: string;
   forecast?: FXFCRow[];
   curve?: FXFCRow[];
@@ -138,7 +142,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
       },
       {
         key: "forecast",
-        header: "Forecast",
+        header: "CIP forward",
         numeric: true,
         width: 116,
         render: (r) => (
@@ -174,15 +178,6 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
         numeric: true,
         width: 116,
         render: (r) => <span style={monoMutedStyle}>{fmtFx(r.upper_band)}</span>,
-      },
-      {
-        key: "confidence",
-        header: "Conf.",
-        numeric: true,
-        width: 88,
-        render: (r) => (
-          <span style={monoMutedStyle}>{fmtNum(r.confidence, 1)}%</span>
-        ),
       },
       {
         key: "source_mode",
@@ -262,7 +257,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
             tone={isLive ? "positive" : "neutral"}
           />
           <StatCard
-            label={`${stats.horizon} forecast`}
+            label={`${stats.horizon} CIP forward`}
             value={fmtFx(stats.fwd3m)}
             caption={`${fmtDiff(stats.points3m)} F−S`}
             tone="neutral"
@@ -278,9 +273,13 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
             }
           />
           <StatCard
-            label="Vol assumption"
-            value={`${fmtRate(payload?.vol_annualized)}%`}
-            caption="MODEL BAND INPUT (spot·vol·√T)"
+            label="Band vol"
+            value={
+              payload?.vol_annualized == null
+                ? "—"
+                : `${fmtRate(payload.vol_annualized)}%`
+            }
+            caption={volCaption(payload?.vol_source, payload?.vol_annualized)}
             tone="neutral"
           />
         </section>
@@ -288,7 +287,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           className="fxfc-curve"
           style={curveStyle}
           role="img"
-          aria-label={`FXFC forecast path for ${payload?.pair ?? effectivePair}: CIP forward forecast by horizon with a dashed spot overlay`}
+          aria-label={`FXFC CIP forward path for ${payload?.pair ?? effectivePair}: CIP forward level by horizon with a dashed spot overlay`}
         >
           <svg
             viewBox={`0 0 ${CURVE_W} ${CURVE_H}`}
@@ -320,7 +319,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           </svg>
           <figcaption style={curveCaptionStyle}>
             <span style={legendRowStyle}>
-              <span aria-hidden="true" style={swatchAccentStyle} /> CIP forecast
+              <span aria-hidden="true" style={swatchAccentStyle} /> CIP forward
             </span>
             <span style={legendRowStyle}>
               <span aria-hidden="true" style={swatchSpotStyle} /> spot overlay
@@ -332,9 +331,10 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           </figcaption>
         </figure>
         <p role="note" style={modelNoteStyle} aria-label="Model note">
-          Model note: forecast = spot·(1+r_q·T)/(1+r_b·T) (covered interest
-          parity); bands = spot·vol·√T are model bands, not vendor analyst
-          forecasts.
+          Model note: CIP forward = spot·(1+r_q·T)/(1+r_b·T) (covered interest
+          parity) is a no-arbitrage level, not a consensus forecast; bands =
+          spot·vol·√T use live realized vol per tenor and are model bands, not
+          vendor analyst forecasts. Bands show as — when no vol source is available.
         </p>
         <DataGrid
           columns={COLS}
@@ -455,9 +455,14 @@ function fmtDiff(v: number | null | undefined): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(digits)}`;
 }
 
-function fmtNum(v: number | null | undefined, digits: number): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return formatNumberPlain(v, digits);
+function volCaption(
+  source: string | undefined,
+  vol: number | null | undefined,
+): string {
+  if (vol == null || !Number.isFinite(vol)) return "NO VOL SOURCE · BANDS UNAVAILABLE";
+  if (source === "live_realized_vol") return "LIVE REALIZED VOL · MODEL BANDS (spot·vol·√T)";
+  if (source === "user_inputs") return "USER INPUT VOL · MODEL BANDS (spot·vol·√T)";
+  return "MODEL BAND INPUT (spot·vol·√T)";
 }
 
 function fmtRate(v: number | null | undefined): string {
