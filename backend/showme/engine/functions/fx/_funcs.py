@@ -92,7 +92,10 @@ class FXFCFunction(BaseFunction):
     category = "fx"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        base, quote, pair = _pair_from(instrument, params)
+        parts = _fx_pair_or_none(instrument, params)
+        if parts is None:
+            return _fx_pair_missing_result(self.code, instrument, params)
+        base, quote, pair = parts
         rate_error = _rate_input_error(params)
         if rate_error:
             return _rate_error_result(self.code, instrument, pair, base, quote, rate_error)
@@ -367,7 +370,10 @@ class FXIPFunction(BaseFunction):
     category = "fx"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        base, quote, pair = _pair_from(instrument, params)
+        parts = _fx_pair_or_none(instrument, params)
+        if parts is None:
+            return _fx_pair_missing_result(self.code, instrument, params)
+        base, quote, pair = parts
         rate_error = _rate_input_error(params)
         if rate_error:
             return _rate_error_result(self.code, instrument, pair, base, quote, rate_error)
@@ -777,7 +783,7 @@ class FRDFunction(BaseFunction):
         )
 
 
-# WB1-G11 FRD-only helpers. The shared _rate_for / _pair_from / _forward helpers
+# WB1-G11 FRD-only helpers. The shared _rate_for / _forward helpers
 # are deliberately left unchanged because FXIP and FXFC use them.
 _FRD_DAY_COUNT = "ACT/360"
 _FRD_POLICY_LOOKBACK_DAYS = 400
@@ -945,9 +951,12 @@ class OVDVFunction(BaseFunction):
     category = "fx"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        base, quote, pair = _pair_from(instrument, params)
+        parts = _fx_pair_or_none(instrument, params)
+        if parts is None:
+            return _fx_pair_missing_result(self.code, instrument, params)
+        base, quote, pair = parts
         tenors = _parse_tenors(params.get("tenors"), default=("1W", "1M", "3M", "6M", "1Y"))
-        deltas = ["10P", "25P", "ATM", "25C", "10C"]
+        deltas =["10P", "25P", "ATM", "25C", "10C"]
 
         # --- anchor the ATM curve to live realized vol ------------------
         atm_curve, vol_source, data_mode, rv_source, rv_warning = await _atm_term_structure(
@@ -1156,15 +1165,53 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _pair_from(instrument: Instrument | None, params: dict[str, Any]) -> tuple[str, str, str]:
-    raw = (
-        params.get("pair")
-        or params.get("symbol")
-        or (instrument.symbol if instrument else None)
-        or "EURUSD"
+def _fx_raw_pair(instrument: Instrument | None, params: dict[str, Any]) -> str | None:
+    """The caller's pair text: explicit pair, then symbol, then the instrument symbol."""
+    raw = params.get("pair") or params.get("symbol") or (instrument.symbol if instrument else None)
+    return None if raw in (None, "") else str(raw)
+
+
+def _fx_pair_or_none(instrument: Instrument | None, params: dict[str, Any]) -> tuple[str, str, str] | None:
+    """FXFC, FXIP and OVDV pair, or None. There is no default pair (DATA POLICY).
+
+    Unlike the shared _normalize_pair, a missing or malformed pair is not replaced
+    with EURUSD; the caller returns an explicit state instead.
+    """
+    raw = _fx_raw_pair(instrument, params)
+    return None if raw is None else _strict_pair(raw)
+
+
+def _fx_pair_missing_result(
+    code: str, instrument: Instrument | None, params: dict[str, Any]
+) -> FunctionResult:
+    """Explicit state for a call with no valid BASEQUOTE pair: needs_input when nothing
+    was given, input_error when a pair or symbol was given but is not a currency pair."""
+    raw = _fx_raw_pair(instrument, params)
+    reason = (
+        "A BASEQUOTE pair is needed (e.g. EURUSD, USDJPY). No default pair is assumed."
+        if raw is None
+        else f"{raw!r} is not a BASEQUOTE currency pair (e.g. EURUSD). No default pair is assumed."
     )
-    pair = _normalize_pair(str(raw))
-    return pair[:3], pair[3:6], pair
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "needs_input" if raw is None else "input_error",
+            "reason": reason,
+            "pair": None,
+            "base": None,
+            "quote": None,
+            "rows": [],
+            "curve": [],
+            "forecast": [],
+            "surface": [],
+            "next_actions": ["Enter pair as BASEQUOTE, e.g. EURUSD."],
+            "data_mode": "explicit_unavailable",
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"data_mode": "explicit_unavailable"},
+    )
 
 
 def _normalize_pair(raw: str) -> str:

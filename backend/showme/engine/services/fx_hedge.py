@@ -64,8 +64,9 @@ def decimal_rate_error(label: str, value: Any) -> str | None:
     if not math.isfinite(number):
         return f"{label}={value!r} is not finite; rates are decimal annual (3.5 % = 0.035)."
     if abs(number) > RATE_DECIMAL_LIMIT:
+        # Format the parsed number: a string input such as "3.5" has no 'g' format.
         return (
-            f"{label}={value:g} is above {RATE_DECIMAL_LIMIT:g}: rates are decimal annual "
+            f"{label}={number:g} is above {RATE_DECIMAL_LIMIT:g}: rates are decimal annual "
             "(3.5 % = 0.035), not percent. Enter the decimal rate."
         )
     return None
