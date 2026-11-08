@@ -47,7 +47,8 @@ class DCFSensitivityFunction(BaseFunction):
             base_res = await base.execute(instrument, **base_params)
         base_data = base_res.data or {}
         shared = {
-            "wacc": base_data.get("wacc"),
+            # DCFS#2: the discount rate actually applied to FCFE (cost of equity by default).
+            "wacc": base_data.get("discount_rate"),
             "fcfe": base_data.get("starting_fcfe"),
             "shares_outstanding": base_data.get("shares_outstanding"),
         }
@@ -90,7 +91,7 @@ class DCFSensitivityFunction(BaseFunction):
             # (growth_terminal / growth_high), so each entry carries
             # (label, output_key, param_key) separately.
             label_to_keys = [
-                ("wacc",       "wacc",          "wacc"),
+                ("wacc",       "discount_rate", "wacc"),
                 ("g_terminal", "g_terminal",    "growth_terminal"),
                 ("g_high",     "g_high",        "growth_high"),
                 ("years",      "years",         "years"),
@@ -155,7 +156,8 @@ class DCFSensitivityFunction(BaseFunction):
             status = "ok"
         # DCFS#5: echo the base assumptions the grid and tornado were computed from.
         assumptions = {
-            "wacc": base_data.get("wacc"),
+            "wacc": base_data.get("discount_rate"),
+            "wacc_reference": base_data.get("wacc"),
             "g_terminal": base_data.get("g_terminal"),
             "g_high": base_data.get("g_high"),
             "years": base_data.get("years"),
