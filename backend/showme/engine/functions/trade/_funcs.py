@@ -668,12 +668,27 @@ class FXGOFunction(EMSXFunction):
             return await super().execute(instrument=instrument, **params)
 
         # Default path: live FX dealing board (keyless spot grid w/ bid/ask/spread).
-        pairs = params.get("pairs") or params.get("symbols")
+        # ``pairs`` is the board's own input. ``symbols`` is deliberately NOT
+        # read here: the router injects the FX agent peer group
+        # (EURUSD/GBPUSD/USDJPY) into ``symbols`` for every FX route, which
+        # would silently shrink the default 10-pair board to three rows.
+        pairs = params.get("pairs")
+        board_source = "explicit_pairs"
         if isinstance(pairs, str):
             pairs = [p.strip() for p in pairs.split(",") if p.strip()]
         if not pairs:
-            single = params.get("symbol") or (instrument.symbol if instrument else None)
-            pairs = [single] if single else list(self._BOARD_PAIRS)
+            # A symbol is only a board request when the caller supplied it;
+            # the router sets __explicit_symbol=False when it injected one.
+            explicit_symbol = params.get("__explicit_symbol", True) is not False
+            single = None
+            if explicit_symbol:
+                single = params.get("symbol") or (instrument.symbol if instrument else None)
+            if single:
+                pairs = [single]
+                board_source = "explicit_symbol"
+            else:
+                pairs = list(self._BOARD_PAIRS)
+                board_source = "default"
 
         # ``pairs`` is user-supplied — cap it to a sane board size so a caller
         # cannot fan out hundreds of blocking ``requests.get`` threads at once.
@@ -784,6 +799,8 @@ class FXGOFunction(EMSXFunction):
                 "rows": rows,
                 "cards": cards,
                 "data_mode": board_mode,
+                "requested_pairs": [str(p).upper() for p in pairs],
+                "board_source": board_source,
                 "bid_ask_basis": "synthetic_indicative",
                 "as_of": as_of,
                 "methodology": self._BOARD_METHODOLOGY,
