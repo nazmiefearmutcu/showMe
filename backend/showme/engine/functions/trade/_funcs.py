@@ -1018,6 +1018,16 @@ class FXGOFunction(EMSXFunction):
         )
 
 
+def _is_treasury_future_symbol(symbol: str | None) -> bool:
+    """True for CME Treasury futures (ZN=F, ZB=F ...), using the server's classifier."""
+    if not symbol:
+        return False
+    # Lazy import: showme.server imports the engine, so a module-level import cycles.
+    from showme.server import looks_like_treasury_future
+
+    return bool(looks_like_treasury_future(str(symbol)))
+
+
 @FunctionRegistry.register
 class BBGTFunction(EMSXFunction):
     """BBGT — Bloomberg Trade (multi-asset)."""
@@ -1206,6 +1216,26 @@ class BBGTFunction(EMSXFunction):
             "time_in_force": tif,
             "tif": tif,
         }
+        # BBGT#1: an explicit EQUITY class bypasses the symbol classifier, and
+        # _select_broker would then route a CME Treasury future (ZN=F) to the
+        # equity broker. Refuse that combination before any preview or broker call.
+        if instrument.asset_class == AssetClass.EQUITY and _is_treasury_future_symbol(instrument.symbol):
+            return _ticket_input_error_result(
+                self.code,
+                instrument,
+                {
+                    "field": "asset_class",
+                    "reason": (
+                        f"{instrument.symbol} is a CME Treasury future and cannot be traded as "
+                        "EQUITY: the equity broker would receive it. Set the asset class to "
+                        "DERIVATIVE (IBKR desk) or leave it on auto-detect."
+                    ),
+                },
+                side=side or "",
+                quantity=quantity,
+                order_type=order_type or "",
+                tif=tif or "",
+            )
         if side is None:
             return FunctionResult(
                 code=self.code,
