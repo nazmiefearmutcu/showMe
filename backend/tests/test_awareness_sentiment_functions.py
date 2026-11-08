@@ -137,7 +137,10 @@ def test_sosc_ok_reads_entity_sentiment_and_social_from_awareness() -> None:
     assert out.data["news"]["mean"] == pytest.approx(0.3)
     assert out.data["social"]["rank"] == 4
     assert [h["id"] for h in out.data["headlines"]] == ["h0", "h1"]
+    # Flat headline shape: label string + score + model id (payload contract).
     assert out.data["headlines"][0]["sentiment"] == "positive"
+    assert out.data["headlines"][0]["sentiment_score"] == pytest.approx(0.6)
+    assert out.data["headlines"][0]["sentiment_model"] == "finbert:ProsusAI/finbert"
     platforms = [r["platform"] for r in out.data["rows"]]
     assert platforms == ["News (FinBERT)", "Reddit (ApeWisdom)", "GDELT tone"]
     # GDELT tone is passed through in its native scale, not rescaled.
@@ -209,6 +212,55 @@ def test_sosc_social_failure_keeps_news_and_warns() -> None:
     assert out.data["social"] is None
     assert [r["platform"] for r in out.data["rows"]] == ["News (FinBERT)", "GDELT tone"]
     assert any("social buzz unavailable" in w for w in out.warnings)
+
+
+def _scored_entity(models: list[str]) -> dict[str, Any]:
+    """Entity payload whose returned headlines are scored by the given model ids."""
+    entity = _entity_payload(len(models))
+    entity["data"]["headlines"] = [
+        {
+            "id": f"m{i}",
+            "title": f"Scored item {i}",
+            "publisher_name": "Reuters",
+            "url": f"https://example.test/m{i}",
+            "published_at": _now_iso(0.1),
+            "sentiment": {"label": "negative", "score": -0.4, "confidence": 0.8, "model": model},
+            "quality_label": "standard",
+        }
+        for i, model in enumerate(models)
+    ]
+    return entity
+
+
+def test_sosc_finbert_only_window_names_finbert() -> None:
+    out = _sosc(_client(_standard_routes(entity=_scored_entity(["finbert:ProsusAI/finbert"] * 2))))
+    assert out.data["rows"][0]["platform"] == "News (FinBERT)"
+    assert "finbert:ProsusAI/finbert" in out.data["methodology"]
+
+
+def test_sosc_lexicon_only_window_names_lexicon_and_never_says_finbert() -> None:
+    out = _sosc(_client(_standard_routes(entity=_scored_entity(["lexicon:aw-fin-1"] * 2))))
+    assert out.data["rows"][0]["platform"] == "News (lexicon)"
+    assert "lexicon:aw-fin-1" in out.data["methodology"]
+    assert "FinBERT" not in out.data["methodology"]
+
+
+def test_sosc_mixed_window_names_both_models_in_row_and_methodology() -> None:
+    models = ["finbert:ProsusAI/finbert", "lexicon:aw-fin-1"]
+    out = _sosc(_client(_standard_routes(entity=_scored_entity(models))))
+    assert out.data["rows"][0]["platform"] == "News (mixed: finbert+lexicon)"
+    assert "finbert:ProsusAI/finbert" in out.data["methodology"]
+    assert "lexicon:aw-fin-1" in out.data["methodology"]
+    assert "FinBERT confidence" not in out.data["methodology"]
+
+
+def test_sosc_gdelt_tone_trend_uses_the_native_scale_band() -> None:
+    entity = _entity_payload(3)
+    entity["data"]["gdelt_tone"] = [{"ts": _now_iso(0.1), "value": 0.06}]
+    out = _sosc(_client(_standard_routes(entity=entity)))
+    tone_row = next(r for r in out.data["rows"] if r["platform"] == "GDELT tone")
+    assert tone_row["sentiment"] == pytest.approx(0.06)
+    assert tone_row["trend"] == "flat"
 
 
 def test_sosc_rejects_an_invalid_window_as_input_error() -> None:
