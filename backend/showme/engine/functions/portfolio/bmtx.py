@@ -39,7 +39,7 @@ class BMTXFunction(BaseFunction):
         if isinstance(strategies, str):
             strategies = [s.strip() for s in strategies.split(",") if s.strip()]
         days = int(params.get("days", 365 * 3))
-        fee_bps = float(params.get("fee_bps", 5.0))
+        fee_bps = _cost_inputs(params)[3]
         try:
             return await asyncio.wait_for(
                 self._execute_inner(instrument, **params),
@@ -73,7 +73,7 @@ class BMTXFunction(BaseFunction):
         if isinstance(strategies, str):
             strategies = [s.strip() for s in strategies.split(",") if s.strip()]
         days = int(params.get("days", 365 * 3))
-        fee_bps = float(params.get("fee_bps", 5.0))
+        initial_equity, commission_bps, slippage_bps, fee_bps = _cost_inputs(params)
         sources = ["yfinance"]
         if not _live_requested(params):
             # BMTX residual: without live OHLCV no backtest runs, so the grid
@@ -129,7 +129,7 @@ class BMTXFunction(BaseFunction):
                 if fn is None:
                     continue
                 try:
-                    bt = Backtest(df, fn, initial_cash=10_000, fee_bps=fee_bps)
+                    bt = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps)
                     r = bt.run()
                     cells.append({
                         "label": f"{sym} {strat}",
@@ -207,7 +207,9 @@ class BMTXFunction(BaseFunction):
                 },
                 "methodology": (
                     "Runs each selected strategy on each symbol's daily OHLCV history "
-                    "with the selected fee, then ranks cells by Sharpe and total return. "
+                    f"from initial equity {initial_equity:,.0f} with commission "
+                    f"{commission_bps:g} bps plus slippage {slippage_bps:g} bps per unit of turnover, "
+                    "then ranks cells by Sharpe and total return. "
                     "IN-SAMPLE — each cell is scored on the same history it is ranked "
                     "over, so the top cell is favoured by the comparison itself. Use "
                     "BTFW to evaluate a chosen strategy/symbol pair out-of-sample."
@@ -285,6 +287,23 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cost_inputs(params: dict[str, Any]) -> tuple[float, float, float, float]:
+    """BMTX#5: read the seed-declared inputs instead of hard-coded constants.
+
+    Returns (initial_equity, commission_bps, slippage_bps, total_cost_bps).
+    The engine charges one fee rate per turnover, so commission and slippage
+    are summed into it. ``fee_bps`` is still accepted as the commission when
+    ``commission_bps`` is absent.
+    """
+    initial_equity = float(params.get("initial_equity") or 100_000.0)
+    if params.get("commission_bps") is not None:
+        commission_bps = float(params["commission_bps"])
+    else:
+        commission_bps = float(params.get("fee_bps", 5.0))
+    slippage_bps = float(params["slippage_bps"]) if params.get("slippage_bps") is not None else 2.0
+    return initial_equity, commission_bps, slippage_bps, commission_bps + slippage_bps
 
 
 def _live_requested(params: dict[str, Any]) -> bool:
