@@ -275,33 +275,13 @@ class YFinanceAdapter(BaseDataSource):
                 return raced_quote
         try:
             return await self._fetch_chart_quote(sym)
-        except Exception:
-            pass
-        ticker = await asyncio.to_thread(self._ticker, sym)
-        raw_info = await asyncio.to_thread(getattr, ticker, "fast_info", {}) or {}
-        # FastInfo is not a dict and (version-dependently) may lack .get;
-        # normalize via dict() so every field below reads real values.
-        try:
-            info = dict(raw_info)
-        except Exception:
-            info = {}
-        last = info.get("last_price")
-        if last is None:
-            raise DataSourceError(f"yfinance fast_info has no price for {sym}")
-        return Quote(
-            symbol=sym,
-            timestamp=utcnow(),
-            timestamp_source="fetch_time",
-            bid=info.get("bid"),
-            ask=info.get("ask"),
-            last=last,
-            volume_24h=info.get("last_volume"),
-            open_24h=info.get("open"),
-            high_24h=info.get("day_high"),
-            low_24h=info.get("day_low"),
-            close_prev=info.get("previous_close"),
-            source=self.name,
-        )
+        except Exception as exc:
+            # fast_info has no exchange timestamp (yfinance 1.3.0), so it cannot
+            # yield an honest "as of" for the last price. Refuse instead of
+            # stamping fetch time (ASOF-4).
+            raise DataSourceError(
+                f"yfinance chart quote unavailable for {sym}; fast_info has no exchange time"
+            ) from exc
 
     async def _fetch_chart_quote(self, sym: str) -> Quote:
         try:
