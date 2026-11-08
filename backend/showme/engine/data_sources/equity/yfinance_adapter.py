@@ -50,6 +50,36 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _dividends_on_bars(index: pd.DatetimeIndex, events: Any) -> pd.Series:
+    """Place chart dividend events on the bar that carries their date.
+
+    An event goes to the first bar whose UTC date is on or after the event
+    date (a dividend on a non-trading day settles on the next session). An
+    event after the last bar falls outside the frame and is dropped. Bars with
+    no event hold 0.0; the chart was requested with events=div, so a missing
+    events block really means no dividend in the window.
+    """
+    out = pd.Series(0.0, index=index, dtype=float)
+    if len(index) == 0 or not isinstance(events, dict):
+        return out
+    dividends = events.get("dividends")
+    if not isinstance(dividends, dict):
+        return out
+    bar_dates = index.normalize()
+    for raw in dividends.values():
+        if not isinstance(raw, dict):
+            continue
+        amount = _to_float(raw.get("amount"))
+        stamp = _to_float(raw.get("date"))
+        if amount is None or stamp is None or amount <= 0:
+            continue
+        event_date = pd.Timestamp(int(stamp), unit="s", tz="UTC").normalize()
+        pos = int(bar_dates.searchsorted(event_date, side="left"))
+        if pos < len(index):
+            out.iloc[pos] += amount
+    return out
+
+
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -459,6 +489,10 @@ class YFinanceAdapter(BaseDataSource):
             index=idx,
         )
         frame = frame.dropna(subset=["close"])
+        # The request asked for events=div,splits. The chart answers with a
+        # ``events.dividends`` map (unix ts -> {amount, date}); keep it as a
+        # dividends column so callers do not read a missing series as zero.
+        frame["dividends"] = _dividends_on_bars(frame.index, result.get("events"))
         return frame
 
     async def _fetch_refdata(self, req: DataRequest) -> ReferenceData:

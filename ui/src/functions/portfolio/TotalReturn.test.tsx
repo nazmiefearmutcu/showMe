@@ -98,6 +98,13 @@ describe("TRA Total Return pane", () => {
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
   });
 
+  it("shows dividends as missing, not $0, when the source has no dividend series", () => {
+    ok({ ...LIVE_SERIES, dividends_count: null, dividends_total: null, summary: { symbol: "AAPL" } });
+    render(<TotalReturnPane code="TRA" />);
+    const tile = screen.getByText("Dividends").closest(".portfolio-analytics-metric");
+    expect(tile?.querySelector("strong")?.textContent).toBe("—");
+  });
+
   it("toggles the MODEL (reference) control state", () => {
     ok(LIVE_SERIES);
     render(<TotalReturnPane code="TRA" />);

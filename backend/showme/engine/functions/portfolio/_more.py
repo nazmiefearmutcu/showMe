@@ -229,7 +229,17 @@ class TRAFunction(BaseFunction):
                     "labelled template history instead."
                 )
         close = df["close"]
-        divs = df["dividends"] if "dividends" in df.columns else pd.Series(dtype=float)
+        # A source without a dividend series (e.g. the template) must not read
+        # as "no dividends paid": keep the count/total null and say so.
+        dividends_known = "dividends" in df.columns
+        divs = df["dividends"] if dividends_known else pd.Series(dtype=float)
+        if not dividends_known:
+            warnings.append(
+                "Dividend events are unavailable from this data source; dividend "
+                "fields are null and the IRR excludes dividends."
+            )
+        div_count = int((divs > 0).sum()) if dividends_known else None
+        div_total = float(divs.sum()) if dividends_known else None
         price_ret = float(close.iloc[-1] / close.iloc[0] - 1)
         # TWR (daily compounded)
         daily_returns = close.pct_change().dropna().tolist()
@@ -263,8 +273,8 @@ class TRAFunction(BaseFunction):
                 "twr_total": twr,
                 "irr_annualized": irr,
                 "cagr": float(cagr) if cagr is not None else None,
-                "dividends_count": int((divs > 0).sum()) if len(divs) else 0,
-                "dividends_total": float(divs.sum()) if len(divs) else 0.0,
+                "dividends_count": div_count,
+                "dividends_total": div_total,
                 "n_observations": int(len(close)),
                 "first_date": close.index[0].strftime("%Y-%m-%d"),
                 "last_date":  close.index[-1].strftime("%Y-%m-%d"),
@@ -281,7 +291,7 @@ class TRAFunction(BaseFunction):
                     "price_return_total": price_ret,
                     "twr_total": twr,
                     "irr_annualized": irr,
-                    "dividends_total": float(divs.sum()) if len(divs) else 0.0,
+                    "dividends_total": div_total,
                 },
                 "methodology": (
                     "Compute price return from first and last adjusted closes, compound daily returns for "
