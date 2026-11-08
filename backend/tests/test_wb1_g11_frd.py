@@ -74,20 +74,39 @@ def test_frd_policy_rates_come_from_live_fred_series(fred) -> None:
     assert not any("policy rate" in w for w in res.warnings)
 
 
-def test_frd_constant_rate_is_labelled_and_warned(fred_down) -> None:
+def test_frd_no_live_rate_is_unavailable_not_a_stale_constant(fred_down) -> None:
+    """DATA POLICY: with no live series and no caller input, no forward is computed.
+
+    The 2024-06 constants (USD 4.5%, EUR 3.5%) must never be used as current rates.
+    """
     res = _run(FRDFunction().execute(spot=1.10, tenors="3M"))
     d = res.data
-    # Constant fallback is still produced, but it is marked as a reference.
-    assert d["r_base"] == pytest.approx(0.035)
-    assert d["r_quote"] == pytest.approx(0.045)
-    assert d["rate_sources"] == {
-        "base": "reference_policy_rate_constant",
-        "quote": "reference_policy_rate_constant",
-    }
-    assert d["rate_as_of"] == {"base": "2024-06", "quote": "2024-06"}
-    assert any("EUR policy rate" in w and "2024-06" in w for w in res.warnings)
-    assert any("USD policy rate" in w and "2024-06" in w for w in res.warnings)
-    assert "reference_policy_rate_constant" in res.sources
+    assert d["status"] == "provider_unavailable"
+    assert d["rows"] == []
+    assert d["curve"] == []
+    assert "F" not in d and "r_base" not in d and "r_quote" not in d
+    assert isinstance(d.get("reason"), str) and d["reason"]
+    actions = d.get("next_actions")
+    assert isinstance(actions, list) and actions
+    assert all(isinstance(a, str) and a for a in actions)
+    assert any("r_base" in a and "r_quote" in a for a in actions)
+    assert "reference_policy_rate_constant" not in res.sources
+    assert any("EUR policy rate" in w and "unavailable" in w for w in res.warnings)
+    assert any("USD policy rate" in w and "unavailable" in w for w in res.warnings)
+
+
+def test_frd_one_live_leg_and_one_missing_leg_is_unavailable(monkeypatch) -> None:
+    """A single missing leg blocks the forward; the live leg is not enough."""
+
+    async def _only_dff(series_id, *, client=None, timeout=8.0, lookback_days=None):  # noqa: ARG001
+        return _series(3.88) if series_id == "DFF" else None
+
+    monkeypatch.setattr(fx, "fetch_fred_csv_series", _only_dff)
+    res = _run(FRDFunction().execute(spot=1.10, tenors="3M"))
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["rows"] == []
+    assert res.data["rate_sources"]["quote"] == "fred:DFF"
+    assert res.data["rate_sources"]["base"] == "unavailable"
 
 
 def test_frd_explicit_rates_win_and_skip_the_live_lookup(fred) -> None:
@@ -99,10 +118,11 @@ def test_frd_explicit_rates_win_and_skip_the_live_lookup(fred) -> None:
     assert fred == []
 
 
-def test_frd_live_false_skips_policy_lookup_and_warns(fred) -> None:
+def test_frd_live_false_skips_policy_lookup_and_is_unavailable(fred) -> None:
     res = _run(FRDFunction().execute(spot=1.10, tenors="3M", live=False))
     assert fred == []
-    assert res.data["rate_sources"]["base"] == "reference_policy_rate_constant"
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["rate_sources"]["base"] == "unavailable"
     assert any("EUR policy rate" in w for w in res.warnings)
 
 

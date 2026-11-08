@@ -76,7 +76,7 @@ def frd() -> FunctionManifest:
                 required=False,
                 description=(
                     "Annualized decimal rate for the quote (pricing) currency. "
-                    "Blank uses the live FRED policy series, or a labelled reference constant."
+                    "Blank uses the live FRED policy series. With neither, the forward is not computed (provider_unavailable)."
                 ),
                 min=-0.05,
                 max=0.50,
@@ -90,7 +90,7 @@ def frd() -> FunctionManifest:
                 required=False,
                 description=(
                     "Annualized decimal rate for the base currency. "
-                    "Blank uses the live FRED policy series, or a labelled reference constant."
+                    "Blank uses the live FRED policy series. With neither, the forward is not computed (provider_unavailable)."
                 ),
                 min=-0.05,
                 max=0.50,
@@ -180,7 +180,7 @@ def frd() -> FunctionManifest:
             "fallbacks. The policy rates are live keyless FRED series for the "
             "base and quote currencies (USD DFF, EUR ECBDFR, GBP IUDSOIA, "
             "JPY/AUD/CAD monthly call rates) or caller-supplied rates; a rate "
-            "with no live series is a labelled 2024-06 reference constant. "
+            "with no live series and no caller input gives provider_unavailable, never a stale constant. "
             "Tenor is mapped to a year fraction T on ACT/360 for both legs "
             "(house convention; GBP and JPY market practice is ACT/365). The "
             "forward rate is F = S × (1 + r_quote × T) / (1 + r_base × T), where "
@@ -221,8 +221,8 @@ def frd() -> FunctionManifest:
             "forward_points": FieldDef(unit="price", description="Forward - spot in quote-currency price units (quote per base).", source="computed"),
             "forward_points_pips": FieldDef(unit="pips", description="(F - S) in pips: x10000, or x100 for a JPY quote.", source="computed"),
             "implied_carry": FieldDef(unit="%", description="(F/S - 1) / T × 100.", source="computed"),
-            "r_base": FieldDef(unit="decimal", description="Base-currency rate used: caller input, live FRED policy series, or labelled reference constant.", source="provider"),
-            "r_quote": FieldDef(unit="decimal", description="Quote-currency rate used: caller input, live FRED policy series, or labelled reference constant.", source="provider"),
+            "r_base": FieldDef(unit="decimal", description="Base-currency rate used: caller input or live FRED policy series.", source="provider"),
+            "r_quote": FieldDef(unit="decimal", description="Quote-currency rate used: caller input or live FRED policy series.", source="provider"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

@@ -365,8 +365,8 @@ class WCRSFunction(BaseFunction):
 class FRDFunction(BaseFunction):
     """FRD - Forward rates via covered interest parity.
 
-    Policy-rate legs come from keyless FRED series when live, otherwise from a
-    labelled reference constant with a warning (FRD#1). Manifest input names
+    Policy-rate legs come from keyless FRED series when live or from caller input;
+    a leg with neither returns provider_unavailable, never a stale constant (FRD#1). Manifest input names
     are honoured (FRD#2). Day count and forward-point units are stated (FRD#4).
     """
 
@@ -411,7 +411,7 @@ class FRDFunction(BaseFunction):
                 instrument=instrument or Instrument(symbol=pair, asset_class=AssetClass.FX),
                 data={
                     "status": "provider_unavailable",
-                    "reason": "a currency leg has no live policy rate and no labelled reference rate; no forward computed",
+                    "reason": "a currency leg has no caller-supplied rate and no live policy rate from FRED; no forward computed",
                     "next_actions": [
                         "Pass the policy rates explicitly as r_base and r_quote (decimal, e.g. 0.035 for 3.5%) to compute a forward.",
                         "Retry when the FRED policy-rate series (DFF, ECBDFR and the other central bank series) are reachable.",
@@ -475,8 +475,8 @@ class FRDFunction(BaseFunction):
                 "Covered interest parity: F = S * (1 + r_quote * T) / (1 + r_base * T). "
                 "S is quote currency per base currency. Rates are annual decimals; T is the "
                 "tenor year fraction on ACT/360 (house convention for both legs). Each rate "
-                "is a live FRED series where rate_sources shows fred:<series>, otherwise a "
-                "labelled reference constant."
+                "comes from a live FRED series (rate_sources shows fred:<series>) or from the "
+                "caller; a leg with neither returns status provider_unavailable and no forward."
             ),
             "field_dictionary": {
                 "S": "Spot rate, quote currency per one base currency.",
@@ -484,8 +484,8 @@ class FRDFunction(BaseFunction):
                 "r_base": "Annual policy/overnight reference rate for the base currency.",
                 "r_quote": "Annual policy/overnight reference rate for the quote currency.",
                 "rate_sources": (
-                    "Source of each rate leg: caller_input, fred:<series id>, or "
-                    "reference_policy_rate_constant (labelled 2024-06 reference)."
+                    "Source of each rate leg: caller_input or fred:<series id>. "
+                    "A leg with neither gives provider_unavailable (source 'unavailable')."
                 ),
                 "T": "Tenor in years.",
                 "forward_points": "Forward - spot, in price units (quote currency per base).",
@@ -510,7 +510,7 @@ _FRD_POLICY_LOOKBACK_DAYS = 400
 _FRD_FETCH_TIMEOUT_S = 6.0
 # Keyless FRED series for each currency's policy / overnight reference rate.
 # Values are percent and are converted to decimals. A series with no
-# observation inside the lookback window falls back to the labelled constant.
+# observation inside the lookback window leaves that leg without a rate (FRD#1).
 _FRD_POLICY_SERIES: dict[str, str] = {
     "USD": "DFF",  # effective federal funds rate, daily
     "EUR": "ECBDFR",  # ECB deposit facility rate, daily
@@ -554,10 +554,10 @@ def _frd_pair(instrument: Instrument | None, params: dict[str, Any]) -> tuple[st
 async def _frd_policy_rate(
     fn: BaseFunction, currency: str, explicit: Any, params: dict[str, Any]
 ) -> dict[str, Any]:
-    """Resolve one rate leg: caller input, then live keyless FRED, then labelled constant.
+    """Resolve one rate leg: caller input, then live keyless FRED, else no rate.
 
-    Returns ``{"rate", "source", "as_of", "warning"}``. ``rate`` is None only when
-    the currency has neither a live series nor a labelled reference rate.
+    Returns ``{"rate", "source", "as_of", "warning"}``. ``rate`` is None whenever
+    there is neither a caller input nor a live FRED observation.
     """
     ccy = currency.upper()
     if explicit not in (None, ""):
@@ -590,21 +590,16 @@ async def _frd_policy_rate(
                     }
         except Exception:  # noqa: BLE001 - any fetch/parse failure means no live rate
             pass
-    reference = _REFERENCE_RATES.get(ccy)
-    if reference is None:
-        return {
-            "rate": None,
-            "source": "unavailable",
-            "as_of": None,
-            "warning": f"{ccy} policy rate unavailable: no live FRED series and no labelled reference rate",
-        }
+    # DATA POLICY (FRD#1): no live series and no caller input means no rate. The
+    # 2024-06 constants in _REFERENCE_RATES are stale and are never used as current
+    # rates here; the caller gets provider_unavailable instead of a forward.
     return {
-        "rate": float(reference),
-        "source": "reference_policy_rate_constant",
-        "as_of": _REFERENCE_AS_OF,
+        "rate": None,
+        "source": "unavailable",
+        "as_of": None,
         "warning": (
-            f"{ccy} policy rate unavailable live; using labelled reference constant "
-            f"(vintage {_REFERENCE_AS_OF})"
+            f"{ccy} policy rate unavailable: no live FRED series and no caller-supplied rate "
+            f"(the {_REFERENCE_AS_OF} reference constant is not used as a current rate)"
         ),
     }
 
