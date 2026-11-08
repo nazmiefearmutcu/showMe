@@ -127,7 +127,7 @@ export function BIOPane({ code }: FunctionPaneProps) {
     const biometryLabel = biometryKindLabel(caps.biometry_kind);
     const biometrySub = caps.biometry_available
       ? "available"
-      : "Biometry is only available in the desktop app";
+      : "Touch ID / Face ID is available in macOS builds only";
     const lastResultText = result
       ? result.allowed
         ? "ALLOWED"
