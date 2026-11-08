@@ -65,3 +65,31 @@ def test_tauc_template_security_filter_applied_before_limit() -> None:
         TAUCFunction(FunctionDeps()).execute(live_auctions=False, security_type="Bond", limit=1)
     )
     assert [row["security_type"] for row in result.data["rows"]] == ["Bond"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# TAUC#4 — manifest default for live_auctions must match the handler
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _manifest(code: str):
+    from showme.manifest.registry import REGISTRY
+    from showme.manifest.seeds import load_seeds
+
+    load_seeds()
+    return REGISTRY.get(code)
+
+
+def test_tauc_manifest_default_live_matches_handler() -> None:
+    from showme.engine.functions.bond.tauc import TAUCFunction
+
+    adapter = _AuctionsFake(_MIXED_ROWS)
+    # No live flag supplied: the handler goes live (it is the keyless default).
+    result = asyncio.run(TAUCFunction(FunctionDeps(treasury_auctions=adapter)).execute())
+    assert result.sources == ["treasurydirect"]
+
+    tauc = _manifest("TAUC")
+    assert tauc.defaults["live_auctions"] is True, (
+        "manifest says live_auctions defaults to False but the handler goes live when it is absent"
+    )
+    assert "opt-in" not in tauc.methodology.lower()
