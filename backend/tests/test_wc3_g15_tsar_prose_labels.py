@@ -42,11 +42,28 @@ def test_bare_section_label_after_sentence_end_is_not_a_speaker() -> None:
     assert any("delivered solid results" in u["utterance"] for u in utts), utts
 
 
-def test_bare_name_with_no_line_start_precedent_is_not_a_speaker() -> None:
-    """A two-word name that never opened a line is indistinguishable from prose."""
+def test_bare_name_turn_with_speech_opener_is_split_without_precedent() -> None:
+    """Reviewer case: a bare two-word name with no line-start precedent, whose turn
+    opens with a speech word, starts its own utterance. Its remarks are not
+    attributed to the previous speaker, and the CFO label still splits."""
+    text = (
+        "Operator: Good morning and welcome. Tim Cook: Thanks everyone. "
+        "Our margins improved strongly. Kevan Parekh, CFO: We expect headwinds."
+    )
+    utts = _segment(text)
+    by_text = {u["utterance"]: u["speaker"] for u in utts}
+    assert by_text.get("Good morning and welcome.") == "Operator", utts
+    assert by_text.get("Thanks everyone.") == "Tim Cook", utts
+    assert by_text.get("Our margins improved strongly.") == "Tim Cook", utts
+    assert by_text.get("We expect headwinds.") == "Kevan Parekh, CFO", utts
+    assert not any(u["speaker"] == "Operator" and "Thanks" in u["utterance"] for u in utts), utts
+
+
+def test_bare_name_with_prose_body_and_no_precedent_is_not_a_speaker() -> None:
+    """A bare two-word run whose body is a plain noun phrase stays in the sentence."""
     text = (
         "John Ternus, CEO: We delivered strong results. "
-        "Tim Cook: Thanks everyone for joining."
+        "Apple Watch: Sales rose sharply across all regions."
     )
     utts = _segment(text)
     assert {u["speaker"] for u in utts} == {"John Ternus, CEO"}, utts

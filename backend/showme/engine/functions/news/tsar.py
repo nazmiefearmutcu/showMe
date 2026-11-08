@@ -799,20 +799,46 @@ def _segment(text: str) -> list[dict[str, Any]]:
     ]
 
 
-# TSAR#1 (wc3-g15 follow-up): an inline label is a speaker only when it is a
-# speaker already seen opening a line in this transcript, or a "Name, Role"
-# label (a name of at least two words before the comma). A bare two-to-four word
-# Title Case run has no structural signature that separates a speaker from a
-# product or section head ("Apple Watch: Sales rose ..."), so with no line-start
-# precedent it stays in the sentence it sits in.
-def _is_speaker_label(label: str, known_speakers: set[str]) -> bool:
+# TSAR#1 (wc3-g15 follow-up): an inline label is a speaker when it is a speaker
+# already seen opening a line in this transcript, or a "Name, Role" label (a name
+# of at least two words before the comma). A bare two-to-four word Title Case run
+# is a speaker only when its turn opens with a speech word ("Thanks everyone.",
+# "Our margins ...") and the run holds no section or product head word. A bare
+# run whose body is a plain noun phrase ("Apple Watch: Sales rose ...") stays in
+# the sentence it sits in. This is a heuristic on text alone: a product name with
+# a speech-opening body would still split (see the wc3-g15 residual).
+_BARE_NAME_HEAD_WORDS = frozenset({
+    "discussion", "overview", "analysis", "report", "section", "products", "product",
+    "services", "service", "segment", "division", "business", "company", "group",
+    "update", "introduction", "appendix", "presentation", "disclosure", "watch",
+    "management", "reference", "summary", "highlights", "outlook", "guidance",
+})
+_SPEECH_OPENER = re.compile(
+    r"""^["'(“]?(?:thanks?|thank\s+you|good|welcome|hello|hi|yes|great|sure|okay|ok|"""
+    r"""i|i'm|i’m|i'd|i’d|i'll|we|we're|we’re|our|let|let's|let’s|turning|"""
+    r"""first|so\s+thank)\b""",
+    re.IGNORECASE,
+)
+
+
+def _is_speaker_label(label: str, known_speakers: set[str], body: str = "") -> bool:
     """True when an inline candidate label is a real speaker, not prose."""
     if label in known_speakers:
         return True
     if "," in label:
         name = label.split(",", 1)[0].strip()
         return len(name.split()) >= 2
-    return False
+    words = label.split()
+    if not 2 <= len(words) <= 4:
+        return False
+    if not all(_NAME_WORD.match(w) for w in words):
+        return False
+    if any(w.lower() in _BARE_NAME_HEAD_WORDS for w in words):
+        return False
+    return bool(_SPEECH_OPENER.match(body.lstrip()))
+
+
+_NAME_WORD = re.compile(r"^[A-Z][A-Za-z'.-]*$")
 
 
 def _split_inline_speakers(line: str, known_speakers: set[str]) -> list[str]:
@@ -820,7 +846,9 @@ def _split_inline_speakers(line: str, known_speakers: set[str]) -> list[str]:
     cuts = [
         m.start()
         for m in _INLINE_LABEL.finditer(line)
-        if _is_speaker_label(m.group("label"), known_speakers)
+        if _is_speaker_label(
+            m.group("label"), known_speakers, line[m.end("label"):].lstrip(" \t:")
+        )
     ]
     if not cuts:
         stripped = line.strip()

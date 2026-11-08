@@ -95,10 +95,10 @@ def test_known_single_word_speaker_inline_is_still_split() -> None:
 
 def test_two_word_name_label_after_sentence_end_is_split() -> None:
     """TSAR#1 follow-up: a two-word speaker name with no comma, inline after a
-    sentence end, starts its own utterance once the name has opened a line
-    (wc3-g15: a bare name with no line-start precedent is prose, not a speaker)."""
+    sentence end, starts its own utterance (the reviewer's transcript case). The
+    name has no line-start precedent here; its turn opens with a speech word
+    ("Thanks"), which is what separates it from a bare product or section label."""
     text = (
-        "Tim Cook: Hello.\n"
         "Operator: Good morning and welcome. Tim Cook: Thanks everyone. "
         "Our margins improved strongly. Kevan Parekh, CFO: We expect headwinds next quarter."
     )
