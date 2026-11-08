@@ -201,3 +201,18 @@ def test_tldr_portfolio_failure_never_substitutes_a_sample_watchlist(monkeypatch
     assert result.data["watchlist_source"] == "portfolio_unavailable"
     assert not {"AAPL", "MSFT", "TSLA", "BTCUSDT", "EURUSD", "DGS10"} & set(result.data["symbols"])
     assert any(str(w).startswith("portfolio:") for w in result.metadata.get("provider_errors", []))
+
+
+def test_tldr_seed_symbols_description_does_not_advertise_a_default_set() -> None:
+    """TLDR#5 follow-up: the manifest must not promise a fallback default symbol set.
+
+    The handler returns no symbols (with a portfolio_empty / portfolio_unavailable
+    watchlist_source) when there are no holdings, so the seed text must say so.
+    """
+    from showme.manifest.seeds.tldr_seed import tldr
+
+    spec = tldr  # @manifest() already yields the FunctionManifest object
+    symbols_input = next(i for i in spec.inputs if i.name == "symbols")
+    text = symbols_input.description.lower()
+    assert "fallback" not in text and "default set" not in text, symbols_input.description
+    assert "portfolio_empty" in text or "portfolio_unavailable" in text, symbols_input.description

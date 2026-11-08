@@ -59,7 +59,11 @@ def tldr() -> FunctionManifest:
                 label="Symbols",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="Symbols to summarize. Empty = read from PortfolioState + fallback default set.",
+                description=(
+                    "Symbols to summarize. Empty = the holdings in PortfolioState. With no holdings "
+                    "the symbol list is empty and the result carries a portfolio_empty or "
+                    "portfolio_unavailable watchlist_source; no default symbols are substituted."
+                ),
             ),
             InputSpec(
                 name="bullets",
