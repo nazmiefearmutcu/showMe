@@ -175,10 +175,14 @@ def test_top_stale_provider_keeps_rows_but_marks_cached_snapshot() -> None:
 def test_top_parses_get_strings_and_clamps() -> None:
     client, seen = _client(_news_only([]))
     fn = _fn(TOPFunction, client)
-    _run(fn.execute(hours="abc", limit="9999", min_quality="low"))
+    _run(fn.execute(hours="abc", limit="9999", min_quality="bogus"))
     assert seen[-1].url.params["hours"] == "24"
     assert seen[-1].url.params["limit"] == "200"
     assert seen[-1].url.params["min_quality"] == "standard"
+    _run(fn.execute(min_quality="low"))  # the pane's "show low-quality" relaxer is honoured
+    assert seen[-1].url.params["min_quality"] == "low"
+    _run(fn.execute(days="2"))  # legacy Welcome-feed window
+    assert seen[-1].url.params["hours"] == "48"
     _run(fn.execute(hours="9999"))
     assert seen[-1].url.params["hours"] == "168"
     _run(fn.execute(max_age_days="2"))
@@ -187,12 +191,17 @@ def test_top_parses_get_strings_and_clamps() -> None:
     assert seen[-1].url.params["hours"] == "6"
 
 
-def test_top_ignores_legacy_query_param_so_routed_defaults_cannot_filter() -> None:
-    # The route injects a profile ``query`` into every news call; TOP must not
-    # turn it into a full-text filter. Only ``q`` searches.
+def test_top_maps_legacy_query_to_q_and_route_no_longer_injects_it() -> None:
+    # ``query`` is the legacy name of ``q``. The route used to inject a profile query into
+    # every news call; that default is now dropped for the Awareness news codes, so an explicit
+    # caller ``query`` is a real search again.
     client, seen = _client(_news_only([]))
-    _run(_fn(TOPFunction, client).execute(query="bitcoin cryptocurrency"))
-    assert "q" not in seen[-1].url.params
+    _run(_fn(TOPFunction, client).execute(query="nvidia"))
+    assert seen[-1].url.params["q"] == "nvidia"
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    routed = _route_function_params("TOP", {"limit": 50})
+    assert "query" not in routed and routed.get("limit") == 50
 
 
 def test_top_story_id_resolves_lead_item_to_story_brief() -> None:

@@ -169,7 +169,10 @@
       ]
     },
     "CACT": {
-      "keys": [],
+      "keys": [
+        "days_ahead",
+        "days_back"
+      ],
       "conditional": [],
       "dynamic": false,
       "files": [
@@ -350,8 +353,7 @@
     },
     "DVD": {
       "keys": [
-        "live",
-        "live_dividends"
+        "history"
       ],
       "conditional": [],
       "dynamic": false,
@@ -373,12 +375,10 @@
       "keys": [
         "country",
         "days",
-        "importance",
-        "live_calendar"
-      ],
-      "conditional": [
+        "from",
         "importance"
       ],
+      "conditional": [],
       "dynamic": false,
       "files": [
         "ui/src/functions/ECO.tsx"
@@ -444,6 +444,18 @@
         "ui/src/functions/EREV.tsx"
       ]
     },
+    "ERN": {
+      "keys": [
+        "days",
+        "from",
+        "min_market_cap"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ERN.tsx"
+      ]
+    },
     "ESG": {
       "keys": [],
       "conditional": [],
@@ -453,9 +465,7 @@
       ]
     },
     "EVTS": {
-      "keys": [
-        "reference"
-      ],
+      "keys": [],
       "conditional": [],
       "dynamic": false,
       "files": [
@@ -742,6 +752,17 @@
         "ui/src/functions/ICX.tsx"
       ]
     },
+    "IPO": {
+      "keys": [
+        "days_ahead",
+        "days_back"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/IPO.tsx"
+      ]
+    },
     "ISIN": {
       "keys": [
         "ids"
@@ -894,8 +915,9 @@
     },
     "NALRT": {
       "keys": [
-        "max_alert_age_hours",
-        "threshold"
+        "hours",
+        "limit",
+        "min_importance"
       ],
       "conditional": [],
       "dynamic": false,
@@ -905,20 +927,23 @@
     },
     "NI": {
       "keys": [
+        "hours",
+        "limit",
         "topic"
       ],
       "conditional": [],
-      "dynamic": true,
+      "dynamic": false,
       "files": [
         "ui/src/functions/NI.tsx"
       ]
     },
     "NSE": {
       "keys": [
-        "include_gdelt",
+        "hours",
         "limit",
-        "live",
-        "query"
+        "min_quality",
+        "q",
+        "symbol"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1285,13 +1310,12 @@
     "TOP": {
       "keys": [
         "_epoch",
-        "days",
+        "asset_classes",
+        "hours",
         "limit",
-        "live",
-        "max_age_days",
-        "news_timeout",
-        "query",
-        "timeout"
+        "min_quality",
+        "q",
+        "topics"
       ],
       "conditional": [],
       "dynamic": false,
@@ -1482,16 +1506,20 @@
   },
   "unresolved": [
     {
+      "where": "ui/src/functions/awareness/StoryDrawer.tsx:47",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
+      "where": "ui/src/functions/awareness/StoryRow.tsx:63",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
       "where": "ui/src/functions/CDE.tsx:79",
       "why": "params expression not resolvable (AsExpression)"
     },
     {
       "where": "ui/src/functions/commodity-spot.tsx:102",
       "why": "code not resolvable to a registry entry"
-    },
-    {
-      "where": "ui/src/functions/NI.tsx:166",
-      "why": "params expression not resolvable (Identifier)"
     },
     {
       "where": "ui/src/functions/portfolio/PerformanceAttribution.tsx:226",

@@ -2041,7 +2041,7 @@ function NewsflowPanel({ ready, tz }: { ready: boolean; tz: string }) {
   const epochKey = useVisibilityTick(5 * 60 * 1000);
   const top = useFunction<TopResponse>({
     code: "TOP",
-    params: { query: "market", limit: 24, days: 7, _epoch: epochKey },
+    params: { hours: 48, limit: 24, _epoch: epochKey },
     enabled: ready,
   });
   const items: TopArticle[] = useMemo(() => {

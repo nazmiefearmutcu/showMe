@@ -59,11 +59,14 @@ class TOPFunction(BaseFunction):
 
             hours = _hours(params)
             limit = bounded_int(params.get("limit"), 50, 1, 200)
-            min_quality = choice(params.get("min_quality"), ("premium", "standard"), "standard")
+            min_quality = choice(params.get("min_quality"), ("premium", "standard", "low"), "standard")
             topics = csv_list(params.get("topics"), lower=True)
             asset_classes = csv_list(params.get("asset_classes"), lower=True)
             countries = csv_list(params.get("countries"), upper=True)
-            query = text_param(params.get("q"))
+            # ``query`` is the legacy name of ``q``; routed profile defaults no longer inject it.
+            query = text_param(params.get("q")) or text_param(params.get("query"))
+            # ``_epoch`` is the Welcome feed's cache-buster: it changes the request key, never the data.
+            _ = params.get("_epoch")
             response, rows = await fetch_news(
                 client,
                 {
@@ -106,4 +109,6 @@ def _hours(params: dict[str, Any]) -> int:
         return bounded_int(params.get("hours"), 24, 1, 168)
     if params.get("max_age_days") not in (None, ""):
         return bounded_int(bounded_float(params.get("max_age_days"), 1.0, 0.0, 7.0) * 24, 24, 1, 168)
+    if params.get("days") not in (None, ""):
+        return bounded_int(bounded_float(params.get("days"), 1.0, 0.0, 7.0) * 24, 24, 1, 168)
     return 24
