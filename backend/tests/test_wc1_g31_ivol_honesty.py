@@ -230,3 +230,34 @@ def test_reference_branch_with_live_spot_returns_no_template() -> None:
     findings = truth.check_response_placeholders(
         body, request_params={"reference": True}, cfg=truth.load_config(), code="IVOL")
     assert findings == []
+
+
+def test_front_atm_substitution_is_disclosed_when_nearest_expiry_is_one_sided() -> None:
+    """When the nearest listed expiry has no two-sided strike near spot, the front ATM,
+    skew and warnings come from the next expiry. That substitution must be stated.
+
+    RED before fix: the surface carried no note about the skipped nearest expiry.
+    """
+    near, far = "2026-11-20", "2026-12-18"
+    one_sided_calls = _frame([(735, 0.17, 10.00, 10.40)])
+    empty_puts = _frame([])
+    far_calls = _frame([(735, 0.18, 10.00, 10.40)])
+    far_puts = _frame([(735, 0.19, 9.00, 9.40)])
+
+    class _TwoExpiry:
+        async def fetch(self, request: DataRequest) -> Any:
+            if request.kind == DataKind.QUOTE:
+                return type("Q", (), {"last": SPOT})()
+            if request.kind != DataKind.OPTIONS_CHAIN:
+                return None
+            expiry = (request.extra or {}).get("expiry")
+            if not expiry:
+                return {"underlyingPrice": SPOT, "expiries": [near, far]}
+            if expiry == near:
+                return {"calls": one_sided_calls, "puts": empty_puts}
+            return {"calls": far_calls, "puts": far_puts}
+
+    body = asyncio.run(IVOLFunction(deps=_Deps(yfinance=_TwoExpiry())).execute(instrument=_spy())).data
+    assert body["status"] == "ok"
+    assert body["series"] and body["series"][0]["t"] == far
+    assert any(near in w and "two-sided" in w for w in body["warnings"]), body["warnings"]

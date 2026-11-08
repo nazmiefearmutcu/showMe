@@ -208,7 +208,9 @@ def _ivol_atm_iv(cells: list[dict[str, Any]]) -> float | None:
     """ATM IV for one expiry: mean of call and put IV at the listed strike nearest spot.
 
     Only strikes quoted on BOTH sides qualify, so the value is never a single-side
-    IV passed off as the call/put average (IVOL#2). Same rule as the OMON pane.
+    IV passed off as the call/put average (IVOL#2). This is deliberately stricter than
+    the OMON pane, which takes the strike nearest spot whichever side is quoted
+    (omon.py ATM block): the two agree only when that nearest strike is two-sided.
     No interpolation is used for ATM; no qualifying strike within
     ``_ATM_MAX_DISTANCE`` of spot gives None.
     """
@@ -895,6 +897,12 @@ class IVOLFunction(BaseFunction):
             warnings.append(
                 f"Front expiry {front_expiry} is {front_days} calendar day(s) away; implied vol is very "
                 "sensitive to the time-to-expiry convention below about 3 days."
+            )
+        earliest = min((str(r["expiry"]) for r in surface_rows if r.get("expiry")), default=None)
+        if front_expiry and earliest and front_expiry != earliest:
+            warnings.append(
+                f"Front ATM IV and skew use {front_expiry}: the nearest listed expiry {earliest} has no "
+                f"two-sided strike (call and put) within {round(_ATM_MAX_DISTANCE * 100)}% of spot, so it is not used for them."
             )
         as_of = _ivol_as_of(raw_calls, raw_puts)
         return FunctionResult(code=self.code, instrument=instrument,
