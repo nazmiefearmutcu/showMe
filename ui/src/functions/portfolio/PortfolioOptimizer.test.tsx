@@ -111,6 +111,16 @@ describe("PORT_OPT Portfolio Optimizer pane", () => {
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
   });
 
+  it("renders a Sharpe, return and vol tile for every returned mode (PORT_OPT#8)", () => {
+    ok(LIVE_PAYLOAD);
+    const { container } = render(<PortfolioOptimizerPane code="PORT_OPT" />);
+    // Three modes x three metrics: the Risk Parity group must not be cut off.
+    expect(screen.getByText("Risk Parity Sharpe")).toBeInTheDocument();
+    expect(screen.getByText("Risk Parity Ret")).toBeInTheDocument();
+    expect(screen.getByText("Risk Parity Vol")).toBeInTheDocument();
+    expect(container.querySelectorAll(".portfolio-analytics-metric").length).toBe(9);
+  });
+
   it("switches the MODE control", () => {
     ok(LIVE_PAYLOAD);
     render(<PortfolioOptimizerPane code="PORT_OPT" />);

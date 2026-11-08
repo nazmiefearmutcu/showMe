@@ -232,7 +232,7 @@ export function PortfolioOptimizerPane({ code }: FunctionPaneProps) {
                   label: `${entry.label} Vol`,
                   value: fmtPct(entry.result?.vol, { fromFraction: true }),
                 },
-              ]).slice(0, 6)}
+              ])}
             />
           </section>
 
