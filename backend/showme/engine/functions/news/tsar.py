@@ -39,6 +39,13 @@ _MGMT_HINTS = (
 # A "SPEAKER: utterance" line. Capture group 1 = speaker label, 2 = text.
 _SPEAKER_LINE = re.compile(r"^\s*([A-Z][\w .,'&/-]{0,60}?)\s*[:\-—]\s+(.*\S.*)$")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+# TSAR#1: a speaker label that follows a sentence end inside the same block
+# ("... headwinds. Kevan Parekh, CFO: We expect ...") starts a new utterance.
+# Only Title-Case labels followed by a colon qualify, so a mid-sentence
+# "Our guidance: ..." is not mistaken for a speaker.
+_INLINE_SPEAKER_SPLIT = re.compile(
+    r"(?<=[.!?])\s+(?=[A-Z][\w.'&/-]*(?:,?\s+[A-Z][\w.'&/-]*){0,5}\s*:\s)"
+)
 
 
 @FunctionRegistry.register
@@ -687,7 +694,13 @@ def _segment(text: str) -> list[dict[str, Any]]:
     saw_qa = False
     matched_any = False
 
-    for ln in lines:
+    pieces = [
+        part.strip()
+        for ln in lines
+        for part in _INLINE_SPEAKER_SPLIT.split(ln)
+        if part.strip()
+    ]
+    for ln in pieces:
         low = ln.lower()
         if not saw_qa and (
             "question-and-answer" in low or "q&a" in low or "questions and answers" in low
