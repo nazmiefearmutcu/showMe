@@ -158,6 +158,10 @@ def test_unbenchmarked_fill_is_not_plotted_as_zero_slippage(tmp_path, monkeypatc
     assert data["summary"]["avg_slippage_bps"] is None
     assert data["summary"]["worst_slippage_bps"] is None
     assert data["cards"]["avg_slippage_bps"] is None
+    # No cost was measured either: the total and the row cost are null, not 0.0.
+    assert data["rows"][0]["cost_usd"] is None, data["rows"][0]
+    assert data["summary"]["total_cost_usd"] is None, data["summary"]
+    assert data["cards"]["total_cost_usd"] is None, data["cards"]
 
 
 # ---------------------------------------------------------------------------

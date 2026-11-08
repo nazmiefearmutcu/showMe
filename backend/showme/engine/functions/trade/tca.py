@@ -50,7 +50,9 @@ _METHODOLOGY = (
     "side_sign; implementation-shortfall is_bps = (avg_fill - arrival) / arrival "
     "* 10000 * side_sign; opportunity_bps is always null because the ledgers "
     "record no target size from which unfilled quantity could be derived. "
-    "total_cost_usd aggregates slippage_bps * notional / 10000. Summary KPIs are "
+    "total_cost_usd aggregates slippage_bps * notional / 10000 over the fills "
+    "whose slippage was measured (null when none was; cost_usd is null for an "
+    "unbenchmarked fill). Summary KPIs are "
     "the fill-count means across the analysed tail. TCA is strictly read-only "
     "and never mutates broker state."
 )
@@ -539,13 +541,16 @@ class TCAFunction(BaseFunction):
             if arrival and avg_fill:
                 is_bps = (avg_fill - arrival) / arrival * 1e4 * sign
             notional = (avg_fill or 0) * (qty or 0)
-            cost_usd = (slip_bps or 0) * notional / 1e4
+            # TCA#6: cost is only measured where slippage is; an unbenchmarked
+            # fill has no cost, so it is null and left out of the total.
+            cost_usd = slip_bps * notional / 1e4 if slip_bps is not None else None
 
             if slip_bps is not None:
                 slip_bps_vals.append(slip_bps)
             if is_bps is not None:
                 is_bps_vals.append(is_bps)
-            total_cost_usd += cost_usd
+            if cost_usd is not None:
+                total_cost_usd += cost_usd
 
             rows.append({
                 "order_id": f.get("order_id"),
@@ -566,7 +571,7 @@ class TCAFunction(BaseFunction):
                 # of is_bps.
                 "opportunity_bps": None,
                 "notional_usd": round(notional, 2),
-                "cost_usd": round(cost_usd, 2),
+                "cost_usd": round(cost_usd, 2) if cost_usd is not None else None,
                 "filled_at": f.get("filled_at"),
                 "benchmark_source": bench_used,
             })
@@ -590,7 +595,9 @@ class TCAFunction(BaseFunction):
             "avg_slippage_bps": round(avg_slip, 2) if avg_slip is not None else None,
             "avg_is_bps": round(avg_is, 2) if avg_is is not None else None,
             "worst_slippage_bps": round(worst_slip, 2) if worst_slip is not None else None,
-            "total_cost_usd": round(total_cost_usd, 2),
+            # Null when no fill had a benchmark: a total of 0.0 would read as a
+            # measured zero-cost execution.
+            "total_cost_usd": round(total_cost_usd, 2) if slip_bps_vals else None,
         }
 
         status = _OK
