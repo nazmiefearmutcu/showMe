@@ -94,7 +94,11 @@ async def _binance_funding(client: httpx.AsyncClient, symbol: str) -> float | No
         r = await client.get("https://fapi.binance.com/fapi/v1/premiumIndex",
                               params={"symbol": symbol})
         if r.status_code == 200:
-            return float((r.json() or {}).get("lastFundingRate", 0))
+            # A missing or empty key is an absent venue, not a zero rate.
+            raw = (r.json() or {}).get("lastFundingRate")
+            if raw in (None, ""):
+                return None
+            return float(raw)
     except Exception:
         return None
     return None
