@@ -83,10 +83,9 @@ def bgas() -> FunctionManifest:
         },
         provider_chain=ProviderChain(
             primary="yfinance",
-            fallbacks=["cached_snapshot"],
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=False),

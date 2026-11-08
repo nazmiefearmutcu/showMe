@@ -299,3 +299,17 @@ def test_days_is_honoured_when_no_range_is_sent() -> None:
     _run(fn.execute(contract="NG=F", days=90))
     ohlcv = [r for r in yahoo.requests if r.kind.name == "OHLCV"]
     assert ohlcv[0].limit == 90
+
+
+# ── BGAS residual: seed declares only the provider chain it implements ────
+
+
+def test_bgas_seed_declares_no_unimplemented_cached_snapshot_fallback() -> None:
+    """The handler never reads a cached snapshot, so the seed must not claim
+    one in its fallback chain or its acceptable modes."""
+    from showme.manifest.enums import DataMode
+
+    load_seeds()
+    chain = REGISTRY.get("BGAS").provider_chain
+    assert "cached_snapshot" not in list(chain.fallbacks)
+    assert DataMode.CACHED_SNAPSHOT not in list(chain.acceptable_modes)
