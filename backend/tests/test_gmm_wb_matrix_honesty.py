@@ -283,3 +283,34 @@ def test_seed_card_and_field_names_match_the_payload(monkeypatch) -> None:
         assert field_name.startswith("rows[]."), field_name
         base = field_name[len("rows[]."):]
         assert base in row_keys, f"field_dict {field_name!r} not in row payload"
+
+
+# ── GMM#2: the real World Bank aggregate response ids map to our codes ──
+
+
+@pytest.mark.parametrize(
+    "country_id, iso3, expected",
+    [
+        ("XC", "EMU", "EZ"),  # World Bank's id for the euro area (iso2 XC, iso3 EMU)
+        ("EMU", "", "EZ"),    # the request spelling, if it comes back as the id
+        ("EMU", "EMU", "EZ"),
+        ("EU", "EUU", "EU"),  # European Union aggregate
+        ("EUU", "", "EU"),
+    ],
+)
+def test_worldbank_aggregate_response_ids_map_to_our_codes(
+    country_id: str, iso3: str, expected: str,
+) -> None:
+    payload = [
+        {"page": 1, "pages": 1, "total": 1},
+        [
+            {
+                "indicator": {"id": "FP.CPI.TOTL.ZG"},
+                "country": {"id": country_id, "value": "aggregate"},
+                "countryiso3code": iso3,
+                "date": "2025",
+                "value": 2.0,
+            }
+        ],
+    ]
+    assert set(gmm_mod._parse_wb_series(payload)) == {expected}
