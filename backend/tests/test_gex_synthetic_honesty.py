@@ -80,7 +80,9 @@ class _LiveChainYf:
         import pandas as pd
 
         if request.extra.get("expiry") is None:
-            return {"expiries": ["2026-07-17"]}
+            # wc3-g15 (GEX#4): an expiry whose close has passed is excluded, so this
+            # live-chain fixture uses a future expiry rather than the stale 2026-07-17.
+            return {"expiries": ["2099-12-31"]}
         df_calls = pd.DataFrame(
             [
                 {"strike": 95.0, "openInterest": 1200, "impliedVolatility": 0.31},
