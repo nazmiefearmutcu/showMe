@@ -51,10 +51,18 @@ def test_icx_returns_real_constituents():
         }
         assert isinstance(r["symbol"], str) and r["symbol"]
         assert isinstance(r["company"], str) and r["company"]
-        # Real GICS sub-industry classification, not a placeholder.
-        # None when the name is outside the curated table (master-only, ICX#2).
-        assert r["sub_industry"] is None or r["sub_industry"]
+        # Every row carries the sub_industry key. It is None for names outside
+        # the curated table (master-only, ICX#2); it is never a placeholder.
+        assert "sub_industry" in r
+        assert r["sub_industry"] is None or (
+            isinstance(r["sub_industry"], str) and r["sub_industry"].strip()
+        )
         assert r["sector"] == "Information Technology"
+
+    # The curated names keep their real GICS sub-industry (non-null), so the
+    # null-sub_industry path is not the only one exercised.
+    curated = {r["symbol"] for r in rows if r["sub_industry"]}
+    assert {"AAPL", "MSFT", "NVDA"} <= curated
 
     # No Wikipedia provenance / old garbage artefacts.
     assert "wikipedia" not in [s.lower() for s in result.sources]
