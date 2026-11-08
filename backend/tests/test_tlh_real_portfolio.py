@@ -74,7 +74,9 @@ def test_real_losses_without_any_live_flag(monkeypatch):
 
 def test_exactly_one_year_is_still_short_term(monkeypatch):
     _book(monkeypatch, [_pos("AAPL", 1, 200.0, 365), _pos("MSFT", 1, 500.0, 366)])
-    res = _run(tlh.TLHFunction(_deps({"AAPL": 150.0, "MSFT": 400.0})))
+    # Explicit 0 threshold: the losses here (50, 100) are below the manifest
+    # default of 100 and this test is about the term boundary, not the threshold.
+    res = _run(tlh.TLHFunction(_deps({"AAPL": 150.0, "MSFT": 400.0})), min_loss_threshold=0)
     rows = {c["symbol"]: c for c in res.data["candidates"]}
     assert rows["AAPL"]["long_term"] is False
     assert rows["MSFT"]["long_term"] is True
@@ -82,7 +84,9 @@ def test_exactly_one_year_is_still_short_term(monkeypatch):
 
 def test_zero_day_wash_window_is_allowed(monkeypatch):
     _book(monkeypatch, [_pos("AAPL", 1, 200.0, 30)])
-    res = _run(tlh.TLHFunction(_deps({"AAPL": 150.0})), wash_sale_window_days=0)
+    # Explicit 0 threshold: the 50 loss is below the manifest default of 100;
+    # this test is about the zero-day window, not the threshold.
+    res = _run(tlh.TLHFunction(_deps({"AAPL": 150.0})), wash_sale_window_days=0, min_loss_threshold=0)
     window = res.data["candidates"][0]["wash_sale_window"]
     assert window[0] == window[1]
 
