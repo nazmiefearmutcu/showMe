@@ -590,7 +590,6 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     return {
       ...(values.callsign?.trim() ? { callsign: values.callsign.trim().toUpperCase() } : {}),
       ...(values.country?.trim() ? { country: values.country.trim() } : {}),
-      live_flight: true,
     };
   }
   if (upper === "GRAB") {
