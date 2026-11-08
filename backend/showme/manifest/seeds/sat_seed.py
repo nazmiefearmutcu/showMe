@@ -69,8 +69,8 @@ def sat() -> FunctionManifest:
                 required=True,
                 description=(
                     "NASA GIBS visualisation layer: true_color (MODIS Terra corrected reflectance), "
-                    "ndvi (MODIS 8-day NDVI composite), moisture and swir (both MODIS Terra bands 7-2-1 "
-                    "composite), thermal (MODIS land surface temperature, day)."
+                    "ndvi (MODIS 8-day NDVI composite), moisture (MODIS Terra bands 7-2-1 composite), "
+                    "thermal (MODIS land surface temperature, day), swir (VIIRS SNPP SWIR-NIR-red composite)."
                 ),
                 options=["true_color", "ndvi", "moisture", "thermal", "swir"],
             ),

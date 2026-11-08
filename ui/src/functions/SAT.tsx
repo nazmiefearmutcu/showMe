@@ -123,6 +123,17 @@ const AOIS = [
 ] as const;
 const AOI_IDS = AOIS.map((a) => a.id);
 
+// SAT#3: the GIBS layers the backend serves (`sat.py: _GIBS_LAYERS`). Each one
+// is a distinct product; the pane used to hard-code true_color.
+const LAYERS = [
+  { id: "true_color", label: "True colour" },
+  { id: "ndvi", label: "NDVI" },
+  { id: "moisture", label: "Moisture" },
+  { id: "thermal", label: "Thermal" },
+  { id: "swir", label: "SWIR" },
+] as const;
+const LAYER_IDS = LAYERS.map((l) => l.id);
+
 const REFRESH_MS = 60_000;
 
 /* -------------------------------- helpers --------------------------------- */
@@ -264,6 +275,11 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
     AOI_IDS,
     "cushing_ok",
   );
+  const [layer, setLayer] = usePersistentOption<string>(
+    "showme.sat-layer",
+    LAYER_IDS,
+    "true_color",
+  );
   // Bundle D / PERF-04. Visibility-aware poll (weather updates slowly).
   const tick = useVisibilityTick(REFRESH_MS);
 
@@ -273,7 +289,7 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { aoi, layer: "true_color" },
+    params: { aoi, layer },
   });
   useEffect(() => {
     if (tick === 0) return; // initial mount handled by useFunction's own load
@@ -428,6 +444,14 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
             items={locationChoices.map((l) => ({ id: l.id, label: l.label }))}
             active={effectiveAoi}
             onChange={(id) => setAoi(id)}
+          />
+        </div>
+        <div style={tabBarStyle}>
+          <Tabs
+            variant="segmented"
+            items={LAYERS.map((l) => ({ id: l.id, label: l.label }))}
+            active={layer}
+            onChange={(id) => setLayer(id)}
           />
         </div>
         <PaneBody>

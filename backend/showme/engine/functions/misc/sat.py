@@ -51,7 +51,9 @@ _GIBS_LAYERS: dict[str, tuple[str, str]] = {
     "ndvi": ("MODIS_Terra_NDVI_8Day", "1km"),
     "moisture": ("MODIS_Terra_CorrectedReflectance_Bands721", "250m"),
     "thermal": ("MODIS_Terra_Land_Surface_Temp_Day", "1km"),
-    "swir": ("MODIS_Terra_CorrectedReflectance_Bands721", "250m"),
+    # SAT#3: distinct product from ``moisture`` (VIIRS SNPP SWIR-NIR-red composite,
+    # listed in the GIBS WMS capabilities); the two labels no longer share a layer.
+    "swir": ("VIIRS_SNPP_CorrectedReflectance_BandsM11-I2-I1", "250m"),
 }
 
 _GIBS_BASE = "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi"
