@@ -17,7 +17,7 @@ from showme.engine.functions.derivative.ovme import _bs_price
 
 _HVT_FIELDS = {
     "window_days": "Trailing close-to-close return window used for the realized-volatility estimate.",
-    "realized_vol": "Annualized realized volatility as a decimal: stdev(daily returns) * sqrt(252).",
+    "realized_vol": "Annualized realized volatility as a decimal: stdev(daily returns) * sqrt(N), N = 252 trading days for equities/ETFs or 365 calendar days for crypto.",
     "realized_vol_pct": "Annualized realized volatility in percent.",
     "samples": "Number of daily returns used for the window.",
     "history.vol": "Rolling annualized realized volatility for the selected chart window.",
@@ -255,28 +255,47 @@ def _ivol_atm_term_and_skew(
     return stats, series
 
 
-def _vol_rows_from_returns(rets: Any, windows: list[int]) -> list[dict[str, Any]]:
+TRADING_DAYS_PER_YEAR = 252
+CALENDAR_DAYS_PER_YEAR = 365
+
+
+def _annualization_days(instrument: Instrument | None) -> int:
+    """Days per year used to annualize daily returns for this instrument.
+
+    Crypto trades every calendar day, so its daily returns are annualized on
+    365 days; equities and ETFs use the 252-trading-day convention.
+    """
+    if instrument is not None and instrument.asset_class == AssetClass.CRYPTO:
+        return CALENDAR_DAYS_PER_YEAR
+    return TRADING_DAYS_PER_YEAR
+
+
+def _vol_rows_from_returns(
+    rets: Any, windows: list[int], annualization: int = TRADING_DAYS_PER_YEAR,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for window in windows:
         sample = rets.tail(window)
         if len(sample) < max(5, min(window, 20)):
             continue
-        vol = float(sample.std() * np.sqrt(252))
+        vol = float(sample.std() * np.sqrt(annualization))
         rows.append({
             "metric": f"{window}D realized vol",
             "window_days": window,
             "realized_vol": vol,
             "realized_vol_pct": vol * 100,
             "samples": int(len(sample)),
-            "formula": "stdev(daily close returns) * sqrt(252)",
+            "formula": f"stdev(daily close returns) * sqrt({annualization})",
         })
     return rows
 
 
-def _rolling_vol_history(rets: Any, window: int) -> list[dict[str, Any]]:
+def _rolling_vol_history(
+    rets: Any, window: int, annualization: int = TRADING_DAYS_PER_YEAR,
+) -> list[dict[str, Any]]:
     if len(rets) < max(6, window):
         window = max(5, min(window, max(5, len(rets) // 2)))
-    rolling = rets.rolling(window).std().dropna() * np.sqrt(252)
+    rolling = rets.rolling(window).std().dropna() * np.sqrt(annualization)
     history: list[dict[str, Any]] = []
     for idx, value in rolling.tail(180).items():
         date = idx.date().isoformat() if hasattr(idx, "date") else str(idx)[:10]
@@ -302,7 +321,7 @@ def _reference_hvt(symbol: str, spot: float, *, reason: str) -> dict[str, Any]:
         "symbol": symbol,
         "rows": [],
         "summary": {"source_mode": "provider_unavailable", "windows": 0},
-        "methodology": "Live daily close history is required for HVT. The realized-vol formula is stdev(daily close returns) * sqrt(252).",
+        "methodology": "Live daily close history is required for HVT. The realized-vol formula is stdev(daily close returns) * sqrt(N), N = 252 for equities/ETFs and 365 for crypto.",
         "field_dictionary": _HVT_FIELDS,
         "next_actions": ["Retry with a supported symbol or configure the yfinance data adapter."],
     }
@@ -505,16 +524,23 @@ class HVTFunction(BaseFunction):
             )
         closes = df["close"].dropna()
         rets = closes.pct_change().dropna()
+        annualization = _annualization_days(instrument)
         windows = [30, 60, 90, min(252, max(30, days))]
-        rows = _vol_rows_from_returns(rets, sorted(set(windows)))
+        rows = _vol_rows_from_returns(rets, sorted(set(windows)), annualization)
         history_window = min(30, max(10, days // 3))
-        history = _rolling_vol_history(rets, history_window)
+        history = _rolling_vol_history(rets, history_window, annualization)
         current_spot = float(closes.iloc[-1]) if len(closes) else float(params.get("spot", 100))
+        calendar_note = (
+            "crypto trades every calendar day, so N = 365 calendar days"
+            if annualization == CALENDAR_DAYS_PER_YEAR
+            else "equities/ETFs use N = 252 trading days"
+        )
         out = {
             "status": "ok",
             "symbol": symbol,
             "spot": current_spot,
             "lookback_days": days,
+            "annualization_days": annualization,
             "rows": rows,
             "history": history,
             "summary": {
@@ -522,8 +548,12 @@ class HVTFunction(BaseFunction):
                 "current_realized_vol_pct": rows[0]["realized_vol_pct"] if rows else None,
                 "observations": int(len(rets)),
                 "history_window_days": history_window,
+                "annualization_days": annualization,
             },
-            "methodology": "Annualized realized volatility = stdev(daily close-to-close returns) * sqrt(252). Rolling history uses the selected chart window.",
+            "methodology": (
+                f"Annualized realized volatility = stdev(daily close-to-close returns) * sqrt({annualization}); "
+                f"{calendar_note}. Rolling history uses the selected chart window."
+            ),
             "field_dictionary": _HVT_FIELDS,
         }
         return FunctionResult(code=self.code, instrument=instrument, data=out,
