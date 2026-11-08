@@ -107,3 +107,34 @@ class _FakeYfinance:
 
     async def fetch(self, *_args: Any, **_kwargs: Any) -> pd.DataFrame:
         return self._frame
+
+
+_SUMMARY_ACCURACY_KEYS = (
+    "test_accuracy",
+    "test_accuracy_ci95",
+    "test_baseline_always_long_accuracy",
+    "scored_samples",
+    "test_samples",
+)
+
+
+def test_summary_carries_baseline_interval_and_sample_counts(numpy_backend) -> None:
+    """The summary block is what the pane reads first; the baseline, interval and
+    row counts must sit beside the accuracy there, not only at the top level."""
+    deps = FunctionDeps(yfinance=_FakeYfinance(_random_walk()))
+    out = asyncio.run(MLSIGFunction(deps).execute(symbol="AAPL", asset_class="EQUITY", live=True))
+
+    assert out.data["status"] == "ok"
+    for key in _SUMMARY_ACCURACY_KEYS:
+        assert key in out.data["summary"], key
+        assert out.data["summary"][key] == out.data[key], key
+
+
+def test_summary_missing_state_carries_the_same_accuracy_keys_as_null() -> None:
+    out = asyncio.run(MLSIGFunction().execute(symbol="AAPL", asset_class="EQUITY", days=252))
+
+    for key in _SUMMARY_ACCURACY_KEYS:
+        assert key in out.data["summary"], key
+    assert out.data["summary"]["test_baseline_always_long_accuracy"] is None
+    assert out.data["summary"]["test_accuracy_ci95"] is None
+    assert out.data["summary"]["scored_samples"] == 0

@@ -732,6 +732,7 @@ function PortfolioAnalyticsView({
 }) {
   const nextActions = payload?.next_actions ?? [];
   const emptyReason = payload?.reason ?? nextActions[0];
+  const accuracyContext = accuracyContextLines(payload);
 
   const isStatusEmptyOrError =
     payload?.status === "ready_no_positions" ||
@@ -839,6 +840,14 @@ function PortfolioAnalyticsView({
             </div>
           ))}
         </div>
+        {accuracyContext.length ? (
+          // MLSIG#7: the baseline, interval and sample count sit beside the accuracy.
+          <p className="portfolio-analytics-accuracy-context" data-testid="mlsig-accuracy-context">
+            {accuracyContext.map((line) => (
+              <span key={line}>{line}</span>
+            ))}
+          </p>
+        ) : null}
       </section>
 
       {warnings.length ? (
@@ -1118,6 +1127,36 @@ function extractRows(payload: PortfolioPayload | undefined): Row[] {
     return Object.entries(summary).map(([metric, value]) => ({ metric, value }));
   }
   return [];
+}
+
+/**
+ * MLSIG#7: the always-long baseline, the 95% interval around test accuracy and
+ * the scored row count, as readable lines. Only lines whose inputs the backend
+ * really sent are returned; a missing-data state yields none.
+ */
+function accuracyContextLines(payload: PortfolioPayload | undefined): string[] {
+  if (!payload) return [];
+  const lines: string[] = [];
+  const baseline = numberValue(payload.test_baseline_always_long_accuracy);
+  if (baseline != null) {
+    lines.push(`Always-long baseline ${formatPercent(baseline, { fromFraction: true })}`);
+  }
+  const interval = Array.isArray(payload.test_accuracy_ci95) ? (payload.test_accuracy_ci95 as unknown[]) : null;
+  if (interval && interval.length === 2) {
+    const low = numberValue(interval[0]);
+    const high = numberValue(interval[1]);
+    if (low != null && high != null) {
+      lines.push(
+        `95% CI ${formatPercent(low, { fromFraction: true })} to ${formatPercent(high, { fromFraction: true })}`,
+      );
+    }
+  }
+  const scored = numberValue(payload.scored_samples);
+  const tested = numberValue(payload.test_samples);
+  if (scored != null && tested != null) {
+    lines.push(`Scored ${scored} of ${tested} test rows`);
+  }
+  return lines;
 }
 
 function deriveMetrics(payload: PortfolioPayload | undefined): Array<{ key: string; label: string; value: unknown }> {

@@ -90,3 +90,64 @@ describe("MLSIG pane controls (MLSIG#6)", () => {
     expect(screen.getByText(/Next-day direction classifier/i)).toBeTruthy();
   });
 });
+
+function mockOkPayload() {
+  mockReturn.current = {
+    state: "ok",
+    data: {
+      data: {
+        status: "ok",
+        symbol: "AAPL",
+        backend: "lstsq_linear_probability",
+        source_mode: "live_yfinance",
+        signal: "long_bias",
+        test_accuracy: 0.5652,
+        test_samples: 70,
+        scored_samples: 69,
+        test_baseline_always_long_accuracy: 0.5217,
+        test_accuracy_ci95: [0.4012, 0.7100],
+        strategy_sharpe: 0.31,
+        summary: {
+          test_accuracy: 0.5652,
+          test_baseline_always_long_accuracy: 0.5217,
+          test_accuracy_ci95: [0.4012, 0.7100],
+          scored_samples: 69,
+          test_samples: 70,
+          strategy_sharpe: 0.31,
+          signal: "long_bias",
+          backend: "lstsq_linear_probability",
+          source_mode: "live_yfinance",
+        },
+      },
+      metadata: { live: true },
+      sources: ["yfinance"],
+      warnings: [],
+      elapsed_ms: 5,
+    },
+    error: undefined,
+    refetch: vi.fn(),
+  };
+}
+
+describe("MLSIG accuracy context (MLSIG#7)", () => {
+  it("shows the always-long baseline beside the accuracy", () => {
+    mockOkPayload();
+    render(<PortfolioAnalyticsPane code="MLSIG" symbol="AAPL" />);
+
+    expect(screen.getByText(/Always-long baseline 52\.17%/)).toBeTruthy();
+  });
+
+  it("shows the 95% interval around the accuracy as percentages", () => {
+    mockOkPayload();
+    render(<PortfolioAnalyticsPane code="MLSIG" symbol="AAPL" />);
+
+    expect(screen.getByText(/95% CI 40\.12% to 71\.00%/)).toBeTruthy();
+  });
+
+  it("shows how many test rows the accuracy is scored over", () => {
+    mockOkPayload();
+    render(<PortfolioAnalyticsPane code="MLSIG" symbol="AAPL" />);
+
+    expect(screen.getByText(/Scored 69 of 70 test rows/)).toBeTruthy();
+  });
+});

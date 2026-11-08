@@ -276,6 +276,10 @@ def _enrich_report(
         "rows": rows,
         "summary": {
             "test_accuracy": accuracy,
+            "test_baseline_always_long_accuracy": report.get("test_baseline_always_long_accuracy"),
+            "test_accuracy_ci95": report.get("test_accuracy_ci95"),
+            "scored_samples": report.get("scored_samples", 0),
+            "test_samples": report.get("test_samples", 0),
             "strategy_sharpe": sharpe,
             "signal": signal,
             "backend": report.get("backend"),
