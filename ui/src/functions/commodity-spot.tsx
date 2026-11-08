@@ -82,6 +82,18 @@ const DAYS_OPTIONS = [
 ] as const;
 const DAYS_IDS = DAYS_OPTIONS.map((o) => o.value);
 
+/** BGAS and its NGAS alias take the advertised `range` window (1M..1Y) so the
+ *  backend honours the selection; BOIL keeps the legacy `days` window. */
+const RANGE_WINDOW_CODES = new Set(["BGAS", "NGAS"]);
+const RANGE_OPTIONS = [
+  { value: "1M", label: "1m" },
+  { value: "3M", label: "3m" },
+  { value: "6M", label: "6m" },
+  { value: "1Y", label: "1y" },
+] as const;
+type RangeId = (typeof RANGE_OPTIONS)[number]["value"];
+const RANGE_IDS = RANGE_OPTIONS.map((o) => o.value);
+
 const CHART_W = 620;
 const CHART_H = 150;
 const PAD = { top: 10, right: 12, bottom: 20, left: 44 };
@@ -92,17 +104,23 @@ export interface CommoditySpotPaneProps extends FunctionPaneProps {
 }
 
 export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProps) {
+  const isRangeWindow = RANGE_WINDOW_CODES.has(code.toUpperCase());
   const [days, setDays] = usePersistentOption<number>(
     `showme.${code.toLowerCase()}.days`,
     DAYS_IDS,
     365,
+  );
+  const [range, setRange] = usePersistentOption<RangeId>(
+    `showme.${code.toLowerCase()}.range`,
+    RANGE_IDS,
+    "1Y",
   );
   const effectiveSymbol =
     symbol || defaultSymbolForFunction(code, ["COMMODITY"]);
   const { state, data, error, refetch } = useFunction<SpotData>({
     code,
     symbol: effectiveSymbol,
-    params: { days, live: true },
+    params: isRangeWindow ? { range, live: true } : { days, live: true },
     enabled: !!effectiveSymbol,
   });
 
@@ -252,12 +270,21 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
                       ? "live quote"
                       : sourceMode}
               </Pill>
-              <SegmentedControl
-                label="HISTORY"
-                value={days}
-                options={DAYS_OPTIONS}
-                onChange={setDays}
-              />
+              {isRangeWindow ? (
+                <SegmentedControl
+                  label="HISTORY"
+                  value={range}
+                  options={RANGE_OPTIONS}
+                  onChange={setRange}
+                />
+              ) : (
+                <SegmentedControl
+                  label="HISTORY"
+                  value={days}
+                  options={DAYS_OPTIONS}
+                  onChange={setDays}
+                />
+              )}
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}
@@ -286,7 +313,11 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
           <StatusDivider />
-          <StatusSection label="history" value={days} tone="accent" />
+          <StatusSection
+            label="history"
+            value={isRangeWindow ? range : days}
+            tone="accent"
+          />
         </PaneFooter>
       </Pane>
     </div>

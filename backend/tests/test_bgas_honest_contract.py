@@ -262,3 +262,40 @@ def test_model_row_with_unparseable_vintage_has_no_expiry() -> None:
     )
     assert rows[0]["expiry_month"] is None
     assert rows[0]["expiry_basis"] == "unknown_price_vintage"
+
+
+# ── BGAS#5 (router path): the advertised range is what the caller gets ────
+
+
+def test_routed_range_is_honoured_despite_router_injected_days() -> None:
+    """Pre-fix: the production router always injects days=120 next to the
+    caller's range, and the handler read days first, so range=1Y served 120
+    bars. The routed request must get the 1Y window (365 bars)."""
+    from showme.server_routes._agent_runtime import _route_function_params
+
+    load_seeds()
+    routed = _route_function_params("BGAS", {"symbol": "NG=F", "range": "1Y"})
+    assert routed["days"] == 120  # the router still injects its default
+    assert routed["range"] == "1Y"
+    yahoo = _Yahoo()
+    fn = BGASFunction(deps=FunctionDeps(yfinance=yahoo))
+    _run(fn.execute(**routed))
+    ohlcv = [r for r in yahoo.requests if r.kind.name == "OHLCV"]
+    assert ohlcv, "history request expected"
+    assert ohlcv[0].limit == 365
+
+
+def test_explicit_range_wins_over_days_when_both_are_sent() -> None:
+    yahoo = _Yahoo()
+    fn = BGASFunction(deps=FunctionDeps(yfinance=yahoo))
+    _run(fn.execute(contract="NG=F", range="3M", days=120))
+    ohlcv = [r for r in yahoo.requests if r.kind.name == "OHLCV"]
+    assert ohlcv[0].limit == 91
+
+
+def test_days_is_honoured_when_no_range_is_sent() -> None:
+    yahoo = _Yahoo()
+    fn = BGASFunction(deps=FunctionDeps(yfinance=yahoo))
+    _run(fn.execute(contract="NG=F", days=90))
+    ohlcv = [r for r in yahoo.requests if r.kind.name == "OHLCV"]
+    assert ohlcv[0].limit == 90

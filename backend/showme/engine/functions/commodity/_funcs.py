@@ -809,16 +809,22 @@ class BGASFunction(BaseFunction):
                 contract,
                 f"BGAS serves daily bars only (interval=1d); got interval={interval!r}.",
             )
-        if params.get("days") not in (None, ""):
-            days = _int_param(params, "days", 365, 20, 1095)
-        else:
-            range_key = str(params.get("range") or "1Y").strip().upper()
+        # range is the advertised window and wins whenever it is sent. The
+        # agent router always injects a days default next to the caller's
+        # range, so reading days first silently ignored range. days is honoured
+        # only for callers that send no range at all.
+        if params.get("range") not in (None, ""):
+            range_key = str(params.get("range")).strip().upper()
             if range_key not in _BGAS_RANGE_DAYS:
                 return self._input_error(
                     contract,
                     f"BGAS range {range_key!r} is not supported; use one of {', '.join(_BGAS_RANGE_DAYS)}.",
                 )
             days = _BGAS_RANGE_DAYS[range_key]
+        elif params.get("days") not in (None, ""):
+            days = _int_param(params, "days", 365, 20, 1095)
+        else:
+            days = _BGAS_RANGE_DAYS["1Y"]
         quote_timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
         as_of_day = datetime.now(timezone.utc).date()
         symbol = BGAS_CONTRACT
