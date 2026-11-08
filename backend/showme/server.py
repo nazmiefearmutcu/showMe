@@ -1035,10 +1035,16 @@ def _install_middlewares(app: FastAPI) -> None:
           ``X-ShowMe-Token`` (or Bearer authorization) except for the two
           exempt liveness probes.
     """
+    # Extra dev origins (e.g. a second Vite port) — loopback only, opt-in via env.
+    _dev_origins = [
+        origin.strip().rstrip("/")
+        for origin in os.environ.get("SHOWME_DEV_CORS_ORIGINS", "").split(",")
+        if origin.strip().startswith(("http://127.0.0.1:", "http://localhost:"))
+    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["tauri://localhost", "http://tauri.localhost",
-                       "http://localhost:5173", "http://127.0.0.1:5173"],
+                       "http://localhost:5173", "http://127.0.0.1:5173", *_dev_origins],
         allow_methods=["*"],
         allow_headers=["*"],
         allow_credentials=False,
