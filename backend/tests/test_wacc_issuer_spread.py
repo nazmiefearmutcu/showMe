@@ -121,10 +121,14 @@ async def test_sector_default_kicks_in_for_bank_without_balance_sheet():
     instrument = Instrument(symbol="BNK", asset_class=AssetClass.EQUITY)
     res = await fn.execute(instrument=instrument, beta=1.0)
     data = res.data
-    assert abs(data["equity_weight"] - 0.1) < 1e-9
-    assert abs(data["debt_weight"] - 0.9) < 1e-9
-    assert data["debt_value_source"] == "sector_default_financial"
-    assert data["capital_structure_data_state"] == "sector_default"
+    # WACC#2: a bank's liabilities are operating funding, so the old 10/90
+    # sector constant is no longer used; WACC is reported as not applicable.
+    assert data["status"] == "not_applicable"
+    assert data["equity_weight"] is None
+    assert data["debt_weight"] is None
+    assert data["wacc"] is None
+    assert data["debt_value_source"] == "not_applicable_financial"
+    assert data["capital_structure_data_state"] == "not_applicable_financial"
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,9 @@ from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions._fred_csv import fred_with_keyless_fallback
 from showme.engine.functions.equity.beta import BetaFunction
 
+# WACC#2: sector / industry tokens that mark a bank, insurer or other financial.
+_FINANCIAL_SECTOR_TOKENS = ("bank", "financ", "insurance")
+
 
 @FunctionRegistry.register
 class WACCFunction(BaseFunction):
@@ -238,6 +241,7 @@ class WACCFunction(BaseFunction):
         debt_value_source = "default"
         capital_data_state = "default"
         sector_used: str | None = None
+        financial_issuer = False
         ev_ratio = 0.7
         dv_ratio = 0.3
         try:
@@ -251,35 +255,47 @@ class WACCFunction(BaseFunction):
                 mc = raw.get("marketCap") or 0
                 debt = raw.get("totalDebt") or 0
                 v = (mc or 0) + (debt or 0)
-                if v > 0:
+                sector = (raw.get("sector") or raw.get("industry") or "").lower()
+                sector_used = sector or None
+                if any(token in sector for token in _FINANCIAL_SECTOR_TOKENS):
+                    # WACC#2: a bank's or insurer's liabilities are operating
+                    # funding (deposits, policy reserves), not capital-structure
+                    # debt. Neither the book-debt weight nor a sector constant
+                    # describes its capital structure, so WACC is not applicable.
+                    financial_issuer = True
+                    ev_ratio, dv_ratio = None, None
+                    debt_value_source = "not_applicable_financial"
+                    capital_data_state = "not_applicable_financial"
+                elif v > 0:
                     ev_ratio = float(mc / v)
                     dv_ratio = float(debt / v)
                     debt_value_source = "book"
                     capital_data_state = "live"
-                else:
+                elif any(token in sector for token in ("technology", "software", "internet")):
                     # Audit Q3 #18: sector-aware fallback when balance sheet
-                    # is empty. Banks carry ~9:1, capital-light tech ~95:5.
-                    sector = (raw.get("sector") or raw.get("industry") or "").lower()
-                    sector_used = sector or None
-                    if any(token in sector for token in ("bank", "financ", "insurance")):
-                        ev_ratio, dv_ratio = 0.1, 0.9
-                        debt_value_source = "sector_default_financial"
-                        capital_data_state = "sector_default"
-                    elif any(token in sector for token in ("technology", "software", "internet")):
-                        ev_ratio, dv_ratio = 0.95, 0.05
-                        debt_value_source = "sector_default_tech"
-                        capital_data_state = "sector_default"
-                    elif any(token in sector for token in ("utility", "real estate", "reit")):
-                        ev_ratio, dv_ratio = 0.45, 0.55
-                        debt_value_source = "sector_default_utility"
-                        capital_data_state = "sector_default"
+                    # is empty. Capital-light tech ~95:5.
+                    ev_ratio, dv_ratio = 0.95, 0.05
+                    debt_value_source = "sector_default_tech"
+                    capital_data_state = "sector_default"
+                elif any(token in sector for token in ("utility", "real estate", "reit")):
+                    ev_ratio, dv_ratio = 0.45, 0.55
+                    debt_value_source = "sector_default_utility"
+                    capital_data_state = "sector_default"
                 sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance ratios: {e}")
         if rf != rf:
             rf = 0.04
         re_capm = rf + beta * erp
-        wacc = ev_ratio * re_capm + dv_ratio * rd * (1 - tax)
+        wacc: float | None = None
+        if financial_issuer:
+            warnings.append(
+                "WACC not applicable to a bank or insurer: its liabilities are operating "
+                "funding (deposits, reserves), not capital-structure debt; cost of equity "
+                "(re_capm) is still reported"
+            )
+        else:
+            wacc = ev_ratio * re_capm + dv_ratio * rd * (1 - tax)
         rows = [
             {"component": "Cost of equity", "value": re_capm, "formula": "Re = rf + beta * ERP"},
             {"component": "After-tax cost of debt", "value": rd * (1 - tax), "formula": "Rd * (1 - tax_rate)"},
@@ -288,17 +304,31 @@ class WACCFunction(BaseFunction):
             {"component": "WACC", "value": wacc, "formula": "(E/V * Re) + (D/V * Rd * (1 - tax))"},
         ]
         surface = []
-        for b in (max(0.1, beta - 0.25), beta, beta + 0.25):
+        for b in ((max(0.1, beta - 0.25), beta, beta + 0.25) if wacc is not None else ()):
             for spread in (-0.01, 0, 0.01):
                 rd_case = max(0.0, rd + spread)
                 re_case = rf + b * erp
                 w_case = ev_ratio * re_case + dv_ratio * rd_case * (1 - tax)
                 surface.append({"bucket": f"beta {b:.2f} / Rd {rd_case:.1%}", "beta": b, "rd": rd_case, "wacc": w_case})
+        extra_state: dict[str, Any] = {}
+        if financial_issuer:
+            extra_state = {
+                "reason": (
+                    "WACC is not applicable to a bank or insurer: deposits and policy reserves "
+                    "are operating funding, so the book-debt capital-structure weight is not a "
+                    "meaningful input. The cost of equity (re_capm) is reported."
+                ),
+                "next_actions": [
+                    "Use the cost of equity (re_capm) for a financial issuer valuation.",
+                    "Use a financials-specific model (e.g. excess-return or dividend-discount) instead of WACC.",
+                ],
+            }
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok",
-                "wacc": float(wacc),
+                "status": "not_applicable" if financial_issuer else "ok",
+                **extra_state,
+                "wacc": float(wacc) if wacc is not None else None,
                 "re_capm": float(re_capm),
                 "rf": float(rf), "beta": float(beta), "erp": erp,
                 "rd": float(rd), "tax_rate": float(tax),

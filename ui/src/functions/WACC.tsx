@@ -57,6 +57,7 @@ interface WACCSurfaceCell {
 
 interface WACCPayload {
   status?: string;
+  reason?: string;
   wacc?: number;
   re_capm?: number;
   rf?: number;
@@ -211,6 +212,12 @@ export function WACCPane({ code, symbol }: FunctionPaneProps) {
             <Skeleton height={300} />
           ) : state === "error" ? (
             <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
+          ) : payload.status === "not_applicable" ? (
+            <Empty
+              title="WACC not applicable"
+              body={payload.reason ?? "WACC is not meaningful for this financial issuer; use the cost of equity."}
+              icon="!"
+            />
           ) : payload.wacc == null ? (
             <Empty title="No WACC payload" body={`The ${code} function returned no result.`} />
           ) : (
