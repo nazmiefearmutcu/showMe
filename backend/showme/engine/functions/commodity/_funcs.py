@@ -1080,7 +1080,9 @@ class CPFFunction(BaseFunction):
             },
             sources=["yfinance"],
             warnings=provider_errors,
-            metadata={"degraded": data_mode != "futures_proxy_trend"} if data_mode != "futures_proxy_trend" else {},
+            # CPF#2: a Yahoo futures proxy with a trend extrapolation is never
+            # an official series, so the quality flag is set on every path.
+            metadata={"degraded": True, "data_mode": data_mode},
         )
 
     async def _yahoo_history(self, symbol: str, timeout: float) -> list[dict[str, Any]]:

@@ -51,6 +51,16 @@ def test_futures_proxy_is_not_labelled_live_official(monkeypatch) -> None:
     assert result.data["cards"]["data_mode"] == "futures_proxy_trend"
 
 
+# CPF#2 — the futures-proxy success path is still a non-official series, so the
+# response metadata must carry the degraded flag rather than an empty dict.
+def test_futures_proxy_success_response_is_marked_degraded(monkeypatch) -> None:
+    _patch_history(monkeypatch, _history())
+    result = _run()
+    assert result.data["status"] == "ok"
+    assert result.data["data_mode"] == "futures_proxy_trend"
+    assert result.metadata.get("degraded") is True
+
+
 # CPF#6 — cards.forecast_1y must be the ~12-month point. For a 6M horizon the
 # old code returned the 6M endpoint under the 1Y key.
 def test_forecast_1y_card_is_only_the_twelve_month_point(monkeypatch) -> None:
