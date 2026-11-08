@@ -171,24 +171,18 @@ def test_fxgo_ticket_without_symbol_still_input_required():
 # ── GEX ────────────────────────────────────────────────────────────────────
 
 
-def test_gex_clamps_non_positive_spot_in_model_only_branch():
-    """Was: when not live_options, GEX returned _model_gex(sym, spot, rate)
-    with no clamp on spot, so spot<=0 produced a strike grid centered on 0.
-    Now: clamped before any consumer reads spot."""
+def test_gex_rejects_non_positive_spot_without_a_grid():
+    """Was: spot=0 reached a strike grid centred on 0 in the model-only branch.
+    Now (wc1-g06): a non-positive spot is never used; with no live chain the
+    function returns an honest non-ok state and no rows at all."""
     fn = GEXFunction(deps=FunctionDeps(yfinance=None))
     result = _run(fn.execute(instrument=Instrument(symbol="SPY",
                                                    asset_class=AssetClass.EQUITY),
                              spot=0))
     data = result.data
-    # The data carries either a `strikes` or `rows` array; make sure no row
-    # has every metric collapsed to 0 (the symptom of spot=0 propagation).
-    rows = data.get("rows") or data.get("strikes") or []
-    assert rows, "expected strike rows in GEX model output"
-    sample = rows[0]
-    # whatever the row shape, at least one numeric field must be non-zero
-    numeric_values = [v for v in sample.values()
-                      if isinstance(v, (int, float)) and v != 0]
-    assert numeric_values, f"every numeric field was 0 — spot=0 leaked: {sample}"
+    assert data["status"] != "ok"
+    assert data.get("spot") is None
+    assert (data.get("rows") or []) == []
 
 
 # ── GC3D ───────────────────────────────────────────────────────────────────

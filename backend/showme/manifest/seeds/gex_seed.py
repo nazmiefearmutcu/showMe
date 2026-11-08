@@ -157,8 +157,10 @@ def gex() -> FunctionManifest:
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
-            primary="cboe_options",
-            fallbacks=["yfinance", "cached_snapshot"],
+            # The handler reads only the yfinance chain and quote; no other
+            # provider is wired, so none is declared.
+            primary="yfinance",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.DELAYED_REFERENCE,
@@ -176,7 +178,7 @@ def gex() -> FunctionManifest:
                 "underlying",
                 "spot",
                 "as_of",
-                "strikes",
+                "rows",
                 "data_mode",
                 "iv_source",
                 "dealer_assumption",
@@ -219,8 +221,9 @@ def gex() -> FunctionManifest:
             "γ(S, K, T, σ, r, q); (2) per-contract dollar gamma = γ * S² * "
             "contract_multiplier * 0.01 ($/1% convention); (3) dealer-signed "
             "gamma — under short_calls_long_puts, dealers are short calls "
-            "(positive contribution → suppresses realized vol when net γ > 0) "
-            "and long puts (negative contribution); (4) aggregate by strike "
+            "(negative contribution, short gamma) and long puts (positive contribution); "
+            "net_gex = Σ(call + put), so a positive net means dealers are net long gamma, "
+            "which tends to damp realized vol; (4) aggregate by strike "
             "across selected expiries; (5) gamma flip = spot level where total dealer "
             "GEX changes sign, found by re-evaluating GEX on a ±10% spot grid with the "
             "same chain (IV, OI, T fixed) and taking the zero crossing; (6) walls = "
@@ -255,9 +258,9 @@ def gex() -> FunctionManifest:
                 notes="Per-contract dollar gamma in the $/1% convention.",
             ),
             "dealer_signed": Formula(
-                expression=r"\text{signed}_\gamma = +\Gamma_\$(\text{call}) - \Gamma_\$(\text{put})",
+                expression=r"\text{signed}_\gamma = -\Gamma_\$(\text{call}) + \Gamma_\$(\text{put})",
                 variables={},
-                notes="Under standard short_calls_long_puts dealer convention.",
+                notes="Under standard short_calls_long_puts dealer convention: call contributions are negative, put contributions positive.",
             ),
             "gamma_flip": Formula(
                 expression=(
@@ -274,7 +277,7 @@ def gex() -> FunctionManifest:
             "strikes[].strike": FieldDef(unit="$", description="Strike price.", source="option chain"),
             "strikes[].call_gex": FieldDef(unit="$/1%", description="Aggregated call dealer γ at strike.", source="computed"),
             "strikes[].put_gex": FieldDef(unit="$/1%", description="Aggregated put dealer γ at strike.", source="computed"),
-            "strikes[].signed_gex": FieldDef(unit="$/1%", description="call_gex − put_gex.", source="computed"),
+            "strikes[].signed_gex": FieldDef(unit="$/1%", description="Net dealer GEX per strike: put contribution (positive) plus call contribution (negative, dealers short calls).", source="computed"),
             "strikes[].oi_call": FieldDef(unit="contracts", description="Call OI summed across selected expiries.", source="option chain"),
             "strikes[].oi_put": FieldDef(unit="contracts", description="Put OI summed across selected expiries.", source="option chain"),
             "cumulative_gex_curve[].strike": FieldDef(unit="$", description="Strike.", source="derived"),
