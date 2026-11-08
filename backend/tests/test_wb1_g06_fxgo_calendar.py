@@ -265,3 +265,48 @@ def test_fxgo_previous_close_skips_null_latest_bar(monkeypatch):
     assert row["previous_close"] == pytest.approx(1.12283, abs=1e-6)
     assert row["previous_close_date"] == "2026-11-06"
     assert row["change"] == pytest.approx(1.1230 - 1.12283, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# ASOF-12 (follow-up) — next_close must agree with is_open on half-days
+# --------------------------------------------------------------------------- #
+def test_next_close_honours_nyse_half_day_early_close():
+    """2026-11-27 closes at 13:00 ET = 18:00 UTC; next_close must say so."""
+    from showme.engine.reference.calendar_registry import CalendarRegistry
+
+    cal = CalendarRegistry()
+    if cal._ec is None:
+        pytest.skip("exchange_calendars not installed; early-close data unavailable")
+    after = datetime(2026, 11, 27, 15, 0, tzinfo=timezone.utc)  # 10:00 ET
+    assert cal.next_close("NYSE", after) == datetime(2026, 11, 27, 18, 0, tzinfo=timezone.utc)
+
+
+def test_next_close_and_is_open_agree_on_half_day():
+    from showme.engine.reference.calendar_registry import CalendarRegistry
+
+    cal = CalendarRegistry()
+    if cal._ec is None:
+        pytest.skip("exchange_calendars not installed; early-close data unavailable")
+    close = cal.next_close("NYSE", datetime(2026, 11, 27, 15, 0, tzinfo=timezone.utc))
+    assert cal.is_open("NYSE", close - timedelta(minutes=1)) is True
+    assert cal.is_open("NYSE", close + timedelta(minutes=1)) is False
+
+
+def test_next_close_regular_day_is_16_et():
+    """2026-11-09 is EST: 16:00 ET = 21:00 UTC (host-independent)."""
+    from showme.engine.reference.calendar_registry import CalendarRegistry
+
+    cal = CalendarRegistry()
+    after = datetime(2026, 11, 9, 15, 0, tzinfo=timezone.utc)
+    assert cal.next_close("NYSE", after) == datetime(2026, 11, 9, 21, 0, tzinfo=timezone.utc)
+
+
+def test_as_utc_pins_naive_datetime_to_utc_on_any_host():
+    """Host-independent pin of the naive-input rule (the is_open regression
+    itself only bites on non-UTC machines)."""
+    from showme.engine.reference.calendar_registry import _as_utc
+
+    naive = datetime(2026, 11, 9, 15, 0)
+    out = _as_utc(naive)
+    assert out == datetime(2026, 11, 9, 15, 0, tzinfo=timezone.utc)
+    assert out.utcoffset() == timedelta(0)

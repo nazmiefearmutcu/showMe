@@ -147,18 +147,25 @@ class CalendarRegistry:
             return None
         local = after.astimezone(ZoneInfo(ex.timezone))
         h_c, m_c = (int(x) for x in ex.close_local.split(":"))
-        cand = local.replace(hour=h_c, minute=m_c, second=0, microsecond=0)
-        if cand <= local:
-            cand = cand + timedelta(days=1)
+        # ASOF-12: the session's actual close (half-day early closes included)
+        # comes from the same calendar source is_open uses; the fixed close_local
+        # is only the fallback when no calendar data exists for the session.
         # HNT-14: skip weekends AND non-session (holiday) dates; bounded so a
         # calendar with no future sessions can never spin forever.
+        day = local.date()
         for _ in range(60):
-            if cand.weekday() < 5 and self._is_session(ex.code, cand.date()):
-                break
-            cand = cand + timedelta(days=1)
-        else:
-            return None
-        return cand.astimezone(timezone.utc)
+            if day.weekday() < 5 and self._is_session(ex.code, day):
+                bounds = self._session_bounds_utc(ex.code, day)
+                if bounds is not None:
+                    close_utc = bounds[1]
+                else:
+                    close_utc = datetime.combine(
+                        day, time(h_c, m_c), tzinfo=ZoneInfo(ex.timezone)
+                    ).astimezone(timezone.utc)
+                if close_utc > after:
+                    return close_utc
+            day = day + timedelta(days=1)
+        return None
 
     def session_dates(self, exchange_code: str, start: date, end: date) -> list[date]:
         out: list[date] = []
