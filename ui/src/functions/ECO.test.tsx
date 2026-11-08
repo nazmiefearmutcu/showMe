@@ -255,3 +255,29 @@ describe("ECO live-shaped payloads (F2 C1)", () => {
     expect(screen.getAllByText(/nager/).length).toBeGreaterThan(0);
   });
 });
+
+describe("ECO holiday degradation (F6 m6)", () => {
+  it("says holidays were not checked when the holiday call failed, not that there are none", () => {
+    setOk(okPayload({ holidays: [], holidays_status: "unavailable", degraded: true }));
+    render(<ECOPane code="ECO" />);
+    expect(screen.getByText(/Holidays not checked/)).toBeTruthy();
+  });
+
+  it("shows no holidays banner when the holiday call answered", () => {
+    setOk(okPayload({ holidays: [], holidays_status: "ok", degraded: false }));
+    render(<ECOPane code="ECO" />);
+    expect(screen.queryByText(/Holidays not checked/)).toBeNull();
+  });
+
+  it("keeps the not-checked notice on an empty window", () => {
+    setOk({
+      status: "empty",
+      rows: [],
+      holidays: [],
+      holidays_status: "unavailable",
+      meta: META,
+    });
+    render(<ECOPane code="ECO" />);
+    expect(screen.getByText(/Holidays not checked/)).toBeTruthy();
+  });
+});

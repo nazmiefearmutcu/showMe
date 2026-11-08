@@ -128,7 +128,7 @@ describe("MSENT pane — sections", () => {
     const { container } = render(<MSENTPane code="MSENT" />);
     const card = container.querySelector("#msent-fg")?.closest("section");
     expect(card?.textContent).toContain("22");
-    expect(card?.textContent).toContain("Extreme Fear");
+    expect(card?.textContent).toContain("Extreme fear");
     expect(card?.textContent).toContain("−2.2 vs previous close");
     expect(
       screen.getByRole("img", { name: /Fear and Greed gauge at 22, extreme fear/ }),
@@ -195,5 +195,205 @@ describe("MSENT pane — news sentiment card", () => {
     render(<MSENTPane code="MSENT" />);
     fireEvent.click(await screen.findByRole("button", { name: "MSFT" }));
     expect(calls.filter((c) => c.code === "SOSC").at(-1)?.symbol).toBe("MSFT");
+  });
+});
+
+describe("MSENT pane — F6 sections (sentiment review M-4 to M-9, M-13)", () => {
+  it("draws the crypto gauge at 160 x 88 with its score and sentence-case rating", () => {
+    setFn(
+      "MSENT",
+      "ok",
+      okMsent({
+        crypto: {
+          score: 28,
+          rating: "fear",
+          as_of: NOW,
+          history: [
+            { ts: "2026-11-06T00:00:00Z", value: 30 },
+            { ts: "2026-11-07T00:00:00Z", value: 28 },
+          ],
+        },
+      }),
+    );
+    const { container } = render(<MSENTPane code="MSENT" />);
+    const gauge = container.querySelector('[data-testid="msent-crypto-gauge"]');
+    expect(gauge?.getAttribute("width")).toBe("160");
+    expect(gauge?.getAttribute("height")).toBe("88");
+    const card = container.querySelector("#msent-crypto")?.closest("section");
+    expect(card?.textContent).toContain("28");
+    expect(card?.textContent).toContain("Fear");
+    expect(card?.textContent).not.toContain("fear");
+  });
+
+  it("shows the backwardation badge for a backwardated term structure", () => {
+    setFn(
+      "MSENT",
+      "ok",
+      okMsent({
+        vix: {
+          vix: 25.6,
+          vix9d: 24,
+          vix3m: 24.6,
+          as_of: "2026-11-07",
+          term_ratio: 1.04,
+          structure: "backwardation",
+        },
+      }),
+    );
+    render(<MSENTPane code="MSENT" />);
+    expect(screen.getByText("Backwardation")).toBeInTheDocument();
+    expect(screen.queryByText("Contango")).toBeNull();
+  });
+
+  it("passes all seven CNN components through in order", () => {
+    const labels = [
+      "Momentum",
+      "Strength",
+      "Breadth",
+      "Put/call",
+      "VIX",
+      "Junk bonds",
+      "Safe haven",
+    ];
+    const components = labels.map((label, i) => ({
+      key: `k${i}`,
+      label,
+      score: 10 + i * 10,
+      rating: "fear",
+    }));
+    setFn("MSENT", "ok", okMsent({ cnn: { ...(okMsent().cnn as object), components } }));
+    const { container } = render(<MSENTPane code="MSENT" />);
+    const rows = Array.from(container.querySelectorAll(".aw-components li")).map(
+      (li) => li.textContent ?? "",
+    );
+    expect(rows).toHaveLength(7);
+    expect(rows[0]).toContain("Momentum");
+    expect(rows[6]).toContain("Safe haven");
+  });
+
+  it("draws the 25/50/75 guides only where they fall inside the 90-day range", () => {
+    const wide = okMsent({
+      cnn: {
+        ...(okMsent().cnn as object),
+        history: [
+          { ts: "2026-08-10T00:00:00Z", value: 0 },
+          { ts: "2026-11-07T00:00:00Z", value: 100 },
+        ],
+      },
+    });
+    setFn("MSENT", "ok", wide);
+    const first = render(<MSENTPane code="MSENT" />);
+    expect(
+      Array.from(first.container.querySelectorAll("[data-guide]")).map((el) =>
+        el.getAttribute("data-guide"),
+      ),
+    ).toEqual(["25", "50", "75"]);
+    first.unmount();
+    setFn(
+      "MSENT",
+      "ok",
+      okMsent({
+        cnn: {
+          ...(okMsent().cnn as object),
+          history: [
+            { ts: "2026-08-10T00:00:00Z", value: 30 },
+            { ts: "2026-11-07T00:00:00Z", value: 60 },
+          ],
+        },
+      }),
+    );
+    const narrow = render(<MSENTPane code="MSENT" />);
+    expect(
+      Array.from(narrow.container.querySelectorAll("[data-guide]")).map((el) =>
+        el.getAttribute("data-guide"),
+      ),
+    ).toEqual(["50"]);
+  });
+
+  it("stamps the social card with the latest row as-of", () => {
+    setFn(
+      "MSENT",
+      "ok",
+      okMsent({
+        social: {
+          stocks: [
+            {
+              ticker: "NVDA",
+              rank: 1,
+              mentions: 1200,
+              mention_change_pct: 1,
+              rank_change: 0,
+              as_of: "2026-11-08T10:00:00Z",
+            },
+            {
+              ticker: "AMD",
+              rank: 2,
+              mentions: 900,
+              mention_change_pct: 1,
+              rank_change: 0,
+              as_of: "2026-11-08T11:30:00Z",
+            },
+          ],
+          crypto: [],
+        },
+      }),
+    );
+    const { container } = render(<MSENTPane code="MSENT" />);
+    const card = container.querySelector("#msent-social")?.closest("section");
+    expect(card?.querySelector(".aw-card__asof")?.textContent).toBe(
+      "as of 2026-11-08T11:30:00Z",
+    );
+  });
+
+  it("takes the VIX source line from the payload's cboe stamp", () => {
+    setFn("MSENT", "ok", okMsent({ sources: { cboe: "2026-11-07T21:15:00+00:00" } }));
+    render(<MSENTPane code="MSENT" />);
+    expect(
+      screen.getByText("CBOE daily closes, 2026-11-07T21:15:00+00:00"),
+    ).toBeInTheDocument();
+  });
+
+  it("without a cboe stamp the VIX line names only the VIX date, never a fixed provider", () => {
+    setFn("MSENT", "ok", okMsent());
+    render(<MSENTPane code="MSENT" />);
+    expect(screen.getByText("VIX daily closes, 2026-11-07")).toBeInTheDocument();
+    expect(screen.queryByText(/CBOE daily closes, 2026-11-07$/)).toBeNull();
+  });
+
+  it("news card as-of: a newest article older than 24 h is stale", async () => {
+    watchSymbols = ["NVDA"];
+    const old = new Date(Date.now() - 30 * 3600e3).toISOString();
+    setFn("MSENT", "ok", okMsent());
+    setFn("SOSC", "ok", {
+      status: "ok",
+      news: { count: 2, latest_at: old, series: [{ ts: old, mean: 0.2 }], publishers: 2 },
+      gdelt_tone: [],
+    });
+    const { container } = render(<MSENTPane code="MSENT" />);
+    await screen.findByRole("img", { name: /news sentiment buckets/ });
+    expect(container.querySelector(".aw-card--news .aw-card__asof")?.textContent).toContain(
+      "stale",
+    );
+  });
+
+  it("news card as-of: an article inside 24 h is not stale", async () => {
+    watchSymbols = ["NVDA"];
+    const fresh = new Date(Date.now() - 2 * 3600e3).toISOString();
+    setFn("MSENT", "ok", okMsent());
+    setFn("SOSC", "ok", {
+      status: "ok",
+      news: {
+        count: 1,
+        latest_at: fresh,
+        series: [{ ts: fresh, mean: 0.2 }],
+        publishers: 1,
+      },
+      gdelt_tone: [],
+    });
+    const { container } = render(<MSENTPane code="MSENT" />);
+    await screen.findByRole("img", { name: /news sentiment buckets/ });
+    expect(
+      container.querySelector(".aw-card--news .aw-card__asof")?.textContent,
+    ).not.toContain("stale");
   });
 });

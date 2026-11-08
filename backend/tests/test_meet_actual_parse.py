@@ -24,7 +24,7 @@ if str(_BACKEND_DIR) not in sys.path:
 
 import pytest  # noqa: E402
 
-from showme.engine.functions.macro import eco as eco_mod  # noqa: E402
+from showme.engine.functions.comm import meet as meet_mod  # noqa: E402
 from showme.engine.services import world_events as we  # noqa: E402
 
 
@@ -61,48 +61,48 @@ def _run(coro):
 
 
 def test_parse_k_suffix():
-    value, unit, capped = eco_mod._parse_ff_number("180K")
+    value, unit, capped = meet_mod._parse_ff_number("180K")
     assert value == 180000
     assert unit == "K"
     assert capped is False
 
 
 def test_parse_m_suffix():
-    value, unit, capped = eco_mod._parse_ff_number("1.40M")
+    value, unit, capped = meet_mod._parse_ff_number("1.40M")
     assert value == 1400000
     assert unit == "M"
     assert capped is False
 
 
 def test_parse_b_and_t_suffixes():
-    assert eco_mod._parse_ff_number("2.1B")[0] == pytest.approx(2.1e9)
-    assert eco_mod._parse_ff_number("1.5T")[0] == pytest.approx(1.5e12)
+    assert meet_mod._parse_ff_number("2.1B")[0] == pytest.approx(2.1e9)
+    assert meet_mod._parse_ff_number("1.5T")[0] == pytest.approx(1.5e12)
 
 
 def test_parse_capped_percent():
-    value, unit, capped = eco_mod._parse_ff_number("<1.25%")
+    value, unit, capped = meet_mod._parse_ff_number("<1.25%")
     assert value == 1.25
     assert unit == "%"
     assert capped is True
 
 
 def test_parse_score_format_is_none():
-    value, unit, capped = eco_mod._parse_ff_number("3-0-6")
+    value, unit, capped = meet_mod._parse_ff_number("3-0-6")
     assert value is None
     assert unit == "3-0-6"
     assert capped is False
 
 
 def test_parse_preserves_legacy_percent_comma_stripping():
-    assert eco_mod._parse_ff_number("40.5%")[0] == 40.5
-    assert eco_mod._parse_ff_number("1,234.5%")[0] == 1234.5
-    assert eco_mod._parse_ff_number("3.2%")[0] == 3.2
-    assert eco_mod._parse_ff_number(None)[0] is None
-    assert eco_mod._parse_ff_number("")[0] is None
+    assert meet_mod._parse_ff_number("40.5%")[0] == 40.5
+    assert meet_mod._parse_ff_number("1,234.5%")[0] == 1234.5
+    assert meet_mod._parse_ff_number("3.2%")[0] == 3.2
+    assert meet_mod._parse_ff_number(None)[0] is None
+    assert meet_mod._parse_ff_number("")[0] is None
 
 
 def test_parse_pipe_takes_first_part():
-    assert eco_mod._parse_ff_number("1.5%|2.0%")[0] == 1.5
+    assert meet_mod._parse_ff_number("1.5%|2.0%")[0] == 1.5
 
 
 @pytest.mark.parametrize(
@@ -110,7 +110,7 @@ def test_parse_pipe_takes_first_part():
     [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
 )
 def test_parse_ff_number_rejects_non_finite_values(value):
-    assert eco_mod._parse_ff_number(value)[0] is None
+    assert meet_mod._parse_ff_number(value)[0] is None
 
 
 def test_economic_rows_details_preserves_actual():

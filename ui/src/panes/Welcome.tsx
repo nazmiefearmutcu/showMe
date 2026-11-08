@@ -9,6 +9,7 @@ import {
   fearGreedZone,
   formatSignedDelta,
   formatUtcStamp,
+  ratingLabel,
 } from "@/functions/awareness/FearGreedGauge";
 import { sidecarFetch, type FunctionEntry } from "@/lib/sidecar";
 import { useAppStore } from "@/lib/store";
@@ -921,7 +922,7 @@ export function Welcome() {
               </p>
             </div>
           ) : moodGauge ? (
-            <MarketMoodReading gauge={moodGauge} />
+            <MarketMoodReading gauge={moodGauge} refreshError={moodError} />
           ) : moodError ? (
             <div className="aw-mood__body" role="status">
               <strong data-testid="sentiment-label">Market mood unavailable</strong>
@@ -1923,13 +1924,39 @@ function formatPct(value: number): string {
  * previous close, and the source line with its as-of stamp. Shows "stale" when
  * the reading is older than the store's staleness window.
  */
-function MarketMoodReading({ gauge }: { gauge: MarketGauge }) {
+function MarketMoodReading({
+  gauge,
+  refreshError,
+}: {
+  gauge: MarketGauge;
+  /** A refresh that failed after an accepted reading: the reading stays, with a notice (M-6). */
+  refreshError: string | null;
+}) {
   const zone = fearGreedZone(gauge.score);
-  const rating = gauge.rating ?? zone.label;
+  const rating = ratingLabel(gauge.rating) ?? zone.label;
   const delta = gauge.previous_close == null ? null : gauge.score - gauge.previous_close;
   const stale = isGaugeStale(gauge.as_of);
+  const cryptoRating = ratingLabel(gauge.cryptoRating)?.toLowerCase();
+  const cryptoNote =
+    gauge.cryptoScore == null
+      ? ""
+      : ` Crypto: ${Math.round(gauge.cryptoScore)}${cryptoRating ? `, ${cryptoRating}` : ""}.`;
   return (
     <div className="aw-mood__body">
+      {refreshError ? (
+        <p className="aw-mood__notice" role="status" data-testid="sentiment-refresh-error">
+          Refresh failed: {refreshError}. Showing the reading from{" "}
+          {formatUtcStamp(gauge.as_of)}.
+        </p>
+      ) : null}
+      {gauge.stale ? (
+        <p className="aw-mood__notice" role="status" data-testid="sentiment-provider-stale">
+          CNN Fear &amp; Greed provider {gauge.providerStatus?.status ?? "degraded"}
+          {gauge.providerStatus?.provider ? ` (${gauge.providerStatus.provider})` : ""}
+          {gauge.providerStatus?.last_error ? `: ${gauge.providerStatus.last_error}` : ""}.
+          The value may not be current.
+        </p>
+      ) : null}
       <FearGreedGauge score={gauge.score} testId="sentiment-gauge" />
       <div className="aw-mood__figures">
         <span className="aw-mood__score" data-testid="sentiment-score">
@@ -1943,7 +1970,7 @@ function MarketMoodReading({ gauge }: { gauge: MarketGauge }) {
         </span>
       </div>
       <p className="aw-mood__source">
-        CNN Fear &amp; Greed, as of {formatUtcStamp(gauge.as_of)}.
+        CNN Fear &amp; Greed, as of {formatUtcStamp(gauge.as_of)}.{cryptoNote}
         {stale ? <span className="aw-mood__stale"> stale</span> : null}
       </p>
     </div>

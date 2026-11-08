@@ -62,6 +62,40 @@ describe("parseMarketGauge", () => {
   });
 });
 
+describe("parseMarketGauge F6 fields (M-6, M-7)", () => {
+  it("carries the provider flag, the provider status and the crypto reading", () => {
+    const parsed = parseMarketGauge({
+      ...OK_BODY,
+      stale: true,
+      provider_status: {
+        provider: "sent.cnn_fng",
+        status: "degraded",
+        last_error: "HTTP 503",
+      },
+      crypto_score: 28,
+      crypto_rating: "Fear",
+    });
+    if (!("gauge" in parsed)) throw new Error("expected a gauge");
+    expect(parsed.gauge.stale).toBe(true);
+    expect(parsed.gauge.providerStatus).toEqual({
+      provider: "sent.cnn_fng",
+      status: "degraded",
+      last_error: "HTTP 503",
+    });
+    expect(parsed.gauge.cryptoScore).toBe(28);
+    expect(parsed.gauge.cryptoRating).toBe("Fear");
+  });
+
+  it("defaults to not stale and no crypto when the route omits them", () => {
+    const parsed = parseMarketGauge(OK_BODY);
+    if (!("gauge" in parsed)) throw new Error("expected a gauge");
+    expect(parsed.gauge.stale).toBe(false);
+    expect(parsed.gauge.providerStatus).toBeNull();
+    expect(parsed.gauge.cryptoScore).toBeNull();
+    expect(parsed.gauge.cryptoRating).toBeNull();
+  });
+});
+
 describe("isGaugeStale", () => {
   it("flags readings older than 36 h", () => {
     const now = Date.parse("2026-11-08T12:00:00Z");

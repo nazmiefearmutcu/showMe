@@ -203,3 +203,21 @@ describe("TRDH lunch-break countdown (F2 I1, backend break-aware boundaries)", (
     expect(screen.getByText(/closes in 50m/)).toBeTruthy();
   });
 });
+
+describe("TRDH row-level errors (F6 m3)", () => {
+  it("shows an invalid exchange timezone on its row instead of a local session", () => {
+    const bad = venue({
+      mic: "XTKS",
+      name: "Tokyo Stock Exchange",
+      timezone: "Mars/Olympus",
+      is_open_now: false,
+      today: null,
+      error: "invalid exchange timezone: Mars/Olympus",
+      next_open_utc: at(3 * 60 * MIN),
+    });
+    setMockFn({ state: "ok", data: { data: { status: "ok", exchanges: [bad] } } });
+    render(<TRDHPane code="TRDH" />);
+    expect(screen.getByText("invalid exchange timezone: Mars/Olympus")).toBeTruthy();
+    expect(screen.queryByText("closed today")).toBeNull();
+  });
+});

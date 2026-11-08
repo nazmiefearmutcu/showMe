@@ -48,7 +48,9 @@ _METHODOLOGY = (
     "boundaries in UTC, lunch breaks included: during a break next_open_utc is the break end, and before a "
     "break next_close_utc is the break start. today is the session whose exchange-local date is today (null on closed "
     "days). closures are holidays and early closes from the same calendar. Early closes carry "
-    "early_close=true and their local close time."
+    "early_close=true and their local close time. A request without exchange codes answers the default set "
+    "(XNYS, XNAS, XLON, XFRA, XTKS, XHKG, XASX, XIST); unknown codes are skipped with a warning. An exchange "
+    "with an invalid timezone carries error and today=null; its open and close instants stay exact."
 )
 
 
@@ -100,12 +102,18 @@ def _exchange_block(mic: str, payload: dict[str, Any], closures: list[dict[str, 
     tz_name = str(payload.get("timezone") or "UTC")
     sessions = [_session_row(item) for item in (payload.get("sessions") or []) if isinstance(item, dict)]
     sessions.sort(key=lambda row: str(row.get("open_utc") or ""))
+    # An invalid zone is a row-level error: the exchange's local date is unknown, so no "today" is claimed.
+    # Instant comparisons (open/closed, next boundaries) are timezone-free and still computed.
+    error: str | None = None
     try:
         local_zone = ZoneInfo(tz_name)
     except (ZoneInfoNotFoundError, ValueError):
-        local_zone = UTC
-    local_today = now.astimezone(local_zone).date().isoformat()
-    today = next((row for row in sessions if row.get("date") == local_today), None)
+        local_zone = None
+        error = f"invalid exchange timezone: {tz_name}"
+    today: dict[str, Any] | None = None
+    if local_zone is not None:
+        local_today = now.astimezone(local_zone).date().isoformat()
+        today = next((row for row in sessions if row.get("date") == local_today), None)
     is_open = any(_is_open(row, now) for row in sessions)
     # A lunch break is a close (break_start) followed by an open (break_end), so the next boundaries
     # must include them: during a break the next open is the break end, before a break the next close
@@ -123,6 +131,7 @@ def _exchange_block(mic: str, payload: dict[str, Any], closures: list[dict[str, 
         "next_close_utc": next_closes[0].isoformat() if next_closes else None,
         "sessions": sessions,
         "closures": closures,
+        "error": error,
     }
 
 

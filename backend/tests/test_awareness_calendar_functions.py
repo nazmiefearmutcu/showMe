@@ -792,3 +792,189 @@ def test_m1_ipo_unknown_status_is_not_guessed_as_upcoming():
     assert [r["symbol"] for r in result.data["sections"]["upcoming"]] == ["SOON"]
     assert all(r["symbol"] != "PSTP" for rows in result.data["sections"].values() for r in rows)
     assert any("postponed" in w for w in result.warnings)
+
+
+# ── F6 minor polish (calendar review m3, m5, m6, m7) ───────────────────
+
+def test_m6_eco_failed_holiday_call_is_degraded_not_no_holidays():
+    fn = eco_mod.ECOFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/economic": [_econ()],
+                            "/calendar/holidays": AwarenessUnavailable("holiday calendar is not answering")})
+    result = _run(fn.execute(country="US", days=7))
+    assert result.data["status"] == "ok"
+    assert result.data["holidays_status"] == "unavailable"
+    assert result.data["holidays"] == []
+    assert result.data["degraded"] is True
+    assert result.data["degraded_parts"] == ["holidays"]
+    assert result.metadata["degraded"] is True
+    assert any("holidays unavailable, not checked" in w for w in result.warnings)
+
+
+def test_m6_eco_answered_holiday_call_is_not_degraded():
+    fn = eco_mod.ECOFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/economic": [_econ()], "/calendar/holidays": []})
+    result = _run(fn.execute(country="US", days=7))
+    assert result.data["holidays_status"] == "ok"
+    assert result.data["degraded"] is False
+    assert result.warnings == []
+
+
+def test_m6_eco_parse_ff_number_lives_in_meet():
+    assert not hasattr(eco_mod, "_parse_ff_number")
+    assert meet_mod._parse_ff_number("1.40M")[0] == pytest.approx(1.4e6)
+
+
+def test_m3_trdh_default_set_is_requested_when_no_codes_given(monkeypatch):
+    _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 1, 0, tzinfo=UTC))
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/sessions": {"timezone": "Asia/Tokyo", "sessions": _tokyo_sessions()},
+                            "/calendar/holidays": []})
+    result = _run(fn.execute())
+    asked = [params["exchange"] for path, params in fn._awareness.calls if path == "/calendar/sessions"]
+    assert asked == trdh_mod.DEFAULT_MICS
+    assert "default set" in result.data["methodology"]
+
+
+def test_m3_trdh_invalid_timezone_is_a_row_error_not_a_crash(monkeypatch):
+    _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 1, 0, tzinfo=UTC))
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/sessions": {"timezone": "Mars/Olympus", "sessions": _tokyo_sessions()},
+                            "/calendar/holidays": []})
+    result = _run(fn.execute(exchanges="XTKS"))
+    block = result.data["exchanges"][0]
+    assert result.data["status"] == "ok"
+    assert block["error"] == "invalid exchange timezone: Mars/Olympus"
+    assert block["today"] is None
+    assert block["is_open_now"] is True
+    assert block["next_close_utc"].startswith("2026-11-09T02:30")
+
+
+def test_m3_trdh_valid_timezone_has_no_error(monkeypatch):
+    _freeze_now(monkeypatch, trdh_mod, datetime(2026, 11, 9, 1, 0, tzinfo=UTC))
+    fn = trdh_mod.TRDHFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/sessions": {"timezone": "Asia/Tokyo", "sessions": _tokyo_sessions()},
+                            "/calendar/holidays": []})
+    block = _run(fn.execute(exchanges="XTKS")).data["exchanges"][0]
+    assert block["error"] is None
+    assert block["today"]["date"] == "2026-11-09"
+
+
+def test_m5_ern_watchlist_failure_is_named_and_rows_are_kept():
+    fn = ern_mod.ERNFunction(FunctionDeps())
+    fn._awareness = Routes({
+        "/calendar/corporate": [_earn("BIG", _day(1), 9e12, "amc")],
+        "/watchlist": AwarenessUnavailable("watchlist endpoint timed out"),
+    })
+    result = _run(fn.execute(days=3))
+    assert result.data["status"] == "ok"
+    assert [r["in_watchlist"] for r in result.data["rows"]] == [False]
+    assert any(w.startswith("watchlist unavailable: in_watchlist is false for every row") for w in result.warnings)
+    assert "every in_watchlist is false" in result.data["methodology"]
+
+
+def test_m5_ern_market_cap_floor_reports_rows_dropped_for_unknown_cap():
+    unknown = _earn("NOCAP", _day(1), 1e10, "amc")
+    unknown["fields"]["market_cap"] = None
+    fn = ern_mod.ERNFunction(FunctionDeps())
+    fn._awareness = Routes({
+        "/calendar/corporate": [_earn("A", _day(1), 2e10, "amc"), unknown],
+        "/watchlist": [],
+    })
+    result = _run(fn.execute(days=3, min_market_cap="1e9"))
+    assert [r["symbol"] for r in result.data["rows"]] == ["A"]
+    assert result.data["filters"]["dropped_unknown_market_cap"] == 1
+    assert any("1 row(s) with no market cap were dropped" in w for w in result.warnings)
+    assert "no market cap are dropped" in result.data["methodology"]
+
+
+def test_m5_ern_without_cap_floor_keeps_unknown_caps_silently():
+    unknown = _earn("NOCAP", _day(1), 1e10, "amc")
+    unknown["fields"]["market_cap"] = None
+    fn = ern_mod.ERNFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/corporate": [unknown], "/watchlist": []})
+    result = _run(fn.execute(days=3))
+    assert [r["symbol"] for r in result.data["rows"]] == ["NOCAP"]
+    assert result.warnings == []
+
+
+def test_m7_evts_days_back_zero_skips_filings_with_a_warning():
+    fn = EVTSFunction(FunctionDeps())
+    fn._awareness = Routes({"/filings": [{"id": "f1", "date": _day(-1), "fields": {"form": "8-K"}, "sources": []}]})
+    result = _run(fn.execute(symbol="AAPL", types="filing", days_back=0))
+    assert result.data["status"] == "empty"
+    assert result.metadata["live"] is True
+    assert any("filings skipped: days_back=0" in w for w in result.warnings)
+    assert not any(path == "/filings" for path, _ in fn._awareness.calls)
+
+
+def test_m7_evts_days_back_zero_keeps_corporate_rows_and_warns_about_filings():
+    fn = EVTSFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/corporate": [
+        {"id": "a", "type": "earnings", "symbol": "AAPL", "company": "Apple", "date": _day(3),
+         "time_of_day": "amc", "status": "scheduled", "fields": {}, "sources": []},
+    ]})
+    result = _run(fn.execute(symbol="AAPL", types="earnings,filing", days_back=0))
+    assert result.data["status"] == "ok"
+    assert len(result.data["upcoming"]) == 1
+    assert any("filings skipped" in w for w in result.warnings)
+
+
+def test_m7_evts_undated_rows_are_not_placed_in_recent():
+    fn = EVTSFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/corporate": [
+        {"id": "u", "type": "dividend", "symbol": "AAPL", "company": "Apple", "date": None,
+         "status": "confirmed", "fields": {"amount": 0.25}, "sources": []},
+        {"id": "r", "type": "dividend", "symbol": "AAPL", "company": "Apple", "date": _day(-5),
+         "status": "confirmed", "fields": {}, "sources": []},
+    ]})
+    result = _run(fn.execute(symbol="AAPL", types="dividend"))
+    data = result.data
+    assert [r["date"] for r in data["recent"]] == [_day(-5)]
+    assert [r["date"] for r in data["undated"]] == [""]
+    assert data["rows"][-1] is data["undated"][0]
+    assert data["event_count"] == 2
+
+
+# ── Fix-wave re-review (N1, N3) ────────────────────────────────────────
+
+def _geo_news_row() -> dict[str, Any]:
+    return {"id": "n1", "title": "Sanctions tighten on a major exporter", "url": "https://example.test/n1",
+            "publisher": "Mint (Livemint)", "publisher_id": "livemint", "published_at": _day(0) + "T06:00:00Z",
+            "topics": ["sanctions"], "countries": ["RU"], "symbols": [], "importance": 80, "summary": "x"}
+
+
+def test_n1_meet_failed_economic_calendar_is_not_an_answered_empty_calendar():
+    fn = meet_mod.MEETFunction(FunctionDeps())
+    fn._awareness = Routes({"/calendar/economic": AwarenessUnavailable("econ down"),
+                            "/calendar/holidays": [], "/news": [_geo_news_row()]})
+    result = _run(fn.execute(limit=50))
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["status"] != "empty"
+    assert result.data["reason"] == "Awareness did not answer: econ down"
+    assert result.metadata["live"] is False
+    assert result.metadata["data_mode"] == "provider_unavailable"
+    assert result.metadata["fallback"] is True
+    assert result.data["meta"]["failed_calls"] == ["/calendar/economic: econ down"]
+    assert result.data["rows"], "news rows are kept"
+
+
+def test_n1_meet_failed_calendar_with_forward_rows_is_cached_not_live():
+    fn = meet_mod.MEETFunction(FunctionDeps())
+    holiday = {"date": _day(1), "country": "US", "exchange": "XNYS", "name": "Holiday", "local_name": None,
+               "kind": "market_closed", "early_close_time": None, "source": {"provider": "exchange_calendars"}}
+    fn._awareness = Routes({"/calendar/economic": AwarenessUnavailable("econ down"),
+                            "/calendar/holidays": [holiday]})
+    result = _run(fn.execute(limit=50, countries="US"))
+    assert result.data["status"] == "ok"
+    assert result.metadata["data_mode"] == "cached_snapshot"
+    assert result.metadata["live"] is False
+    assert "/calendar/economic: econ down" in result.data["meta"]["failed_calls"]
+
+
+def test_n3_meet_world_rows_use_the_list_publisher_name():
+    row = meet_mod._article_from_awareness(_geo_news_row())
+    assert row["source"] == "Mint (Livemint)"
+    story_item = {**_geo_news_row(), "publisher": None, "publisher_name": "Reuters"}
+    assert meet_mod._article_from_awareness(story_item)["source"] == "Reuters"
+    bare = {**_geo_news_row(), "publisher": None, "publisher_name": None}
+    assert meet_mod._article_from_awareness(bare)["source"] == "livemint"

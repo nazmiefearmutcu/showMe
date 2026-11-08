@@ -99,6 +99,9 @@ interface EcoPayload {
   reason?: string | null;
   rows?: EconRow[];
   holidays?: HolidayRow[];
+  /** "unavailable" when the holiday call failed: the pane must not read an empty list as "no holidays". */
+  holidays_status?: "ok" | "unavailable";
+  degraded?: boolean;
   meta?: AwarenessMeta;
   next_actions?: string[];
 }
@@ -173,6 +176,7 @@ export function ECOPane({ code }: FunctionPaneProps) {
   const meta: AwarenessMeta = payload.meta ?? {};
   const rows = useMemo(() => payload.rows ?? [], [payload.rows]);
   const holidays = useMemo(() => payload.holidays ?? [], [payload.holidays]);
+  const holidaysUnchecked = payload.holidays_status === "unavailable";
 
   // Countdown and "now" re-read every second while the tab is visible.
   const tick = useVisibilityTick(1000);
@@ -253,6 +257,11 @@ export function ECOPane({ code }: FunctionPaneProps) {
             title="No events in this window"
             body={`Countries ${countryParam} · importance ${IMPORTANCE.find((o) => o.value === importance)?.label} · ${rangeDef.label}. No sample events are substituted.`}
           />
+          {holidaysUnchecked ? (
+            <p className="aw-cal__degraded" role="status">
+              Holidays not checked: the Awareness holiday calendar did not answer.
+            </p>
+          ) : null}
           <div className="aw-cal__relaxers" role="group" aria-label="Widen the filters">
             {importance !== "all" ? (
               <button type="button" className="aw-btn" onClick={() => setImportance("all")}>
@@ -317,6 +326,13 @@ export function ECOPane({ code }: FunctionPaneProps) {
             )}
           </div>
         </section>
+        {holidaysUnchecked ? (
+          <p className="aw-cal__degraded" role="status">
+            Holidays not checked: the Awareness holiday calendar did not answer. Closed days
+            may be missing from this view; the absence of a holiday here does not mean there
+            is none.
+          </p>
+        ) : null}
         <div className="aw-cal__grid" role="table" aria-label="Economic calendar by day">
           <div className="aw-cal__head" role="row">
             <span role="columnheader">Time</span>
