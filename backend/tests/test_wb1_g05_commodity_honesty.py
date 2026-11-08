@@ -101,3 +101,58 @@ def test_ngas1_ng_f_still_serves_the_live_snapshot(monkeypatch: pytest.MonkeyPat
     assert result.data["source_mode"] == "live_yfinance"
     assert result.data["rows"][0]["symbol"] == "NG=F"
     assert snapshot_calls == ["NG=F"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# WETR-R1 — a provider outage carries no weather rows (no synthetic model)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class _FailingOpenMeteo:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def onecall(self, lat: float, lon: float, days: int = 10) -> dict[str, Any]:  # noqa: ARG002
+        self.calls += 1
+        raise RuntimeError("open-meteo timeout")
+
+
+def test_wetr_r1_provider_outage_returns_no_synthetic_rows() -> None:
+    from showme.engine.functions.commodity._funcs import WETRFunction
+
+    fake = _FailingOpenMeteo()
+    result = asyncio.run(WETRFunction(FunctionDeps(open_meteo=fake)).execute(location="EU_NW"))
+    assert fake.calls == 1
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["rows"] == [], "an outage must not serve invented weather rows"
+    assert result.data["history"] == []
+    assert result.data["risk_flags"] == []
+    assert result.data["source_mode"] != "seasonal_model"
+    assert result.sources == []
+    assert result.data["reason"]
+
+
+def test_wetr_r1_no_provider_wired_returns_no_synthetic_rows() -> None:
+    from showme.engine.functions.commodity._funcs import WETRFunction
+
+    result = asyncio.run(WETRFunction(FunctionDeps()).execute(location="BRAZIL_SE"))
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["rows"] == []
+    assert result.sources == []
+
+
+def test_wetr_reference_opt_in_still_serves_labelled_model_rows() -> None:
+    from showme.engine.functions.commodity._funcs import WETRFunction
+
+    class _Never:
+        calls = 0
+
+        async def onecall(self, *_a: Any, **_k: Any) -> dict[str, Any]:
+            raise AssertionError("reference=true must not query the provider")
+
+    result = asyncio.run(WETRFunction(FunctionDeps(open_meteo=_Never())).execute(reference=True))
+    assert result.data["status"] == "reference_model"
+    assert result.data["source_mode"] == "seasonal_model"
+    assert result.data["rows"], "the explicit reference opt-in keeps its labelled rows"
+    assert all(row["source_mode"] == "seasonal_model" for row in result.data["rows"])
+    assert result.metadata.get("data_mode") == "modeled"

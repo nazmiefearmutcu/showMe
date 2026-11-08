@@ -176,7 +176,10 @@ def test_wetr_provider_outage_is_labelled_not_live() -> None:
         WETRFunction(FunctionDeps(open_meteo=_FakeOpenMeteo(fail=True))).execute()
     )
     assert result.data["status"] == "provider_unavailable"
-    assert result.data["source_mode"] == "seasonal_model"
+    # WETR-R1: an outage serves no synthetic model rows, so it no longer
+    # claims the seasonal_model source mode.
+    assert result.data["source_mode"] == "provider_unavailable"
+    assert result.data["rows"] == []
     assert result.metadata.get("fallback") is True
     sanitized = _body(result)
     assert sanitized["data_state"] != "live"

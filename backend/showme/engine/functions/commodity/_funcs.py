@@ -1640,9 +1640,9 @@ class WETRFunction(BaseFunction):
                     "Rows are a labelled seasonal weather model (reference), "
                     "not live forecast data."
                     if reference
-                    else "No live weather provider is wired; rows are a labelled "
-                    "seasonal weather model, not live forecast data."
+                    else "No live weather provider is wired; no weather rows are served."
                 ),
+                reference=reference,
             )
         try:
             if provider_name == "open_meteo":
@@ -1723,50 +1723,80 @@ class WETRFunction(BaseFunction):
         *,
         reason: str,
         warning: str | None = None,
+        reference: bool = False,
     ) -> FunctionResult:
-        """Labelled seasonal-model fallback — never presented as live."""
-        rows = _weather_model_rows(days, lat, lon, location_key, commodity)
-        provider_errors = [warning] if warning else [
-            "No live weather provider configured; seasonal model used."
-        ]
+        """Honest non-live result.
+
+        ``reference=True`` is the explicit opt-in to the labelled seasonal model.
+        Any other call is a provider outage or an unwired provider: WETR-R1
+        serves no weather rows then, because the seasonal model is synthetic
+        and is not a measured or published normal.
+        """
+        if reference:
+            rows = _weather_model_rows(days, lat, lon, location_key, commodity)
+            status = "reference_model"
+            source_mode = "seasonal_model"
+            sources = ["seasonal_weather_model"]
+            data_mode = "modeled"
+            methodology = (
+                "WETR shows weather variables relevant to commodities. "
+                "HDD=max(18C-temp,0), CDD=max(temp-18C,0); risk flags map "
+                "dry/hot/cold/wet days to demand or crop-weather pressure. "
+                "These rows are a labelled seasonal model, not a live forecast."
+            )
+            next_actions = [
+                "Retry WETR without reference=true for live forecast rows.",
+                "Rows shown are a deterministic seasonal model, not live forecast data.",
+            ]
+        else:
+            rows = []
+            status = "provider_unavailable"
+            source_mode = "provider_unavailable"
+            sources = []
+            data_mode = "provider_unavailable"
+            methodology = (
+                "WETR serves weather rows only from a configured live provider. "
+                "During an outage no weather rows are served; the labelled "
+                "seasonal model is available only with reference=true."
+            )
+            next_actions = [
+                "Retry WETR after the public weather providers recover.",
+                "No weather rows are shown while the provider is unavailable.",
+            ]
+        if warning:
+            provider_errors = [warning]
+        else:
+            provider_errors = [] if reference else ["No live weather provider configured."]
         return FunctionResult(
             code=self.code,
             instrument=None,
             data={
-                "status": "provider_unavailable",
+                "status": status,
                 "reason": reason,
                 "location": location_key,
                 "lat": lat,
                 "lon": lon,
                 "commodity_context": commodity,
-                "source_mode": "seasonal_model",
+                "source_mode": source_mode,
                 "rows": rows,
                 "history": rows,
                 "risk_flags": sorted({row["risk_flag"] for row in rows}),
-                "methodology": (
-                    "WETR shows weather variables relevant to commodities. "
-                    "HDD=max(18C-temp,0), CDD=max(temp-18C,0); risk flags map "
-                    "dry/hot/cold/wet days to demand or crop-weather pressure. "
-                    "These rows are a labelled seasonal model, not a live forecast."
-                ),
+                "methodology": methodology,
                 "field_dictionary": {
-                    "temp_c": "Daily average temperature in Celsius.",
+                    "temp_c": "Daily mean temperature in Celsius.",
                     "precip_mm": "Daily precipitation in millimeters.",
                     "hdd": "Heating degree days versus 18C.",
                     "cdd": "Cooling degree days versus 18C.",
                     "commodity_impact": "Plain-language link between weather and the selected commodity context.",
                 },
-                "next_actions": [
-                    "Retry WETR after the public weather providers recover.",
-                    "Rows shown are a deterministic seasonal model, not live forecast data.",
-                ],
+                "next_actions": next_actions,
             },
-            sources=["seasonal_weather_model"],
+            sources=sources,
             warnings=[warning] if warning else [],
             metadata={
                 "fallback": True,
                 "degraded": True,
-                "data_mode": "modeled",
+                "data_mode": data_mode,
                 "provider_errors": provider_errors,
             },
         )
