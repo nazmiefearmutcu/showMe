@@ -76,6 +76,10 @@ const LOCATIONS = [
 type LocationId = (typeof LOCATIONS)[number]["id"];
 const LOCATION_IDS = LOCATIONS.map((l) => l.id);
 
+/** Forecast horizons offered by the WETR manifest (`days` SELECT input). */
+const DAY_OPTIONS = ["3", "5", "10", "14"] as const;
+type DayOption = (typeof DAY_OPTIONS)[number];
+
 const REFRESH_MS = 60_000;
 
 /** Friendly provider names for the backend `source_mode` values. */
@@ -90,6 +94,12 @@ export function WETRPane({ code }: FunctionPaneProps) {
     LOCATION_IDS,
     "US_NORTHEAST",
   );
+  // WETR#4: the forecast horizon is a real control, not a hard-coded 10.
+  const [days, setDays] = usePersistentOption<DayOption>(
+    "showme.wetr-days",
+    DAY_OPTIONS,
+    "10",
+  );
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
 
@@ -98,7 +108,7 @@ export function WETRPane({ code }: FunctionPaneProps) {
     // Audit A4-M: the tick must stay OUT of params — useFunction fingerprints
     // params into the fetch key, so a tick here re-keyed every poll into a
     // fresh load (skeleton flash + cleared rows). Poll via refetch() instead.
-    params: { location, days: 10 },
+    params: { location, days: Number(days) },
   });
   useEffect(() => {
     if (tick === 0) return; // initial mount handled by useFunction's own load
@@ -238,10 +248,20 @@ export function WETRPane({ code }: FunctionPaneProps) {
         <div style={tabBarStyle}>
           <Tabs
             variant="segmented"
+            ariaLabel="Region"
             items={LOCATIONS.map((l) => ({ id: l.id, label: l.label }))}
             active={location}
             onChange={(id) => setLocation(id as LocationId)}
           />
+          <div style={{ marginTop: 6 }}>
+            <Tabs
+              variant="segmented"
+              ariaLabel="Forecast days"
+              items={DAY_OPTIONS.map((d) => ({ id: d, label: `${d}d` }))}
+              active={days}
+              onChange={(id) => setDays(id as DayOption)}
+            />
+          </div>
         </div>
         <PaneBody>
           {state === "loading" || state === "idle" ? (
