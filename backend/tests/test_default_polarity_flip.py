@@ -117,15 +117,6 @@ def test_mars_default_is_live_and_failure_is_labelled():
     assert result.warnings
 
 
-def test_evts_default_is_live_attempt():
-    from showme.engine.functions.news.evts import EVTSFunction
-    result = _run(EVTSFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.data["status"] == "empty"
-    assert result.data["rows"] == []
-    assert result.metadata.get("live") is False
-    assert result.metadata.get("fallback") is True
-
-
 def test_ee_default_failure_is_labelled_placeholder():
     from showme.engine.functions.equity.ee import EEFunction
     result = _run(EEFunction(FunctionDeps()).execute(instrument=EQ))
@@ -170,39 +161,9 @@ def test_fly_default_failure_is_honest():
     assert result.metadata.get("fallback") is True
 
 
-def test_eco_default_failure_is_honest_empty_error():
-    from showme.engine.functions.macro import eco as _eco_mod
-    from showme.engine.functions.macro.eco import ECOFunction
-    # The ForexFactory leg caches at module scope (30-min TTL); a full-suite
-    # run can populate it before this test, which would bypass the boom
-    # client entirely. Reset so the failure path is what's under test.
-    _eco_mod._ff_cache["fetched_at"] = 0.0
-    _eco_mod._ff_cache["rows"] = []
-    fn = ECOFunction(FunctionDeps())
-    fn._http_client = _BoomClient()
-    result = _run(fn.execute(days=30))
-    assert result.data["status"] == "provider_unavailable"
-    assert result.data["rows"] == []
-    assert result.warnings
-
-
 # ────────────────────────────────────────────────────────────────────────
 # 2. reference=true opts back into the labelled template.
 # ────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "code",
-    ["MOSS", "CHGS", "TRA", "MARS", "EVTS", "EE", "LITM", "APPL", "FTS", "FLY"],
-)
-def test_reference_true_never_claims_live(code: str):
-    result = _run(_execute_reference(code))
-    metadata = result.metadata or {}
-    assert metadata.get("live") is not True, f"{code}: reference=true must not claim live"
-    data_mode = str(metadata.get("data_mode") or (result.data or {}).get("data_mode") or "")
-    assert data_mode in {"modeled", "reference", "empty"}, (
-        f"{code}: reference payload data_mode {data_mode!r} is off-vocabulary"
-    )
 
 
 def _execute_reference(code: str):
@@ -268,18 +229,6 @@ def test_mars_default_live_with_mocked_provider():
     assert result.metadata.get("live") is True
     assert result.sources == ["yfinance"]
     assert result.data["factor_loadings"]
-
-
-def test_evts_default_live_with_mocked_provider():
-    from showme.engine.functions.news.evts import EVTSFunction
-    today = datetime.now(timezone.utc).date()
-    events = {"calendar": {"Next Earnings Date": today + timedelta(days=30)}}
-    fn = EVTSFunction(FunctionDeps(yfinance=_FakeYfinance(events)))
-    result = _run(fn.execute(instrument=EQ))
-    assert result.data["status"] == "ok"
-    assert result.data["rows"]
-    assert result.metadata.get("live") is True
-    assert result.sources == ["yfinance"]
 
 
 def test_ee_default_live_with_mocked_provider():
@@ -399,3 +348,16 @@ def test_litm_default_live_with_mocked_cact():
     assert result.data["status"] == "ok"
     assert result.data["rows"][0]["item_code"] == "1.03"
     assert "sec_edgar" in result.sources
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 from showme.engine.core.base_function import FunctionDeps  # noqa: E402
 from showme.engine.core.instrument import AssetClass, Instrument  # noqa: E402
 from showme.engine.functions.news.av import _matches_query  # noqa: E402
-from showme.engine.functions.news.evts import _date_value, _scalar_value  # noqa: E402
+from showme.engine.functions.calendar._common import _date_value, _scalar_value  # noqa: E402
 from showme.engine.functions.news.ni import (  # noqa: E402
     NIFunction,
     _coerce_float,

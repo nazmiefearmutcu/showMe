@@ -83,8 +83,9 @@ def test_btune_requires_instrument(deps):
 # ── CACT / LITM / APPL / CHGS — instrument error messages ────────────
 
 def test_cact_requires_instrument(deps):
-    with pytest.raises(ValueError, match="CACT requires an instrument symbol"):
-        _run(CACTFunction(deps).execute(instrument=None))
+    # CACT is Awareness-backed now: a missing symbol is an honest input_required envelope, not a raise.
+    result = _run(CACTFunction(deps).execute(instrument=None))
+    assert result.data["status"] == "input_required"
 
 
 def test_chgs_requires_instrument(deps):
@@ -227,3 +228,16 @@ def test_coun_known_country_no_baseline_warning(deps):
     assert res.metadata.get("country_known") is True
     # No baseline warning for a known country (live=False path).
     assert not any("no curated profile" in w for w in (res.warnings or []))
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

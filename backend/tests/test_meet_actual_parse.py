@@ -30,11 +30,7 @@ from showme.engine.services import world_events as we  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _reset_ff_cache():
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
     yield
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
 
 
 class _FakeResp:
@@ -109,70 +105,12 @@ def test_parse_pipe_takes_first_part():
     assert eco_mod._parse_ff_number("1.5%|2.0%")[0] == 1.5
 
 
-def test_normalize_ff_rows_keeps_raw_fields():
-    rows = eco_mod._normalize_ff_rows([
-        {"title": "Non Farm Payrolls", "country": "USD",
-         "date": "2026-09-04T08:30:00-04:00",
-         "impact": "High", "forecast": "180K", "actual": "<1.25%", "previous": "175K"},
-    ])
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["forecast"] == "180K"
-    assert row["forecast_raw"] == "180K"
-    assert row["actual_raw"] == "<1.25%"
-    assert row["previous_raw"] == "175K"
-
-
-def test_normalize_ff_rows_preserves_numeric_zero_cells():
-    row = eco_mod._normalize_ff_rows([{
-        "title": "Zero print",
-        "country": "USD",
-        "date": "2026-09-19T12:00:00Z",
-        "actual": 0,
-        "forecast": 0.0,
-        "previous": 0,
-    }])[0]
-    assert row["actual"] == 0
-    assert row["forecast"] == 0.0
-    assert row["previous"] == 0
-
-
 @pytest.mark.parametrize(
     "value",
     [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
 )
 def test_parse_ff_number_rejects_non_finite_values(value):
     assert eco_mod._parse_ff_number(value)[0] is None
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), "NaN", "Infinity"])
-def test_normalize_ff_rows_clears_non_finite_cells_but_keeps_raw(value):
-    row = eco_mod._normalize_ff_rows([{
-        "title": "Invalid print",
-        "country": "USD",
-        "date": "2026-09-19T12:00:00Z",
-        "actual": value,
-        "forecast": value,
-        "previous": value,
-    }])[0]
-    assert row["actual"] is None
-    assert row["forecast"] is None
-    assert row["previous"] is None
-    assert row["actual_raw"] is value
-
-
-def test_normalize_events_parses_suffixes_and_surprise():
-    today = datetime.now(UTC).date().isoformat()
-    rows = eco_mod._normalize_events([
-        {"country": "US", "event": "Payrolls", "date": today,
-         "importance": "high", "forecast": "180K", "actual": "210K", "previous": "175K"},
-    ], country=None, importance=None, days=30)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["forecast"] == 180000
-    assert row["actual"] == 210000
-    assert row["previous"] == 175000
-    assert row["surprise"] == 30000
 
 
 def test_economic_rows_details_preserves_actual():
@@ -194,25 +132,14 @@ def test_economic_rows_details_preserves_actual():
     assert rows[0]["details"]["previous"] == "3.0%"
 
 
-def test_empty_ff_result_is_not_cached():
-    today = datetime.now(UTC).date()
-    good = [{
-        "title": "CPI y/y", "country": "USD",
-        "date": f"{(today + timedelta(days=1)).isoformat()}T13:30:00-04:00",
-        "impact": "High", "forecast": "3.2%", "actual": "", "previous": "3.0%",
-    }]
-    client = _FakeFFClient(good)
-    first = _run(eco_mod._forex_factory_events(client=client, timeout=5.0))
-    assert len(first) == 1
-    assert client.calls == 1
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
 
-    # An empty upstream reply must not poison the TTL cache: expire the
-    # good entry so the empty reply is actually fetched, then verify the
-    # cache still holds the good rows.
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    empty_client = _FakeFFClient([])
-    empty = _run(eco_mod._forex_factory_events(client=empty_client, timeout=5.0))
-    assert empty == []
-    assert empty_client.calls == 1
-    assert eco_mod._ff_cache["rows"] != []
-    assert len(eco_mod._ff_cache["rows"]) == 1
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

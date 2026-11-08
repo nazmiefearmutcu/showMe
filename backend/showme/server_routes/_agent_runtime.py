@@ -603,6 +603,30 @@ def _function_usage(
             ],
             "example": _standalone_function_defaults("OSA"),
         }
+    if upper == "ERN":
+        return {
+            "purpose": "Scheduled company earnings reports with before-open or after-close timing, EPS consensus and watchlist flags.",
+            "scope": "global",
+            "inputs": ["from", "days", "symbols", "min_market_cap", "time_of_day"],
+            "steps": [
+                "Pick the start date and window in days, or keep the defaults for the next seven days.",
+                "Optionally restrict to comma-separated symbols, a minimum market cap, or bmo/amc timing, then Run.",
+                "Read the rows by date (largest market cap first) and the by-day counts; watchlist names are flagged.",
+            ],
+            "example": {"days": 7, "time_of_day": "amc"},
+        }
+    if upper == "IPO":
+        return {
+            "purpose": "IPO calendar: priced, upcoming, filed and withdrawn offerings from the Awareness calendar.",
+            "scope": "global",
+            "inputs": ["days_back", "days_ahead", "status"],
+            "steps": [
+                "Set the lookback and look-ahead windows in days, or keep the defaults (30 and 60).",
+                "Optionally pick one section (priced, upcoming, filed or withdrawn), then Run.",
+                "Read each section; price and deal fields appear only where the provider states them.",
+            ],
+            "example": {"days_back": 30, "days_ahead": 60},
+        }
     if upper == "MLSIG":
         return {
             "purpose": "Train a directional classifier for one symbol and explain the feature drivers.",

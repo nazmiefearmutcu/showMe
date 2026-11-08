@@ -1,210 +1,167 @@
-"""DVD — Dividends & Splits."""
+"""DVD — Dividends for one symbol.
+
+Upcoming dividend events come from the Awareness corporate calendar. Dividend
+history comes from the live Yahoo event series. The fabricated template default
+has been removed: when neither source has rows the result is ``empty``.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import timedelta
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions.calendar._common import (
+    aw_get,
+    data_meta,
+    iso_day,
+    parse_bool,
+    parse_float,
+    provenance_metadata,
+    unavailable_result,
+    utc_today,
+)
 from showme.engine.functions.equity._common import series_rows
+
+_UPCOMING_DAYS = 365
+_FREQUENCY = {1: "annual", 2: "semi-annual", 4: "quarterly", 12: "monthly"}
+_METHODOLOGY = (
+    "DVD lists upcoming cash dividends from the Awareness corporate calendar (ex-date, record, pay and "
+    "announcement dates, amount per share and annualised amount as published) and the dividend history "
+    "from the live Yahoo event series. summary.annual_amount sums history over the last 12 months; "
+    "frequency_guess counts those payments. Nothing is estimated; empty sources stay empty."
+)
+_FIELD_DICTIONARY = {
+    "date": "Ex-dividend date.",
+    "amount": "Cash dividend per share.",
+    "annual_amount": "Annualised amount as published by the calendar.",
+    "record_date": "Record date.",
+    "pay_date": "Payment date.",
+    "source": "Provider the row came from.",
+}
+
+
+def _history_rows(events: dict[str, Any], symbol: str) -> list[dict[str, Any]]:
+    rows = []
+    for row in series_rows(events.get("dividends"), value_key="amount", limit=80):
+        if row.get("amount"):
+            rows.append({"symbol": symbol, "date": row.get("date"), "amount": row.get("amount"), "source": "yfinance"})
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    return rows
+
+
+def _upcoming_row(item: dict[str, Any]) -> dict[str, Any]:
+    fields = item.get("fields") or {}
+    return {
+        "date": item.get("date"),
+        "symbol": item.get("symbol"),
+        "amount": fields.get("amount"),
+        "annual_amount": fields.get("annual_amount"),
+        "record_date": fields.get("record_date"),
+        "pay_date": fields.get("pay_date"),
+        "announcement_date": fields.get("announcement_date"),
+        "status": item.get("status"),
+        "source": "awareness:corporate",
+    }
+
+
+def _summary(history: list[dict[str, Any]], upcoming: list[dict[str, Any]], today_text: str) -> dict[str, Any]:
+    last_year = [r for r in history if str(r.get("date") or "")[:10] > (utc_today() - timedelta(days=365)).isoformat()]
+    annual = round(sum(parse_float(r.get("amount")) or 0.0 for r in last_year), 6) if last_year else None
+    if annual is None and upcoming:
+        annual = parse_float(upcoming[0].get("annual_amount"))
+    last = history[0] if history else None
+    frequency = _FREQUENCY.get(len(last_year), "irregular") if last_year else None
+    return {
+        "annual_amount": annual,
+        "last_amount": parse_float(last.get("amount")) if last else None,
+        "last_ex_date": str(last.get("date") or "")[:10] if last else None,
+        "next_ex_date": next((r["date"] for r in upcoming if str(r.get("date") or "")[:10] >= today_text), None),
+        "frequency_guess": frequency,
+        "payments_last_12m": len(last_year),
+    }
 
 
 @FunctionRegistry.register
 class DVDFunction(BaseFunction):
     code = "DVD"
-    name = "Dividends & Splits"
+    name = "Dividends"
     asset_classes = (AssetClass.EQUITY, AssetClass.ETF)
     category = "equity"
+    description = (
+        "Upcoming cash dividends with record, pay and annualised amounts from the Awareness calendar, "
+        "plus the live dividend history and a summary of payment frequency."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        if instrument is None:
-            raise ValueError
-        live = _truthy(params.get("live_dividends") or params.get("live_events") or params.get("live"))
-        if not live:
-            # F6 fix: the model branch used to return the bare `_template_events`
-            # dict with no `rows`/`status`, so the pane's Model toggle rendered
-            # "No corporate actions" (dead mode). Return real reference rows,
-            # explicitly labelled as model data — never as reported events.
-            template = _template_events(instrument)
-            rows = _model_rows(instrument.symbol, template)
+        symbol = str(params.get("symbol") or (instrument.symbol if instrument else "") or "").strip().upper()
+        if not symbol:
             return FunctionResult(
                 code=self.code,
-                instrument=instrument,
-                data={
-                    "status": "modeled",
-                    "symbol": instrument.symbol,
-                    "rows": rows,
-                    "history": [r for r in rows if r.get("action_type") == "dividend"],
-                    "dividends": template["dividends"],
-                    "splits": template["splits"],
-                    "actions": template["actions"],
-                    "methodology": _METHODOLOGY,
-                    "field_dictionary": _FIELD_DICTIONARY,
-                },
-                sources=["dividend_calendar_model"],
-                warnings=[
-                    (
-                        "Model mode: rows are reference-shaped model events, not "
-                        "reported corporate actions. Switch the toggle to Live "
-                        "for provider data."
-                    )
-                ],
-                metadata={"live": False, "data_mode": "modeled"},
+                instrument=None,
+                data={"status": "input_required", "reason": "DVD needs a symbol.", "rows": [], "history": []},
+                sources=["no_live_source"],
+                metadata={"fallback": True, "live": False, "data_mode": "provider_unavailable"},
             )
-        warnings: list[str] = []
-        events = {}
-        try:
-            if not self.deps.yfinance:
-                raise RuntimeError("no yfinance")
-            events = await asyncio.wait_for(
-                self.deps.yfinance.fetch(DataRequest(
-                    kind=DataKind.EVENTS,
-                    instrument=instrument,
-                    extra={"timeout": float(params.get("provider_timeout", 8))},
-                )),
-                timeout=float(params.get("timeout", 10)),
-            )
-        except Exception as e:
-            warnings.append(f"yfinance: {e}")
-        data = {
-            "dividends": events.get("dividends"),
-            "splits": events.get("splits"),
-            "actions": events.get("actions"),
-        }
-        rows = _dvd_rows(instrument.symbol, data)
-        if not events or all(getattr(v, "empty", False) or v is None for v in data.values()):
-            data = {
-                "dividends": [{"date": None, "amount": 0, "status": "no_recent_dividend_feed"}],
-                "splits": [],
-                "actions": [],
-            }
-            rows = [{
-                "symbol": instrument.symbol,
-                "action_type": "provider_unavailable",
-                "date": None,
-                "amount": None,
-                "source_mode": "yfinance_events_empty",
-                "reason": "Yahoo events returned no dividend or split rows.",
-            }]
-            warnings = []
-        data.update({
-            "status": "ok" if rows and rows[0].get("action_type") != "provider_unavailable" else "provider_unavailable",
-            "rows": rows,
-            "history": [r for r in rows if r.get("action_type") == "dividend"],
-            "methodology": _METHODOLOGY,
-            "field_dictionary": _FIELD_DICTIONARY,
-        })
-        return FunctionResult(
-            code=self.code, instrument=instrument,
-            data=data,
-            sources=["yfinance"], warnings=warnings,
+        if instrument is None:
+            instrument = Instrument(symbol=symbol, asset_class=AssetClass.EQUITY)
+        # ``live`` / ``live_dividends`` are the pane's legacy toggle for the live history; the
+        # template ("model") mode they used to select is gone, so off simply means no history.
+        legacy_live = params.get("live_dividends", params.get("live"))
+        want_history = parse_bool(params.get("history"), default=parse_bool(legacy_live, default=True))
+        today = utc_today()
+        window = {"from": iso_day(today), "to": iso_day(today + timedelta(days=_UPCOMING_DAYS))}
+
+        corporate, corporate_error = await aw_get(
+            self, "/calendar/corporate", {**window, "types": "dividend", "symbols": symbol}
         )
+        warnings: list[str] = []
+        history_events: dict[str, Any] = {}
+        if want_history and self.deps.yfinance:
+            try:
+                history_events = await asyncio.wait_for(
+                    self.deps.yfinance.fetch(DataRequest(
+                        kind=DataKind.EVENTS,
+                        instrument=instrument,
+                        extra={"timeout": float(params.get("provider_timeout", 8))},
+                    )),
+                    timeout=float(params.get("timeout", 10)),
+                )
+            except Exception as exc:  # noqa: BLE001 - history is a supplement; error is surfaced
+                warnings.append(f"yfinance: {exc}")
+        history = _history_rows(history_events, symbol) if want_history else []
 
-
-def _dvd_rows(symbol: str, data: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for row in series_rows(data.get("dividends"), value_key="amount", limit=80):
-        if row.get("amount"):
-            rows.append({"symbol": symbol, "action_type": "dividend", "date": row.get("date"), "amount": row.get("amount"), "source_mode": "live_yfinance_dividends"})
-    for row in series_rows(data.get("splits"), value_key="amount", limit=40):
-        if row.get("amount"):
-            rows.append({"symbol": symbol, "action_type": "split", "date": row.get("date"), "amount": row.get("amount"), "source_mode": "live_yfinance_splits"})
-    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
-    return rows
-
-
-def _model_rows(symbol: str, template: dict[str, Any]) -> list[dict[str, Any]]:
-    """Turn the model template into explicit, labelled reference rows.
-
-    F6 fix: the Model mode is a reference-shape model — every row carries
-    ``source_mode="model"`` so the pane can never present it as a reported
-    corporate action.
-    """
-    rows: list[dict[str, Any]] = []
-    for div in template.get("dividends") or []:
-        if not isinstance(div, dict):
-            continue
-        amount = div.get("amount")
-        rows.append({
-            "symbol": symbol,
-            "action_type": "dividend",
-            "date": div.get("date"),
-            "amount": amount if isinstance(amount, (int, float)) else None,
-            "source_mode": "model",
-            "reason": div.get("status"),
-        })
-    for split in template.get("splits") or []:
-        if not isinstance(split, dict):
-            continue
-        ratio = split.get("ratio")
-        if isinstance(ratio, (int, float)):
-            rows.append({
+        if corporate is None:
+            return unavailable_result(
+                self.code, instrument, corporate_error or "awareness returned no response",
+                extra={"symbol": symbol, "history": history},
+            )
+        upcoming = [_upcoming_row(item) for item in corporate.data or [] if isinstance(item, dict)]
+        upcoming.sort(key=lambda r: str(r.get("date") or ""))
+        today_text = today.isoformat()
+        has_rows = bool(upcoming or history)
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data={
+                "status": "ok" if has_rows else "empty",
                 "symbol": symbol,
-                "action_type": "split",
-                "date": split.get("date"),
-                "amount": ratio,
-                "source_mode": "model",
-                "reason": split.get("status"),
-            })
-    if not rows:
-        first = (template.get("dividends") or [{}])[0]
-        rows = [{
-            "symbol": symbol,
-            "action_type": "not_applicable",
-            "date": None,
-            "amount": None,
-            "source_mode": "model",
-            "reason": first.get("status") if isinstance(first, dict) else None,
-        }]
-    return rows
-
-
-def _template_events(instrument: Instrument) -> dict[str, Any]:
-    symbol = instrument.symbol
-    asset_class = instrument.asset_class.value
-    is_equity_like = asset_class in {"EQUITY", "ETF"}
-    today = datetime.now(timezone.utc).date().isoformat()
-    if is_equity_like:
-        dividends = [
-            {"date": today, "amount": 0.24, "currency": "USD", "frequency": "quarterly", "status": "modelled_latest"},
-            {"date": today, "amount": 0.23, "currency": "USD", "frequency": "quarterly", "status": "modelled_prior"},
-        ]
-        splits = [{"date": None, "ratio": None, "status": "no_recent_split"}]
-        actions = dividends + splits
-    else:
-        dividends = [{"date": None, "amount": 0, "status": f"not_applicable_for_{asset_class.lower()}"}]
-        splits = []
-        actions = []
-    return {
-        "symbol": symbol,
-        "asset_class": asset_class,
-        "dividends": dividends,
-        "splits": splits,
-        "actions": actions,
-    }
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-_METHODOLOGY = (
-    "DVD separates cash dividends and stock splits from Yahoo corporate-action "
-    "event series. Dividends are cash per share; split rows use split ratio. "
-    "Model mode rows are reference-shaped model events (source_mode=model), "
-    "not reported corporate actions."
-)
-
-_FIELD_DICTIONARY = {
-    "date": "Ex/effective date returned by the provider.",
-    "amount": "Cash dividend per share or split ratio.",
-    "action_type": "dividend or split.",
-    "source_mode": "Provider event table used for the row.",
-}
+                "rows": upcoming + history,
+                "upcoming": upcoming,
+                "history": history,
+                "summary": _summary(history, upcoming, today_text),
+                "meta": data_meta([corporate]),
+                "methodology": _METHODOLOGY,
+                "field_dictionary": _FIELD_DICTIONARY,
+                "reason": None if has_rows else f"No dividend events found for {symbol}.",
+            },
+            sources=["awareness:corporate"] + (["yfinance"] if history else []),
+            warnings=warnings,
+            metadata=provenance_metadata([corporate], provider_errors=warnings, extra={
+                "symbol": symbol,
+                "history_requested": want_history,
+            }),
+        )

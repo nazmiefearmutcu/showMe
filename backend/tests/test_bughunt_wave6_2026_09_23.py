@@ -501,25 +501,6 @@ def test_reba_seed_input_names_match_handler() -> None:
 # ── HNT-13: ECO country filter ────────────────────────────────────────────
 
 
-def test_eco_country_filter_drops_countryless_rows() -> None:
-    from showme.engine.functions.macro import eco as eco_mod
-
-    d1 = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
-    events = [
-        {"country": "US", "event": "CPI YoY", "date": d1, "importance": "high",
-         "forecast": "3.1%", "previous": "3.0%"},
-        {"country": "", "event": "Mystery Print", "date": d1, "importance": "high"},
-    ]
-    filtered = eco_mod._normalize_events(events, country="US", importance=None, days=7)
-    assert [r["event"] for r in filtered] == ["CPI YoY"]
-
-    unfiltered = eco_mod._normalize_events(events, country=None, importance=None, days=7)
-    assert len(unfiltered) == 2
-    mystery = next(r for r in unfiltered if r["event"] == "Mystery Print")
-    # No fabricated "US" label on a row with no country provenance.
-    assert mystery["country"] == ""
-
-
 # ── HNT-14: calendar holidays ─────────────────────────────────────────────
 
 
@@ -685,3 +666,16 @@ def test_sosc_base_symbol_stripping_is_suffix_anchored(monkeypatch) -> None:
     # Crypto quote suffixes strip; the FX pair is left intact (the old
     # `.replace("USD", "")` mangled USDJPY into "JPY").
     assert captured == ["BTC", "BTC", "USDJPY"]
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())
