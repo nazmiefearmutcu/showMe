@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -178,3 +179,62 @@ def test_gdp_level_unit_is_chained_usd_not_index(monkeypatch):
     gdp = _rows_named(result, "Real GDP")
     assert len(gdp) == 1
     assert gdp[0]["unit"] == "bn chained USD"
+
+
+class _BtmmRows:
+    """BTMM stand-in returning policy rows shaped like BTMMFunction output."""
+
+    def __init__(self, rows) -> None:
+        self.rows = rows
+
+    async def execute(self, **kwargs):
+        return SimpleNamespace(data={"rows": self.rows})
+
+
+def _patch_btmm_rows(monkeypatch, rows) -> None:
+    monkeypatch.setattr(coun_mod, "BTMMFunction", lambda deps: _BtmmRows(rows))
+
+
+def test_policy_path_skips_stale_legacy_row_and_uses_fresh_row(monkeypatch):
+    """COUN#4: a stale BIS row (1998) must not drive the live policy rate."""
+    _patch(monkeypatch, _Fred())
+    _patch_btmm_rows(
+        monkeypatch,
+        [
+            {"country_code": "EU", "country": "Euro area", "policy_rate": 2.0,
+             "as_of": "1998-01-01", "source": "BIS CBPOL", "freshness": "stale"},
+            {"country_code": "EU", "country": "Euro area", "policy_rate": 2.15,
+             "as_of": "2026-10-30", "source": "BIS CBPOL", "freshness": "fresh"},
+        ],
+    )
+
+    result = _run(COUNFunction(FunctionDeps()).execute(country="EU", live=True))
+
+    policy = _rows_named(result, "Policy rate")
+    assert len(policy) == 1
+    assert policy[0]["value"] == 2.15
+    assert policy[0]["as_of"] == "2026-10-30"
+    assert "btmm" in result.sources
+    assert result.data["source_mode"] == "live_macro"
+
+
+def test_policy_path_stale_only_row_is_not_live(monkeypatch):
+    """COUN#4: a policy row that is only stale or undated never makes the workbook live."""
+    _patch(monkeypatch, _Fred())
+    _patch_btmm_rows(
+        monkeypatch,
+        [
+            {"country_code": "EU", "country": "Euro area", "policy_rate": 2.0,
+             "as_of": "1998-01-01", "source": "BIS CBPOL", "freshness": "stale"},
+        ],
+    )
+
+    result = _run(COUNFunction(FunctionDeps()).execute(country="EU", live=True))
+
+    policy = _rows_named(result, "Policy rate")
+    assert len(policy) == 1
+    assert policy[0]["value"] is None
+    assert policy[0]["source_mode"] == "provider_unavailable"
+    assert "btmm" not in result.sources
+    assert result.data["source_mode"] != "live_macro"
+    assert any("not fresh" in warning for warning in result.warnings)

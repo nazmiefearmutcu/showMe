@@ -251,10 +251,24 @@ async def _fetch_policy(deps: Any, country: str, timeout: Any) -> tuple[dict[str
     except Exception as exc:
         return None, f"btmm: {exc}"
     rows = btmm.data.get("rows") if isinstance(btmm.data, dict) else None
-    policy = rows[0] if rows and isinstance(rows[0], dict) else None
-    if policy is None or policy.get("policy_rate") is None:
-        return None, None
-    return policy, None
+    candidates = [
+        row
+        for row in (rows or [])
+        if isinstance(row, dict) and row.get("policy_rate") is not None
+    ]
+    # COUN#4: only a fresh BIS row may drive the live policy rate. BTMM keeps
+    # legacy (stale) and undated rows in its output, and rows[0] can be one.
+    fresh = [row for row in candidates if row.get("freshness") == "fresh"]
+    if fresh:
+        return max(fresh, key=lambda row: str(row.get("as_of") or "")), None
+    if candidates:
+        newest = candidates[0]
+        return None, (
+            f"btmm: policy-rate row for {country} is not fresh "
+            f"(freshness={newest.get('freshness')!r}, as_of={newest.get('as_of')!r}); "
+            "not used as live"
+        )
+    return None, None
 
 
 def _series_ids(country: str) -> list[str]:
