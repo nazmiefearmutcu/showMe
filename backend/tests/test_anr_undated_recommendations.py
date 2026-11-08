@@ -14,7 +14,7 @@ an offline fake (no network).
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,6 +22,10 @@ from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.equity.anr import ANRFunction, _date_from_row
 
+
+# Dated broker action, a few days before the run date. Relative so the
+# 365-day stale cutoff never drops it on a later run.
+_ACTION_DAY = (datetime.now(timezone.utc) - timedelta(days=4)).date().isoformat()
 
 _RAW: dict[str, Any] = {
     "currentPrice": 200.0,
@@ -37,7 +41,7 @@ _RAW: dict[str, Any] = {
     ],
     "upgrades_downgrades": [
         {
-            "GradeDate": "2026-11-04T00:00:00",
+            "GradeDate": f"{_ACTION_DAY}T00:00:00",
             "Firm": "Example Research",
             "ToGrade": "Buy",
             "FromGrade": "Hold",
@@ -95,7 +99,7 @@ def test_target_price_as_of_is_not_fabricated_from_request_date() -> None:
 def test_latest_real_rating_action_date_comes_from_dated_upgrades_rows() -> None:
     result = _run_anr()
     summary = result.data["summary"]
-    assert summary["latest_rating_action_date"] == "2026-11-04"
+    assert summary["latest_rating_action_date"] == _ACTION_DAY
 
 
 def test_consensus_uses_current_period_row_only() -> None:
