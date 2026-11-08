@@ -39,7 +39,7 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
-import { usePersistentNumber } from "./function-control-state";
+import { usePersistentNumber, usePersistentString } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 /* ── model types ───────────────────────────────────────────────────── */
@@ -82,7 +82,9 @@ interface OsaSummary {
 interface OsaData {
   status?: string;
   reason?: string;
-  spot?: number;
+  spot?: number | null;
+  spot_source?: "user_override" | "live_quote" | null;
+  underlying?: string | null;
   rate?: number;
   div_yield?: number;
   strategy?: string;
@@ -201,6 +203,38 @@ function usePersistentLegs(key: string): [OsaLeg[], (next: OsaLeg[]) => void] {
   return [legs, update];
 }
 
+/**
+ * Spot is optional: blank means use the underlying's live quote. The legacy
+ * showme.osa.spot key defaulted to 100 without the user typing it, so it is
+ * deliberately not read (OSA#2).
+ */
+const SPOT_KEY = "showme.osa.spot_entered";
+
+function readStoredSpot(key: string): number | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null || raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function usePersistentSpot(key: string): [number | null, (next: number | null) => void] {
+  const [value, setValue] = useState<number | null>(() => readStoredSpot(key));
+  const update = (next: number | null) => {
+    setValue(next);
+    try {
+      localStorage.setItem(key, next == null ? "" : String(next));
+    } catch {
+      /* storage unavailable — session-only spot */
+    }
+  };
+  return [value, update];
+}
+
 function readStoredPreset(key: string): string {
   if (typeof localStorage === "undefined") return PRESETS[0].id;
   const raw = localStorage.getItem(key);
@@ -211,7 +245,8 @@ function readStoredPreset(key: string): string {
 
 export function OSAPane({ code }: FunctionPaneProps) {
   const [legs, setLegs] = usePersistentLegs(LEGS_KEY);
-  const [spot, setSpot] = usePersistentNumber("showme.osa.spot", 100);
+  const [spot, setSpot] = usePersistentSpot(SPOT_KEY);
+  const [underlying, setUnderlying] = usePersistentString("showme.osa.underlying", "");
   const [rate, setRate] = usePersistentNumber("showme.osa.rate", 4.5); // percent
   const [divPct, setDivPct] = usePersistentNumber("showme.osa.div", 0); // percent
   const [preset, setPreset] = useState<string>(() => readStoredPreset(PRESET_KEY));
@@ -235,7 +270,9 @@ export function OSAPane({ code }: FunctionPaneProps) {
 
   const addLeg = () => {
     if (legs.length >= MAX_LEGS) return;
-    setLegs([...legs, { qty: 1, strike: spot, type: "CALL", expiry: 0.25, vol: 0.25 }]);
+    // New leg opens at the entered spot, else at the last leg's strike (no spot is guessed).
+    const anchorStrike = spot ?? legs[legs.length - 1].strike;
+    setLegs([...legs, { qty: 1, strike: anchorStrike, type: "CALL", expiry: 0.25, vol: 0.25 }]);
     setPreset("custom");
   };
 
@@ -249,11 +286,15 @@ export function OSAPane({ code }: FunctionPaneProps) {
   // honest (otherwise the runner's CALL_SPREAD default is echoed even for a
   // straddle / condor).
   const presetLabel = PRESETS.find((p) => p.id === preset)?.label ?? "CUSTOM";
+  const ticker = underlying.trim().toUpperCase();
   const { state, data, error, refetch } = useFunction<OsaData>({
     code,
     params: {
       asset_class: "DERIVATIVE",
-      spot,
+      // Only a value the user typed is sent; otherwise the backend takes the
+      // underlying's live quote or reports an input/provider state.
+      ...(spot != null ? { spot } : {}),
+      ...(ticker ? { underlying: ticker } : {}),
       rate: rate / 100,
       div_yield: divPct / 100,
       strategy: presetLabel,
@@ -263,6 +304,9 @@ export function OSAPane({ code }: FunctionPaneProps) {
 
   const payload = data?.data;
   const isOk = state !== "loading" && state !== "idle" && payload?.status === "ok";
+  // The spot the priced strategy actually used (entered or live), once priced.
+  const shownSpot = isOk ? num(payload?.spot) : null;
+  const spotSource = isOk ? payload?.spot_source : undefined;
   const curve: OsaCurvePoint[] = useMemo(
     () => (payload?.curve && payload.curve.length ? payload.curve : payload?.pnl_curve ?? []),
     [payload],
@@ -280,9 +324,9 @@ export function OSAPane({ code }: FunctionPaneProps) {
         curve,
         breakevens,
         legs.map((l) => l.strike),
-        spot,
+        shownSpot,
       ),
-    [curve, breakevens, legs, spot],
+    [curve, breakevens, legs, shownSpot],
   );
 
   const gridColumns = useMemo<DataGridColumn<PayoffRow>[]>(
@@ -354,7 +398,13 @@ export function OSAPane({ code }: FunctionPaneProps) {
       state={state}
       error={error}
       empty={!isOk}
-      emptyTitle="Strategy could not be priced"
+      emptyTitle={
+        payload?.status === "needs_input"
+          ? "Inputs needed"
+          : payload?.status === "provider_unavailable"
+            ? "Live quote unavailable"
+            : "Strategy could not be priced"
+      }
       emptyBody={
         payload?.reason ??
         "Check the legs — every strike, expiry and IV must be positive, and the backend must return at least two curve points."
@@ -391,7 +441,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
         </section>
 
         {/* primary visual — expiration P&L profile */}
-        <PayoffChart curve={curve} breakevens={breakevens} spot={spot} />
+        <PayoffChart curve={curve} breakevens={breakevens} spot={shownSpot} />
 
         {/* compact leg editor — one row set, kit input density */}
         <section aria-label="Strategy legs editor" style={editorWrapStyle}>
@@ -489,22 +539,27 @@ export function OSAPane({ code }: FunctionPaneProps) {
               + Add leg
             </button>
             <span className="u-text-mute" style={noteTextStyle}>
-              premium = Black-Scholes at current spot · IV per leg is the entered value (default
-              0.25)
+              premium = Black-Scholes at the spot used (entered or live quote) · IV per leg is the
+              entered value (default 0.25)
             </span>
           </div>
         </section>
 
         {/* model assumptions — single compact row, kit Field inputs */}
         <section style={assumptionRowStyle} aria-label="Model assumptions">
-          <NumField
-            label="Spot"
+          <SpotField
             value={spot}
-            min={0.01}
-            step={1}
             width={104}
             ariaLabel="Underlying spot price"
             onChange={setSpot}
+          />
+          <Field
+            label="Underlying"
+            type="text"
+            value={underlying}
+            width={96}
+            aria-label="Underlying ticker for live spot"
+            onChange={(e) => setUnderlying(e.target.value)}
           />
           <NumField
             label="Rate %"
@@ -553,7 +608,9 @@ export function OSAPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Option Strategy Analyzer — ${strategyLabel}`}
-          subtitle={`${legs.length} leg${legs.length === 1 ? "" : "s"} · spot ${fmtNum(spot)}`}
+          subtitle={`${legs.length} leg${legs.length === 1 ? "" : "s"} · spot ${fmtNum(shownSpot)}${
+            spotSource === "live_quote" ? " · live quote" : spotSource === "user_override" ? " · entered" : ""
+          }`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
@@ -615,7 +672,7 @@ function PayoffChart({
 }: {
   curve: OsaCurvePoint[];
   breakevens: number[];
-  spot: number;
+  spot: number | null;
 }) {
   const geom = useMemo(() => {
     const xs: number[] = [];
@@ -656,7 +713,7 @@ function PayoffChart({
     );
   }
 
-  const spotX = spot >= geom.xMin && spot <= geom.xMax ? geom.px(spot) : null;
+  const spotX = spot != null && spot >= geom.xMin && spot <= geom.xMax ? geom.px(spot) : null;
 
   return (
     <section style={chartCardStyle} aria-label="Expiration payoff chart">
@@ -779,6 +836,45 @@ function NumField({
   );
 }
 
+/** Optional spot: blank clears it (the backend then uses the live quote). */
+function SpotField({
+  value,
+  onChange,
+  width,
+  ariaLabel,
+}: {
+  value: number | null;
+  onChange: (v: number | null) => void;
+  width?: number;
+  ariaLabel: string;
+}) {
+  const [text, setText] = useState<string>(() => (value == null ? "" : String(value)));
+  useEffect(() => {
+    setText(value == null ? "" : String(value));
+  }, [value]);
+  return (
+    <Field
+      label="Spot"
+      type="text"
+      inputMode="decimal"
+      value={text}
+      step={1}
+      width={width}
+      aria-label={ariaLabel}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setText(raw);
+        if (raw.trim() === "") {
+          onChange(null);
+          return;
+        }
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0) onChange(n);
+      }}
+      onBlur={() => setText(value == null ? "" : String(value))}
+    />
+  );
+}
 function NumInput({
   value,
   onChange,
@@ -887,7 +983,7 @@ function keyPriceRows(
   curve: OsaCurvePoint[],
   breakevens: number[],
   strikes: number[],
-  spot: number,
+  spot: number | null,
 ): PayoffRow[] {
   const points: PayoffRow[] = [];
   for (const p of curve) {
@@ -896,7 +992,13 @@ function keyPriceRows(
     points.push({ spot: s, payoff: num(p.payoff), pnl: num(p.pnl) });
   }
   if (points.length < 2) return [];
-  const targets = [points[0].spot, points[points.length - 1].spot, spot, ...strikes, ...breakevens];
+  const targets = [
+    points[0].spot,
+    points[points.length - 1].spot,
+    ...(spot == null ? [] : [spot]),
+    ...strikes,
+    ...breakevens,
+  ];
   const picked = new Set<number>();
   for (const t of targets) {
     let best = 0;

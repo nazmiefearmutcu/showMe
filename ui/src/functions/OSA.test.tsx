@@ -27,6 +27,8 @@ interface MockFnState {
 }
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
+// Last request params the pane handed to useFunction (what the backend sees).
+const mockCalls: { params?: Record<string, unknown> } = {};
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -35,12 +37,15 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args?: { params?: Record<string, unknown> }) => {
+    mockCalls.params = args?.params;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
@@ -227,6 +232,62 @@ describe("OSA pane — ok surface", () => {
     // the 900px fold with the 120px budget. This pin guards the regression.
     const chart = container.querySelector('svg[role="img"]');
     expect(chart?.getAttribute("height")).toBe("120");
+  });
+});
+
+describe("OSA pane — spot and underlying (OSA#2)", () => {
+  it("does not send a placeholder spot when none was entered", () => {
+    setMockFn({ state: "ok", ...bullCallPayload() });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    // RED before fix: the pane always sent spot 100 from a persisted default.
+    expect(mockCalls.params).not.toHaveProperty("spot");
+    expect(mockCalls.params).not.toHaveProperty("underlying");
+  });
+
+  it("sends the typed underlying upper-cased so the backend can take its live quote", () => {
+    setMockFn({ state: "ok", ...bullCallPayload() });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    // RED before fix: there was no underlying input at all.
+    const underlying = screen.getByLabelText("Underlying ticker for live spot") as HTMLInputElement;
+    fireEvent.change(underlying, { target: { value: "spy" } });
+    expect(mockCalls.params?.underlying).toBe("SPY");
+  });
+
+  it("sends an entered spot as the spot override", () => {
+    setMockFn({ state: "ok", ...bullCallPayload() });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    fireEvent.change(screen.getByLabelText("Underlying spot price"), { target: { value: "735.29" } });
+    expect(mockCalls.params?.spot).toBe(735.29);
+  });
+
+  it("says where the spot came from in the header", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: { ...(bullCallPayload().data.data as Record<string, unknown>), spot_source: "live_quote", underlying: "SPY" },
+      },
+    });
+    const { container } = render(<OSAPane code="OSA" symbol="SPY" />);
+    const header = container.querySelector(".ds-pane-header");
+    expect(header?.textContent).toMatch(/live quote/);
+  });
+
+  it("titles a missing-input state as inputs needed, with the backend reason", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "needs_input",
+          reason: "Enter a spot price, or an underlying ticker to take its live quote.",
+          curve: [],
+          summary: {},
+        },
+      },
+    });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    // RED before fix: the title was always "Strategy could not be priced".
+    expect(screen.getByText(/Inputs needed/i)).toBeInTheDocument();
+    expect(screen.getByText(/Enter a spot price, or an underlying ticker/i)).toBeInTheDocument();
   });
 });
 

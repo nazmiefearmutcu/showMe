@@ -395,30 +395,73 @@ def _osa_finite_positive(value: Any) -> float | None:
     return number
 
 
-def _osa_needs_input(reason: str, instrument: Instrument | None) -> FunctionResult:
+async def _osa_live_spot(deps: Any, underlying: str, params: dict[str, Any]) -> tuple[float | None, str]:
+    """Live last price for the OSA underlying from the yfinance QUOTE adapter.
+
+    Returns ``(price, "")`` or ``(None, reason)``. Never substitutes a number.
+    """
+    yfinance = getattr(deps, "yfinance", None)
+    if yfinance is None:
+        return None, "the yfinance quote adapter is not configured"
+    try:
+        timeout = max(1.0, min(float(params.get("yfinance_timeout", 3)), 4.0))
+    except (TypeError, ValueError):
+        timeout = 3.0
+    try:
+        quote = await asyncio.wait_for(
+            yfinance.fetch(DataRequest(
+                kind=DataKind.QUOTE,
+                instrument=Instrument(symbol=underlying, asset_class=AssetClass.EQUITY),
+                extra={"timeout": timeout, "offline_ok": True},
+            )),
+            timeout=timeout + 0.5,
+        )
+    except Exception as exc:  # noqa: BLE001 - reported as an honest provider state
+        return None, f"the quote request failed ({type(exc).__name__})"
+    value = _osa_finite_positive(getattr(quote, "last", None))
+    if value is None:
+        return None, "the quote carried no last price"
+    return value, ""
+
+
+def _osa_needs_input(
+    reason: str,
+    instrument: Instrument | None,
+    *,
+    status: str = "needs_input",
+    underlying: str | None = None,
+) -> FunctionResult:
     """OSA input gap: no priced curve, no placeholder numbers, explicit reason."""
+    if status == "provider_unavailable":
+        next_actions = [
+            f"Retry the live quote for {underlying or 'the underlying'}, or enter a spot price.",
+        ]
+    else:
+        next_actions = [
+            "Enter a positive spot price, or an underlying ticker to take its live quote.",
+            "Give every leg a CALL/PUT type, positive strike, positive expiry in years, "
+            "signed qty and an implied vol (or a market_price to solve it).",
+        ]
     return FunctionResult(
         code="OSA",
         instrument=instrument,
         data={
-            "status": "needs_input",
+            "status": status,
             "reason": reason,
+            "underlying": underlying,
             "spot": None,
+            "spot_source": None,
             "legs": [],
             "rows": [],
             "curve": [],
             "pnl_curve": [],
             "summary": {},
             "methodology": (
-                "Premiums use Black-Scholes-Merton at the spot used, with the per-leg "
-                "implied vol entered (or solved from market_price). Nothing is priced "
-                "until every input is supplied."
+                "Premiums use Black-Scholes-Merton at the spot used (entered, or the "
+                "underlying's live quote), with the per-leg implied vol entered (or solved "
+                "from market_price). Nothing is priced until every input is supplied."
             ),
-            "next_actions": [
-                "Enter a positive spot price (or an underlying ticker with a live quote).",
-                "Give every leg a CALL/PUT type, positive strike, positive expiry in years, "
-                "signed qty and an implied vol (or a market_price to solve it).",
-            ],
+            "next_actions": next_actions,
         },
         sources=["black_scholes_formula"],
     )
@@ -441,12 +484,27 @@ class OSAFunction(BaseFunction):
                 "Add at least one option leg (side, type, strike, expiry, vol).",
                 instrument,
             )
+        # OSA#2: spot is the caller's entered value, else the underlying's live
+        # quote, else an explicit provider/input state. Never a default number.
+        spot_source = "user_override"
         S = _osa_finite_positive(params.get("spot"))
-        if S is None:
+        underlying = str(params.get("underlying") or params.get("symbol") or "").strip().upper() or None
+        if S is None and underlying is None:
             return _osa_needs_input(
-                "Enter a spot price for the underlying to price the strategy.",
+                "Enter a spot price, or an underlying ticker to take its live quote.",
                 instrument,
             )
+        if S is None:
+            S, quote_reason = await _osa_live_spot(self.deps, underlying or "", params)
+            if S is None:
+                return _osa_needs_input(
+                    f"No live quote for {underlying}: {quote_reason}. "
+                    "Enter a spot price to price the strategy.",
+                    instrument,
+                    status="provider_unavailable",
+                    underlying=underlying,
+                )
+            spot_source = "live_quote"
         r = float(params.get("rate", 0.045))
         q = float(params.get("div_yield", 0.0))
         initial_premiums: list[dict[str, Any]] = []
@@ -563,7 +621,9 @@ class OSAFunction(BaseFunction):
         return FunctionResult(code=self.code, instrument=instrument,
                               data={
                                   "status": "ok",
+                                  "underlying": underlying,
                                   "spot": S,
+                                  "spot_source": spot_source,
                                   "rate": r,
                                   "div_yield": q,
                                   "strategy": params.get("strategy") or "custom",
@@ -583,14 +643,15 @@ class OSAFunction(BaseFunction):
                                           if (prev <= 0 <= cur) or (prev >= 0 >= cur)
                                       ),
                                   },
-                                  "methodology": "Horizon P&L at the first expiry = sum(qty * value at spot) - fv_debit. Legs expiring at the horizon are valued at intrinsic payoff; longer legs are valued with Black-Scholes-Merton at their remaining time and per-leg IV. fv_debit = net_debit * exp(+r * horizon) carries the initial debit to the same horizon. Premiums use Black-Scholes-Merton with per-leg IV (solved from market_price if supplied, else input vol, else default 0.25).",
+                                  "methodology": "Horizon P&L at the first expiry = sum(qty * value at spot) - fv_debit. Legs expiring at the horizon are valued at intrinsic payoff; longer legs are valued with Black-Scholes-Merton at their remaining time and per-leg IV. fv_debit = net_debit * exp(+r * horizon) carries the initial debit to the same horizon. Premiums use Black-Scholes-Merton with per-leg IV (entered vol, or solved from market_price). Spot is the entered value or the underlying's live quote (spot_source says which).",
                                   "field_dictionary": {
                                       "net_debit": "Positive value means the strategy costs premium up front; negative means a credit.",
                                       "curve.pnl": "Estimated expiration profit/loss at each underlying spot.",
                                       "premium": "Black-Scholes-Merton premium at the current spot.",
                                   },
                               },
-                              sources=["black_scholes_formula"])
+                              sources=["black_scholes_formula"]
+                              + (["yfinance"] if spot_source == "live_quote" else []))
 
 
 @FunctionRegistry.register
