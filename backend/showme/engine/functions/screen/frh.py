@@ -214,12 +214,18 @@ class FRHFunction(BaseFunction):
             if missing
             else []
         )
-        if not explicit and len(symbols) < limit:
+        if basis == UNIVERSE_DEFAULT and len(symbols) < limit:
             # The volume ranking failed and the 25-symbol default list was used:
             # say so instead of silently returning fewer names than requested.
             warnings.insert(0, (
                 f"requested {limit} symbols; only {len(symbols)} returned because the "
                 "Binance 24h volume ranking was unavailable, so the built-in default list was used"
+            ))
+        elif basis == UNIVERSE_VOLUME and len(symbols) < limit:
+            # The ranking ran but listed fewer USDT perpetuals than requested.
+            warnings.insert(0, (
+                f"requested {limit} symbols; only {len(symbols)} USDT perpetuals were "
+                "returned by the Binance 24h volume ranking"
             ))
         usable.sort(key=lambda x: -(x.get("avg") or 0))
         data = _payload(usable, live=True)
