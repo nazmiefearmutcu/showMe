@@ -261,6 +261,10 @@ def test_keyed_monthly_request_is_sent_as_fred_code_and_labelled_as_applied(monk
     assert http.observation_params()[0]["frequency"] == "m"
     assert result.data["frequency"] == "monthly"
     assert "unhonoured_params" not in result.data
+    rows = result.data["rows"]
+    assert rows, "keyed monthly request returned no rows"
+    # Every row must carry the applied frequency, not the native catalog label.
+    assert {row["frequency"] for row in rows} == {"monthly"}
 
 
 def test_keyed_unknown_frequency_is_input_error_without_provider_call(monkeypatch):

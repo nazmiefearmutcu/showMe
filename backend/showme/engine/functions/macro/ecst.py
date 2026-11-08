@@ -314,8 +314,26 @@ class ECSTFunction(BaseFunction):
             df = merged.sort_index()
             df = df[df["value"].notna()]
 
+        # The keyed API aggregated the series to the requested frequency, so the
+        # response and every row report that frequency, not the native one.
+        frequency_applied = bool(
+            requested_frequency
+            and source_mode == "fred"
+            and not isinstance(fred, _KeylessFredCSV)
+        )
+
         # Normalize and construct response metadata
-        rows = _normalize_rows(df, sid, source_mode, compare_sid)
+        keyless_fred = isinstance(fred, _KeylessFredCSV)
+        applied_by_fred = main_available and source_mode == "fred" and not keyless_fred
+        # The keyed API aggregated the series to the requested frequency, so the response
+        # and every row report that frequency, not the native catalog one.
+        rows = _normalize_rows(
+            df,
+            sid,
+            source_mode,
+            compare_sid,
+            frequency=requested_frequency if applied_by_fred else None,
+        )
         if transform == "yoy":
             for row in rows:
                 row["unit"] = YOY_UNIT
@@ -332,8 +350,6 @@ class ECSTFunction(BaseFunction):
 
         # ECST#5: only the keyed FRED adapter applies a frequency or pinned vintage; the keyless
         # CSV shim serves native-frequency latest-vintage data. Say so rather than imply it.
-        keyless_fred = isinstance(fred, _KeylessFredCSV)
-        applied_by_fred = main_available and source_mode == "fred" and not keyless_fred
         frequency_applied = fred_frequency is None or not main_available or applied_by_fred
         vintage_applied = fred_vintage is None or not main_available or applied_by_fred
         if requested_frequency and applied_by_fred:
@@ -544,8 +560,11 @@ def _normalize_rows(
     series_id: str, 
     source_mode: str, 
     compare_sid: str | None = None,
-    limit: int = 1500
+    limit: int = 1500,
+    frequency: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Build the row list. ``frequency`` is the applied aggregation (keyed FRED
+    only); when absent each row keeps the series' native catalog frequency."""
     meta = _series_meta(series_id)
     compare_meta = _series_meta(compare_sid) if compare_sid else None
     rows: list[dict[str, Any]] = []
@@ -573,7 +592,7 @@ def _normalize_rows(
             "series_name": meta["label"],
             "value": numeric_value,
             "unit": meta["unit"],
-            "frequency": meta["frequency"],
+            "frequency": frequency or meta["frequency"],
             "source_mode": source_mode,
         }
         
