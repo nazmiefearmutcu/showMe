@@ -200,3 +200,25 @@ def test_methodology_does_not_give_min_volatility_a_return_multiplier() -> None:
     assert "Min-volatility uses projected gradient descent" in entry.methodology, entry.methodology
 
 
+# --- PORT_OPT#7 follow-up: the agent path must not inject defaults either ------
+
+def test_agent_path_does_not_inject_agent_defaults_into_port_opt(monkeypatch) -> None:
+    import showme.server_routes._agent_runtime as runtime
+
+    captured: list[dict] = []
+
+    async def _fake_execute(code, params):  # noqa: ANN001 - patched sidecar call
+        captured.append({"code": code, "params": dict(params)})
+        return {"code": code, "data": {}}
+
+    monkeypatch.setattr(runtime, "_execute_showme_function", _fake_execute)
+    asyncio.run(runtime._run_best_symbol_agent({
+        "candidates": ["SPY"],
+        "function_codes": ["PORT_OPT"],
+        "execute_functions": True,
+    }))
+    port_opt_calls = [c for c in captured if c["code"].upper() == "PORT_OPT"]
+    assert port_opt_calls, "PORT_OPT was not executed by the agent"
+    for call in port_opt_calls:
+        for key in ("days", "range", "live", "symbols", "query", "limit"):
+            assert key not in call["params"], (key, call["params"].get(key))

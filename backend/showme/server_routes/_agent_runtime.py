@@ -1186,7 +1186,13 @@ async def _run_best_symbol_agent(request: dict[str, Any]) -> dict[str, Any]:
         fail_count = 0
         fallback_count = 0
         for entry in entries:
-            params = _agent_function_params(entry, candidate)
+            if entry.code.upper() == "PORT_OPT":
+                # PORT_OPT applies its own handler defaults (3-year lookback,
+                # ETF universe, live off). The agent peer profile (days 120,
+                # peer symbols, live=True, news query) must not reach it.
+                params = {"symbol": candidate["symbol"], "asset_class": candidate["asset_class"]}
+            else:
+                params = _agent_function_params(entry, candidate)
             start = time.perf_counter()
             status = "pass"
             reason = ""
