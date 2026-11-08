@@ -381,7 +381,9 @@ class AVFunction(BaseFunction):
         desc = str(f.get("primary_desc") or "").strip()
         edgar_items = str(f.get("edgar_items") or "").strip()
         title_bits = [f"{symbol} {form}"]
-        if desc:
+        # SEC often sets the primary doc description to the form itself
+        # ("10-K"); repeating it adds nothing, so only a real description is kept.
+        if desc and desc.upper() != form.upper():
             title_bits.append(desc)
         elif edgar_items:
             title_bits.append(f"Items {edgar_items}")
@@ -629,17 +631,17 @@ def _media_row(feed: Any, entry: Any) -> dict[str, Any]:
         # contract (every row must carry a real http(s) play_url). Signal the
         # caller to skip this malformed RSS entry rather than emit a dead row.
         return {}
-    # Honest media_type: surface the real enclosure MIME type (e.g. audio/mpeg)
-    # when the feed provides one, so consumers can pick a player; fall back to the
-    # generic "podcast" label only when the enclosure omits a type.
-    media_type = enclosure.get("type") or "podcast"
+    # media_type is the manifest's enumerated kind; the enclosure MIME type
+    # (e.g. audio/mpeg) is kept separately as enclosure_type.
+    published = _parse_event_date(entry.get("published"))
     return {
-        "event_date": entry.get("published"),
+        "event_date": published.isoformat() if published else "",
         "feed": feed.get("title"),
         "source": feed.get("title"),
         "symbol": "",
         "title": entry.get("title"),
-        "media_type": media_type,
+        "media_type": "podcast",
+        "enclosure_type": str(enclosure.get("type") or ""),
         "url": play_url,
         "play_url": play_url,
         "source_url": article_url,
