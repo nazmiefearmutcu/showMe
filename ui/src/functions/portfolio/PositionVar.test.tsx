@@ -142,6 +142,10 @@ describe("PVAR Position VaR pane", () => {
     render(<PositionVarPane code="PVAR" />);
     expect(screen.getByText("Book coverage")).toBeInTheDocument();
     expect(screen.queryByText("100.0% (2/2)")).toBeNull();
+    const tile = screen.getByTitle("Share of the full eligible book analysed by this VaR (PVAR#1)");
+    expect(tile).toHaveTextContent("Book coverage");
+    expect(tile).toHaveTextContent("—");
+    expect(tile).not.toHaveTextContent("%");
   });
 
   it("discloses the modelled template path via the badge + warning strip", () => {
