@@ -220,6 +220,14 @@ class ECSTFunction(BaseFunction):
             )
             if not provider_errors:
                 warnings.append(f"ECST: {reason}")
+        # Observations existed but none fall inside the requested window: an
+        # explicit empty state, not an ok live series with zero rows.
+        main_in_window = main_available and bool(rows)
+        if main_available and not rows:
+            reason = (
+                f"provider returned observations for {sid!r}, but none fall on or "
+                f"after the requested window start {start_date or 'MAX'}"
+            )
         if compare_sid and compare_source_mode == "provider_unavailable":
             warnings.append(
                 f"{compare_sid} compare series was unavailable from the providers — "
@@ -231,8 +239,16 @@ class ECSTFunction(BaseFunction):
             "series_name": label,
             "unit": unit,
             "frequency": frequency,
-            "status": "ok" if main_available else "provider_unavailable",
-            "data_state": "live" if main_available else "provider_unavailable",
+            "status": (
+                "ok" if main_in_window
+                else "empty" if main_available
+                else "provider_unavailable"
+            ),
+            "data_state": (
+                "live" if main_in_window
+                else "empty" if main_available
+                else "provider_unavailable"
+            ),
             "rows": rows,
             "history": rows,
             "cards": [
