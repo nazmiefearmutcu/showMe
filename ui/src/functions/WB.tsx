@@ -54,6 +54,8 @@ interface WBPayload {
   };
   methodology?: string;
   field_dictionary?: Record<string, string>;
+  /** WB#2: requested countries whose live FRED series returned nothing usable. */
+  missing_countries?: string[];
 }
 
 // Bucket countries the engine ships today (`_SOVEREIGN_FRED_IDS` /
@@ -119,6 +121,27 @@ export function WBPane({ code }: FunctionPaneProps) {
     const set = region === "dm" ? DEVELOPED : EMERGING;
     return allRows.filter((r) => set.has((r.country ?? "").toUpperCase()));
   }, [allRows, region]);
+
+  // WB#2: countries the backend could not supply (keyless FRED CSV 404 / no
+  // observation). They are not in the grid, so the pane must say they are missing
+  // instead of showing a shorter grid as if it were the full roster.
+  const missing = useMemo<string[]>(() => {
+    const all = (Array.isArray(payload.missing_countries) ? payload.missing_countries : [])
+      .map((c) => String(c).toUpperCase())
+      .filter(Boolean);
+    if (region === "all") return all;
+    const set = region === "dm" ? DEVELOPED : EMERGING;
+    return all.filter((c) => set.has(c));
+  }, [payload.missing_countries, region]);
+  const missingBox = missing.length ? (
+    <div style={noticeStyle} role="note">
+      <strong className="u-text-warn">Live data missing for {missing.join(", ")}</strong>
+      <span className="u-text-secondary">
+        The keyless FRED series returned no usable observation for these countries, so they are
+        not in the grid, the ranks or the spreads.
+      </span>
+    </div>
+  ) : null;
 
   // Seed contract (wb_seed.py): rank intensity / stats use the VISIBLE
   // min/max so the heat rescales when the region tab is switched.
@@ -256,7 +279,7 @@ export function WBPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="World sovereign bonds"
-          subtitle={`${rows.length} of ${allRows.length} countries · poll ${REFRESH_MS / 1000}s · ${sourceMode}`}
+          subtitle={`${rows.length} of ${rows.length + missing.length} countries · poll ${REFRESH_MS / 1000}s · ${sourceMode}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>{rows.length} ctry</Pill>
@@ -296,7 +319,10 @@ export function WBPane({ code }: FunctionPaneProps) {
           ) : state === "error" ? (
             <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
           ) : rows.length === 0 ? (
-            <Empty title="No yields" body={`No WB rows for ${region}.`} />
+            <>
+              {missingBox}
+              <Empty title="No yields" body={`No WB rows for ${region}.`} />
+            </>
           ) : (
             <div className="u-grid-gap-14">
               {noticeText ? (
@@ -305,6 +331,7 @@ export function WBPane({ code }: FunctionPaneProps) {
                   <span className="u-text-secondary">{noticeText}</span>
                 </div>
               ) : null}
+              {missingBox}
               <section style={kpiGrid} aria-label="WB KPI ribbon">
                 <StatCard
                   label="Avg yield"
