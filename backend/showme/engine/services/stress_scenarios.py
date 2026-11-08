@@ -15,6 +15,14 @@ from typing import Any
 # Smallest shock a long position can take (a full loss of its market value).
 MIN_SHOCK = -1.0
 
+# Treasury / government / aggregate bond funds. They are typed ETF or FUND by
+# the instrument master, but they must take the BOND shock, not the equity-style
+# ETF/FUND shock (TLT rose in both the GFC and COVID windows).
+BOND_ETF_SYMBOLS: frozenset[str] = frozenset({
+    "TLT", "IEF", "SHY", "GOVT", "VGLT", "VGIT", "VGSH", "SPTL", "EDV", "ZROZ",
+    "TIP", "BND", "AGG", "LQD", "HYG", "JNK",
+})
+
 
 @dataclass
 class StressScenario:
@@ -41,6 +49,8 @@ SCENARIOS: dict[str, StressScenario] = {
             "COMMODITY": -0.50, "BOND": -0.05, "FX": -0.10,
             "FUND": -0.45, "DERIVATIVE": -0.40,
         },
+        # TLT: measured Yahoo chart close return 2008-09-15 -> 2009-03-09 (inclusive).
+        symbol_shocks={"TLT": 0.0574},
         sector_shocks={
             "Financials": -0.78, "Real Estate": -0.70, "Energy": -0.55,
             "Materials": -0.50, "Consumer Discretionary": -0.45,
@@ -58,6 +68,8 @@ SCENARIOS: dict[str, StressScenario] = {
             "COMMODITY": -0.65, "BOND": +0.07, "FX": -0.05,
             "FUND": -0.30, "DERIVATIVE": -0.30,
         },
+        # TLT: measured Yahoo chart close return 2020-02-19 -> 2020-03-23 (inclusive).
+        symbol_shocks={"TLT": 0.1407},
         sector_shocks={
             "Energy": -0.65, "Financials": -0.45, "Industrials": -0.40,
             "Real Estate": -0.40, "Consumer Discretionary": -0.35,
@@ -186,6 +198,17 @@ def custom_scenario(
     )
 
 
+def resolve_shock_bucket(symbol: str, asset_class: str) -> str:
+    """Asset-class bucket a position is shocked under.
+
+    Bond funds typed as ETF/FUND move to the BOND bucket.
+    """
+    ac = str(asset_class or "EQUITY").upper()
+    if ac in {"ETF", "FUND"} and str(symbol or "").upper() in BOND_ETF_SYMBOLS:
+        return "BOND"
+    return ac
+
+
 def apply_scenario(
     positions: list[dict[str, Any]],
     scenario: StressScenario,
@@ -206,7 +229,7 @@ def apply_scenario(
     warnings: list[str] = []
     for p in positions:
         sym = p["symbol"]
-        ac = p.get("asset_class", "EQUITY").upper()
+        ac = resolve_shock_bucket(sym, p.get("asset_class", "EQUITY"))
         sector = p.get("sector") or sector_lookup.get(sym)
         mv = float(p.get("market_value", 0) or 0)
         # Resolve shock — symbol > sector > asset_class.

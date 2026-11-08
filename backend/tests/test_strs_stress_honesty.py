@@ -62,4 +62,39 @@ def test_strs1_compare_path_floors_and_reports(monkeypatch):
     assert res.warnings, "floored shocks must be reported in warnings"
 
 
+# ── STRS#3: bond ETFs are not shocked as equities ───────────────────────
+
+
+def _row(res, symbol):
+    return next(r for r in res.data["positions"] if r["symbol"] == symbol)
+
+
+def test_strs3_tlt_gfc_is_not_the_equity_style_etf_loss(monkeypatch):
+    _use_positions(monkeypatch, [_Position("TLT", AssetClass.ETF, 100.0, 100.0)])
+    res = _run(strs_mod.STRSFunction().execute(action="scenario", scenario="GFC_2008"))
+    row = _row(res, "TLT")
+    # Measured TLT price return 2008-09-15 -> 2009-03-09 is +5.74% (window rose).
+    assert row["shock"] > 0, row
+    assert row["market_value_post"] > row["market_value_pre"], row
+
+
+def test_strs3_tlt_covid_uses_measured_window_return(monkeypatch):
+    _use_positions(monkeypatch, [_Position("TLT", AssetClass.ETF, 100.0, 100.0)])
+    res = _run(strs_mod.STRSFunction().execute(action="scenario", scenario="COVID_2020"))
+    assert _row(res, "TLT")["shock"] == pytest.approx(0.1407, abs=1e-4)
+
+
+def test_strs3_treasury_etf_takes_bond_bucket_not_etf_bucket(monkeypatch):
+    _use_positions(monkeypatch, [_Position("IEF", AssetClass.ETF, 100.0, 100.0)])
+    res = _run(strs_mod.STRSFunction().execute(action="scenario", scenario="RATE_SHOCK_300BP"))
+    # RATE_SHOCK_300BP: BOND -0.20 applies; the ETF bucket (-0.16) must not.
+    assert _row(res, "IEF")["shock"] == pytest.approx(-0.20)
+
+
+def test_strs3_equity_etf_still_takes_etf_bucket(monkeypatch):
+    _use_positions(monkeypatch, [_Position("SPY", AssetClass.ETF, 100.0, 100.0)])
+    res = _run(strs_mod.STRSFunction().execute(action="scenario", scenario="GFC_2008"))
+    assert _row(res, "SPY")["shock"] == pytest.approx(-0.50)
+
+
 # ── STRS#3 and STRS#4 are appended below in their own steps ─────────────
