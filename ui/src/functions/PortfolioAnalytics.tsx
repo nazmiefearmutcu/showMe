@@ -108,11 +108,10 @@ const PORTFOLIO_TOOLS = [
   "MLSIG",
 ] as const;
 
+// ACCT and TRA stay in the toolbar strip but are served by their own panes
+// (registry: AcctPane, TotalReturnPane), so they have no config here
+// (ACCT#4, TRA#5: the dead entries claimed cash/margin and a LIVE toggle).
 const TOOL_CONFIG: Record<string, ToolConfig> = {
-  ACCT: {
-    title: "Account Overview",
-    subtitle: "Cash, margin, exposure, and account state",
-  },
   BLAK: {
     title: "Black-Litterman",
     subtitle: "Prior, posterior return, and implied allocation",
@@ -234,13 +233,6 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   TLH: {
     title: "Tax-Loss Harvesting",
     subtitle: "Harvest candidates and wash-sale risk",
-  },
-  TRA: {
-    title: "Total Return",
-    subtitle: "TWR, IRR, CAGR, and dividend return",
-    defaultSymbol: "AAPL",
-    usesSymbol: true,
-    supportsLive: true,
   },
 };
 
@@ -1430,8 +1422,6 @@ function buildParams(
       if (cost !== undefined) out.cost = cost;
       return out;
     }
-    case "TRA":
-      return { years: 5, live_return: state.live };
     case "BTFW": {
       // BTFW#3: only what the user typed is sent (blank keeps the handler default). A typed
       // value that does not parse is sent as the trimmed text, so the backend names it.
