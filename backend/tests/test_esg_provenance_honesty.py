@@ -170,3 +170,20 @@ def test_manifest_data_mode_description_lists_live_official():
     description = esg_manifest.field_dict["data_mode"].description
     assert "live_official" in description, description
     assert "delayed_reference" not in description, description
+
+
+# ---- ESG#2: the manifest methodology describes the real provenance paths ------
+
+
+def test_manifest_methodology_does_not_claim_a_paid_vendor_is_required():
+    # The SEC EDGAR proxy returns data_mode=live_official with no vendor plugin, so
+    # the methodology must not say ESG needs a paid vendor or returns unavailable
+    # without one.
+    from showme.manifest.seeds.esg_seed import esg as esg_manifest
+
+    text = esg_manifest.methodology.lower()
+    assert "requires a paid vendor" not in text, text
+    assert "none is bundled" not in text, text
+    assert "live_official" in text, text
+    assert "sec edgar" in text, text
+    assert "filing" in text, text
