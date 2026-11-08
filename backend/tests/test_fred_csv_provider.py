@@ -185,7 +185,7 @@ def test_gc3d_reference_true_serves_template_without_fetch():
     assert result.sources == ["yield_curve_model"]
 
 
-def test_wb_default_live_keyless_and_offline_fallback_labelled():
+def test_wb_default_live_keyless_and_failed_fetch_is_unavailable_without_template():
     from showme.engine.functions.bond.wb import WBFunction
 
     online = WBFunction(FunctionDeps())

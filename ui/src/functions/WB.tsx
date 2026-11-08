@@ -164,9 +164,9 @@ export function WBPane({ code }: FunctionPaneProps) {
     null;
   const noticeText =
     sourceMode === "sovereign_yield_model"
-      ? `Rows are the labelled sovereign_yield_model template${
+      ? `Rows are the labelled sovereign_yield_model reference template${
           modelVintage ? ` (reference vintage ${modelVintage})` : ""
-        } — the live FRED fetch returned no rows. Toggle \`live\` off/on to retry the live path.`
+        }, shown because \`live\` is off. They are not market data; turn \`live\` on to fetch FRED.`
       : null;
 
   const minYield = stats.min;

@@ -204,8 +204,9 @@ def _result(
 
     methodology = (
         "WIRP shows market-implied probabilities of the next central-bank decisions. "
-        "For each meeting cut+hold+hike sum to 1 and implied_change_bp is "
-        "(-25 * cut_25bp) + (25 * hike_25bp). Probabilities come only from the CME "
+        "For each meeting cut+hold+hike sum to 1 and implied_change_bp is the "
+        "probability-weighted move of the CME target-range midpoints vs the anchor "
+        "range (a 50 bp cut counts 50 bp). Probabilities come only from the CME "
         "FedWatch adapter when it is wired. The keyless path reports the FRED target "
         "range, EFFR (FRED DFF) and the 13-week T-bill (^IRX) as reference anchors and "
         "does not derive hike/cut odds from them. ECB/BoE have no robust keyless "
@@ -241,8 +242,9 @@ def _result(
                 "hike_25bp": "Probability of a 25 bp (or deeper) hike.",
                 "implied_change_bp": (
                     "Probability-weighted expected policy-rate move in basis points vs the "
-                    "current-target anchor at that meeting. Cumulative to that meeting, not an "
-                    "incremental move, so it must not be summed across meetings."
+                    "current-target anchor at that meeting, from the midpoints of the CME target "
+                    "ranges. Cumulative to that meeting, not an incremental move, so it must not "
+                    "be summed across meetings."
                 ),
             },
             "source_mode": source_mode,
@@ -418,13 +420,16 @@ def _rows_from_cme(payload: dict[str, Any] | None, central_bank: str) -> list[di
         cut_r = round(cut, 6)
         hike_r = round(hike, 6)
         hold_r = round(1.0 - cut_r - hike_r, 6)
+        # Expected move vs the anchor from each range's midpoint, so a 50 bp
+        # (or deeper) cut priced at a later meeting counts as 50 bp, not 25.
+        expected_bp = sum(pct * (mid - anchor_mid) for mid, _, pct in entries) / bucket_total * 100.0
         rows.append({
             "central_bank": central_bank,
             "date": date_str,
             "cut_25bp": cut_r,
             "hold": hold_r,
             "hike_25bp": hike_r,
-            "implied_change_bp": round((-25 * cut_r) + (25 * hike_r), 2),
+            "implied_change_bp": round(expected_bp, 2),
             "source_mode": "cme_fedwatch",
         })
     return rows
