@@ -64,14 +64,11 @@ def gex() -> FunctionManifest:
                 label="Expirations",
                 control=ControlKind.MULTISELECT,
                 required=True,
-                description="Which expiries to include in the GEX aggregation.",
+                description="Which expiries to include in the GEX aggregation (nearest 1, 3 or 6; at most 3 are aggregated per request).",
                 options=[
                     "next_1",
                     "next_3",
                     "next_6",
-                    "weekly_only",
-                    "monthly_only",
-                    "all",
                 ],
             ),
             InputSpec(
@@ -79,8 +76,8 @@ def gex() -> FunctionManifest:
                 label="OI Source",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Where Open Interest comes from.",
-                options=["exchange", "modeled"],
+                description="Where Open Interest comes from (yfinance exchange open interest; the only source served).",
+                options=["exchange"],
             ),
             InputSpec(
                 name="risk_free",
@@ -109,41 +106,20 @@ def gex() -> FunctionManifest:
                 label="IV Source",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Implied vol source for the gamma calc.",
-                options=["market", "modeled_vol_surface", "fixed_30d_atm"],
+                description="Implied vol source for the gamma calc (the chain's per-contract market IV; the only source served).",
+                options=["market"],
             ),
             InputSpec(
                 name="dealer_assumption",
                 label="Dealer Side",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Convention for who's net short gamma.",
-                options=[
-                    "short_calls_long_puts",
-                    "sticky_strike",
-                    "sticky_delta",
-                    "neutral",
-                ],
+                description="Convention for who's net short gamma (the only convention served).",
+                options=["short_calls_long_puts"],
             ),
-            InputSpec(
-                name="as_of",
-                label="As of",
-                control=ControlKind.DATE_RANGE,
-                required=False,
-                description="Snapshot time; default is last_close.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; chain may downgrade.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
+            # as_of and provider_mode were removed (GEX#3): the handler cannot
+            # honour a historical snapshot or a provider mode. The snapshot time
+            # is reported as output (as_of, data_mode) from the chain itself.
         ],
         defaults={
             "underlying": "SPY",
@@ -153,8 +129,6 @@ def gex() -> FunctionManifest:
             "dividend_yield": 0.015,
             "iv_source": "market",
             "dealer_assumption": "short_calls_long_puts",
-            "as_of": "last_close",
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             # The handler reads only the yfinance chain and quote; no other
@@ -228,9 +202,10 @@ def gex() -> FunctionManifest:
             "GEX changes sign, found by re-evaluating GEX on a ±10% spot grid with the "
             "same chain (IV, OI, T fixed) and taking the zero crossing; (6) walls = "
             "strike with the largest absolute call GEX and strike with the largest "
-            "absolute put GEX, each reported with its own side value. Model assumptions are visible — fixed_30d_atm "
-            "loses skew (flagged as warning), modeled_vol_surface requires "
-            "IVOL infra, market uses chain bid/ask mid IV per contract."
+            "absolute put GEX, each reported with its own side value. Model assumptions are visible: "
+            "IV is the chain's per-contract market implied vol (a contract without a usable IV or "
+            "expiry is excluded and counted, never priced at a substitute vol), and missing open "
+            "interest counts as zero and is disclosed. No modeled or fixed-vol grid is served."
         ),
         formula_dict={
             "bsm_gamma": Formula(
@@ -274,15 +249,12 @@ def gex() -> FunctionManifest:
         },
         field_dict={
             "spot": FieldDef(unit="$", description="Current underlying price.", source="quote provider"),
-            "strikes[].strike": FieldDef(unit="$", description="Strike price.", source="option chain"),
-            "strikes[].call_gex": FieldDef(unit="$/1%", description="Aggregated call dealer γ at strike.", source="computed"),
-            "strikes[].put_gex": FieldDef(unit="$/1%", description="Aggregated put dealer γ at strike.", source="computed"),
-            "strikes[].signed_gex": FieldDef(unit="$/1%", description="Net dealer GEX per strike: put contribution (positive) plus call contribution (negative, dealers short calls).", source="computed"),
-            "strikes[].oi_call": FieldDef(unit="contracts", description="Call OI summed across selected expiries.", source="option chain"),
-            "strikes[].oi_put": FieldDef(unit="contracts", description="Put OI summed across selected expiries.", source="option chain"),
-            "cumulative_gex_curve[].strike": FieldDef(unit="$", description="Strike.", source="derived"),
-            "cumulative_gex_curve[].cum_gex": FieldDef(unit="$/1%", description="Running Σ signed_gex from lowest strike.", source="derived"),
-            "net_gex": FieldDef(unit="$/1%", description="Σ signed_gex across all strikes.", source="derived"),
+            "rows[].strike": FieldDef(unit="$", description="Strike price.", source="option chain"),
+            "rows[].gex": FieldDef(unit="$/1%", description="Net dealer GEX per strike: put contribution (positive) plus call contribution (negative, dealers short calls).", source="computed"),
+            "rows[].cumulative_gex": FieldDef(unit="$/1%", description="Running sum of rows[].gex from the lowest strike.", source="derived"),
+            "summary.excluded_contracts": FieldDef(unit="contracts", description="Contracts left out of the sums for a missing strike, implied vol or expiry.", source="derived"),
+            "summary.oi_missing_contracts": FieldDef(unit="contracts", description="Contracts with no open interest value (counted as zero).", source="derived"),
+            "net_gex": FieldDef(unit="$/1%", description="Σ rows[].gex across all strikes (summary.net_gex).", source="derived"),
             "gamma_flip": FieldDef(unit="$", description="Spot level where total dealer GEX crosses zero (spot-grid re-evaluation of the same chain); null when no crossing lies in the ±10% range.", source="derived"),
         },
         provenance=ProvenanceSpec(
@@ -336,30 +308,12 @@ def gex() -> FunctionManifest:
                     "provider_unavailable, strikes==[], warning explains the missing config — "
                     "NOT a zero-strike chart pretending to be live."
                 ),
-                inputs={"underlying": "SPY", "provider_mode": "live_official"},
+                inputs={"underlying": "SPY", "live_options": True},
                 assertions=[
                     "data_mode_is_not_configured_or_provider_unavailable",
                     "strikes_is_empty",
                     "warning_explains_missing_config",
                 ],
-            ),
-            SemanticTest(
-                name="gex_dealer_assumption_changes_sign",
-                description=(
-                    "Same inputs with dealer_assumption short_calls_long_puts vs neutral "
-                    "should yield different signed_gex; net_gex differs."
-                ),
-                inputs={"underlying": "SPY"},
-                assertions=["net_gex_differs_across_dealer_assumptions"],
-            ),
-            SemanticTest(
-                name="gex_fixed_30d_atm_warns_about_skew_loss",
-                description=(
-                    "When iv_source=fixed_30d_atm, a warning is present mentioning "
-                    "'skew not modeled'."
-                ),
-                inputs={"underlying": "SPY", "iv_source": "fixed_30d_atm"},
-                assertions=["warning_mentions_skew_not_modeled"],
             ),
         ],
     )

@@ -10,6 +10,11 @@ and long put OI) and aggregates the chain into:
   gamma exposure, reported with that side's own GEX value
 - gex_per_strike: per-strike net values (for chart)
 
+Honesty (wc1-g06 GEX#5): no implied vol or expiry is invented. A contract
+without a usable strike, implied vol or expiry is left out of the sums and
+counted in ``excluded``; a missing or non-finite open interest counts as zero
+and is counted in ``oi_missing``. Both counts are returned for disclosure.
+
 Black-Scholes gamma:
     γ = N'(d1) / (S σ √T)
 where d1 = [ln(S/K) + (r + σ²/2) T] / (σ √T)
@@ -105,13 +110,34 @@ def _gamma_flip_spot_grid(spot: float, total_gex_at: Any) -> float | None:
     return round(best, 2) if best is not None else None
 
 
+def _finite_positive(value: Any) -> float | None:
+    """A finite number > 0, else None (missing, NaN, inf, zero or invalid)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _finite_nonnegative(value: Any) -> float | None:
+    """A finite number >= 0, else None. Used for open interest only."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
 def chain_gex(
     *, spot: float,
     calls: list[dict[str, Any]],
     puts: list[dict[str, Any]],
     contract_size: int = 100,
     rate: float = 0.04,
-    default_vol: float = 0.30,
     div_yield: float = 0.0,
 ) -> dict[str, Any]:
     """Compute per-strike gamma exposure dollar terms.
@@ -120,54 +146,66 @@ def chain_gex(
     ``impliedVolatility`` (or ``iv``), and ``expiry`` (datetime str / "YYYY-MM-DD")
     or ``T`` (years).
 
-    D03-2026-05-24 (H7+H8): ``div_yield`` is now a first-class parameter
-    (SPX ≈ 1.5% — 0DTE bias was material). Intraday expiries now compute
-    fractional days via UTC current time, so 0DTE option gamma is finite
-    and not 0 once the calendar rolls.
+    A contract whose strike, implied vol or time to expiry is missing or invalid
+    is excluded (never priced at a substitute vol or term) and counted in
+    ``excluded``. A missing open interest contributes zero and is counted in
+    ``oi_missing``. ``contracts_used`` counts contracts that entered the sums.
     """
     now = datetime.now(timezone.utc)
+    excluded = {"strike": 0, "implied_vol": 0, "expiry": 0}
+    oi_missing = 0
 
-    def _T(opt: dict[str, Any]) -> float:
-        T = opt.get("T")
-        if T is not None:
-            return max(float(T), 1e-9)
+    def _T(opt: dict[str, Any]) -> float | None:
+        if opt.get("T") is not None:
+            return _finite_positive(opt.get("T"))
         exp = opt.get("expiry") or opt.get("expiration") or opt.get("expiration_date")
-        if exp:
-            # Same 16:00 ET close for today and future expiries (GEX#4).
-            T_exp = time_to_expiry_years(exp, now)
-            if T_exp is not None:
-                return T_exp
-        return 30 / 365.0
+        if not exp:
+            return None
+        # Same 16:00 ET close for today and future expiries (GEX#4).
+        return time_to_expiry_years(exp, now)
 
-    def _vol(opt: dict[str, Any]) -> float:
-        v = opt.get("impliedVolatility") or opt.get("iv") or default_vol
-        try:
-            v = float(v)
-            return max(v, 0.05)
-        except Exception:
-            return default_vol
+    def _vol(opt: dict[str, Any]) -> float | None:
+        for key in ("impliedVolatility", "iv"):
+            v = _finite_positive(opt.get(key))
+            if v is not None:
+                return max(v, 0.05)
+        return None
 
-    def _oi(opt: dict[str, Any]) -> float:
-        v = opt.get("openInterest") or opt.get("oi") or 0
-        try:
-            return float(v)
-        except Exception:
-            return 0.0
+    def _oi(opt: dict[str, Any]) -> float | None:
+        for key in ("openInterest", "oi"):
+            v = _finite_nonnegative(opt.get(key))
+            if v is not None:
+                return v
+        return None
 
     # Per-side contract terms, kept so total GEX can be re-evaluated at
     # hypothetical spots with the same chain (fixed IV, OI and expiry).
     call_terms: list[tuple[float, float, float, float]] = []  # (K, vol, T, oi)
     put_terms: list[tuple[float, float, float, float]] = []
-    for c in calls:
-        K = float(c.get("strike") or 0)
-        if K <= 0:
-            continue
-        call_terms.append((K, _vol(c), _T(c), _oi(c)))
-    for p in puts:
-        K = float(p.get("strike") or 0)
-        if K <= 0:
-            continue
-        put_terms.append((K, _vol(p), _T(p), _oi(p)))
+
+    def _collect(options: list[dict[str, Any]], terms: list[tuple[float, float, float, float]]) -> None:
+        nonlocal oi_missing
+        for opt in options:
+            K = _finite_positive(opt.get("strike"))
+            if K is None:
+                excluded["strike"] += 1
+                continue
+            vol = _vol(opt)
+            if vol is None:
+                excluded["implied_vol"] += 1
+                continue
+            T = _T(opt)
+            if T is None:
+                excluded["expiry"] += 1
+                continue
+            oi = _oi(opt)
+            if oi is None:
+                oi_missing += 1
+                oi = 0.0
+            terms.append((K, vol, T, oi))
+
+    _collect(calls, call_terms)
+    _collect(puts, put_terms)
 
     def _side_gex(s: float, terms: list[tuple[float, float, float, float]], sign: float,
                   ) -> dict[float, float]:
@@ -209,4 +247,7 @@ def chain_gex(
         "call_wall": {"strike": call_wall[0], "gex": call_wall[1]},
         "put_wall": {"strike": put_wall[0], "gex": put_wall[1]},
         "n_strikes": len(sorted_strikes),
+        "contracts_used": len(call_terms) + len(put_terms),
+        "excluded": excluded,
+        "oi_missing": oi_missing,
     }

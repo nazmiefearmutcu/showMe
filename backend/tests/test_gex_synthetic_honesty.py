@@ -15,6 +15,7 @@ These tests pin the honest contract that replaced it (wc1-g06):
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from showme.engine.core.base_data_source import DataKind
 from showme.engine.core.base_function import FunctionDeps
@@ -94,6 +95,11 @@ class _LiveChainYf:
                 {"strike": 105.0, "openInterest": 600, "impliedVolatility": 0.36},
             ]
         )
+        # Stamp the rows with today's trade time so this is a genuinely live
+        # chain (wc1-g06 GEX#6: an unstamped chain is not claimed as live).
+        now_stamp = pd.Timestamp(datetime.now(timezone.utc))
+        df_calls["lastTradeDate"] = now_stamp
+        df_puts["lastTradeDate"] = now_stamp
         return {"calls": df_calls, "puts": df_puts}
 
 

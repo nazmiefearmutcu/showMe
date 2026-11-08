@@ -233,7 +233,7 @@ def test_handler_sign_convention_matches_manifest_text() -> None:
     data = _run(fn.execute(symbol="SPY", spot=100.0, live_options=True)).data
     # Dealers short calls -> negative call contribution; long puts -> positive.
     assert data["summary"]["call_gex_total"] < 0 < data["summary"]["put_gex_total"]
-    signed = entry.field_dict["strikes[].signed_gex"].description
+    signed = entry.field_dict["rows[].gex"].description
     assert "call_gex − put_gex" not in signed
     assert "negative" in signed.lower()
     assert "positive contribution → suppresses" not in entry.methodology

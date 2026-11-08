@@ -38,6 +38,14 @@ DATA_MODE_LAST_SESSION = "last_session_yfinance"
 DATA_MODE_UNSTAMPED = "snapshot_time_unknown"
 DATA_MODE_UNAVAILABLE = "unavailable"
 
+# summary.source_mode is derived from the snapshot state, never hard-coded, so
+# a Friday-stamped chain served on Sunday cannot be labelled live (GEX#6).
+_SOURCE_MODE_BY_DATA_MODE = {
+    DATA_MODE_LIVE: "live_chain",
+    DATA_MODE_LAST_SESSION: "last_session_chain",
+    DATA_MODE_UNSTAMPED: "snapshot_time_unknown",
+}
+
 _GEX_FIELDS = {
     "strike": "Option strike bucket.",
     "gex": "Dealer-perspective gamma exposure in dollars per 1% underlying move.",
@@ -50,7 +58,9 @@ _GEX_FIELDS = {
 _METHODOLOGY = (
     "Dealer GEX assumes dealers are short call open interest and long put open interest. "
     "Black-Scholes gamma = N'(d1) / (S * sigma * sqrt(T)); exposure = gamma * OI * contract_size * S^2 * 1%. "
-    "T runs to the 16:00 America/New_York expiry close for every expiry."
+    "T runs to the 16:00 America/New_York expiry close for every expiry. "
+    "Implied vol is each contract's market IV from the chain; a contract without a usable "
+    "IV or expiry is left out and counted in excluded_contracts, never priced at a substitute vol."
 )
 
 
@@ -188,9 +198,12 @@ def _shape_gex_payload(
             "put_wall": (raw.get("put_wall") or {}).get("strike"),
             "gamma_flip_method": raw.get("gamma_flip_method"),
             "n_strikes": raw.get("n_strikes") or len(rows),
-            "source_mode": "live_chain",
+            "source_mode": _SOURCE_MODE_BY_DATA_MODE.get(data_mode, DATA_MODE_UNAVAILABLE),
             "synthetic": False,
             "degraded": False,
+            "contracts_used": raw.get("contracts_used"),
+            "excluded_contracts": raw.get("excluded"),
+            "oi_missing_contracts": raw.get("oi_missing"),
         },
         "call_wall": raw.get("call_wall"),
         "put_wall": raw.get("put_wall"),
@@ -284,10 +297,24 @@ class GEXFunction(BaseFunction):
         return _positive(getattr(quote, "last", None))
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        sym = (instrument.symbol if instrument else
-               params.get("symbol") or "SPY").upper()
-        spot_inst = instrument or Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
+        # The underlying must be a user choice. The router injects a default
+        # symbol and flags it __explicit_symbol=False; GEX never prices a
+        # guessed ticker (GEX#3 / data policy), so that case is needs_input.
+        explicit = params.get("__explicit_symbol", True) is not False
+        raw_symbol = ""
+        if explicit:
+            raw_symbol = str(params.get("symbol") or params.get("underlying") or "").strip()
+            if instrument is not None and instrument.symbol:
+                raw_symbol = str(instrument.symbol).strip()
+        sym = raw_symbol.upper()
         live_options = _truthy(params.get("live_options") or params.get("deep"))
+        if not sym:
+            return self._result(instrument, _unavailable_payload(
+                "", status="needs_input",
+                reason="GEX needs an underlying symbol; none was supplied.",
+                next_actions=["Pass symbol=<ticker>, for example SPY or NVDA"],
+            ))
+        spot_inst = instrument or Instrument(symbol=sym, asset_class=AssetClass.EQUITY)
 
         # 1. Validate every declared input before any network call.
         try:
@@ -317,7 +344,8 @@ class GEXFunction(BaseFunction):
             "dividend_yield": div_yield,
             "time_basis": "calendar days / 365 to the 16:00 America/New_York expiry close",
             "as_of_basis": "latest option lastTradeDate in the fetched chain",
-            "oi_basis": "yfinance openInterest (exchange, prior session)",
+            "oi_basis": "yfinance openInterest (exchange, prior session); a missing value counts as zero and is disclosed",
+            "iv_basis": "yfinance impliedVolatility per contract; a contract without a usable IV or expiry is excluded and disclosed",
             "contract_size": 100,
         }
 
@@ -427,6 +455,14 @@ class GEXFunction(BaseFunction):
                         div_yield=div_yield)
         out["symbol"] = sym
         out["expiries"] = expiries
+        if not out.get("contracts_used"):
+            return self._result(instrument, _unavailable_payload(
+                sym, status="provider_unavailable",
+                reason=(f"No option contract for {sym} in the selected expiries has a usable "
+                        "implied volatility and expiry, so GEX cannot be computed honestly."),
+                next_actions=["Retry later", "Try another expiry_filter"],
+                expiries=expiries, model_inputs=model_inputs,
+            ), sources=["yfinance_options"])
         shaped = _shape_gex_payload(
             out,
             symbol=sym,
@@ -439,6 +475,21 @@ class GEXFunction(BaseFunction):
         if spot_source == "yfinance_quote":
             sources.insert(0, "yfinance_quote")
         warnings = [cap_warning] if cap_warning else []
+        excluded = out.get("excluded") or {}
+        if excluded.get("implied_vol"):
+            warnings.append(
+                f"{excluded['implied_vol']} option contract(s) without a usable implied volatility "
+                "were left out of GEX."
+            )
+        if excluded.get("strike") or excluded.get("expiry"):
+            warnings.append(
+                f"{int(excluded.get('strike', 0)) + int(excluded.get('expiry', 0))} option "
+                "contract(s) without a usable strike or expiry were left out of GEX."
+            )
+        if out.get("oi_missing"):
+            warnings.append(
+                f"{out['oi_missing']} option contract(s) had no open interest value and count as zero."
+            )
         if data_mode == DATA_MODE_LAST_SESSION:
             warnings.append(
                 f"Option chain snapshot is from the last session ({as_of[:10]}), not the current session."
