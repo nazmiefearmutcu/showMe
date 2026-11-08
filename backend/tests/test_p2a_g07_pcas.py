@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
+
+import pandas as pd
 
 import pytest
 
@@ -120,3 +123,68 @@ def test_pcas_n_factors_above_available_components_is_an_input_error(monkeypatch
     assert res.data["status"] == "input_error"
     assert "5 principal components" in res.data["reason"]
     assert "history supports" in res.data["reason"]
+
+
+# ---------------------------------------------------------------- PCAS #4 on real price history
+
+
+class _FakeYFinance:
+    """Deterministic OHLCV fixture per symbol; stands in for the free yfinance adapter."""
+
+    async def fetch(self, req):
+        import numpy as np
+
+        now = datetime.now(timezone.utc)
+        n = max(2, (now - req.start).days)
+        symbol = req.instrument.symbol
+        seed = sum(ord(c) for c in symbol)
+        rng = np.random.default_rng(seed)
+        vol = 0.008 + (seed % 7) * 0.002
+        closes = 100.0 * np.exp(np.cumsum(rng.normal(0.0003, vol, size=n)))
+        index = pd.date_range(end=now.date(), periods=n, freq="D")
+        return pd.DataFrame({"close": closes}, index=index)
+
+
+def _pcas_live(monkeypatch, symbols=("AAA", "BBB", "CCC", "DDD")):
+    monkeypatch.setattr(pcas_mod, "PortfolioState", lambda *a, **k: _FakeBook(symbols))
+    return pcas_mod.PCASFunction(FunctionDeps(yfinance=_FakeYFinance()))
+
+
+def test_pcas_multi_factor_runs_on_live_price_history(monkeypatch):
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", live_prices="true",
+                    n_factors=3, k_sigma=2.0)
+    d = res.data
+    assert d["status"] == "ok"
+    assert d["data_mode"] == "delayed_reference"
+    assert res.sources == ["yfinance"]
+    assert [c["component"] for c in d["components"]] == ["PC1", "PC2", "PC3"]
+    assert d["aggregate_impact"] == pytest.approx(
+        sum(item["impact_value"] for item in d["shock_impacts"]), rel=1e-9, abs=1e-6)
+    assert d["samples"] > 100
+
+
+def test_pcas_shock_set_on_live_history_applies_each_sigma(monkeypatch):
+    res = _pcas_run(_pcas_live(monkeypatch), live="true", live_prices="true",
+                    n_factors=2, shock_set=[1.5, 3.0])
+    assert [c["shock_sigma"] for c in res.data["components"]] == [1.5, 3.0]
+    assert res.sources == ["yfinance"]
+
+
+def test_pcas_lookback_window_on_live_history_sets_real_sample_count(monkeypatch):
+    short = _pcas_run(_pcas_live(monkeypatch), live="true", live_prices="true",
+                      lookback_window="90d")
+    long = _pcas_run(_pcas_live(monkeypatch), live="true", live_prices="true",
+                     lookback_window="1Y")
+    assert short.data["lookback_days"] == 90 and long.data["lookback_days"] == 365
+    assert short.data["samples"] < long.data["samples"]
+
+
+def test_pcas_live_prices_without_a_provider_is_an_honest_outage_not_modeled(monkeypatch):
+    # No yfinance adapter: the live request must not quietly fall back to the
+    # modeled template returns.
+    monkeypatch.setattr(pcas_mod, "PortfolioState", lambda *a, **k: _FakeBook(("AAA", "BBB", "CCC", "DDD")))
+    fn = pcas_mod.PCASFunction(FunctionDeps())
+    res = _pcas_run(fn, live="true", live_prices="true", n_factors=2)
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data.get("data_mode") != "modeled"
+    assert "portfolio_state_template_returns" not in res.sources

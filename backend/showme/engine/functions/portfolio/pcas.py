@@ -242,10 +242,11 @@ class PCASFunction(BaseFunction):
                     "aggregate_impact": "Linear sum of the per-component P&L impacts.",
                 },
             },
-            # 2026-05-17 BugHunt S10: rename non-live source so the
-            # server-side synthetic-source guard (SYNTHETIC_SOURCE_MARKERS)
-            # actually demotes the response. Without the "template" token
-            # the guard let fake PCA output through with status="ok".
+            # The non-live source keeps the "template" token so the pane's
+            # MODEL disclosure can label it. Only data_mode ("modeled") and
+            # this source label mark the result; the server helper
+            # _has_live_source (server.py) has no call site, so it does not
+            # demote status. Live (LIVE toggle, the pane default) is real yfinance.
             sources=[source],
         )
 
