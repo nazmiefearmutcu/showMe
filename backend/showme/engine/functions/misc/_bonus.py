@@ -476,8 +476,17 @@ class CHGSFunction(BaseFunction):
                 sources=["showme_chart_model"],
             )
         from showme.engine.functions.chart.tech import TECHFunction
+        tech_params = dict(params)
+        # CHGS#2: the router injects a routed agent default ``limit=6`` into
+        # every call. TECH reads ``limit`` as the bar tail and clamps it to
+        # 60..5000, so a 1Y request came back as 60 bars (~3 months). CHGS has
+        # no tail/limit input of its own; its window is driven by ``days``, so
+        # the leaked limit is dropped and TECH's manifest tail default applies.
+        # An explicit ``tail``/``bars`` from the caller still wins.
+        if "tail" not in tech_params and "bars" not in tech_params:
+            tech_params.pop("limit", None)
         tech = TECHFunction(self.deps)
-        result = await tech.execute(instrument=instrument, **params)
+        result = await tech.execute(instrument=instrument, **tech_params)
         return FunctionResult(
             code=self.code,
             instrument=result.instrument,
