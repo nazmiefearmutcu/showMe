@@ -282,6 +282,8 @@ class EQSFunction(BaseFunction):
         if not rows:
             rows = _screen_template_rows(instrument, universe)
         df = pd.DataFrame(rows)
+        coverage = _enrichment_coverage(df)
+        coverage_warnings = _coverage_warnings(coverage) if live else []
         try:
             filtered = filter_dataframe(df, query)
         except Exception as e:
@@ -326,6 +328,7 @@ class EQSFunction(BaseFunction):
                     "scanned": int(len(df)),
                 },
                 sources=["yfinance"] if live else ["equity_screener_model"],
+                warnings=list(coverage_warnings),
                 metadata={
                     "query": query,
                     "matched": 0,
@@ -335,12 +338,13 @@ class EQSFunction(BaseFunction):
                     "data_mode": "delayed_reference" if live else "modeled",
                     "universe": universe_label,
                     "universe_size": len(universe),
+                    "enrichment_coverage": coverage,
                 },
             )
         # S05 BUGHUNT B6: surface the actual universe label + size so the UI
         # cannot continue to claim "SP500" coverage when only the mega-cap
         # stub was scanned. `universe_label` flows up untouched.
-        warnings: list[str] = []
+        warnings: list[str] = list(coverage_warnings)
         if template_mode:
             warnings.append(
                 "Template mode: rows are model fixtures, not live market data."
@@ -359,6 +363,7 @@ class EQSFunction(BaseFunction):
                 "data_mode": "delayed_reference" if live else "modeled",
                 "universe": universe_label,
                 "universe_size": len(universe),
+                "enrichment_coverage": coverage,
             },
         )
 
@@ -398,9 +403,7 @@ class EQSFunction(BaseFunction):
                     _batch_cache_write(fresh)
                     batch_rows.update(fresh)
         if batch_rows:
-            await self._refresh_refdata_slice(
-                universe, str(params.get("query") or ""), params
-            )
+            await self._refresh_refdata_slice(universe, params)
             master = _security_master_by_symbol()
             rows: list[dict[str, Any]] = []
             for sym in universe:
@@ -465,23 +468,18 @@ class EQSFunction(BaseFunction):
     async def _refresh_refdata_slice(
         self,
         universe: list[str],
-        query: str,
         params: dict[str, Any],
     ) -> None:
         """Cache REFDATA-only fields (beta/industry/ps) in rotated slices.
 
-        The batch endpoint covers marketCap/PE/PB/yield but not beta; queries
-        that reference those fields would otherwise run with unknown values
-        forever. Each call refreshes a bounded slice of uncached symbols into a
-        process-local cache, so repeated runs progressively cover the universe
-        without ever inventing a number.
+        The batch endpoint (Yahoo v7 quote) does not carry beta, priceToSales or
+        industry. They exist only in the per-symbol REFDATA payload, so every
+        live batch scan refreshes a bounded slice of uncached symbols into a
+        process-local cache. The slice used to run only when the query text
+        named one of those fields, which made the same universe show different
+        columns depending on the previous query. Coverage is reported by
+        ``_enrichment_coverage``; no value is ever invented.
         """
-        normalized = normalize_query_aliases(query or "").lower()
-        if not any(
-            re.search(rf"\b{token}\b", normalized)
-            for token in ("beta", "industry", "ps")
-        ):
-            return
         budget = int(max(0.0, min(_param_float(params, "refdata_budget", 24.0), 64.0)))
         if budget <= 0:
             return
@@ -638,6 +636,32 @@ def _compose_live_row(
         "beta": beta,
         "country": ref.get("country") or master.get("country") or batch.get("country"),
     }
+
+
+_ENRICHMENT_FIELDS = ("beta", "ps", "industry")
+
+
+def _enrichment_coverage(df: pd.DataFrame) -> dict[str, dict[str, int]]:
+    """Per-field count of scanned rows that carry a real value (not a gap)."""
+    total = int(len(df))
+    out: dict[str, dict[str, int]] = {}
+    for field in _ENRICHMENT_FIELDS:
+        populated = int(df[field].notna().sum()) if field in df.columns else 0
+        out[field] = {"populated": populated, "of": total}
+    return out
+
+
+def _coverage_warnings(coverage: dict[str, dict[str, int]]) -> list[str]:
+    warnings: list[str] = []
+    for field, counts in coverage.items():
+        gaps = counts["of"] - counts["populated"]
+        if counts["of"] and gaps > 0:
+            warnings.append(
+                f"{field} is empty for {gaps} of {counts['of']} scanned rows: no REFDATA "
+                "value is cached for them yet, so predicates on it skip those rows. "
+                "Coverage grows across runs (rotating REFDATA refresh)."
+            )
+    return warnings
 
 
 def _batch_cache_read(symbols: list[str]) -> dict[str, dict[str, Any]]:
