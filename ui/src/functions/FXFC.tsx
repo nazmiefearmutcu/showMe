@@ -361,7 +361,7 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`FX Forecasts — ${payload?.pair ?? effectivePair}`}
+          title={`CIP Forward — ${payload?.pair ?? effectivePair}`}
           subtitle={`${rows.length} horizons · CIP carry path`}
           trailing={
             <FunctionControlGroup>
