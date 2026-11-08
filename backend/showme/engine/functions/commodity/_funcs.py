@@ -802,13 +802,34 @@ class NGASFunction(BGASFunction):
 # (see CPFFunction._trend_forecast), so CPF needs no key and no second
 # provider — the values move with the live market, never constants.
 CPF_SERIES_MAP: dict[str, dict[str, Any]] = {
-    "WTISPLC": {"name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl"},
-    "DCOILWTICO": {"name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl"},
-    "DHHNGSP": {"name": "Henry Hub natural gas", "futures": "NG=F", "unit": "USD/MMBtu"},
+    # CPF#4/#9: each entry is a futures PROXY served under the series id label.
+    # ``contract``/``unit`` describe the proxy actually served; ``fred_unit`` and
+    # ``fred_basis`` describe the FRED series the id names, so the response can
+    # say where they differ. PGOLD has no FRED series (fredgraph.csv?id=PGOLD
+    # returns HTTP 404), so it carries no FRED fields.
+    "WTISPLC": {
+        "name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl",
+        "contract": "NYMEX WTI crude front-month futures",
+        "fred_unit": "USD/bbl", "fred_basis": "monthly spot average",
+    },
+    "DCOILWTICO": {
+        "name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl",
+        "contract": "NYMEX WTI crude front-month futures",
+        "fred_unit": "USD/bbl", "fred_basis": "daily spot price",
+    },
+    "DHHNGSP": {
+        "name": "Henry Hub natural gas", "futures": "NG=F", "unit": "USD/MMBtu",
+        "contract": "NYMEX Henry Hub natural gas front-month futures",
+        "fred_unit": "USD/MMBtu", "fred_basis": "daily spot price",
+    },
     # PNGASEUUSDM (European gas) is deliberately NOT mapped: NG=F is the Henry
     # Hub contract, so routing it there served US prices under a European label.
-    "PCOPPUSDM": {"name": "Copper", "futures": "HG=F", "unit": "USD/lb"},
-    "PGOLD": {"name": "Gold", "futures": "GC=F", "unit": "USD/oz"},
+    "PCOPPUSDM": {
+        "name": "Copper", "futures": "HG=F", "unit": "USD/lb",
+        "contract": "COMEX copper front-month futures",
+        "fred_unit": "USD/metric ton", "fred_basis": "monthly world price",
+    },
+    "PGOLD": {"name": "Gold", "futures": "GC=F", "unit": "USD/oz", "contract": "COMEX gold front-month futures"},
 }
 
 
@@ -980,6 +1001,16 @@ class CPFFunction(BaseFunction):
 
         # Build the flat table rows the manifest table_schema expects:
         # {date, kind, value, vintage}.
+        series_note = (
+            f"{series_id} is served from the {meta['contract']} ({futures}), not from FRED."
+        )
+        if meta.get("fred_basis"):
+            series_note += f" The FRED {series_id} series is a {meta['fred_basis']}."
+        if meta.get("fred_unit") and meta["fred_unit"] != meta["unit"]:
+            series_note += (
+                f" Units differ: FRED reports {meta['fred_unit']}, "
+                f"the served proxy is in {meta['unit']}."
+            )
         # The actual series is shown only when show_actual_history is on; it is
         # always returned under ``actual`` because the forecast is built from it.
         displayed_actual = actual_series if show_actual else []
@@ -1013,6 +1044,15 @@ class CPFFunction(BaseFunction):
                 "series_id": series_id,
                 "commodity": meta["name"],
                 "unit": meta["unit"],
+                # CPF#4/#9: the served series is a futures proxy, not the FRED
+                # series named by series_id. Say so, and say where they differ.
+                "proxy_symbol": futures,
+                "proxy_contract": meta["contract"],
+                "proxy_unit": meta["unit"],
+                "fred_series_id": series_id,
+                "fred_unit": meta.get("fred_unit"),
+                "fred_series_fetched": False,
+                "series_note": series_note,
                 "horizon": horizon,
                 "actual": actual_series,
                 "forecast": forecast_series,

@@ -56,6 +56,8 @@ interface CPFData {
   as_of?: string;
   data_mode?: string;
   next_actions?: string[];
+  proxy_symbol?: string;
+  series_note?: string;
 }
 
 const SERIES_OPTIONS = [
@@ -208,8 +210,11 @@ export function CPFPane({ code, symbol }: FunctionPaneProps) {
     <div className="u-grid-gap-14">
       <div role="note" style={noticeStyle}>
         <strong>Trend model.</strong> The forecast leg is a clamped trend
-        extrapolation of the live actual series (vintage{" "}
+        extrapolation of the futures-proxy actual series (vintage{" "}
         {payload?.forecast_vintage ?? "—"}) — NOT analyst consensus.
+        {payload?.series_note ? (
+          <div style={{ marginTop: 4 }}>{payload.series_note}</div>
+        ) : null}
       </div>
       <section style={kpiGridStyle} aria-label="CPF forecast cards">
         <StatCard

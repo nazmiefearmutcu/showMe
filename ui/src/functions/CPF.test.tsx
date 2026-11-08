@@ -67,6 +67,9 @@ function livePayload() {
         forecast_vintage: "2026-09-06",
         as_of: "2026-09-06",
         data_mode: "futures_proxy_trend",
+        proxy_symbol: "CL=F",
+        series_note:
+          "WTISPLC is served from the NYMEX WTI crude front-month futures (CL=F), not from FRED. The FRED WTISPLC series is a monthly spot average.",
       },
       sources: ["yfinance"],
       elapsed_ms: 40,
@@ -159,6 +162,9 @@ describe("CPF pane — model honesty", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<CPFPane code="CPF" symbol="CL=F" />);
     expect(screen.getByText(/NOT analyst consensus/i)).toBeInTheDocument();
+    // CPF#4/#9: the served series is disclosed as a futures proxy, not FRED.
+    expect(screen.getByText(/served from the NYMEX WTI crude front-month/i)).toBeInTheDocument();
+    expect(screen.getByText(/not from FRED/i)).toBeInTheDocument();
     expect(screen.getByText("trend model")).toBeInTheDocument();
     // CPF#2: the futures proxy is labelled as a proxy, never as "live actual".
     expect(screen.getAllByText(/futures proxy/i).length).toBeGreaterThanOrEqual(1);

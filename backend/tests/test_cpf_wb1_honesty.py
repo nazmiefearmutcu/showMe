@@ -107,3 +107,39 @@ def test_outage_reason_reports_the_real_failure_not_a_skipped_fetch(monkeypatch)
     assert result.data["status"] == "provider_unavailable"
     assert "CL=F" in result.data["reason"]
     assert "HTTP 503" in result.data["reason"]
+
+
+# CPF#4 — the response must say that the served series is a futures proxy, with
+# its own contract, unit and basis, and not the FRED series named by series_id.
+def test_copper_response_names_the_proxy_and_the_unit_difference(monkeypatch) -> None:
+    _patch_history(monkeypatch, _history())
+    data = _run(series_id="PCOPPUSDM").data
+    assert data["proxy_symbol"] == "HG=F"
+    assert data["unit"] == "USD/lb"
+    assert data["fred_series_id"] == "PCOPPUSDM"
+    assert data["fred_unit"] == "USD/metric ton"
+    assert data["fred_series_fetched"] is False
+    assert "not from FRED" in data["series_note"]
+    assert "USD/metric ton" in data["series_note"]
+    assert "USD/lb" in data["series_note"]
+
+
+def test_wti_response_says_the_fred_series_is_a_monthly_average(monkeypatch) -> None:
+    _patch_history(monkeypatch, _history())
+    data = _run(series_id="WTISPLC").data
+    assert data["proxy_symbol"] == "CL=F"
+    assert "The FRED WTISPLC series is a monthly spot average." in data["series_note"]
+    assert "Units differ" not in data["series_note"]
+    assert data["fred_series_fetched"] is False
+
+
+# CPF#9 — PGOLD is not a FRED series id (fredgraph.csv?id=PGOLD returns HTTP 404).
+# It is served from the GC=F futures proxy and must be labelled as a proxy only.
+def test_gold_series_id_is_labelled_as_a_proxy_not_a_fred_series(monkeypatch) -> None:
+    _patch_history(monkeypatch, _history())
+    data = _run(series_id="PGOLD").data
+    assert data["proxy_symbol"] == "GC=F"
+    assert data["fred_unit"] is None
+    assert data["fred_series_fetched"] is False
+    assert "PGOLD is served from" in data["series_note"]
+    assert "not from FRED" in data["series_note"]
