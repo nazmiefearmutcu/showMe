@@ -804,10 +804,23 @@ class ALLQFunction(BaseFunction):
     async def _ustreasury_curve_anchor(self, symbol: str) -> tuple[float, str, str, str] | None:
         """Per-tenor anchor from the keyless US Treasury par-yield curve.
 
-        Returns ``(clean_price, source, ref_note, as_of_date)``: the tenor's
-        latest observed par yield discounted to a reference-bond clean price.
-        Returns ``None`` when the adapter is absent, the symbol is not a US
-        curve tenor, the tenor has no observation, or the fetch fails.
+        Returns ``(clean_price, source, ref_note, as_of_date)`` or ``None``; see
+        ``_ustreasury_curve_anchor_detail`` for the failure reason.
+        """
+        anchor, _failure = await self._ustreasury_curve_anchor_detail(symbol)
+        return anchor
+
+    async def _ustreasury_curve_anchor_detail(
+        self, symbol: str
+    ) -> tuple[tuple[float, str, str, str] | None, str | None]:
+        """Per-tenor anchor plus the reason a fetch failed.
+
+        Returns ``(anchor, failure)``. ``anchor`` is ``(clean_price, source,
+        ref_note, as_of_date)``: the tenor's latest observed par yield discounted
+        to a reference-bond clean price. ``failure`` names the curve fetch error
+        when the adapter raised, so the caller can report it; it is ``None`` when
+        the adapter is absent, the symbol is not a US curve tenor, or the tenor
+        simply has no observation.
         """
         import math
 
@@ -815,22 +828,22 @@ class ALLQFunction(BaseFunction):
         upper = str(symbol).upper()
         column = _US_TREASURY_TENOR_COLUMNS.get(upper)
         if provider is None or column is None:
-            return None
+            return None, None
         try:
             curve = await provider.yield_curve()
-        except Exception:  # noqa: BLE001 — the ALLQ caller reports provider_unavailable
-            return None
+        except Exception as exc:  # noqa: BLE001 — reported by the ALLQ caller, never silent
+            return None, f"Treasury curve fetch failed ({type(exc).__name__}: {exc})"
         if not hasattr(curve, "columns") or column not in curve.columns:
-            return None
+            return None, None
         series = curve[column].dropna()
         if series.empty:
-            return None
+            return None, None
         try:
             yld = float(series.iloc[-1])
         except (TypeError, ValueError):
-            return None
+            return None, None
         if not math.isfinite(yld):
-            return None
+            return None, None
         as_of = _allq_observation_date(series.index[-1])
         years = float(_US_TREASURY_TENOR_YEARS.get(upper, 10.0))
         price = round(_allq_reference_price(yld, years), 4)
@@ -840,7 +853,7 @@ class ALLQFunction(BaseFunction):
             else f"reference bond {_ALLQ_REF_COUPON_PCT:.0f}% coupon"
         )
         note = f"Treasury {column} par yield {yld:.3f}% on {as_of} (per-tenor, keyless curve; {basis})"
-        return (price, "ustreasury", note, as_of)
+        return (price, "ustreasury", note, as_of), None
 
     def _build_ladder(
         self, symbol: str, anchor: float, spread: float, size: float, ref_note: str, quote_time: str
@@ -873,8 +886,11 @@ class ALLQFunction(BaseFunction):
         as_of = _as_of()
         quote_time = _now_iso()
         fetch_error: Exception | None = None
+        curve_failure: str | None = None
         try:
-            got = await self._ustreasury_curve_anchor(symbol) if us_tenor else None
+            got = None
+            if us_tenor:
+                got, curve_failure = await self._ustreasury_curve_anchor_detail(symbol)
             if got is not None:
                 anchor, source, ref_note, as_of = got
                 quote_time = f"{as_of}T00:00:00+00:00"
@@ -917,6 +933,7 @@ class ALLQFunction(BaseFunction):
                 if us_tenor
                 else f"{symbol!r} is not a US Treasury tenor on the keyless curve; no reference yield is anchored"
             )
+            detail = curve_failure or (str(fetch_error) if fetch_error else None)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -930,7 +947,7 @@ class ALLQFunction(BaseFunction):
                     "next_actions": ["Retry when the Treasury curve is reachable, or pass an explicit ``mid``."],
                 },
                 sources=[source] if us_tenor else [],
-                warnings=[f"{reason}{f': {fetch_error}' if fetch_error else ''}."],
+                warnings=[f"{reason}{f': {detail}' if detail else ''}."],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 

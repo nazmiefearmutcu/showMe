@@ -404,3 +404,22 @@ def test_allq3_ustreasury_adapter_does_not_mask_server_errors() -> None:
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(adapter.yield_curve())
     assert http.urls == [cur]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ALLQ#3 (reporting) — a failed per-tenor curve fetch is named, not silent
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_allq3_curve_fetch_failure_is_named_in_the_warning() -> None:
+    """A failing Treasury curve fetch must surface its reason, not a generic note.
+
+    Red on the old code: the helper swallowed the exception, so the warning
+    only said there was no observation and never named the failed fetch.
+    """
+    res = asyncio.run(
+        _allq(FunctionDeps(ustreasury=_FakeCurve(boom=True))).execute(instrument=_bond("US10Y"))
+    )
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["rows"] == []
+    assert any("treasury csv down" in w for w in res.warnings)
