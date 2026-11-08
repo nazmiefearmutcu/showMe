@@ -465,6 +465,35 @@ def test_inline_transactions_replace_the_local_store(tmp_path, monkeypatch):
     assert "order_history" not in res.sources
 
 
+# ---------------------------------------------------------------------------
+# TCA#5 (review) — a limit order with no recorded arrival price must not take
+# its limit price as the arrival benchmark. Arrival and IS stay unset.
+# ---------------------------------------------------------------------------
+def test_missing_arrival_price_is_not_filled_from_the_limit_price(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+    from showme.engine.services import order_history
+
+    _use_temp_home(tmp_path, monkeypatch)
+
+    async def _no_bars(self, symbol, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(TCAFunction, "_yfinance_intraday", _no_bars)
+    order_history.record_order(
+        broker="ibkr", order_id="ord-900", symbol="AAPL", side="BUY",
+        quantity=2.0, asset_class="EQUITY", price=190.0, type="LIMIT",
+        status="filled",
+        metadata={"fills": [{"px": 190.0, "qty": 2.0}], "filled_qty": 2.0},
+    )
+    res = _run(TCAFunction(deps=FunctionDeps()).execute(symbol="AAPL", benchmark="ARRIVAL"))
+    row = res.data["rows"][0]
+
+    assert row["avg_fill_px"] == pytest.approx(190.0)
+    assert row["arrival_px"] is None, row
+    assert row["is_bps"] is None, row
+
+
 def test_json_transactions_and_invalid_transactions(tmp_path, monkeypatch):
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.functions.trade.tca import TCAFunction
