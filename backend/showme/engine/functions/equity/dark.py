@@ -19,14 +19,8 @@ import pandas as pd
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.data_sources.equity.finra_adapter import fetch_ats_weekly_pages, newest_weeks
 from showme.engine.functions.equity._common import FIELD_DICTIONARIES, finite
-
-# FINRA OTC Transparency — keyless public Query API.
-_FINRA_WEEKLY_URL = (
-    "https://api.finra.org/data/group/otcMarket/name/weeklySummary"
-)
-# ATS (Alternative Trading System) weekly, broken out by symbol.
-_FINRA_ATS_TYPE = "ATS_W_SMBL"
 
 _METHODOLOGY = (
     "DARK pulls FINRA OTC Transparency weekly ATS aggregates (off-exchange share "
@@ -92,7 +86,7 @@ class DARKFunction(BaseFunction):
 
         async def _safe_finra():
             try:
-                return await self._fetch_finra_ats(sym)
+                return await self._fetch_finra_ats(sym, weeks)
             except Exception as exc:
                 provider_errors.append(f"finra: {exc}")
                 return []
@@ -252,8 +246,13 @@ class DARKFunction(BaseFunction):
             metadata={"provider_errors": provider_errors} if provider_errors else {},
         )
 
-    async def _fetch_finra_ats(self, symbol: str) -> list[dict[str, Any]]:
+    async def _fetch_finra_ats(self, symbol: str, weeks: int = 26) -> list[dict[str, Any]]:
         """Fetch keyless FINRA OTC Transparency weekly ATS rows for ``symbol``.
+
+        Returns the rows of the ``weeks`` most recent published weeks. FINRA
+        returns oldest-first, so the request is bounded to a date window ending
+        today (shared with the adapter) instead of a bare row limit that would
+        only ever see the symbol's oldest history.
 
         Prefers a wired ``self.deps.finra`` adapter if it exposes ``ats_weekly``;
         otherwise queries the public FINRA Query API directly. Returns a list of
@@ -263,7 +262,7 @@ class DARKFunction(BaseFunction):
         # Wired adapter path (kept for parity with existing wiring / tests).
         adapter = getattr(self.deps, "finra", None)
         if adapter is not None and hasattr(adapter, "ats_weekly"):
-            df = await adapter.ats_weekly(symbol=symbol, limit=200)
+            df = await adapter.ats_weekly(symbol=symbol, limit=weeks)
             if df is not None and len(df) > 0:
                 return _normalise_adapter_frame(df)
 
@@ -271,31 +270,8 @@ class DARKFunction(BaseFunction):
         from showme.providers._http import get_client
 
         client = await get_client()
-        payload = {
-            "compareFilters": [
-                {
-                    "fieldName": "summaryTypeCode",
-                    "fieldValue": _FINRA_ATS_TYPE,
-                    "compareType": "EQUAL",
-                },
-                {
-                    "fieldName": "issueSymbolIdentifier",
-                    "fieldValue": symbol,
-                    "compareType": "EQUAL",
-                },
-            ],
-            "limit": 200,
-        }
-        resp = await client.post(
-            _FINRA_WEEKLY_URL,
-            json=payload,
-            headers={"Accept": "application/json"},
-            timeout=8.0,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        rows = body if isinstance(body, list) else body.get("data") or body.get("rows") or []
-        return _normalise_finra_rows(rows)
+        raw = await fetch_ats_weekly_pages(client, symbol, weeks=weeks, timeout=8.0)
+        return _normalise_finra_rows(newest_weeks(raw, weeks))
 
     async def _weekly_total_volume(self, symbol: str) -> dict[str, float]:
         """Return {weekStartDate(Mon iso): total_volume} from yfinance weekly bars.
