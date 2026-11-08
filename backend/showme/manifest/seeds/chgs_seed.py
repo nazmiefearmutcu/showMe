@@ -4,7 +4,9 @@ A study-focused chart launcher that wraps TECH with a fixed preset of
 overlays + sub-pane studies and a faster turnaround for the workspace's
 "throw a chart up with sensible defaults" need. CHGS aliases TECH on the
 live path; the offline path returns a small template so the pane still
-renders when no data adapter is wired.
+renders when no data adapter is wired. Honesty (CHGS#1/#5): the offline path
+returns an explicit provider_unavailable / no_price_history state, and
+reference=true returns an empty state, never a template.
 """
 from __future__ import annotations
 
@@ -111,7 +113,7 @@ def chgs() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["symbol", "rows", "last", "data_mode"],
+            must_have=["rows", "bars", "indicators", "summary", "status"],
             rows=True,
             series=True,
             cards=True,
@@ -157,16 +159,15 @@ def chgs() -> FunctionManifest:
             "CHGS is a quick-launch alias for TECH with a fixed preset of overlays (SMA20/SMA50) and"
             " a single RSI(14) sub-pane. The handler defers to the live TECH path by default"
             " (``metadata.alias_of=TECH``); when the provider is unavailable it returns an explicit"
-            " ``no_price_history`` status with a reason — never a synthetic chart template. The"
+            " ``provider_unavailable`` or ``no_price_history`` status with a reason — never a synthetic chart template. The"
             " chart_grammar pins ``TIME_SERIES_CANDLES`` with a 70/30 price/RSI split."
         ),
         formula_dict={},
         field_dict={
-            "symbol": FieldDef(description="Instrument symbol echoed from the request.", source="adapter"),
-            "last": FieldDef(unit="quote_ccy", description="Last close price (from the live TECH alias).", source="adapter"),
-            "rsi_14": FieldDef(description="Wilder RSI(14) reading at last close.", source="computed"),
-            "sma_20": FieldDef(unit="quote_ccy", description="Simple 20-period close average.", source="computed"),
-            "sma_50": FieldDef(unit="quote_ccy", description="Simple 50-period close average.", source="computed"),
+            "summary.last_price": FieldDef(unit="quote_ccy", description="Last close price (from the live TECH alias).", source="adapter"),
+            "summary.rsi": FieldDef(description="Wilder RSI(14) reading at last close.", source="computed"),
+            "indicators.sma_20": FieldDef(unit="quote_ccy", description="Simple 20-period close average series.", source="computed"),
+            "indicators.sma_50": FieldDef(unit="quote_ccy", description="Simple 50-period close average series.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -182,7 +183,7 @@ def chgs() -> FunctionManifest:
                 name="chgs_default_defers_to_live_tech",
                 description=(
                     "The default path forwards to TECHFunction (metadata.alias_of=TECH); with no"
-                    " provider it returns an explicit no_price_history status and a reason, never a"
+                    " provider it returns an explicit provider_unavailable status and a reason, never a"
                     " chart template."
                 ),
                 inputs={"symbol": "AAPL"},

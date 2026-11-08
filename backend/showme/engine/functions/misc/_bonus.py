@@ -494,25 +494,26 @@ class CHGSFunction(BaseFunction):
         if instrument is None:
             raise ValueError("CHGS requires an instrument symbol")
         # Default-polarity flip (2026-09-08): CHGS defers to the live TECH
-        # studies by default; ``reference=true`` serves the labelled
-        # synthetic chart template.
+        # studies by default. Honesty (CHGS#1): ``reference=true`` used to
+        # serve a synthetic 10-bar template with constant RSI/SMA values; it
+        # now returns an explicit empty state with no figures.
         if _truthy(params.get("reference")):
-            rows = _chart_template(instrument.symbol)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "reference",
-                    "data_mode": "modeled",
+                    "status": "empty",
+                    "data_mode": "empty",
                     "symbol": instrument.symbol,
-                    "last": rows[-1]["close"],
-                    "rows": rows,
-                    "rsi_14": 54.2,
-                    "sma_20": rows[-1]["close"] * 0.985,
-                    "sma_50": rows[-1]["close"] * 0.962,
+                    "rows": [],
+                    "reason": "reference_mode_has_no_figures",
+                    "next_actions": ["Turn reference mode off to load live TECH studies"],
                 },
-                metadata={"alias_of": "TECH", "live": False, "data_mode": "modeled"},
-                sources=["showme_chart_model"],
+                metadata={"live": False, "data_mode": "empty"},
+                sources=[],
+                warnings=[
+                    "reference mode ships no chart figures; nothing was modelled or fabricated"
+                ],
             )
         from showme.engine.functions.chart.tech import TECHFunction
         tech_params = dict(params)
@@ -526,10 +527,21 @@ class CHGSFunction(BaseFunction):
             tech_params.pop("limit", None)
         tech = TECHFunction(self.deps)
         result = await tech.execute(instrument=instrument, **tech_params)
+        data = result.data
+        if not data:
+            # Honesty (CHGS#5): TECH answers an empty envelope with no status
+            # when no OHLCV adapter is wired. CHGS names that outage explicitly
+            # so an empty body never reads as data.
+            data = {
+                "status": "provider_unavailable",
+                "rows": [],
+                "reason": "; ".join(result.warnings) or "no price data provider is configured",
+                "next_actions": ["Configure a price provider or try again later."],
+            }
         return FunctionResult(
             code=self.code,
             instrument=result.instrument,
-            data=result.data,
+            data=data,
             metadata={**(result.metadata or {}), "alias_of": "TECH"},
             sources=result.sources,
             warnings=result.warnings,
@@ -767,21 +779,6 @@ def _taxonomy_rows(
     if len(rows) <= 5:
         rows.append({"level": "Asset class", "classification": instrument.asset_class.value, "source_mode": "instrument_registry"})
     return rows
-
-
-def _chart_template(symbol: str) -> list[dict[str, Any]]:
-    base = 78000.0 if symbol.upper().endswith(("USDT", "USD")) else 100.0
-    return [
-        {
-            "date": f"template-{idx + 1:02d}",
-            "open": round(base * (1 + (idx - 5) * 0.003), 4),
-            "high": round(base * (1 + (idx - 5) * 0.003 + 0.008), 4),
-            "low": round(base * (1 + (idx - 5) * 0.003 - 0.007), 4),
-            "close": round(base * (1 + (idx - 5) * 0.003 + 0.002), 4),
-            "volume": 1_000_000 + idx * 75_000,
-        }
-        for idx in range(10)
-    ]
 
 
 def _parse_symbol_list(raw: Any) -> list[str]:
