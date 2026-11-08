@@ -103,7 +103,7 @@ def btmm() -> FunctionManifest:
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
-            primary="fred",
+            primary="bis_cbpol",
             fallbacks=["cached_snapshot"],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
