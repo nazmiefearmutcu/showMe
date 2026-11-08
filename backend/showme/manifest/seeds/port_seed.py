@@ -185,11 +185,11 @@ def port() -> FunctionManifest:
             "(sign-aware for shorts), unrealized_pct = unrealized / "
             "(avg_cost * |qty|) * 100, day_change = (last - prev_close) * qty, "
             "and weight = market_value / total_market_value * 100. Currency "
-            "conversion uses the FX adapter (cached intraday). Equity curve is "
-            "reconstructed from snapshot history in DuckDB (one snapshot per "
-            "minute when the sidecar is running). Realized PnL YTD is summed "
-            "from broker transaction history (fetched on first load, cached, "
-            "incrementally updated). Reconciliation diffs between broker "
+            "conversion uses the FX adapter (cached intraday). No equity curve "
+            "is produced yet: snapshot history is not stored by this function. "
+            "Realized PnL YTD is summed from closed-position records dated in "
+            "the current year; realized PnL on open positions has no close date "
+            "and is excluded. Reconciliation diffs between broker "
             "equity and computed market_value are surfaced as warnings — never "
             "silently absorbed."
         ),
@@ -220,9 +220,7 @@ def port() -> FunctionManifest:
             "positions[].avg_cost": FieldDef(unit="quote", description="Volume-weighted average cost.", source="broker"),
             "positions[].last": FieldDef(unit="quote", description="Last traded price.", source="market adapter"),
             "totals.total_equity": FieldDef(unit="ccy", description="Cash + Σ position market values, converted to base ccy.", source="computed"),
-            "totals.day_pnl": FieldDef(unit="ccy", description="Σ position day_change, sign-aware.", source="computed"),
-            "equity_curve[].t": FieldDef(unit="epoch ms", description="Snapshot time.", source="snapshot store"),
-            "equity_curve[].equity": FieldDef(unit="ccy", description="Equity at that snapshot.", source="snapshot store"),
+            "totals.day_pnl": FieldDef(unit="ccy", description="Σ position day_change, sign-aware; null while any position is unpriced or lacks a previous close.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -274,12 +272,6 @@ def port() -> FunctionManifest:
                 description="Broker reports equity that disagrees by 0.5% from computed market_value.",
                 inputs={},
                 assertions=["warnings_contains_reconciliation_diff"],
-            ),
-            SemanticTest(
-                name="port_equity_curve_monotonic_time",
-                description="Equity curve timestamps are strictly increasing.",
-                inputs={},
-                assertions=["equity_curve_timestamps_strictly_increasing"],
             ),
             SemanticTest(
                 name="port_no_silent_zero_qty_positions_when_show_zero_false",

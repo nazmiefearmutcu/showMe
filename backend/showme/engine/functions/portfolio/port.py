@@ -21,6 +21,12 @@ from showme.engine.portfolio.state import PortfolioState
 _STABLE_USD_CURRENCIES = {"USD", "USDT", "USDC", "DAI", "BUSD", "TUSD"}
 _GROUP_BY_OPTIONS = ("account", "asset_class", "sector", "currency", "none")
 _CCY_RE = re.compile(r"^[A-Z]{3}$")
+_DATA_STATE_BY_PRICE_STATE = {
+    "live": "live",
+    "partial": "partial",
+    "legacy_snapshot": "reference",
+    "unavailable": "unavailable",
+}
 
 
 def _cash_totals(cash: Any) -> tuple[float | None, dict[str, float]]:
@@ -137,6 +143,104 @@ def _input_error(reason: str, next_actions: list[str]) -> FunctionResult:
               "next_actions": next_actions},
         sources=["portfolio_state"],
         metadata={"input_error": True},
+    )
+
+
+async def _supplied_rows_result(deps: FunctionDeps, rows: list[dict[str, Any]], ccy: str,
+                                accounts: set[str] | None, show_zero: bool,
+                                cash_base: float | None, cash_by_currency: dict[str, float],
+                                cash_warnings: list[str]) -> FunctionResult:
+    """Value the positions passed in params when the book itself is empty.
+
+    Same rules as the book path: each row is converted to ``ccy`` with its own
+    FX rate, the account and zero-quantity filters apply, and a row without a
+    usable last price is unpriced (it is never marked at its cost basis).
+    """
+    warnings: list[str] = list(cash_warnings)
+    fx_rates: dict[str, float | None] = {}
+    out_rows: list[dict[str, Any]] = []
+    total_mv = 0.0
+    total_cost = 0.0
+    total_unrl = 0.0
+    n_unpriced = 0
+    for row in rows:
+        qty = float(row["quantity"])
+        if not show_zero and qty == 0:
+            continue
+        account = str(row.get("account") or "main")
+        if accounts is not None and account.upper() not in accounts:
+            continue
+        sym = str(row.get("symbol") or "")
+        currency = _fx_key(row.get("currency"))
+        if currency not in fx_rates:
+            fx_rates[currency] = await _fx_rate(deps, currency, ccy)
+        rate = fx_rates[currency]
+        avg = float(row["avg_cost"])
+        last = _finite_positive(row.get("last"))
+        out: dict[str, Any] = {
+            **row,
+            "symbol": sym,
+            "account": account,
+            "currency": currency,
+            "quantity": qty,
+            "avg_cost": avg,
+            "last": last,
+            "price_source": "supplied" if last is not None else "missing",
+            "quote_missing": last is None,
+            "fx_rate": rate,
+            "market_value": None,
+            "unrealized_pnl": None,
+            "weight_pct": None,
+        }
+        out_rows.append(out)
+        if rate is None:
+            n_unpriced += 1
+            warnings.append(f"{sym}: no {currency}{ccy} FX rate; excluded from {ccy} totals")
+            continue
+        total_cost += avg * qty * rate
+        if last is None:
+            n_unpriced += 1
+            warnings.append(f"{sym}: no last price supplied; excluded from market value and P&L")
+            continue
+        mv = qty * last * rate
+        unrl = (last - avg) * qty * rate
+        out["market_value"] = mv
+        out["unrealized_pnl"] = unrl
+        total_mv += mv
+        total_unrl += unrl
+    for out in out_rows:
+        if out["market_value"] is not None and total_mv:
+            out["weight_pct"] = out["market_value"] / total_mv * 100
+    n_rows = len(out_rows)
+    if n_rows:
+        warnings.append("day P&L unavailable: supplied rows carry no previous close")
+    total_equity = (
+        total_mv + cash_base if cash_base is not None and n_unpriced == 0 else None
+    )
+    used_sources = ["user_positions"]
+    if any(rate is not None and rate != 1.0 for rate in fx_rates.values()):
+        used_sources.append("yfinance")
+    return FunctionResult(
+        code="PORT", instrument=None,
+        data={
+            "positions": out_rows,
+            "ccy": ccy,
+            "fx_rates": dict(fx_rates),
+            "groups": [],
+            "totals": {
+                "market_value": total_mv,
+                "cost_basis": total_cost,
+                "unrealized_pnl": total_unrl,
+                "n_positions": n_rows,
+                "n_unpriced": n_unpriced,
+                "total_equity": total_equity,
+                "day_pnl": None,
+                **_cash_fields(cash_base, cash_by_currency),
+            },
+        },
+        metadata={"data_state": "user_supplied" if n_rows else "empty"},
+        sources=sorted(used_sources),
+        warnings=warnings,
     )
 
 
@@ -272,31 +376,8 @@ class PORTFunction(BaseFunction):
                     metadata={"empty": True, "requires_positions": True},
                     warnings=cash_warnings,
                 )
-            total_mv = 0.0
-            total_cost = 0.0
-            out_rows = []
-            for row in rows:
-                if not show_zero and float(row["quantity"]) == 0:
-                    continue
-                cost = float(row["avg_cost"])
-                mv = float(row["quantity"]) * float(row.get("last", row["avg_cost"]))
-                total_mv += mv
-                total_cost += cost * float(row["quantity"])
-                out_rows.append({**row, "market_value": mv,
-                                 "unrealized_pnl": (float(row.get("last", row["avg_cost"])) -
-                                                    float(row["avg_cost"])) * float(row["quantity"])})
-            for row in out_rows:
-                row["weight_pct"] = row["market_value"] / total_mv * 100 if total_mv else 0
-            return FunctionResult(code=self.code, instrument=None,
-                                  data={"positions": out_rows, "ccy": ccy,
-                                        "totals": {"market_value": total_mv,
-                                                   "cost_basis": total_cost,
-                                                   "n_positions": len(out_rows),
-                                                   "unrealized_pnl": sum(r["unrealized_pnl"] for r in out_rows),
-                                                   **_cash_fields(cash_base, cash_by_currency)},
-                                        "groups": []},
-                                  sources=["user_positions"],
-                                  warnings=cash_warnings)
+            return await _supplied_rows_result(self.deps, rows, ccy, accounts, show_zero,
+                                               cash_base, cash_by_currency, cash_warnings)
 
         # The book's own filters: zero-quantity history and the account selection.
         positions = [
@@ -407,17 +488,22 @@ class PORTFunction(BaseFunction):
 
         n_rows = len(rows)
         n_unpriced = sum(1 for row in rows if row["market_value"] is None)
-        # Day P&L needs a previous close for every priced position; a partial
-        # sum would understate the move, so it is withheld instead.
+        # Day P&L needs a previous close for every priced position, and every
+        # position must be priced: a partial sum would understate the move, so
+        # it is withheld instead (the same rule as total_equity below).
         if day_missing:
             day_pnl = None
             warnings.append(
                 "day P&L unavailable: no previous close for " + ", ".join(day_missing)
             )
-        elif n_rows > n_unpriced:
+        elif n_rows and n_unpriced == 0:
             day_pnl = day_total
         else:
             day_pnl = None
+            if n_unpriced:
+                warnings.append(
+                    f"day P&L withheld: {n_unpriced} unpriced position(s) are excluded from the day move"
+                )
         # Total equity = cash + market value; it is withheld while any position
         # is unpriced or when the book does not track cash.
         total_equity = (
@@ -466,7 +552,13 @@ class PORTFunction(BaseFunction):
                 },
                 "by_asset_class": by_class,
             },
-            metadata={"price_state": price_state, "price_sources": dict(price_sources)},
+            metadata={
+                "price_state": price_state,
+                "price_sources": dict(price_sources),
+                # Label follows the quote sources: live only when every mark came
+                # from the live quote adapter; recorded snapshot prices are reference.
+                "data_state": _DATA_STATE_BY_PRICE_STATE.get(price_state, "partial") if n_rows else "empty",
+            },
             sources=sorted(used_sources),
             warnings=warnings,
         )

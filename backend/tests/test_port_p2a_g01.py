@@ -306,3 +306,104 @@ def test_invalid_ccy_is_an_input_error(tmp_path: Path) -> None:
 
     assert result.data["status"] == "input_error"
     assert result.data["positions"] == []
+
+
+# --- PORT#1 supplied-rows path (empty book + params.positions) ---------------
+
+def _empty_book(tmp_path: Path) -> PortfolioState:
+    return _book(tmp_path)
+
+
+def test_supplied_rows_are_converted_to_base_ccy_and_account_filtered(tmp_path: Path) -> None:
+    rows = [
+        {"symbol": "SAP", "asset_class": "equity", "quantity": 10, "avg_cost": 100.0,
+         "last": 120.0, "currency": "EUR", "account": "broker_a"},
+        {"symbol": "MSFT", "asset_class": "equity", "quantity": 1, "avg_cost": 100.0,
+         "last": 110.0, "currency": "USD", "account": "broker_b"},
+    ]
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"EURUSD": (1.10, None)})))
+
+    result = _run(fn, _portfolio_override=_empty_book(tmp_path), positions=rows,
+                  ccy="USD", accounts=["broker_a"])
+
+    assert [r["symbol"] for r in result.data["positions"]] == ["SAP"]
+    row = result.data["positions"][0]
+    assert row["fx_rate"] == 1.10
+    assert row["market_value"] == pytest.approx(10 * 120.0 * 1.10)
+    assert result.data["totals"]["market_value"] == pytest.approx(1320.0)
+    assert result.data["totals"]["n_positions"] == 1
+    assert result.data["ccy"] == "USD"
+
+
+def test_supplied_rows_without_fx_rate_are_unpriced_not_relabelled(tmp_path: Path) -> None:
+    rows = [{"symbol": "SAP", "asset_class": "equity", "quantity": 10, "avg_cost": 100.0,
+             "last": 120.0, "currency": "EUR"}]
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({})))
+
+    result = _run(fn, _portfolio_override=_empty_book(tmp_path), positions=rows, ccy="USD")
+
+    row = result.data["positions"][0]
+    assert row["market_value"] is None
+    assert result.data["totals"]["market_value"] == 0.0
+    assert result.data["totals"]["n_unpriced"] == 1
+    assert any("EURUSD" in w for w in result.warnings)
+
+
+def test_supplied_row_without_last_is_not_marked_at_cost(tmp_path: Path) -> None:
+    rows = [{"symbol": "XYZ", "asset_class": "equity", "quantity": 10, "avg_cost": 50.0,
+             "currency": "USD"}]
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({})))
+
+    result = _run(fn, _portfolio_override=_empty_book(tmp_path), positions=rows, ccy="USD")
+
+    row = result.data["positions"][0]
+    assert row["last"] is None
+    assert row["market_value"] is None
+    assert result.data["totals"]["market_value"] == 0.0
+
+
+# --- PORT#2 day P&L is withheld while any position is unpriced ----------------
+
+def test_day_pnl_is_withheld_when_a_position_is_unpriced(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 2, 100.0), _eq("XYZ", 1, 50.0), cash={"USD": 1000.0})
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+
+    result = _run(fn, _portfolio_override=book)
+    totals = result.data["totals"]
+
+    assert totals["n_unpriced"] == 1
+    assert totals["total_equity"] is None  # same rule as day P&L: partial sums are withheld
+    assert totals["day_pnl"] is None
+    assert any("day P&L" in w and "unpriced" in w for w in result.warnings)
+
+
+# --- PORT#6 data_state derived from the quote sources --------------------------
+
+def test_data_state_is_live_only_when_every_quote_is_live(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (150.0, 149.0)})))
+    assert _run(fn, _portfolio_override=book).metadata["data_state"] == "live"
+
+
+def test_data_state_is_reference_for_recorded_snapshot_prices(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("ABC", 2, 10.0, metadata={"current_price": 12.5}))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({})))
+    assert _run(fn, _portfolio_override=book).metadata["data_state"] == "reference"
+
+
+def test_data_state_is_unavailable_when_nothing_prices(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("XYZ", 10, 50.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({})))
+    assert _run(fn, _portfolio_override=book).metadata["data_state"] == "unavailable"
+
+
+# --- PORT#2 manifest must not promise an equity curve that is not produced -----
+
+def test_port_manifest_does_not_promise_equity_curve() -> None:
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    entry = REGISTRY.get("PORT")
+    assert not [k for k in entry.field_dict if k.startswith("equity_curve")]
+    assert "reconstructed from snapshot" not in entry.methodology.lower()
+    assert not [t for t in entry.semantic_tests if "equity_curve" in t.name]
