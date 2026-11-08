@@ -946,9 +946,15 @@ class CPFFunction(BaseFunction):
         # HNT-06 fix: the old ``min(1, ...)`` picked the 2ND monthly point;
         # the documented ~12-month target lives at index 11. Shorter
         # horizons clamp to the last available point.
+        # CPF#6: forecast_1y is the ~12-month point only. A shorter horizon has
+        # no 1Y value, so it is None rather than the horizon endpoint under a
+        # 1Y key. forecast_at_horizon carries the endpoint for any horizon.
         forecast_1y: float | None = None
-        if forecast_series:
-            forecast_1y = _finite(forecast_series[min(11, len(forecast_series) - 1)].get("value"))
+        if forecast_series and horizon_months >= 12:
+            forecast_1y = _finite(forecast_series[11].get("value"))
+        forecast_at_horizon: float | None = (
+            _finite(forecast_series[-1].get("value")) if forecast_series else None
+        )
 
         # Build the flat table rows the manifest table_schema expects:
         # {date, kind, value, vintage}.
@@ -997,6 +1003,7 @@ class CPFFunction(BaseFunction):
                 "cards": {
                     "latest_actual": latest_actual,
                     "forecast_1y": forecast_1y,
+                    "forecast_at_horizon": forecast_at_horizon,
                     "forecast_vintage": forecast_vintage,
                     "forecast_horizon": horizon,
                     "data_mode": data_mode,
@@ -1100,7 +1107,8 @@ def _cpf_field_dictionary() -> dict[str, str]:
         "forecast_vintage": "Last realized actual date the forecast is anchored to (iso8601).",
         "forecast_horizon": "User-selected forward window (6M/1Y/2Y/5Y).",
         "latest_actual": "Most recent realized futures value.",
-        "forecast_1y": "Forecast value at the ~12-month horizon.",
+        "forecast_1y": "Forecast value at the ~12-month point; null when the horizon is shorter than 12 months.",
+        "forecast_at_horizon": "Forecast value at the end of the selected horizon.",
         "data_mode": "futures_proxy_trend when the actual futures proxy and the trend forecast are both present; delayed_reference when one leg is missing. live_official is reserved for official sources.",
     }
 

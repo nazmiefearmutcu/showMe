@@ -18,8 +18,10 @@ def _history(
     n: int = 200,
     start: float = 90.0,
     step: float = 0.1,
-    first: date = date(2026, 1, 1),
+    end: date = date(2026, 11, 6),
 ) -> list[dict]:
+    """n ascending daily closes ending on ``end`` (the last realized actual)."""
+    first = end - timedelta(days=n - 1)
     return [
         {"date": (first + timedelta(days=i)).isoformat(), "value": round(start + i * step, 4)}
         for i in range(n)
@@ -47,3 +49,17 @@ def test_futures_proxy_is_not_labelled_live_official(monkeypatch) -> None:
     assert result.data["status"] == "ok"
     assert result.data["data_mode"] == "futures_proxy_trend"
     assert result.data["cards"]["data_mode"] == "futures_proxy_trend"
+
+
+# CPF#6 — cards.forecast_1y must be the ~12-month point. For a 6M horizon the
+# old code returned the 6M endpoint under the 1Y key.
+def test_forecast_1y_card_is_only_the_twelve_month_point(monkeypatch) -> None:
+    _patch_history(monkeypatch, _history(end=date(2026, 11, 6)))
+    short = _run(horizon="6M")
+    assert len(short.data["forecast"]) == 6
+    assert short.data["cards"]["forecast_1y"] is None
+    assert short.data["cards"]["forecast_at_horizon"] == short.data["forecast"][-1]["value"]
+
+    long_ = _run(horizon="1Y")
+    assert long_.data["cards"]["forecast_1y"] == long_.data["forecast"][11]["value"]
+    assert long_.data["cards"]["forecast_at_horizon"] == long_.data["forecast"][-1]["value"]
