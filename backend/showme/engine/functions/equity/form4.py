@@ -94,17 +94,19 @@ class FORM4Function(BaseFunction):
                                   metadata={"provider_errors": [f"sec_edgar: {e}"]})
         # Aggregate counts
         rows = _filter_rows(rows, months=months, transaction_types=transaction_types)
-        by_month: dict[str, int] = {}
-        for r in rows:
-            d = (r.get("filingDate") or "")[:7]   # YYYY-MM
-            if d:
-                by_month[d] = by_month.get(d, 0) + 1
         # FORM4#6: the yfinance rows are the returned table, so the same window and
         # transaction-type filters apply to them (they were returned unfiltered).
         have_yfin = bool(yfin_rows)
         if have_yfin:
             yfin_rows = _filter_rows(yfin_rows, months=months, transaction_types=transaction_types)
         parsed_rows = yfin_rows if have_yfin else _filing_rows(sym, rows)
+        # FORM4#7: the monthly histogram counts the same rows the table shows (it used to
+        # count the SEC filing list, which can be a different length and set).
+        by_month: dict[str, int] = {}
+        for r in parsed_rows:
+            d = str(r.get("filingDate") or "")[:7]   # YYYY-MM
+            if d:
+                by_month[d] = by_month.get(d, 0) + 1
         # FORM4#4: without yfinance the SEC rows are filing metadata only (no filer,
         # shares, price or transaction). They are not live parsed trades.
         metadata_only = bool(parsed_rows) and not have_yfin

@@ -478,3 +478,51 @@ describe("FORM4 pane — monthly net flow render", () => {
     expect(screen.getByText(/Filing metadata only/i)).toBeInTheDocument();
   });
 });
+
+describe("FORM4 pane — link pairing (FORM4#7)", () => {
+  it("links each row only to the filing with the same accession number", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "metadata_only",
+          data_mode: "delayed_reference",
+          symbol: "AAPL",
+          rows: [
+            {
+              filingDate: "2026-10-01",
+              insider: null,
+              role: null,
+              transaction_type: "",
+              transaction: null,
+              shares: null,
+              price: null,
+              filing_url: null,
+              accession: "0001140361-26-000002",
+              source_mode: "sec_form4_filing_metadata",
+            },
+          ],
+          filings: [
+            {
+              filingDate: "2026-09-01",
+              accession: "0001140361-26-000001",
+              url: "https://www.sec.gov/Archives/one.xml",
+            },
+            {
+              filingDate: "2026-10-01",
+              accession: "0001140361-26-000002",
+              url: "https://www.sec.gov/Archives/two.xml",
+            },
+          ],
+          by_month: [{ month: "2026-10", count: 1 }],
+        },
+      },
+    });
+    render(<FORM4Pane code="FORM4" symbol="AAPL" />);
+    const links = screen.getAllByLabelText(/Open SEC primary document/i);
+    expect(links.length).toBe(1);
+    expect(links[0].getAttribute("href")).toBe(
+      "https://www.sec.gov/Archives/two.xml",
+    );
+  });
+});

@@ -220,3 +220,13 @@ def test_form4_8_six_month_window_is_calendar_not_186_days() -> None:
     now = datetime.now(timezone.utc)
     assert form4_mod._in_month_window(now - timedelta(days=186), 6) is False
     assert form4_mod._in_month_window(now - timedelta(days=120), 6) is True
+
+
+# ─── FORM4#7: by_month counts the same rows the table shows ───────────────
+
+
+def test_form4_7_by_month_counts_the_returned_rows() -> None:
+    # SEC returns no rows here; the histogram must still follow the yfinance table.
+    res = _execute_yf_and_sec(_yf_frame_relative(), months=24)
+    counts = {b["month"]: b["count"] for b in res.data["by_month"]}
+    assert sum(counts.values()) == len(res.data["rows"]) == 3
