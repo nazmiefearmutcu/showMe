@@ -604,6 +604,15 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
       target: 90,
     });
   });
+
+  it("PSC sends a typed but non-numeric risk or win rate as typed, never dropped for a 1% default", () => {
+    mockOk({ status: "input_error", rows: [] });
+    render(<PortfolioAnalyticsPane code="PSC" symbol="" />);
+    // A decimal comma is not a number to the backend: it must be reported, not replaced by 1%.
+    fireEvent.change(screen.getByLabelText("Risk per trade (%)"), { target: { value: "1,5" } });
+    fireEvent.change(screen.getByLabelText("Win rate (%)"), { target: { value: "abc" } });
+    expect(mockArgs.current?.params).toEqual({ side: "LONG", risk_pct: "1,5", win_rate: "abc" });
+  });
 });
 
 describe("PORTX STRS valuation basis is visible (STRS#6)", () => {

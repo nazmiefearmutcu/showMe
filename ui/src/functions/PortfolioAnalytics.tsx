@@ -1308,15 +1308,15 @@ function buildParams(
       // defaults (live price / portfolio value) or its input request (stop).
       // Risk and win rate are typed in percent and sent as fractions.
       const out: Record<string, unknown> = { side: state.side === "SHORT" ? "SHORT" : "LONG" };
-      const risk = optionalNumber(state.riskPct);
-      if (risk !== undefined) out.risk_pct = risk / 100;
+      const risk = pscTyped(state.riskPct);
+      if (risk !== undefined) out.risk_pct = typeof risk === "number" ? risk / 100 : risk;
       const fields = { account: state.account, entry: state.entry, stop: state.stop, target: state.target };
       for (const [key, raw] of Object.entries(fields)) {
-        const value = optionalNumber(raw);
+        const value = pscTyped(raw);
         if (value !== undefined) out[key] = value;
       }
-      const winRate = optionalNumber(state.winRate);
-      if (winRate !== undefined) out.win_rate = winRate / 100;
+      const winRate = pscTyped(state.winRate);
+      if (winRate !== undefined) out.win_rate = typeof winRate === "number" ? winRate / 100 : winRate;
       return out;
     }
     case "PORT_WHATIF": {
@@ -1540,6 +1540,17 @@ export function optionalNumber(raw: string): number | undefined {
   if (raw.trim() === "") return undefined;
   const value = Number(raw);
   return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * A PSC field as typed: a number when it parses, the trimmed text when it does
+ * not (the backend then names the field as not a number), undefined when blank.
+ * A typed value is never dropped or replaced by a default.
+ */
+function pscTyped(raw: string): number | string | undefined {
+  if (raw.trim() === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : raw.trim();
 }
 
 function num(raw: string, fallback: number): number {

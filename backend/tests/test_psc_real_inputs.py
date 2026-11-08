@@ -101,6 +101,9 @@ def test_manifest_no_longer_prefills_a_demo_trade():
     ({"entry": 200, "stop": 190, "risk_pct": 2}, "risk_pct"),
     ({"entry": "abc", "stop": 190}, "entry is not a number"),
     ({"entry": 200, "stop": 190, "account": "lots"}, "account is not a number"),
+    # The pane sends a typed, non-numeric risk or win rate as typed (never a 1% default).
+    ({"entry": 200, "stop": 190, "risk_pct": "1,5"}, "risk_pct is not a number"),
+    ({"entry": 200, "stop": 190, "target": 230, "win_rate": "abc"}, "win_rate is not a number"),
     ({"entry": 200, "stop": 200}, "stop equals entry"),
     ({"side": "SIDEWAYS", "entry": 200, "stop": 190}, "side"),
 ])
