@@ -166,7 +166,7 @@ def test_bbgt_non_fx_notional_us_venue_is_usd() -> None:
 def test_bbgt_market_notional_is_null_without_quote_adapter() -> None:
     fn = BBGTFunction()
     fn.deps = FunctionDeps()
-    res = _run(fn.execute(instrument=MSFT, quantity=2, side="BUY", type="MARKET"))
+    res = _run(fn.execute(instrument=MSFT, quantity=2, side="BUY", type="MARKET", tif="DAY"))
     data = res.data
     assert data["status"] == "preview"
     assert data["notional"] is None
@@ -179,7 +179,7 @@ def test_bbgt_market_notional_uses_labelled_indicative_quote() -> None:
     feed = _QuoteFeed(last=100.0)
     fn = BBGTFunction()
     fn.deps = FunctionDeps(yfinance=feed)
-    res = _run(fn.execute(instrument=MSFT, quantity=2, side="BUY", type="MARKET"))
+    res = _run(fn.execute(instrument=MSFT, quantity=2, side="BUY", type="MARKET", tif="DAY"))
     data = res.data
     assert feed.calls == 1
     assert data["notional"] == pytest.approx(200.0)
@@ -192,7 +192,7 @@ def test_bbgt_market_notional_uses_labelled_indicative_quote() -> None:
 def test_bbgt_market_notional_is_null_when_quote_fetch_fails() -> None:
     fn = BBGTFunction()
     fn.deps = FunctionDeps(yfinance=_QuoteFeed(error=RuntimeError("upstream down")))
-    res = _run(fn.execute(instrument=MSFT, quantity=2, side="BUY", type="MARKET"))
+    res = _run(fn.execute(instrument=MSFT, quantity=2, side="BUY", type="MARKET", tif="DAY"))
     data = res.data
     assert data["status"] == "preview"
     assert data["notional"] is None
@@ -293,3 +293,28 @@ def test_bbgt_seed_card_and_field_declare_notional() -> None:
     slot_keys = {slot.key for slot in entry.card_schema.slots}
     assert "notional" in slot_keys
     assert "notional" in entry.field_dict
+
+
+# ── BBGT#2-RQ: type and TIF are never silently defaulted (same rule as side) ──
+
+
+@pytest.mark.parametrize("missing", ["tif", "type"])
+def test_bbgt_missing_tif_or_type_on_armed_path_is_input_required(missing: str) -> None:
+    fn, broker = _armed_bbgt()
+    kwargs: dict[str, Any] = {"side": "BUY", "type": "MARKET", "tif": "DAY", "submit": True, "paper_mode": False}
+    kwargs.pop(missing)
+    res = _run(fn.execute(instrument=AAPL, quantity=1, **kwargs))
+    assert res.data["status"] == "input_required", res.data
+    assert res.data["field"] == {"tif": "tif", "type": "order_type"}[missing]
+    assert broker.placed == []
+
+
+@pytest.mark.parametrize("missing", ["tif", "type"])
+def test_bbgt_missing_tif_or_type_on_preview_is_input_required(missing: str) -> None:
+    fn = BBGTFunction()
+    fn.deps = FunctionDeps()
+    kwargs: dict[str, Any] = {"side": "BUY", "type": "MARKET", "tif": "DAY"}
+    kwargs.pop(missing)
+    res = _run(fn.execute(instrument=MSFT, quantity=2, **kwargs))
+    assert res.data["status"] == "input_required", res.data
+    assert res.data["field"] == {"tif": "tif", "type": "order_type"}[missing]

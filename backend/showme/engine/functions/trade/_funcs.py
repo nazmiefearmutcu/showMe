@@ -1155,9 +1155,11 @@ class BBGTFunction(EMSXFunction):
             return await super().execute(instrument=None, **params)
         # Side has no default: a missing or blank side must never reach a broker
         # as BUY (data policy: no silent substitution on the armed path).
+        # BBGT#2-RQ: type and TIF follow the same rule. A missing value is an
+        # explicit input_required, never a silent MARKET / GTC substitution.
         side = self._ticket_field(params, ("side",))
-        order_type = self._ticket_text(params, ("type", "order_type"), "MARKET")
-        tif = self._ticket_text(params, ("tif", "time_in_force"), "GTC")
+        order_type = self._ticket_field(params, ("type", "order_type"))
+        tif = self._ticket_field(params, ("tif", "time_in_force"))
         quantity = _float_param(params.get("quantity"))
         common: dict[str, Any] = {
             "broker": "paper",
@@ -1185,12 +1187,13 @@ class BBGTFunction(EMSXFunction):
             )
         # Reject unknown enum values before anything is previewed or armed:
         # previously "HOLD" / "FOO" were echoed back as a valid preview.
+        # A missing (None) type/TIF is handled by the input_required check below.
         for field_name, value, allowed in (
             ("side", side, self._SIDES),
             ("order_type", order_type, self._ORDER_TYPES),
             ("tif", tif, self._TIFS),
         ):
-            if value not in allowed:
+            if value is not None and value not in allowed:
                 return FunctionResult(
                     code=self.code,
                     instrument=instrument,
@@ -1202,6 +1205,24 @@ class BBGTFunction(EMSXFunction):
                         "allowed": list(allowed),
                         "reason": f"{field_name.upper()} '{value}' is not supported; use one of {', '.join(allowed)}.",
                         "next_actions": ["Pick a supported value in the ticket controls and preview again."],
+                    },
+                    sources=["paper_ticket"],
+                    metadata={"preview_only": True},
+                )
+        for missing_field, label, choices in (
+            ("order_type", "Type", "MARKET or LIMIT"),
+            ("tif", "TIF", "DAY, GTC, IOC or FOK"),
+        ):
+            if {"order_type": order_type, "tif": tif}[missing_field] is None:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        **common,
+                        "status": "input_required",
+                        "field": missing_field,
+                        "reason": f"{label} is required: choose {choices} before previewing or submitting.",
+                        "next_actions": [f"Pick a {label} value in the ticket controls."],
                     },
                     sources=["paper_ticket"],
                     metadata={"preview_only": True},

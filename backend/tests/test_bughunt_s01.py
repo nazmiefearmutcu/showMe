@@ -243,7 +243,7 @@ def test_bbgt_returns_provider_unavailable_when_submit_without_broker() -> None:
     fn = BBGTFunction()
     fn.deps = FunctionDeps()  # no broker adapters wired
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = _run(fn.execute(instrument=inst, quantity=1, side="BUY", submit=True, paper_mode=False))
+    result = _run(fn.execute(instrument=inst, quantity=1, side="BUY", type="MARKET", tif="GTC", submit=True, paper_mode=False))
     assert result.data["status"] == "provider_unavailable"
     assert result.data["broker"] is None
     assert result.sources == ["no_live_source"]
@@ -257,7 +257,7 @@ def test_bbgt_keeps_preview_when_submit_false_without_broker() -> None:
     fn = BBGTFunction()
     fn.deps = FunctionDeps()
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = _run(fn.execute(instrument=inst, quantity=1, side="BUY", submit=False))
+    result = _run(fn.execute(instrument=inst, quantity=1, side="BUY", type="MARKET", tif="GTC", submit=False))
     assert result.data["status"] == "preview"
     assert result.data["broker"] == "paper"
 
