@@ -144,8 +144,8 @@ def srsk() -> FunctionManifest:
         methodology=(
             "SRSK reads UST 10Y (FRED ``DGS10``) once per call. For every requested country with a"
             " known FRED long-rate series ID (a curated mapping in ``_SOVEREIGN_FRED_IDS``), the engine"
-            " pulls the latest yield, computes ``proxy_spread = country_yield − ust_y`` (US itself is"
-            " pinned to spread=0 with a 'self-spread is zero' note), then ``PD_1Y ≈ spread/100 /"
+            " pulls the latest yield, computes ``proxy_spread = country_yield − ust_y`` (the US is the"
+            " UST benchmark and gets no FRED spread; its macro-derived row is kept), then ``PD_1Y ≈ spread/100 /"
             " (1 − recovery)`` using the Hull approximation. A country with no live macro data gets no"
             " invented spread: its row stays unranked with null spread and PD and source_mode"
             " 'unavailable'. When DGS10 is unavailable the response is marked ``provider_unavailable``"
@@ -195,12 +195,15 @@ def srsk() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="srsk_us_self_spread_is_zero",
-                description="US sovereign self-spread is pinned to zero with an explicit note.",
+                name="srsk_us_fred_configured_never_pins_zero_spread",
+                description=(
+                    "With FRED configured the US (the UST benchmark) never gets a constant 0.0 spread or PD:"
+                    " without World Bank macro it is unscored with null spread and PD."
+                ),
                 inputs={"countries": ["US"]},
                 assertions=[
-                    "us_proxy_spread_pct_equals_zero",
-                    "us_row_note_mentions_self_spread",
+                    "us_proxy_spread_pct_is_null_when_unscored",
+                    "us_source_mode_is_unavailable_when_unscored",
                 ],
             ),
             SemanticTest(

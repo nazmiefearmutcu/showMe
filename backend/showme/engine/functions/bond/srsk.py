@@ -294,12 +294,16 @@ class SRSKFunction(BaseFunction):
             fid = sovereign_fred_ids.get(country)
             if self.deps.fred and ust_y is not None and fid:
                 if country == "US":
-                    proxy_spread = 0.0
-                    source_mode = "fred"
-                    row_note = (
-                        "US sovereign self-spread is zero; PD shown for completeness only "
-                        "and is not a credit-risk reading"
-                    )
+                    # The US is the UST benchmark: a UST-minus-UST differential is zero by
+                    # construction, not a credit reading. Never pin a constant spread here;
+                    # keep whatever the live macro composite produced (null when unscored).
+                    if risk_score is not None:
+                        row_note = "; ".join(
+                            [
+                                *macro_notes,
+                                "US is the UST benchmark; no FRED self-spread applied",
+                            ]
+                        )
                 elif target_y is not None:
                     proxy_spread = round(target_y - ust_y, 4)
                     source_mode = "fred+worldbank" if risk_score is not None else "fred"
@@ -474,7 +478,7 @@ class SRSKFunction(BaseFunction):
                     "averaged over the legs that returned data. The composite is converted into a "
                     "CDS-style proxy spread (0 score -> ~0.1%, 100 -> ~12%); when a FRED key is "
                     "present the spread is refined to a real country-10Y minus UST-10Y differential "
-                    "(US pinned to zero). The Hull approximation PD_1Y ~= spread / (1 - recovery) then "
+                    "(the US is the benchmark and gets no FRED spread). The Hull approximation PD_1Y ~= spread / (1 - recovery) then "
                     "yields a one-year default-probability proxy. A country with no live macro data is kept "
                     "unranked with null spread and PD (source_mode 'unavailable'); no value is substituted. "
                     "If no requested sovereign can be priced at all, no rows are returned and the status is "
@@ -507,5 +511,5 @@ class SRSKFunction(BaseFunction):
             "recovery": "Assumed recovery rate in the Hull reduced-form approximation.",
             "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'unavailable' when no live macro data exists (score, spread and PD are null, row unranked).",
             "as_of": "Observation year of the latest World Bank data point used.",
-            "note": "Per-row caveat: missing macro legs, US self-spread, or unscored (unavailable) row.",
+            "note": "Per-row caveat: missing macro legs, US benchmark note, or unscored (unavailable) row.",
         }
