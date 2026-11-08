@@ -126,11 +126,33 @@ class DCFFunction(BaseFunction):
             try:
                 from showme.engine.functions.equity.wacc import WACCFunction
                 w = await WACCFunction(self.deps).execute(instrument)
-                wacc = float(w.data.get("wacc") or 0.08)
+                resolved = (w.data or {}).get("wacc")
+                if resolved is None:
+                    raise ValueError("WACC model returned no value")
+                wacc = float(resolved)
                 sources += list(w.sources or [])
             except Exception as e:
                 warnings.append(f"wacc: {e}")
-                wacc = 0.08
+                wacc = None
+        if wacc is None:
+            # No caller WACC and no WACC from the model: report it, never a constant.
+            warnings.append("wacc: no WACC from the caller or the WACC model; pass wacc to run the model.")
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={"status": "needs_input",
+                      "reason": "WACC is unavailable for this instrument; pass wacc to run the model.",
+                      "next_actions": ["Enter WACC (decimal, e.g. 0.08) as an input.",
+                                       "Retry once the WACC inputs recover."],
+                      "wacc": None, "g_high": g_high, "g_terminal": g_terminal,
+                      "years": N, "starting_fcfe": None,
+                      "fcfe_source": None, "shares_source": None,
+                      "shares_outstanding": None,
+                      "fair_value_per_share": None,
+                      "rows": [], "bridge": [],
+                      "methodology": "Two-stage FCFE DCF; WACC is required and is never substituted with a constant.",
+                      "field_dictionary": FIELD_DICTIONARIES["valuation"]},
+                sources=list(set(sources)), warnings=warnings,
+            )
         wacc = float(wacc)
         # Provenance of every model input: a caller value is a manual override,
         # a provider value is labelled with its source, and a missing value is
