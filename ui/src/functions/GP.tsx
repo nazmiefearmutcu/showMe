@@ -39,6 +39,7 @@ import { Chart } from "@/chart/Chart";
 import { loadLayout } from "@/chart/chart-layout";
 import { timeframeById } from "@/chart/timeframes";
 import { formatPrice } from "@/lib/format";
+import { safeHref } from "@/lib/safe-href";
 
 interface OHLCRow {
   date?: string;
@@ -737,9 +738,9 @@ function RightRail({
           {newsState === "ok" && news.length > 0 ? (
             news.map((item, idx) => (
               <div key={idx} style={newsItemStyle}>
-                {item.url ? (
+                {safeHref(item.url) ? (
                   <a
-                    href={item.url}
+                    href={safeHref(item.url)}
                     target="_blank"
                     rel="noreferrer"
                     style={newsHeadlineStyle}

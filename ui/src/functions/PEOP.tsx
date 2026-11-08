@@ -37,6 +37,7 @@ import {
   RefreshButton,
 } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { safeHref } from "@/lib/safe-href";
 
 interface PEOPItem {
   full_name?: string;
@@ -215,9 +216,9 @@ export function PEOPPane({ code }: FunctionPaneProps) {
         header: "Source",
         width: 140,
         render: (r) =>
-          r.profile_url ?? r.source_url ? (
+          safeHref(r.profile_url ?? r.source_url) ? (
             <a
-              href={r.profile_url ?? r.source_url}
+              href={safeHref(r.profile_url ?? r.source_url)}
               target="_blank"
               rel="noreferrer"
               style={linkStyle}

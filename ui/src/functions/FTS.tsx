@@ -34,6 +34,7 @@ import {
   RefreshButton,
 } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { safeHref } from "@/lib/safe-href";
 
 interface FTSRow {
   company?: string | null;
@@ -150,13 +151,13 @@ export function FTSPane({ code }: FunctionPaneProps) {
         header: "Filing",
         width: 150,
         render: (r) =>
-          r.url ? (
+          safeHref(r.url) ? (
             <a
-              href={r.url}
+              href={safeHref(r.url)}
               target="_blank"
               rel="noreferrer"
               style={linkStyle}
-              title={r.accession ?? r.url}
+              title={r.accession ?? r.url ?? undefined}
             >
               Open filing ↗
             </a>

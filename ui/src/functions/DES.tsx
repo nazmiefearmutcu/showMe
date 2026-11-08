@@ -40,6 +40,7 @@ import {
   formatPercent,
   formatCompactNumber,
 } from "@/lib/format";
+import { safeHref } from "@/lib/safe-href";
 
 interface DESData {
   status?: string;
@@ -773,11 +774,11 @@ function DESView({ data, symbol }: { data?: DESData; symbol: string }) {
               </CardHeader>
               <CardBody>
                 {summary ? <BusinessSummary summary={summary} /> : null}
-                {data.website && (
+                {safeHref(data.website) && (
                   <div style={websiteRowStyle}>
                     <span style={websiteLabelStyle}>Website</span>
                     <a
-                      href={data.website}
+                      href={safeHref(data.website)}
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-label="Company website (opens in new tab)"
@@ -788,11 +789,11 @@ function DESView({ data, symbol }: { data?: DESData; symbol: string }) {
                     </a>
                   </div>
                 )}
-                {crypto && data.github_repo && (
+                {crypto && safeHref(data.github_repo) && (
                   <div style={websiteRowStyle}>
                     <span style={websiteLabelStyle}>Repo</span>
                     <a
-                      href={data.github_repo}
+                      href={safeHref(data.github_repo)}
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-label="GitHub repository (opens in new tab)"

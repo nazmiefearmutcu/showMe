@@ -27,6 +27,7 @@ import { useXInjectStore } from "@/lib/xinject";
 import { readTimezone as readTz } from "@/lib/timezone";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import type { FunctionPaneProps } from "./registry-types";
+import { safeHref } from "@/lib/safe-href";
 
 type LoadState = "idle" | "loading" | "ok" | "error";
 
@@ -932,7 +933,7 @@ function EventList({ events, newKeys }: { events: InstantEvent[]; newKeys: Set<s
                     ? `${(event.source_name ?? "").slice(0, 20)}…`
                     : event.source_name ?? "instant"}
                 </Pill>
-                <a href={event.link} target="_blank" rel="noopener noreferrer" style={titleLink}>
+                <a href={safeHref(event.link)} target="_blank" rel="noopener noreferrer" style={titleLink}>
                   {event.title ?? "(untitled)"}
                 </a>
               </div>
@@ -962,9 +963,9 @@ function EventList({ events, newKeys }: { events: InstantEvent[]; newKeys: Set<s
                     <span style={metaCell}>cal {event.calendar_window}</span>
                   </>
                 ) : null}
-                {event.official_url ? (
+                {safeHref(event.official_url) ? (
                   <a
-                    href={event.official_url}
+                    href={safeHref(event.official_url)}
                     target="_blank"
                     rel="noopener noreferrer"
                     style={metaLink}
