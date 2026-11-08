@@ -222,6 +222,11 @@ class TSARFunction(BaseFunction):
         )
         dominant_tone = _dominant_tone(net_score)
 
+        # wc1-g33 (TSAR#2 review): model_set names only the models that produced
+        # rows. A requested model that failed (e.g. FinBERT when XSEN carried the
+        # reading) is not reported as part of this reading.
+        models_used = [m for m in models if any(u["model"] == m for u in utterances)]
+
         speaker_rollups = _build_rollups(primary_rows, speaker_roles)
         cards_quotes = _quote_ladder(primary_rows)
 
@@ -231,7 +236,7 @@ class TSARFunction(BaseFunction):
             "management_score": round(mgmt_score, 4),
             "analyst_score": round(analyst_score, 4),
             "utterance_count": len(utterances_raw),
-            "model_set": models,
+            "model_set": models_used,
             "source": src_label,
         }
 
@@ -249,7 +254,7 @@ class TSARFunction(BaseFunction):
             "management_score": round(mgmt_score, 4),
             "analyst_score": round(analyst_score, 4),
             "utterance_count": len(utterances_raw),
-            "model_set": ", ".join(models),
+            "model_set": ", ".join(models_used),
             "data_mode": data_mode,
             "as_of": as_of,
             "top_positive": cards_quotes["positive"],

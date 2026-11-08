@@ -130,3 +130,48 @@ def test_no_text_envelope_is_not_labelled_live_and_status_is_empty():
 
     envelope = normalize_function_contract("TSAR", {}, res.to_dict())
     assert envelope["status"] == "empty", envelope["status"]
+
+
+# ── TSAR#2 review follow-up: model_set names only the models that scored ──
+
+
+class _StubXsen:
+    @staticmethod
+    def instance():
+        return _StubXsen()
+
+    def classify(self, texts):
+        return [{"sentiment": "positive", "sentiment_score": 0.8} for _ in texts]
+
+
+def test_model_set_lists_only_models_that_produced_rows(monkeypatch):
+    """FinBERT failed and XSEN carried the reading: model_set must not still name finbert."""
+    import showme.finbert_analyzer as fb
+    import showme.x_analysis as xa
+
+    monkeypatch.setattr(fb.FinBertAnalyzer, "instance", _BrokenFinbert.instance)
+    monkeypatch.setattr(xa.XAnalyzer, "instance", _StubXsen.instance)
+    res = _run(TSARFunction().execute(
+        text=_TRANSCRIPT, models=["finbert", "xsen_roberta"]
+    ))
+    data = res.data
+
+    assert {u["model"] for u in data["utterances"]} == {"xsen_roberta"}
+    assert data["summary"]["model_set"] == ["xsen_roberta"], data["summary"]["model_set"]
+    assert data["cards"]["model_set"] == "xsen_roberta", data["cards"]["model_set"]
+    assert data["summary"]["net_score"] == 0.8
+    assert data["data_mode"] == "modeled"
+    assert data["status"] == "ok"
+
+
+def test_model_set_keeps_every_model_when_all_score(monkeypatch):
+    import showme.finbert_analyzer as fb
+    import showme.x_analysis as xa
+
+    monkeypatch.setattr(fb.FinBertAnalyzer, "instance", _StubFinbert.instance)
+    monkeypatch.setattr(xa.XAnalyzer, "instance", _StubXsen.instance)
+    res = _run(TSARFunction().execute(
+        text=_TRANSCRIPT, models=["finbert", "xsen_roberta"]
+    ))
+    assert res.data["summary"]["model_set"] == ["finbert", "xsen_roberta"]
+    assert res.data["cards"]["model_set"] == "finbert, xsen_roberta"
