@@ -27,7 +27,7 @@ def _offline_tca_benchmark(monkeypatch):
     """TCA never reaches yfinance from these tests: the intraday bars are empty."""
     from showme.engine.functions.trade.tca import TCAFunction
 
-    async def _no_bars(self, symbol):
+    async def _no_bars(self, symbol, *args, **kwargs):
         return []
 
     monkeypatch.setattr(TCAFunction, "_yfinance_intraday", _no_bars)
@@ -134,7 +134,7 @@ def test_fxgo_bid_ask_are_labelled_indicative_not_best_quotes(monkeypatch):
 # TCA#1 — unfilled orders must not be booked as fills.
 # ---------------------------------------------------------------------------
 class _StubBinance:
-    async def klines(self, symbol, interval="5m", limit=288):
+    async def klines(self, symbol, interval="5m", limit=288, start_ms=None, end_ms=None):
         return [{"high": 100.0, "low": 100.0, "close": 100.0, "volume": 10.0}
                 for _ in range(5)]
 

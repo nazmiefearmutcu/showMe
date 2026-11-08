@@ -15,7 +15,8 @@ the network genuinely fails.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from showme.crypto_aliases import is_crypto_symbol as _is_crypto_symbol
@@ -30,7 +31,10 @@ _METHODOLOGY = (
     "TCA loads executed fills from the autonomous bot fill ledger (bot_fills) "
     "and the manual order_history store, then joins each fill against a live "
     "intraday VWAP benchmark sourced keyless (Binance klines for crypto, "
-    "yfinance intraday candles otherwise) over the same trading session. "
+    "yfinance intraday candles otherwise) over the fill's own session, i.e. the "
+    "UTC calendar day of the fill (TCA#2: never a window ending today). A fill "
+    "without a timestamp, or whose session has no intraday bars, has no live "
+    "benchmark and falls back to its arrival price. "
     "Only real placed orders count: paper/shadow signals that never reached a "
     "broker are excluded, and rows without a positive executed size are "
     "skipped rather than defaulted. "
@@ -61,7 +65,7 @@ _FIELD_DICTIONARY = {
     "notional_usd": "avg_fill_px * quantity (quote-currency notional).",
     "cost_usd": "slippage_bps * notional / 10000 (execution cost).",
     "filled_at": "ISO-8601 timestamp of the fill.",
-    "benchmark_source": "Live source used for the VWAP benchmark, or 'arrival' fallback.",
+    "benchmark_source": "Provider of the intraday bars for the fill's session, or 'arrival' fallback.",
 }
 
 
@@ -72,6 +76,56 @@ def _crypto_interval(symbol: str) -> bool:
 
 
 _BENCHMARKS = ("VWAP", "TWAP", "ARRIVAL", "IMPLEMENTATION_SHORTFALL")
+
+# yfinance serves 5-minute bars only for roughly the last 60 days.
+_INTRADAY_RETENTION_DAYS = 59
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    """Parse a fill timestamp (ISO-8601 string or epoch seconds) to aware UTC."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text[-1] in "Zz":
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _session_day(value: Any) -> date | None:
+    """UTC calendar day of a fill: the session its benchmark is drawn from."""
+    dt = _parse_ts(value)
+    return dt.date() if dt is not None else None
+
+
+def _day_bounds_ms(day: date) -> tuple[int, int]:
+    start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    start_ms = int(start.timestamp() * 1000)
+    return start_ms, start_ms + 86_400_000 - 1
+
+
+def _normalise_klines(rows: Any) -> list[dict[str, Any]]:
+    """Accept Binance raw kline rows (lists) or already-shaped OHLCV dicts."""
+    out: list[dict[str, Any]] = []
+    for r in rows or []:
+        if isinstance(r, dict):
+            out.append(r)
+        elif isinstance(r, (list, tuple)) and len(r) >= 6:
+            out.append({"high": float(r[2]), "low": float(r[3]),
+                        "close": float(r[4]), "volume": float(r[5])})
+    return out
 
 
 def _twap_from_candles(candles: list[dict[str, Any]]) -> float | None:
@@ -219,17 +273,46 @@ class TCAFunction(BaseFunction):
         benchmark_warnings: list[str] = []
         provider_failed = False
         sources: set[str] = {"bot_fills", "order_history"}
-        vwap_by_symbol: dict[str, tuple[float | None, str]] = {}
         # TCA#3: TWAP selects the time-weighted bar mean; every other live
         # benchmark (VWAP, and the VWAP fallback of ARRIVAL/IS) uses VWAP.
         bench_kind = "TWAP" if benchmark == "TWAP" else "VWAP"
-        for sym in {f["symbol"] for f in fills if f.get("symbol")}:
-            vwap, src, failed = await self._live_vwap(sym, instrument, kind=bench_kind)
-            vwap_by_symbol[sym] = (vwap, src)
+        # TCA#2: the benchmark is looked up per (symbol, fill session), where the
+        # session is the UTC day of the fill. Fills with no timestamp get None.
+        keys = sorted(
+            {(f["symbol"], _session_day(f.get("filled_at")))
+             for f in fills if f.get("symbol")},
+            key=lambda k: (k[0], k[1].isoformat() if k[1] else ""),
+        )
+        lookups = await asyncio.gather(*(
+            self._live_vwap(sym, instrument, kind=bench_kind, session_day=day)
+            for sym, day in keys
+        ))
+        vwap_by_key: dict[tuple[str, date | None], tuple[float | None, str]] = {}
+        no_session: set[str] = set()
+        no_bars: set[str] = set()
+        for (sym, day), (vwap, src, failed) in zip(keys, lookups):
+            vwap_by_key[(sym, day)] = (vwap, src)
             if failed:
                 provider_failed = True
+            elif vwap is None and day is None:
+                no_session.add(sym)
+            elif vwap is None and src != "none":
+                no_bars.add(f"{sym} {day.isoformat()}")
             if src and src not in ("arrival", "none"):
                 sources.add(src)
+        if no_session:
+            benchmark_warnings.append(
+                "Fill timestamp missing for "
+                f"{', '.join(sorted(no_session))}; no session benchmark was requested, "
+                "so those fills fell back to their arrival price."
+            )
+        if no_bars:
+            benchmark_warnings.append(
+                "No intraday bars for the fill session of "
+                f"{', '.join(sorted(no_bars))} (session = UTC day of the fill; "
+                "yfinance keeps 5-minute bars for about 60 days); those fills fell "
+                "back to their arrival price where one was recorded."
+            )
 
         # ---- 3) Build contract rows + series.
         rows: list[dict[str, Any]] = []
@@ -244,7 +327,8 @@ class TCAFunction(BaseFunction):
             avg_fill = f["avg_fill_px"]
             qty = f["quantity"]
             arrival = f.get("arrival_px")
-            live_vwap, bench_src = vwap_by_symbol.get(sym, (None, "none"))
+            live_vwap, bench_src = vwap_by_key.get(
+                (sym, _session_day(f.get("filled_at"))), (None, "none"))
 
             # Benchmark selection: VWAP path uses live VWAP, fall back to arrival.
             if benchmark == "ARRIVAL" or benchmark == "IMPLEMENTATION_SHORTFALL":
@@ -504,12 +588,17 @@ class TCAFunction(BaseFunction):
 
     async def _live_vwap(
         self, symbol: str, instrument: Instrument | None, *, kind: str = "VWAP",
+        session_day: date | None = None,
     ) -> tuple[float | None, str, bool]:
-        """Return (benchmark, source, failed). Keyless: Binance for crypto, yfinance else.
+        """Return (benchmark, source, failed) for the fill session ``session_day``.
 
-        ``kind`` selects the bar aggregation: ``"VWAP"`` (volume-weighted) or
-        ``"TWAP"`` (equal-weight mean of bar typical prices).
+        Keyless: Binance for crypto, yfinance otherwise. ``kind`` selects the bar
+        aggregation: ``"VWAP"`` (volume-weighted) or ``"TWAP"`` (equal-weight mean
+        of bar typical prices). A fill with no session (no timestamp) is never
+        benchmarked against some other window (TCA#2).
         """
+        if session_day is None:
+            return None, "none", False
         aggregate = _twap_from_candles if kind == "TWAP" else _vwap_from_candles
         is_crypto = _crypto_interval(symbol)
         if instrument is not None and instrument.symbol == symbol:
@@ -517,7 +606,7 @@ class TCAFunction(BaseFunction):
 
         if is_crypto:
             try:
-                candles = await self._binance_klines(symbol)
+                candles = await self._binance_klines(symbol, session_day)
                 px = aggregate(candles)
                 if px is not None:
                     return px, "binance", False
@@ -525,8 +614,12 @@ class TCAFunction(BaseFunction):
             except Exception:  # noqa: BLE001 — network/parse failure
                 return None, "arrival", True
 
+        age_days = (datetime.now(timezone.utc).date() - session_day).days
+        if age_days > _INTRADAY_RETENTION_DAYS:
+            # Outside the provider's 5-minute history: no bars, not an outage.
+            return None, "yfinance", False
         try:
-            candles = await self._yfinance_intraday(symbol)
+            candles = await self._yfinance_intraday(symbol, session_day)
             px = aggregate(candles)
             if px is not None:
                 return px, "yfinance", False
@@ -534,35 +627,36 @@ class TCAFunction(BaseFunction):
         except Exception:  # noqa: BLE001 — network/parse failure
             return None, "arrival", True
 
-    async def _binance_klines(self, symbol: str) -> list[dict[str, Any]]:
+    async def _binance_klines(self, symbol: str, session_day: date) -> list[dict[str, Any]]:
+        start_ms, end_ms = _day_bounds_ms(session_day)
         provider = self.deps.get("binance")
         if provider is not None and hasattr(provider, "klines"):
-            return await provider.klines(symbol, interval="5m", limit=288)
+            raw = await provider.klines(
+                symbol, interval="5m", limit=288, start_ms=start_ms, end_ms=end_ms)
+            return _normalise_klines(raw)
         # Direct keyless fallback.
         from showme.providers._http import get_client
 
         client = await get_client()
         resp = await client.get(
             "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol.upper(), "interval": "5m", "limit": 288},
+            params={"symbol": symbol.upper(), "interval": "5m", "limit": 288,
+                    "startTime": start_ms, "endTime": end_ms},
         )
         resp.raise_for_status()
-        return [
-            {"high": float(k[2]), "low": float(k[3]),
-             "close": float(k[4]), "volume": float(k[5])}
-            for k in resp.json()
-        ]
+        return _normalise_klines(resp.json())
 
-    async def _yfinance_intraday(self, symbol: str) -> list[dict[str, Any]]:
+    async def _yfinance_intraday(self, symbol: str, session_day: date) -> list[dict[str, Any]]:
+        start = session_day.isoformat()
+        end = (session_day + timedelta(days=1)).isoformat()
         provider = self.deps.get("yfinance")
         if provider is not None and hasattr(provider, "ohlcv"):
-            return await provider.ohlcv(symbol, period="5d", interval="5m")
-        import asyncio
+            return await provider.ohlcv(symbol, start=start, end=end, interval="5m")
 
         def _sync() -> list[dict[str, Any]]:
             import yfinance as yf
 
-            hist = yf.Ticker(symbol).history(period="5d", interval="5m")
+            hist = yf.Ticker(symbol).history(start=start, end=end, interval="5m")
             rows: list[dict[str, Any]] = []
             for _, row in hist.iterrows():
                 rows.append({

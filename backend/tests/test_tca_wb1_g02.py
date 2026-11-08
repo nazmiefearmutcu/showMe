@@ -174,3 +174,136 @@ def test_unknown_benchmark_is_input_error_not_relabelled(tmp_path, monkeypatch):
         symbol="BTCUSDT", benchmark="MIDPOINT"))
     assert res.data["status"] == "input_error"
     assert res.data["rows"] == []
+
+
+# ---------------------------------------------------------------------------
+# TCA#2 — the benchmark must be the VWAP of the FILL's session, not a 5-day
+# window ending today. A fill from 2026-09-11 must request that day's bars.
+# ---------------------------------------------------------------------------
+class _SessionBinance:
+    """Serves one bar per UTC day, keyed on startTime, and records requests."""
+
+    def __init__(self, bars_by_day: dict[str, float]):
+        self.bars_by_day = bars_by_day
+        self.requests: list[dict] = []
+
+    async def klines(self, symbol, interval="5m", limit=288, start_ms=None, end_ms=None, **kwargs):
+        from datetime import datetime, timezone
+
+        self.requests.append({"start_ms": start_ms, "end_ms": end_ms})
+        if start_ms is None:
+            return []
+        day = datetime.fromtimestamp(start_ms / 1000, timezone.utc).date().isoformat()
+        px = self.bars_by_day.get(day)
+        if px is None:
+            return []
+        return [{"high": px, "low": px, "close": px, "volume": 5.0}]
+
+
+def _seed_dated_btc_fill(filled_at: str | None, fill_px=160.0, signal_px=150.0):
+    kwargs = {}
+    if filled_at is not None:
+        kwargs["bar_close_time"] = filled_at
+    BotStore.fresh().save(BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="binance",
+        symbol="BTCUSDT", timeframe="1h", mode="live", enabled=True,
+        signal_log=[SignalEntry(
+            bar_index=0, bar_time="2026-09-11T15:55:00Z", kind="entry",
+            price=signal_px, action="placed", order_id="s2",
+            fill_price=fill_px, qty=1.0, **kwargs,
+        )],
+    ))
+
+
+def test_benchmark_is_the_fill_session_not_a_five_day_window(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    _seed_dated_btc_fill("2026-09-11T16:00:05Z")
+    binance = _SessionBinance({"2026-09-11": 120.0, "2026-11-06": 300.0})
+
+    res = _run(TCAFunction(deps=FunctionDeps(binance=binance)).execute(
+        symbol="BTCUSDT", benchmark="VWAP"))
+
+    day_start = int(datetime(2026, 9, 11, tzinfo=timezone.utc).timestamp() * 1000)
+    assert binance.requests, "benchmark was never requested"
+    assert binance.requests[0]["start_ms"] == day_start, binance.requests
+    assert res.data["rows"][0]["benchmark_px"] == pytest.approx(120.0)
+
+
+def test_fill_older_than_intraday_retention_does_not_use_other_session(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    async def _fake_yf(self, symbol, *args, **kwargs):
+        calls.append(symbol)
+        return [{"high": 999.0, "low": 999.0, "close": 999.0, "volume": 1.0}]
+
+    monkeypatch.setattr(TCAFunction, "_yfinance_intraday", _fake_yf)
+    BotStore.fresh().save(BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="ibkr",
+        symbol="AAPL", timeframe="1h", mode="live", enabled=True,
+        signal_log=[SignalEntry(
+            bar_index=0, bar_time="2026-09-11T15:55:00Z", kind="entry",
+            price=190.0, action="placed", order_id="eq1",
+            fill_price=191.0, qty=2.0, bar_close_time="2026-06-01T15:00:00Z",
+        )],
+    ))
+
+    res = _run(TCAFunction(deps=FunctionDeps()).execute(symbol="AAPL", benchmark="VWAP"))
+    row = res.data["rows"][0]
+
+    assert calls == [], "a 2026-06 session must not be served from another session's bars"
+    assert row["benchmark_source"] == "arrival"
+    assert row["benchmark_px"] == pytest.approx(190.0)
+    assert any("AAPL" in w for w in res.warnings), res.warnings
+
+
+def test_fill_without_timestamp_has_no_session_benchmark(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    binance = _SessionBinance({})
+    BotStore.fresh().save(BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="binance",
+        symbol="BTCUSDT", timeframe="1h", mode="live", enabled=True,
+        signal_log=[SignalEntry(
+            bar_index=0, bar_time="", kind="entry", price=150.0, action="placed",
+            order_id="nt1", fill_price=160.0, qty=1.0, timestamp="",
+        )],
+    ))
+
+    res = _run(TCAFunction(deps=FunctionDeps(binance=binance)).execute(
+        symbol="BTCUSDT", benchmark="VWAP"))
+    assert binance.requests == [], "no timestamp, so no session may be requested"
+    assert res.data["rows"][0]["benchmark_source"] == "arrival"
+
+
+class _RawKlineBinance:
+    """Returns Binance's raw kline matrix (string fields), as BinanceProvider does."""
+
+    async def klines(self, symbol, interval="5m", limit=288, start_ms=None, end_ms=None):
+        row = [1786000000000, "100.0", "110.0", "90.0", "100.0", "10.0",
+               1786000299999, "0", 1, "0", "0", "0"]
+        return [row]
+
+
+def test_raw_binance_kline_rows_feed_the_benchmark(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    _seed_dated_btc_fill("2026-09-11T16:00:05Z")
+    res = _run(TCAFunction(deps=FunctionDeps(binance=_RawKlineBinance())).execute(
+        symbol="BTCUSDT", benchmark="VWAP"))
+    row = res.data["rows"][0]
+    # typical price = (110 + 90 + 100) / 3 = 100
+    assert row["benchmark_px"] == pytest.approx(100.0)
+    assert row["benchmark_source"] == "binance"

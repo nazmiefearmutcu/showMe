@@ -38,7 +38,7 @@ def _run(coro):
 class _StubBinance:
     """Returns a flat 100.0 VWAP so slippage signs are predictable."""
 
-    async def klines(self, symbol, interval="5m", limit=288):
+    async def klines(self, symbol, interval="5m", limit=288, start_ms=None, end_ms=None):
         return [
             {"high": 100.0, "low": 100.0, "close": 100.0, "volume": 10.0}
             for _ in range(5)
@@ -46,7 +46,7 @@ class _StubBinance:
 
 
 class _BrokenBinance:
-    async def klines(self, symbol, interval="5m", limit=288):
+    async def klines(self, symbol, interval="5m", limit=288, start_ms=None, end_ms=None):
         raise ConnectionError("simulated network outage")
 
 
