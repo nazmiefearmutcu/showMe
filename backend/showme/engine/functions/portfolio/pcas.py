@@ -2,9 +2,9 @@
 
 Single-factor mode (legacy): ``pc_index`` + ``k_sigma`` shock one principal
 component. Multi-factor mode: ``n_factors`` and/or ``shock_set`` (σ per PC)
-shock the first N components; each component's P&L is reported and the
-aggregate is the linear sum (the components are orthogonal, so the shocks
-add up in portfolio return space).
+shock N consecutive components starting at ``pc_index`` (default PC1); each
+component's P&L is reported and the aggregate is the linear sum (the
+components are orthogonal, so the shocks add up in portfolio return space).
 """
 
 from __future__ import annotations
@@ -266,6 +266,8 @@ def _factor_plan(
 
     Returns (multi_factor, component indices, σ per component, error reason).
     """
+    if pc_index < 0:
+        return False, [], [], "pc_index must be 0 or greater (0 is PC1)"
     raw_n = params.get("n_factors")
     raw_set = params.get("shock_set")
     shock_list: list[float] | None = None
@@ -290,7 +292,9 @@ def _factor_plan(
     if shock_list is not None and len(shock_list) != n:
         return False, [], [], f"shock_set has {len(shock_list)} values for {n} factors"
     shocks = shock_list if shock_list is not None else [k_sigma] * n
-    return True, list(range(n)), shocks, None
+    # The window starts at pc_index so that every reported field (components,
+    # shock_impacts, loadings, top_loadings) refers to the same components.
+    return True, list(range(pc_index, pc_index + n)), shocks, None
 
 
 def _pca_failure(code: str, pc_index: int, k_sigma: float, error: Exception, df: Any) -> FunctionResult:
