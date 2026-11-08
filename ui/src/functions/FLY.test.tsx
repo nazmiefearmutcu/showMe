@@ -250,13 +250,15 @@ describe("FLY pane — alert settings", () => {
     fireEvent.click(screen.getByRole("button", { name: /FLY alerts/i }));
     const dialog = screen.getByRole("dialog", { name: /FLY alert settings/i });
     expect(dialog).toBeInTheDocument();
+    // The descent rule describes a state, not a risk: no "crash" wording in the UI.
+    expect(dialog.textContent ?? "").not.toMatch(/crash/i);
     expect(screen.getByLabelText("Erratic flight path")).toBeChecked();
-    expect(screen.getByLabelText("Crash risk")).toBeChecked();
+    expect(screen.getByLabelText("Steep / low descent")).toBeChecked();
     expect(screen.getByLabelText("Stale contact")).toBeChecked();
     // Thresholds are visible with their values + units.
     expect(screen.getByLabelText("Erratic heading threshold (deg)")).toHaveValue(60);
-    expect(screen.getByLabelText("Crash vertical rate threshold (ft/min)")).toHaveValue(2500);
-    expect(screen.getByLabelText("Crash low altitude threshold (ft)")).toHaveValue(2000);
+    expect(screen.getByLabelText("Steep descent threshold (ft/min)")).toHaveValue(2500);
+    expect(screen.getByLabelText("Low altitude descent threshold (ft)")).toHaveValue(2000);
     expect(screen.getByLabelText("Stale contact threshold (minutes)")).toHaveValue(10);
   });
 
@@ -264,8 +266,8 @@ describe("FLY pane — alert settings", () => {
     setMockFn({ state: "ok", data: livePayload() });
     const first = render(<FLYPane code="FLY" />);
     fireEvent.click(screen.getByRole("button", { name: /FLY alerts/i }));
-    fireEvent.click(screen.getByLabelText("Crash risk"));
-    expect(screen.getByLabelText("Crash risk")).not.toBeChecked();
+    fireEvent.click(screen.getByLabelText("Steep / low descent"));
+    expect(screen.getByLabelText("Steep / low descent")).not.toBeChecked();
     const stored = JSON.parse(window.localStorage.getItem("showme.fly.alerts") ?? "null") as {
       crash?: { enabled?: boolean };
     };
@@ -274,7 +276,7 @@ describe("FLY pane — alert settings", () => {
 
     render(<FLYPane code="FLY" />);
     fireEvent.click(screen.getByRole("button", { name: /FLY alerts/i }));
-    expect(screen.getByLabelText("Crash risk")).not.toBeChecked();
+    expect(screen.getByLabelText("Steep / low descent")).not.toBeChecked();
     expect(screen.getByLabelText("Stale contact")).toBeChecked();
   });
 

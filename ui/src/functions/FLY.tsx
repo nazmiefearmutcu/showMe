@@ -14,7 +14,7 @@
  * an empty board is always attributable to a filter or an outage.
  *
  * Alerts (2026-09-16): client-side rules evaluated on every poll against
- * the current rows — erratic flight path, crash risk (steep/low descent),
+ * the current rows — erratic flight path, descent state (steep/low descent),
  * stale ADS-B contact. Rules never fire on missing fields; see
  * `fly-alerts.ts` for the per-rule data requirements. Fired alerts land in
  * the app toast host AND the pane's alert-history list; dedupe/cooldown is
@@ -568,7 +568,7 @@ function FlyAlertsPopover({
 
       <div style={ruleBlockStyle}>
         <ToggleRow
-          label="Crash risk"
+          label="Steep / low descent"
           checked={config.crash.enabled}
           onToggle={(checked) =>
             onChange({ ...config, crash: { ...config.crash, enabled: checked } })
@@ -576,7 +576,7 @@ function FlyAlertsPopover({
         />
         <ThresholdInput
           label="steep descent ≤ −"
-          inputLabel="Crash vertical rate threshold (ft/min)"
+          inputLabel="Steep descent threshold (ft/min)"
           value={config.crash.verticalFpm}
           min={200}
           max={10000}
@@ -588,7 +588,7 @@ function FlyAlertsPopover({
         />
         <ThresholdInput
           label="or below"
-          inputLabel="Crash low altitude threshold (ft)"
+          inputLabel="Low altitude descent threshold (ft)"
           value={config.crash.lowAltFt}
           min={100}
           max={30000}
