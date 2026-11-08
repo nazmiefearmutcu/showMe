@@ -120,7 +120,7 @@ class PSCFunction(BaseFunction):
             problems.append(f"side must be LONG or SHORT (got {side!r})")
 
         values: dict[str, float | None] = {}
-        for key in ("risk_pct", "entry", "account", "stop", "target", "win_rate"):
+        for key in ("risk_pct", "entry", "account", "stop", "target", "win_rate", "max_leverage"):
             value, invalid = _parse(params, key)
             if invalid:
                 problems.append(f"{key} is not a number ({params.get(key)!r})")
@@ -132,6 +132,11 @@ class PSCFunction(BaseFunction):
         win_rate = values["win_rate"]
         if win_rate is not None and not 0 <= win_rate <= 1:
             problems.append("win_rate must be a probability in [0, 1] (0.55 = 55%)")
+        # Optional cap on notional as a multiple of account equity (2 = 2x). Only
+        # applied when the caller asks for it; no cap is invented.
+        max_leverage = values["max_leverage"]
+        if max_leverage is not None and max_leverage <= 0:
+            problems.append("max_leverage must be a positive multiple of equity (2 = 2x)")
 
         entry, entry_source = values["entry"], "input"
         # The router injects a default symbol (e.g. BTCUSDT) when the caller
@@ -166,26 +171,45 @@ class PSCFunction(BaseFunction):
         stop, target = values["stop"], values["target"]
         if stop is None and "stop" not in {p.split(" ")[0] for p in problems}:
             problems.append("stop")
+        # When the entry is the live price, a stop/target error must say so: the
+        # user typed no entry and may be blaming the wrong input.
+        entry_note = ""
+        if entry_source == "live_quote" and entry is not None:
+            entry_note = (f" (entry is the live last price of {str(params.get('symbol') or '').upper()}; "
+                          "enter your own entry)")
         if entry is not None and entry > 0 and stop is not None:
             if stop == entry:
                 problems.append("stop equals entry; can't size")
             elif side == "LONG" and stop > entry:
-                problems.append("a LONG stop must be below the entry")
+                problems.append("a LONG stop must be below the entry" + entry_note)
             elif side == "SHORT" and stop < entry:
-                problems.append("a SHORT stop must be above the entry")
+                problems.append("a SHORT stop must be above the entry" + entry_note)
             if target is not None:
                 if side == "LONG" and target <= entry:
-                    problems.append("a LONG target must be above the entry")
+                    problems.append("a LONG target must be above the entry" + entry_note)
                 elif side == "SHORT" and target >= entry:
-                    problems.append("a SHORT target must be below the entry")
+                    problems.append("a SHORT target must be below the entry" + entry_note)
         if problems:
             return self._input_error(instrument, problems)
 
         per_share_risk = abs(entry - stop)
         risk_dollars = account * risk_pct
-        shares = risk_dollars / per_share_risk
+        uncapped_shares = risk_dollars / per_share_risk
+        shares = uncapped_shares
+        cap_binding = None
+        if max_leverage is not None:
+            max_shares = account * max_leverage / entry
+            if shares > max_shares:
+                shares, cap_binding = max_shares, "max_leverage"
+                warnings.append(
+                    f"Position capped by max_leverage {max_leverage:g}x: shares reduced from "
+                    f"{uncapped_shares:,.4f} to {shares:,.4f}; the stop risks less than the risk budget.")
         notional = shares * entry
         leverage_implied = notional / account
+        if leverage_implied > 1:
+            warnings.append(
+                f"Notional {notional:,.2f} exceeds account equity {account:,.2f} "
+                f"(leverage {leverage_implied:.2f}x): this needs margin or borrowing.")
         reward_per_share = abs(target - entry) if target is not None else None
         rr = reward_per_share / per_share_risk if reward_per_share is not None else None
         kelly = kelly_dollars = kelly_shares = None
@@ -220,6 +244,8 @@ class PSCFunction(BaseFunction):
                 "reward_per_share": reward_per_share,
                 "r_multiple": rr,
                 "shares": shares, "notional": notional,
+                "uncapped_shares": uncapped_shares, "cap_binding": cap_binding,
+                "max_leverage": max_leverage,
                 "leverage_implied": leverage_implied,
                 "kelly_fraction": kelly,
                 "kelly_dollars": kelly_dollars,
@@ -254,5 +280,7 @@ def _methodology() -> str:
         "shares = risk budget / unit risk. Entry defaults to the symbol's live last price and account to "
         "the local portfolio's USD book value (cost basis + USD cash); the stop is always required and "
         "must sit on the loss side (below a LONG entry, above a SHORT one). R multiple needs a target on "
-        "the profit side; the simple Kelly fraction also needs a win rate in [0, 1]."
+        "the profit side; the simple Kelly fraction also needs a win rate in [0, 1]. An optional "
+        "max_leverage (multiple of equity, 2 = 2x) caps the notional and sets cap_binding; no cap is "
+        "applied by default, and a notional above equity is reported as needing margin."
     )
