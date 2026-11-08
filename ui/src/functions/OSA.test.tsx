@@ -113,8 +113,16 @@ function bullCallPayload() {
 
 /* ── harness ───────────────────────────────────────────────────────── */
 
+// The pane starts with no legs (T10). These tests exercise a priced strategy,
+// so they seed the user's entered call spread into storage first.
+const ENTERED_CALL_SPREAD = [
+  { qty: 1, strike: 100, type: "CALL", expiry: 0.25, vol: 0.25 },
+  { qty: -1, strike: 110, type: "CALL", expiry: 0.25, vol: 0.25 },
+];
+
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("showme.osa.legs", JSON.stringify(ENTERED_CALL_SPREAD));
   setMockFn({ state: "idle", data: undefined });
 });
 afterEach(() => {
@@ -333,8 +341,9 @@ describe("OSA pane — interactions", () => {
     expect(stored).toHaveLength(2);
     expect(stored[0].type).toBe("CALL");
     expect(stored[1].type).toBe("PUT");
-    expect(stored[0].strike).toBe(100);
-    expect(stored[1].strike).toBe(100);
+    // A preset is leg structure only: the user enters strikes, not the pane (T10).
+    expect(stored[0].strike).toBeNull();
+    expect(stored[1].strike).toBeNull();
   });
 
   it("editing a leg strike persists the strategy", () => {

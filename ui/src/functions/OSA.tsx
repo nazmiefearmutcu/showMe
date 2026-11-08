@@ -46,10 +46,11 @@ import type { FunctionPaneProps } from "./registry-types";
 
 interface OsaLeg {
   qty: number; // signed: positive = long, negative = short
-  strike: number;
+  /** null until the user enters it: never a template or guessed value (T10). */
+  strike: number | null;
   type: "CALL" | "PUT";
-  expiry: number; // years
-  vol: number; // decimal IV
+  expiry: number | null; // years, null until entered
+  vol: number | null; // decimal IV, null until entered
 }
 
 interface OsaLegRow {
@@ -112,84 +113,84 @@ const LEGS_KEY = "showme.osa.legs";
 const PRESET_KEY = "showme.osa.preset";
 const MAX_LEGS = 4;
 
+/**
+ * A leg with a side and quantity only. Strike, expiry and vol stay null until
+ * the user types them, so a preset never puts a template number on the wire.
+ */
+function blankLeg(qty: number, type: OsaLeg["type"]): OsaLeg {
+  return { qty, type, strike: null, expiry: null, vol: null };
+}
+
 const PRESETS: ReadonlyArray<{ id: string; label: string; legs: OsaLeg[] }> = [
   {
     id: "bullCall",
     label: "BULL CALL",
-    legs: [
-      { qty: 1, strike: 100, type: "CALL", expiry: 0.25, vol: 0.25 },
-      { qty: -1, strike: 110, type: "CALL", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "CALL"), blankLeg(-1, "CALL")],
   },
   {
     id: "bearPut",
     label: "BEAR PUT",
-    legs: [
-      { qty: 1, strike: 110, type: "PUT", expiry: 0.25, vol: 0.25 },
-      { qty: -1, strike: 100, type: "PUT", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "PUT"), blankLeg(-1, "PUT")],
   },
   {
     id: "straddle",
     label: "STRADDLE",
-    legs: [
-      { qty: 1, strike: 100, type: "CALL", expiry: 0.25, vol: 0.25 },
-      { qty: 1, strike: 100, type: "PUT", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "CALL"), blankLeg(1, "PUT")],
   },
   {
     id: "strangle",
     label: "STRANGLE",
-    legs: [
-      { qty: 1, strike: 90, type: "PUT", expiry: 0.25, vol: 0.25 },
-      { qty: 1, strike: 110, type: "CALL", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "PUT"), blankLeg(1, "CALL")],
   },
   {
     id: "condor",
     label: "IRON CONDOR",
-    legs: [
-      { qty: 1, strike: 80, type: "PUT", expiry: 0.25, vol: 0.25 },
-      { qty: -1, strike: 90, type: "PUT", expiry: 0.25, vol: 0.25 },
-      { qty: -1, strike: 110, type: "CALL", expiry: 0.25, vol: 0.25 },
-      { qty: 1, strike: 120, type: "CALL", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "PUT"), blankLeg(-1, "PUT"), blankLeg(-1, "CALL"), blankLeg(1, "CALL")],
   },
 ];
 const PRESET_IDS: readonly string[] = PRESETS.map((p) => p.id);
 
+/** A finite positive number, else null. Never a default (T10). */
+function positiveOrNull(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * A stored leg is kept only when its side and quantity are real. A missing
+ * strike, expiry or vol stays null and shows as an empty input, so the gap is
+ * visible rather than filled with 100 / 0.25.
+ */
 function sanitizeLeg(raw: unknown): OsaLeg | null {
   if (typeof raw !== "object" || raw === null) return null;
   const rec = raw as Record<string, unknown>;
-  const num = (v: unknown, fallback: number): number => {
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) ? n : fallback;
-  };
-  const type = String(rec.type ?? "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
+  const qty = typeof rec.qty === "number" ? rec.qty : Number(rec.qty);
+  const side = String(rec.type ?? "").toUpperCase();
+  const type: OsaLeg["type"] | null = side === "CALL" || side === "PUT" ? side : null;
+  if (!Number.isFinite(qty) || qty === 0 || type === null) return null;
   return {
-    qty: num(rec.qty, 1),
-    strike: num(rec.strike, 100),
+    qty,
+    strike: positiveOrNull(rec.strike),
     type,
-    expiry: Math.max(0.01, num(rec.expiry, 0.25)),
-    vol: Math.max(0.01, num(rec.vol, 0.25)),
+    expiry: positiveOrNull(rec.expiry),
+    vol: positiveOrNull(rec.vol),
   };
 }
 
 function readStoredLegs(key: string): OsaLeg[] {
-  const fallback = PRESETS[0].legs;
-  if (typeof localStorage === "undefined") return fallback;
+  if (typeof localStorage === "undefined") return [];
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
+    if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return fallback;
-    const legs = parsed
+    if (!Array.isArray(parsed)) return [];
+    return parsed
       .slice(0, MAX_LEGS)
       .map(sanitizeLeg)
       .filter((l): l is OsaLeg => l !== null);
-    return legs.length ? legs : fallback;
   } catch {
-    return fallback;
+    return [];
   }
 }
 
@@ -240,10 +241,15 @@ function usePersistentSpot(key: string): [number | null, (next: number | null) =
   return [value, update];
 }
 
+/** No preset until the user picks one: a first load has no legs, so none is labelled. */
 function readStoredPreset(key: string): string {
-  if (typeof localStorage === "undefined") return PRESETS[0].id;
-  const raw = localStorage.getItem(key);
-  return raw && PRESET_IDS.includes(raw) ? raw : PRESETS[0].id;
+  if (typeof localStorage === "undefined") return "custom";
+  try {
+    const raw = localStorage.getItem(key);
+    return raw && PRESET_IDS.includes(raw) ? raw : "custom";
+  } catch {
+    return "custom";
+  }
 }
 
 /* ── pane ──────────────────────────────────────────────────────────── */
@@ -275,14 +281,14 @@ export function OSAPane({ code }: FunctionPaneProps) {
 
   const addLeg = () => {
     if (legs.length >= MAX_LEGS) return;
-    // New leg opens at the entered spot, else at the last leg's strike (no spot is guessed).
-    const anchorStrike = spot ?? legs[legs.length - 1].strike;
-    setLegs([...legs, { qty: 1, strike: anchorStrike, type: "CALL", expiry: 0.25, vol: 0.25 }]);
+    // The strike anchors on the entered spot, else the last leg's strike. Expiry
+    // and vol are left for the user: nothing is guessed (T10).
+    const anchorStrike = spot ?? legs[legs.length - 1]?.strike ?? null;
+    setLegs([...legs, { qty: 1, strike: anchorStrike, type: "CALL", expiry: null, vol: null }]);
     setPreset("custom");
   };
 
   const removeLeg = (idx: number) => {
-    if (legs.length <= 1) return;
     setLegs(legs.filter((_, i) => i !== idx));
     setPreset("custom");
   };
@@ -330,7 +336,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
       keyPriceRows(
         curve,
         breakevens,
-        legs.map((l) => l.strike),
+        legs.flatMap((l) => (l.strike == null ? [] : [l.strike])),
         shownSpot,
       ),
     [curve, breakevens, legs, shownSpot],
@@ -401,6 +407,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
   const strategyLabel = (strategyEcho ?? presetLabel).replace(/_/g, " ").toUpperCase();
 
   const body = (
+    <>
     <PaneState
       state={state}
       error={error}
@@ -465,8 +472,12 @@ export function OSAPane({ code }: FunctionPaneProps) {
 
         {/* primary visual — expiration P&L profile */}
         <PayoffChart curve={curve} breakevens={breakevens} spot={shownSpot} />
+      </div>
+    </PaneState>
 
-        {/* compact leg editor — one row set, kit input density */}
+    <div className="u-grid-gap-14">
+        {/* compact leg editor — one row set, kit input density. Rendered outside
+            PaneState so a needs_input state can still be fixed here. */}
         <section aria-label="Strategy legs editor" style={editorWrapStyle}>
           <div style={{ ...editorGridStyle, ...editorHeadStyle }} aria-hidden="true">
             <span>SIDE</span>
@@ -510,6 +521,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
                 />
                 <NumInput
                   value={leg.strike}
+                  allowBlank
                   step={1}
                   min={0.01}
                   ariaLabel={`Leg ${idx + 1} strike`}
@@ -517,6 +529,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
                 />
                 <NumInput
                   value={leg.expiry}
+                  allowBlank
                   step={0.05}
                   min={0.01}
                   ariaLabel={`Leg ${idx + 1} expiry years`}
@@ -524,6 +537,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
                 />
                 <NumInput
                   value={leg.vol}
+                  allowBlank
                   step={0.05}
                   min={0.01}
                   ariaLabel={`Leg ${idx + 1} implied volatility decimal`}
@@ -534,7 +548,9 @@ export function OSAPane({ code }: FunctionPaneProps) {
                   step={1}
                   min={1}
                   ariaLabel={`Leg ${idx + 1} quantity`}
-                  onChange={(v) => patchLeg(idx, { qty: Math.round(v) * (long ? 1 : -1) })}
+                  onChange={(v) => {
+                    if (v != null) patchLeg(idx, { qty: Math.round(v) * (long ? 1 : -1) });
+                  }}
                 />
                 <span style={premiumStyle}>{fmtNum(legRows[idx]?.premium)}</span>
                 <button
@@ -542,7 +558,6 @@ export function OSAPane({ code }: FunctionPaneProps) {
                   className="btn btn--ghost"
                   title={`Remove leg ${idx + 1}`}
                   aria-label={`Remove leg ${idx + 1}`}
-                  disabled={legs.length <= 1}
                   onClick={() => removeLeg(idx)}
                   style={removeBtnStyle}
                 >
@@ -551,6 +566,12 @@ export function OSAPane({ code }: FunctionPaneProps) {
               </div>
             );
           })}
+          {legs.length === 0 && (
+            <div className="u-text-mute" style={noteTextStyle}>
+              No legs yet. Pick a strategy or add a leg. Nothing is priced until each
+              leg&apos;s strike, expiry and vol are entered.
+            </div>
+          )}
           <div style={editorFootStyle}>
             <button
               type="button"
@@ -563,7 +584,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
             </button>
             <span className="u-text-mute" style={noteTextStyle}>
               premium = Black-Scholes at the spot used (entered or live quote) · IV per leg is the
-              entered value (default 0.25)
+              entered value; a blank input is reported, never filled
             </span>
           </div>
         </section>
@@ -604,25 +625,27 @@ export function OSAPane({ code }: FunctionPaneProps) {
         </section>
 
         {/* secondary table — expiry P&L at the decision-relevant prices */}
-        <section aria-label="Expiry P&L at key prices" style={tableWrapStyle}>
-          <div style={tableHeadStyle}>
-            <span className="u-text-mute" style={noteTextStyle}>
-              key prices · {profileRows.length} rows
-            </span>
-          </div>
-          <DataGrid
-            columns={gridColumns}
-            rows={profileRows}
-            rowKey={(r) => r.spot}
-            density="compact"
-            ariaLabel="Expiry P&L at key prices"
-            defaultSortKey="spot"
-            defaultSortDir="ascending"
-            keyboardNavigable
-          />
-        </section>
-      </div>
-    </PaneState>
+        {isOk && (
+          <section aria-label="Expiry P&L at key prices" style={tableWrapStyle}>
+            <div style={tableHeadStyle}>
+              <span className="u-text-mute" style={noteTextStyle}>
+                key prices · {profileRows.length} rows
+              </span>
+            </div>
+            <DataGrid
+              columns={gridColumns}
+              rows={profileRows}
+              rowKey={(r) => r.spot}
+              density="compact"
+              ariaLabel="Expiry P&L at key prices"
+              defaultSortKey="spot"
+              defaultSortDir="ascending"
+              keyboardNavigable
+            />
+          </section>
+        )}
+    </div>
+    </>
   );
 
   return (
@@ -898,22 +921,29 @@ function SpotField({
     />
   );
 }
+/**
+ * Leg number input. `allowBlank` lets a cleared field report null (the value
+ * the user has not entered); otherwise a blank entry is ignored.
+ */
 function NumInput({
   value,
   onChange,
   step = 1,
   min,
   ariaLabel,
+  allowBlank = false,
 }: {
-  value: number;
-  onChange: (v: number) => void;
+  value: number | null;
+  onChange: (v: number | null) => void;
   step?: number;
   min?: number;
   ariaLabel: string;
+  allowBlank?: boolean;
 }) {
-  const [text, setText] = useState<string>(() => String(value));
+  const toText = (v: number | null) => (v == null ? "" : String(v));
+  const [text, setText] = useState<string>(() => toText(value));
   useEffect(() => {
-    setText(String(value));
+    setText(toText(value));
   }, [value]);
   return (
     <input
@@ -927,13 +957,18 @@ function NumInput({
       min={min}
       aria-label={ariaLabel}
       onChange={(e) => {
-        setText(e.target.value);
-        const n = Number(e.target.value);
-        if (e.target.value.trim() !== "" && Number.isFinite(n) && (min == null || n >= min)) {
+        const raw = e.target.value;
+        setText(raw);
+        if (raw.trim() === "") {
+          if (allowBlank) onChange(null);
+          return;
+        }
+        const n = Number(raw);
+        if (Number.isFinite(n) && (min == null || n >= min)) {
           onChange(n);
         }
       }}
-      onBlur={() => setText(String(value))}
+      onBlur={() => setText(toText(value))}
     />
   );
 }
