@@ -172,9 +172,17 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
     (status === "input_error" && payload?.error_kind === "unsupported_contract");
   // Honesty: "live" is earned by the backend's live_* source modes only
   // (live_yfinance, live_eia, …). Model/fallback envelopes never claim it.
-  const isLive = status === "ok" && /^live_/.test(sourceMode);
-
   const primary = rows[0];
+  // BGAS#2: "live quote" is earned only by a yfinance quote stamped with
+  // today's UTC date. A quote from an earlier session (weekend, holiday,
+  // pre-open) is the last quote, labelled with its own AS OF date.
+  const quoteDay = String(primary?.as_of ?? payload?.as_of ?? "").slice(0, 10);
+  const isPriorSessionQuote =
+    sourceMode === "live_yfinance" &&
+    quoteDay !== "" &&
+    quoteDay !== new Date().toISOString().slice(0, 10);
+  const isLive =
+    status === "ok" && /^live_/.test(sourceMode) && !isPriorSessionQuote;
   const spread =
     typeof payload?.spread === "number" ? (payload.spread as number) : null;
 
@@ -354,7 +362,9 @@ export function CommoditySpotPane({ code, symbol, title }: CommoditySpotPaneProp
                     ? "provider down"
                     : isLive
                       ? "live quote"
-                      : sourceMode}
+                      : isPriorSessionQuote
+                        ? "last quote"
+                        : sourceMode}
               </Pill>
               {isRangeWindow ? (
                 <SegmentedControl

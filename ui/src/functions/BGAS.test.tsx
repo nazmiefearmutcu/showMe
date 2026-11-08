@@ -188,12 +188,25 @@ describe("BGAS pane — data honesty", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the live-quote pill and no model notice for live payloads", () => {
-    setMockFn({ state: "ok", ...livePayload() });
+  it("shows the live-quote pill and no model notice for same-day live payloads", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const p = livePayload();
+    // Copy the row: SPOT_ROW is shared module state and must not be mutated.
+    p.data.data.rows = [{ ...SPOT_ROW, as_of: `${today}T21:59:58+00:00` }];
+    setMockFn({ state: "ok", ...p });
     render(<BGASPane code="BGAS" symbol="NG=F" />);
     expect(screen.getByText(/live quote/i)).toBeInTheDocument();
     expect(screen.queryByText(/reference model/i)).toBeNull();
     expect(screen.queryByText(/NOT a live market price/i)).toBeNull();
+  });
+
+  it("labels a prior-session NG=F close as the last quote, not a live quote", () => {
+    // BGAS#2: a Sunday request returns Friday's close; it must not read "live".
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<BGASPane code="BGAS" symbol="NG=F" />);
+    expect(screen.queryByText(/^live quote$/i)).toBeNull();
+    expect(screen.getByText(/^last quote$/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/AS OF 2026-09-07/).length).toBeGreaterThanOrEqual(1);
   });
 });
 
