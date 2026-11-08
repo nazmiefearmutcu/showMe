@@ -169,6 +169,57 @@ describe("BOIL pane — ok payload", () => {
   });
 });
 
+describe("BOIL pane — per-leg history (BOIL#1)", () => {
+  function payloadWithLegHistory() {
+    const base = livePayload();
+    base.data.data = {
+      ...base.data.data,
+      history_by_symbol: {
+        "CL=F": [
+          { date: "2026-09-01", close: 90.1 },
+          { date: "2026-09-02", close: 90.9 },
+          { date: "2026-09-03", close: 91.48 },
+        ],
+        "BZ=F": [
+          { date: "2026-09-01", close: 94.0 },
+          { date: "2026-09-02", close: 95.5 },
+          { date: "2026-09-03", close: 96.1 },
+          { date: "2026-09-04", close: 96.28 },
+        ],
+      },
+    } as typeof base.data.data;
+    return base;
+  }
+
+  it("charts each leg from its own closes, labelled by symbol", () => {
+    setMockFn({ state: "ok", ...payloadWithLegHistory() });
+    const { container } = render(<BOILPane code="BOIL" symbol="CL=F" />);
+    const brent = container.querySelector(
+      'figure[aria-label="BOIL BZ=F history chart"] svg',
+    );
+    const wti = container.querySelector(
+      'figure[aria-label="BOIL CL=F history chart"] svg',
+    );
+    expect(brent?.getAttribute("aria-label")).toMatch(/4 points/i);
+    expect(wti?.getAttribute("aria-label")).toMatch(/3 points/i);
+    expect(
+      container.querySelector('figure[aria-label="BOIL BZ=F history chart"]')
+        ?.textContent,
+    ).toContain("BZ=F");
+  });
+
+  it("never draws the WTI series under the Brent card", () => {
+    setMockFn({ state: "ok", ...payloadWithLegHistory() });
+    const { container } = render(<BOILPane code="BOIL" symbol="CL=F" />);
+    // Brent's last close is 96.28; the WTI-only series must not be its chart.
+    const brentFigure = container.querySelector(
+      'figure[aria-label="BOIL BZ=F history chart"]',
+    );
+    expect(brentFigure?.textContent).toContain("96.280");
+    expect(brentFigure?.textContent).not.toContain("91.480");
+  });
+});
+
 describe("BOIL pane — interaction", () => {
   it("switches the history window via the segmented control", () => {
     setMockFn({ state: "ok", ...livePayload() });

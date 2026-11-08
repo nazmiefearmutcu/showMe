@@ -590,6 +590,10 @@ class BOILFunction(BaseFunction):
 
         rows: list[dict[str, Any]] = []
         chart_history: list[dict[str, Any]] = []
+        # BOIL#1: each leg keeps its own series. `history` (first leg with
+        # data) is kept for existing consumers; the pane must read
+        # `history_by_symbol` so a Brent card never shows WTI's closes.
+        history_by_symbol: dict[str, list[dict[str, Any]]] = {}
         provider_errors: list[str] = []
         if live and self.deps.yfinance:
             tasks = [
@@ -603,10 +607,11 @@ class BOILFunction(BaseFunction):
                 for sym in symbols
             ]
             results = await asyncio.gather(*tasks)
-            for row, history, errors in results:
+            for sym, (row, history, errors) in zip(symbols, results):
                 provider_errors.extend(errors)
                 if row:
                     rows.append(row)
+                history_by_symbol[sym] = history
                 if not chart_history and history:
                     chart_history = history
 
@@ -648,6 +653,7 @@ class BOILFunction(BaseFunction):
             "source_mode": source_mode,
             "rows": rows,
             "history": chart_history,
+            "history_by_symbol": {sym: history_by_symbol.get(sym, []) for sym in symbols},
             "spread": spread,
             "methodology": "BOIL reports front-month WTI (CL=F) and Brent (BZ=F) futures. Change % is (last / previous close - 1) * 100; history is daily OHLCV from Yahoo chart data.",
             "field_dictionary": _commodity_field_dictionary(),
