@@ -64,6 +64,9 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MIN_IMAGERY_FRACTION = 0.01
 _TILE_LOOKBACK_DAYS = 4
 _TILE_RESOLVE_TIMEOUT = 10.0
+# Open-Meteo runs after the tile walk-back, so its own budget is kept small:
+# worst case is _TILE_RESOLVE_TIMEOUT + _CONDITIONS_TIMEOUT, inside the 14 s router timeout.
+_CONDITIONS_TIMEOUT = 3.0
 
 
 @FunctionRegistry.register
@@ -206,10 +209,13 @@ class SATFunction(BaseFunction):
         cloud_pct: float | None = None
         weather_summary: dict[str, Any] = {}
         try:
-            weather_summary, cloud_pct = await self._fetch_conditions(center_lat, center_lon, capture_date)
+            weather_summary, cloud_pct = await asyncio.wait_for(
+                self._fetch_conditions(center_lat, center_lon, capture_date),
+                timeout=_CONDITIONS_TIMEOUT,
+            )
             sources.append("open_meteo")
         except Exception as exc:  # genuine outage of the conditions provider
-            warnings.append(f"open_meteo: {exc}")
+            warnings.append(f"open_meteo: {exc or type(exc).__name__}")
 
         if not tile_reachable and cloud_pct is None and not weather_summary:
             # Both providers down -> honest outage, no fabrication.

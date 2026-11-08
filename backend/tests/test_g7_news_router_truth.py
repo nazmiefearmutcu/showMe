@@ -445,3 +445,25 @@ def test_tldr_calendar_count_is_full_row_total_not_capped(monkeypatch) -> None:
     assert "10 scheduled" not in markdown
     assert result.data["calendar_total"] == 12
     assert len(result.data["events"]) == 10
+
+
+def test_sat_hanging_open_meteo_is_bounded_by_its_own_budget(monkeypatch) -> None:
+    """SAT budget: the tile walk-back is bounded (10 s), and Open-Meteo runs after it.
+    A hanging conditions call must not stack another 12 s on top and overrun the
+    14 s router timeout; it is cut off and reported as an open_meteo warning."""
+    import time
+
+    import showme.engine.functions.misc.sat as sat_mod
+
+    async def _get(url, params=None):
+        if "gibs.earthdata" in url:
+            return _Resp(content=_imagery_png())
+        await asyncio.sleep(8.0)
+        return _meteo_resp()
+
+    monkeypatch.setattr(sat_mod, "_http_get_raw", _get)
+    started = time.monotonic()
+    result = asyncio.run(sat_mod.SATFunction().execute(aoi="cushing_ok", layer="true_color"))
+    elapsed = time.monotonic() - started
+    assert elapsed < 5.0, f"conditions call was not bounded: {elapsed:.1f}s"
+    assert any("open_meteo" in w for w in result.warnings), result.warnings
