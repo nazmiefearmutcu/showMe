@@ -121,11 +121,13 @@ def tra() -> FunctionManifest:
         table_schema=None,
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="twr_total", label="TWR", kind="kpi", unit="%"),
-                CardSlot(key="irr_annualized", label="IRR", kind="kpi", unit="%"),
-                CardSlot(key="cagr", label="CAGR", kind="kpi", unit="%"),
-                CardSlot(key="price_return_total", label="Price return", kind="kpi", unit="%"),
-                CardSlot(key="max_drawdown", label="Max DD", kind="kpi", unit="%"),
+                # TRA#4: the served "_pct" keys hold percent values (132.99 = 132.99%).
+                # The fraction keys (twr_total and friends) are not card slots.
+                CardSlot(key="twr_total_pct", label="TWR", kind="kpi", unit="%"),
+                CardSlot(key="irr_annualized_pct", label="IRR", kind="kpi", unit="%"),
+                CardSlot(key="cagr_pct", label="CAGR", kind="kpi", unit="%"),
+                CardSlot(key="price_return_total_pct", label="Price return", kind="kpi", unit="%"),
+                CardSlot(key="max_drawdown_pct", label="Max DD", kind="kpi", unit="%"),
                 CardSlot(key="dividends_total", label="Dividends", kind="kpi", unit="ccy"),
             ],
         ),
@@ -137,9 +139,11 @@ def tra() -> FunctionManifest:
             "first close minus one and excludes dividends. IRR is the money-weighted annualized "
             "return on a buy at the first close, the dividends received, and a sale at the last "
             "close. CAGR annualizes the total-return index over the observed span. Max drawdown "
-            "is measured on the full daily total-return index. When the dividend series is "
-            "unavailable, total_return_basis is price_only_dividends_unavailable and TWR and "
-            "CAGR are price-based."
+            "is measured on the full daily total-return index. Closes and dividends are first "
+            "split-adjusted with the cumulative split ratio, so a stock split is not read as a "
+            "loss; when the source reports no split events, split_adjusted is false and the "
+            "warnings say so. When the dividend series is unavailable, total_return_basis is "
+            "price_only_dividends_unavailable and TWR and CAGR are price-based."
         ),
         formula_dict={
             "TWR": Formula(
@@ -160,6 +164,12 @@ def tra() -> FunctionManifest:
             "cagr": FieldDef(unit="decimal", description="Annualized growth over the observed span on the same basis as twr_total.", source="computed"),
             "price_return_total": FieldDef(unit="decimal", description="Last close over first close minus one; excludes dividends.", source="computed"),
             "max_drawdown": FieldDef(unit="decimal", description="Most negative peak-to-trough move of the daily total-return index (<= 0).", source="computed"),
+            "twr_total_pct": FieldDef(unit="%", description="twr_total as a percent (card value).", source="computed"),
+            "irr_annualized_pct": FieldDef(unit="%", description="irr_annualized as a percent (card value).", source="computed"),
+            "cagr_pct": FieldDef(unit="%", description="cagr as a percent (card value).", source="computed"),
+            "price_return_total_pct": FieldDef(unit="%", description="price_return_total as a percent (card value).", source="computed"),
+            "max_drawdown_pct": FieldDef(unit="%", description="max_drawdown as a percent (card value).", source="computed"),
+            "split_adjusted": FieldDef(description="True when split events were available and closes were split-adjusted; false otherwise.", source="provider"),
             "dividends_total": FieldDef(unit="ccy", description="Sum of cash dividends in the window; null when the series is unavailable.", source="provider"),
             "total_return_basis": FieldDef(description="dividends_reinvested or price_only_dividends_unavailable.", source="computed"),
         },
