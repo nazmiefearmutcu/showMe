@@ -415,3 +415,15 @@ describe("SRSK pane — partial-leg composites", () => {
     expect(within(grid).getAllByRole("row")[1].textContent).toContain("TR");
   });
 });
+
+describe("SRSK pane — PD is labelled as an uncalibrated proxy", () => {
+  it("states that the PD is not a market-implied default probability", () => {
+    const payload = livePayload();
+    Object.assign(payload.data.data.summary, { pd_calibration: "uncalibrated" });
+    setMockFn({ state: "ok", ...payload });
+    render(<SRSKPane code="SRSK" />);
+    expect(
+      screen.getByText(/uncalibrated macro proxy, not a market-implied default probability/),
+    ).toBeInTheDocument();
+  });
+});

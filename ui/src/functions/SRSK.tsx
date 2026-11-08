@@ -81,6 +81,7 @@ interface SRSKData {
     worldbank_countries?: number;
     unscored_countries?: number;
     highest_risk_country?: string | null;
+    pd_calibration?: string;
   };
   methodology?: string;
   field_dictionary?: Record<string, unknown>;
@@ -439,7 +440,12 @@ export function SRSKPane({ code }: FunctionPaneProps) {
           density="compact"
           ariaLabel="SRSK ranked sovereign risk table"
         />
-        <div style={methodologyStyle}>{payload?.summary?.formula ?? ""}</div>
+        <div style={methodologyStyle}>
+          {payload?.summary?.formula ?? ""}
+          {payload?.summary?.pd_calibration === "uncalibrated"
+            ? " · PD is an uncalibrated macro proxy, not a market-implied default probability: read it as a relative ranking."
+            : ""}
+        </div>
       </div>
     );
 

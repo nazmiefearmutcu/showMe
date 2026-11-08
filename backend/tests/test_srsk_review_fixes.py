@@ -253,3 +253,23 @@ def test_hung_country_is_bounded_and_others_keep_real_rows(no_network: None, mon
     assert rows["TR"]["risk_score"] is not None
     assert rows["US"]["risk_score"] is None and rows["US"]["pd_1y_pct"] is None
     assert any("US" in w and "timed out" in w for w in out.warnings), out.warnings
+
+
+# SRSK#2: the PD is a linear transform of an uncalibrated equal-weight macro
+# score. The output must say so, per row and on the card, so it is not read as a
+# market-implied default probability.
+def test_pd_basis_labels_macro_proxy_rows_and_card(no_network: None) -> None:
+    out = asyncio.run(SRSKFunction(FunctionDeps(worldbank=_PartialWorldBank())).execute(countries="TR,US"))
+    for row in out.data["rows"]:
+        assert row["pd_basis"] == "macro_composite_proxy", row
+    assert out.data["cards"]["pd_basis"] == "macro_composite_proxy"
+    assert out.data["summary"]["pd_calibration"] == "uncalibrated"
+    assert "not" in out.data["methodology"].lower() and "uncalibrated" in out.data["methodology"].lower()
+
+
+def test_pd_basis_labels_fred_refined_rows(no_network: None) -> None:
+    out = asyncio.run(
+        SRSKFunction(FunctionDeps(worldbank=_ScoreWorldBank(), fred=_SpreadFred())).execute(countries="TR,DE")
+    )
+    basis = {r["country"]: r["pd_basis"] for r in out.data["rows"]}
+    assert basis == {"TR": "fred_yield_differential", "DE": "fred_yield_differential"}, basis

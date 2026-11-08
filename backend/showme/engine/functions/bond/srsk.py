@@ -413,6 +413,15 @@ class SRSKFunction(BaseFunction):
                     "source_mode": source_mode,
                     "as_of": macro.get("as_of"),
                     "as_of_by_leg": macro.get("as_of_by_leg", {}),
+                    "pd_basis": (
+                        None
+                        if pd_1y_pct is None
+                        else (
+                            "fred_yield_differential"
+                            if source_mode.startswith("fred")
+                            else "macro_composite_proxy"
+                        )
+                    ),
                     "legs_present": len(present),
                     "legs_total": len(legs),
                     "note": row_note,
@@ -538,6 +547,7 @@ class SRSKFunction(BaseFunction):
         cards = {
             "highest_pd_country": highest["country"] if highest else None,
             "highest_pd": round(highest["pd_1y_pct"], 4) if highest else None,
+            "pd_basis": highest["pd_basis"] if highest else None,
             "recovery": recovery,
             "data_mode": data_mode,
             "as_of": as_of,
@@ -555,6 +565,7 @@ class SRSKFunction(BaseFunction):
                     "countries": len(rows),
                     "recovery": recovery,
                     "formula": "PD ~= spread / (1 - recovery)",
+                    "pd_calibration": "uncalibrated",
                     "worldbank_countries": wb_success,
                     "unscored_countries": sum(1 for r in rows if r["risk_score"] is None),
                     "partial_coverage_countries": sum(1 for r in rows if _is_partial(r)),
@@ -574,7 +585,10 @@ class SRSKFunction(BaseFunction):
                     "yields a one-year default-probability proxy. A country with no live macro data is kept "
                     "unranked with null spread and PD (source_mode 'unavailable'); no value is substituted. "
                     "If no requested sovereign can be priced at all, no rows are returned and the status is "
-                    "provider_unavailable (World Bank unreachable) or empty (no observations)."
+                    "provider_unavailable (World Bank unreachable) or empty (no observations). "
+                    "The PD is an UNCALIBRATED proxy: it is not implied by CDS or credit ratings and "
+                    "comes from an equal-weight macro score, so read it as a relative ranking, not a "
+                    "market-implied default probability."
                 ),
                 "field_dictionary": self._field_dictionary(),
             },
@@ -599,6 +613,7 @@ class SRSKFunction(BaseFunction):
             "risk_score": "Composite 0-100 sovereign macro risk score (higher = riskier).",
             "proxy_spread_pct": "CDS-style proxy spread in percentage points derived from the risk score (or a real FRED yield differential when available).",
             "pd_1y_proxy": "One-year default-probability proxy as a decimal.",
+            "pd_basis": "What the PD is derived from: 'macro_composite_proxy' (linear transform of the uncalibrated World Bank composite) or 'fred_yield_differential' (country minus UST 10Y). Neither is a market-implied PD.",
             "pd_1y_pct": "One-year default-probability proxy in percent (linear Hull approximation spread/(1-R)). It is not capped at 100; above 100 it is not a probability and only shows how large the spread is relative to the loss given default.",
             "recovery": "Assumed recovery rate in the Hull reduced-form approximation.",
             "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'unavailable' when no live macro data exists (score, spread and PD are null, row unranked).",

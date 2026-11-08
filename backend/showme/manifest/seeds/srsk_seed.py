@@ -134,8 +134,8 @@ def srsk() -> FunctionManifest:
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="highest_pd_country", label="Highest PD", kind="kpi"),
-                CardSlot(key="highest_pd", label="PD", kind="big_number", unit="%"),
+                CardSlot(key="highest_pd_country", label="Highest PD proxy", kind="kpi"),
+                CardSlot(key="highest_pd", label="PD proxy", kind="big_number", unit="%"),
                 CardSlot(key="recovery", label="R", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
@@ -150,6 +150,9 @@ def srsk() -> FunctionManifest:
             " invented spread: its row stays unranked with null spread and PD and source_mode"
             " 'unavailable'. When DGS10 is unavailable the response is marked ``provider_unavailable``"
             " rather than emitting a flat identical PD for every sovereign (the S12 BugHunt fix)."
+            " The PD is an UNCALIBRATED proxy: it is a linear transform of an equal-weight macro score"
+            " (or of a FRED yield differential) and is not implied by CDS or credit ratings, so it is a"
+            " relative ranking, not a market default probability."
         ),
         formula_dict={
             "pd_hull": Formula(
@@ -167,7 +170,9 @@ def srsk() -> FunctionManifest:
             "rows[].country": FieldDef(description="ISO-2 country code.", source="catalog"),
             "rows[].proxy_spread_pct": FieldDef(unit="%", description="Sovereign yield minus US 10Y, percent.", source="computed"),
             "rows[].pd_1y_proxy": FieldDef(unit="decimal", description="1Y PD proxy as decimal in [0,1].", source="computed"),
-            "rows[].pd_1y_pct": FieldDef(unit="%", description="1Y PD proxy as percent.", source="computed"),
+            "rows[].pd_1y_pct": FieldDef(unit="%", description="1Y PD proxy as percent (uncalibrated; see rows[].pd_basis).", source="computed"),
+            "rows[].pd_basis": FieldDef(description="'macro_composite_proxy' or 'fred_yield_differential': what the PD proxy is derived from.", source="computed"),
+            "rows[].legs_present": FieldDef(description="Number of the four macro legs that fed the composite; fewer than 4 means a partial, unranked-vs-full composite.", source="adapter"),
             "rows[].recovery": FieldDef(description="Assumed recovery rate.", source="user_or_default"),
             "rows[].source_mode": FieldDef(description="'worldbank' / 'fred' / 'fred+worldbank' for a priced row; 'unavailable' when no live macro data exists (spread and PD are null).", source="adapter"),
             "rows[].note": FieldDef(description="Per-row explanation for self-spread or unscored (unavailable) rows.", source="adapter"),
