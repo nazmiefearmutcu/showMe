@@ -36,15 +36,9 @@ _IV_FLOOR = 0.001
 # trades are the last trading session or a delayed feed and are labelled so.
 _LIVE_TRADE_WINDOW = timedelta(minutes=60)
 
-# Defensive spot anchor used only when no explicit param and no live quote are
-# available (e.g. air-gapped tests). Mirrors ``_resolve_ivol_spot`` in
-# ``derivative/_stubs.py`` so the two derivative functions stay in lock-step.
-_DEFAULT_SPOT = 100.0
-
-
 async def _resolve_spot(
     deps: Any, instrument: Instrument, params: dict[str, Any],
-) -> float:
+) -> float | None:
     """Resolve the underlying spot for the option monitor.
 
     Resolution order:
@@ -52,11 +46,9 @@ async def _resolve_spot(
     1. An explicit, finite, positive ``params["spot"]`` always wins.
     2. Otherwise the live spot is pulled from the yfinance QUOTE adapter
        (``deps.yfinance`` -> :class:`DataKind.QUOTE` -> ``.last``).
-    3. Only when both signals are missing does it fall back to
-       ``_DEFAULT_SPOT`` (100.0) so greeks/moneyness stay finite.
-
-    This keeps the real option-chain anchored on the live underlying price
-    rather than a hardcoded placeholder.
+    3. When neither signal yields a price, returns ``None``. No placeholder is
+       substituted: moneyness and delta must not be computed around a
+       made-up underlier price (ASOF-1).
     """
     if "spot" in params and params.get("spot") is not None:
         try:
@@ -67,7 +59,7 @@ async def _resolve_spot(
             return value
     yfinance = getattr(deps, "yfinance", None)
     if yfinance is None:
-        return _DEFAULT_SPOT
+        return None
     try:
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 3)), 4.0))
     except (TypeError, ValueError):
@@ -81,7 +73,7 @@ async def _resolve_spot(
             timeout=timeout + 0.5,
         )
     except Exception:
-        return _DEFAULT_SPOT
+        return None
     # The QUOTE adapter exposes ``.last`` on its result object; tolerate a
     # dict-shaped quote too so a mock that returns a plain dict still works.
     last: Any = None
@@ -95,10 +87,10 @@ async def _resolve_spot(
     try:
         value = float(last) if last is not None else 0.0
     except (TypeError, ValueError):
-        return _DEFAULT_SPOT
+        return None
     if value > 0 and math.isfinite(value):
         return value
-    return _DEFAULT_SPOT
+    return None
 
 
 def _num(value: Any) -> float | None:
@@ -317,6 +309,11 @@ class OMONFunction(BaseFunction):
             )
             resolved = await _resolve_spot(self.deps, spot_instrument, params)
             spot = _num(resolved)
+        if spot is not None and spot <= 0:
+            spot = None
+        # No real spot: moneyness, ATM IV and delta stay blank rather than being
+        # computed around an invented price, and the chain is not labelled live.
+        spot_unavailable = spot is None
         tau = _years_to_expiry(expiry)
 
         # Merge calls and puts on strike.
@@ -434,6 +431,11 @@ class OMONFunction(BaseFunction):
         total_put_oi = sum(r["put_oi"] for r in rows if r.get("put_oi"))
 
         warnings: list[str] = []
+        if spot_unavailable:
+            warnings.append(
+                "Underlying spot price unavailable (no live quote and no spot "
+                "param); moneyness, ATM IV and delta are not computed."
+            )
         if iv_undefined["count"]:
             warnings.append(
                 f"Implied vol undefined for {iv_undefined['count']} quote(s) "
@@ -498,11 +500,15 @@ class OMONFunction(BaseFunction):
                 "as_of_timestamp": last_trade.isoformat() if last_trade else None,
                 "fetched_at": now_utc.isoformat(),
                 "strike_count": len(rows),
-                "live": is_live,
+                "live": is_live and not spot_unavailable,
                 "data_mode": (
-                    "live_yfinance"
-                    if is_live
-                    else ("last_trade_yfinance" if last_trade else "yfinance_no_trade_time")
+                    "spot_unavailable"
+                    if spot_unavailable
+                    else (
+                        "live_yfinance"
+                        if is_live
+                        else ("last_trade_yfinance" if last_trade else "yfinance_no_trade_time")
+                    )
                 ),
             },
         )
