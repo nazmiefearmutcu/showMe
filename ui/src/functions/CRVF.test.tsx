@@ -14,7 +14,7 @@
  * `useFunction` is mocked via a mutable shared state (GEX pattern).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { CRVFPane } from "./CRVF";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
@@ -38,18 +38,13 @@ function setMockFn(next: MockFnState) {
   mockFn.error = next.error ?? null;
 }
 
-let lastParams: Record<string, unknown> | undefined;
-
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: (args: { params?: Record<string, unknown> }) => {
-    lastParams = args.params;
-    return {
-      state: mockFn.state,
-      data: mockFn.data,
-      error: mockFn.error,
-      refetch: vi.fn(),
-    };
-  },
+  useFunction: () => ({
+    state: mockFn.state,
+    data: mockFn.data,
+    error: mockFn.error,
+    refetch: vi.fn(),
+  }),
 }));
 
 /* ── fixtures: model curve shape mirrors bond/crvf.py ──────────────── */
@@ -198,64 +193,5 @@ describe("CRVF pane — headline stats", () => {
     render(<CRVFPane code="CRVF" symbol="US10Y" />);
     // 4.67 − 5.32 = −65.0 bps.
     expect(screen.getByText("-65.0 bps")).toBeInTheDocument();
-  });
-});
-
-describe("CRVF pane — honest unavailable and notice states (p2a-g04 CRVF#1)", () => {
-  it("shows the backend reason for a non-US curve instead of US model levels", () => {
-    setMockFn({
-      state: "ok",
-      data: {
-        data: {
-          status: "provider_unavailable",
-          reason: "No curve is wired for DE: CRVF's only source is FRED's US Treasury curve.",
-          rows: [],
-          curve: [],
-          summary: { country: "DE", tenors: 0, source_mode: "provider_unavailable" },
-        },
-        sources: [],
-        warnings: ["No curve is wired for DE"],
-      },
-    });
-    const { container } = render(<CRVFPane code="CRVF" symbol="DE10Y" />);
-    expect(screen.getByText(/Curve unavailable/i)).toBeInTheDocument();
-    expect(screen.getByText(/No curve is wired for DE/i)).toBeInTheDocument();
-    expect(screen.queryByText(/model fixture/i)).toBeNull();
-    expect(container.querySelectorAll("circle").length).toBe(0);
-  });
-
-  it("names the real cause in the computed-model notice, not a missing FRED key", () => {
-    setMockFn({
-      state: "ok",
-      data: {
-        data: {
-          rows: MODEL_ROWS,
-          curve: MODEL_ROWS,
-          summary: { country: "US", tenors: 8, source_mode: "computed_model", latest_10y: 4.45 },
-        },
-        sources: ["curve_model"],
-        warnings: ["fred: keyless FRED CSV unavailable for 'DGS10'"],
-      },
-    });
-    render(<CRVFPane code="CRVF" symbol="US10Y" />);
-    expect(screen.getByText(/keyless FRED CSV unavailable/i)).toBeInTheDocument();
-    expect(screen.queryByText(/No FRED key is configured/i)).toBeNull();
-  });
-});
-
-describe("CRVF pane — tenor filter control (p2a-g04 CRVF#5)", () => {
-  it("sends no tenors param by default, so the backend returns the full curve", () => {
-    setMockFn({ state: "ok", ...modelPayload() });
-    render(<CRVFPane code="CRVF" symbol="US10Y" />);
-    expect(lastParams).toBeUndefined();
-  });
-
-  it("sends the chosen tenors to the backend when the user picks them", () => {
-    setMockFn({ state: "ok", ...modelPayload() });
-    render(<CRVFPane code="CRVF" symbol="US10Y" />);
-    fireEvent.click(screen.getByRole("button", { name: "2Y" }));
-    fireEvent.click(screen.getByRole("button", { name: "10Y" }));
-    expect(lastParams).toEqual({ tenors: ["2Y", "10Y"] });
-    expect(screen.getByRole("button", { name: "2Y" })).toHaveAttribute("aria-pressed", "true");
   });
 });

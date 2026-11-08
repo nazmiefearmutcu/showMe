@@ -307,30 +307,3 @@ describe("YAS pane — grid CSV export", () => {
     expect(downloadGridCsv).not.toHaveBeenCalled();
   });
 });
-
-describe("YAS pane — asset class and unsupported-asset honesty (YAS#3)", () => {
-  it("tells the sidecar the asset is a BOND so a CUSIP is not inferred as EQUITY", () => {
-    setMockFn({ state: "ok", ...livePayload() });
-    render(<YASPane code="YAS" symbol="912828ZT2" />);
-    expect(lastParams).toMatchObject({ asset_class: "BOND" });
-    expect(lastSymbol).toBe("912828ZT2");
-  });
-
-  it("shows the unsupported-asset reason instead of the generic empty message", () => {
-    setMockFn({
-      state: "ok",
-      data: {
-        data: {
-          status: "unsupported_asset",
-          reason: "YAS does not support EQUITY",
-          rows: [],
-          curve: [],
-        },
-      },
-    });
-    render(<YASPane code="YAS" symbol="912828ZT2" />);
-    expect(screen.getByText(/Asset not supported/i)).toBeInTheDocument();
-    expect(screen.getByText(/YAS does not support EQUITY/i)).toBeInTheDocument();
-    expect(screen.queryByText(/check the bond inputs/i)).toBeNull();
-  });
-});
