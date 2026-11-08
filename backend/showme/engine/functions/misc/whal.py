@@ -544,7 +544,7 @@ def _shape_market_bars(
         ret_pct = _to_float(row.get("return_pct"))
         notional_ratio = (notional / baseline_notional) if (notional and baseline_notional) else None
         impulse_ratio = (abs(ret_pct) / baseline_return) if (ret_pct is not None and baseline_return) else None
-        threshold_crossed = bool(notional is not None and notional >= threshold_usd)
+        threshold_crossed = _threshold_test(notional, threshold_usd)
         anomaly = (
             threshold_crossed
             or (notional_ratio is not None and notional_ratio >= 2.0)
@@ -566,6 +566,7 @@ def _shape_market_bars(
                 "threshold_usd": threshold_usd,
                 "threshold_crossed": threshold_crossed,
                 "notional_vs_median": round(notional_ratio, 2) if notional_ratio is not None else None,
+                # Only a real USD notional can be tested against a USD floor; None = not tested.
                 "impulse_vs_median": round(impulse_ratio, 2) if impulse_ratio is not None else None,
                 "return_pct": round(ret_pct, 4) if ret_pct is not None else None,
                 "direction": "up" if (ret_pct or 0) > 0 else "down" if (ret_pct or 0) < 0 else "flat",
@@ -639,7 +640,7 @@ def _top_market_rows(
                 "volume": row.get("volume"),
                 "usd_value": round(notional, 2) if notional is not None else None,
                 "threshold_usd": threshold_usd,
-                "threshold_crossed": bool(notional is not None and notional >= threshold_usd),
+                "threshold_crossed": _threshold_test(notional, threshold_usd),
                 "return_pct": round(ret_pct, 4) if ret_pct is not None else None,
                 "direction": "up" if (ret_pct or 0) > 0 else "down" if (ret_pct or 0) < 0 else "flat",
                 "severity": _severity(notional or (abs(ret_pct or 0) * 1_000_000), threshold_usd),
@@ -728,7 +729,8 @@ async def _fetch_sec_filing_rows(
                 "timestamp": _nth(filing_dates, idx),
                 "form": form,
                 "threshold_usd": None,
-                "threshold_crossed": False,
+                # A filing has no USD value, so the Min USD test does not apply.
+                "threshold_crossed": None,
                 "severity": "high" if form in {"SC 13D", "SC 13G", "13D", "13G"} else "medium",
                 "source_mode": "sec_edgar_submissions",
                 "url": url,
@@ -877,12 +879,38 @@ def _field_dictionary() -> dict[str, str]:
     }
 
 
+def _threshold_test(usd_value: float | None, threshold_usd: float) -> bool | None:
+    """True/False only when both a USD value and a positive threshold exist; otherwise None (not tested)."""
+    if usd_value is None or threshold_usd <= 0:
+        return None
+    return usd_value >= threshold_usd
+
+
 def _market_summary(symbol: str, market: str, rows: list[dict[str, Any]], hits: int, threshold: float) -> str:
+    """Say which rows were actually tested against the USD floor, and which had no USD basis."""
     if not rows:
         return f"No public WHAL proxy rows were returned for {symbol} ({market})."
-    if hits:
-        return f"{symbol} has {hits} public row(s) above ${threshold:,.0f}."
-    return f"{symbol} returned {len(rows)} public WHAL proxy row(s), but none crossed ${threshold:,.0f}."
+    usd_rows = [row for row in rows if row.get("usd_value") is not None]
+    filings = [row for row in rows if row.get("alert_type") == "sec_ownership_filing"]
+    impulses = [
+        row for row in rows
+        if row.get("usd_value") is None and row.get("alert_type") != "sec_ownership_filing"
+    ]
+    parts: list[str] = []
+    if threshold <= 0:
+        parts.append("no USD threshold was set, so no row was tested against one")
+    elif usd_rows:
+        if hits:
+            parts.append(f"{hits} of {len(usd_rows)} USD-valued row(s) reached ${threshold:,.0f}")
+        else:
+            parts.append(f"{len(usd_rows)} USD-valued row(s) were tested and none reached ${threshold:,.0f}")
+    else:
+        parts.append(f"no row has a USD value, so ${threshold:,.0f} could not be tested")
+    if impulses:
+        parts.append(f"{len(impulses)} price-impulse row(s) have no USD value")
+    if filings:
+        parts.append(f"{len(filings)} SEC filing(s) are listed without a USD value")
+    return f"{symbol} ({market}): " + "; ".join(parts) + "."
 
 
 def _proxy_mode(market: str, bars: list[dict[str, Any]]) -> str:
