@@ -92,6 +92,10 @@ describe("SAT pane — layer control (SAT#3)", () => {
   it("keeps the layer choice out of the tick key", () => {
     render(<SATPane code="SAT" />);
     fireEvent.click(screen.getByRole("tab", { name: "NDVI" }));
-    expect(JSON.stringify(lastFnArgs?.params ?? null)).not.toContain("tick");
+    // The layer is a fetch param, not a poll trigger: choosing it must not
+    // refetch by itself, and the params carry exactly the aoi and layer keys.
+    expect(mockFn.refetch).not.toHaveBeenCalled();
+    expect(Object.keys(lastFnArgs?.params ?? {}).sort()).toEqual(["aoi", "layer"]);
+    expect(lastFnArgs?.params).toEqual({ aoi: "cushing_ok", layer: "ndvi" });
   });
 });
