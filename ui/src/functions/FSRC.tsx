@@ -292,9 +292,6 @@ export function FSRCPane({ code }: FunctionPaneProps) {
               <span style={monoStrongStyle}>
                 {formatCurrency(r.aum_usd, { compact: true })}
               </span>
-              {r.aum_state === "reference" ? (
-                <RefMark title="Curated reference AUM: not refreshed from a provider" />
-              ) : null}
             </>
           ),
       },
@@ -336,9 +333,6 @@ export function FSRCPane({ code }: FunctionPaneProps) {
               >
                 {formatPercent(r.ytd_return_pct, { signed: true })}
               </span>
-              {r.ytd_state === "reference" ? (
-                <RefMark title="Curated reference YTD: not refreshed from a provider" />
-              ) : null}
             </>
           ),
       },
