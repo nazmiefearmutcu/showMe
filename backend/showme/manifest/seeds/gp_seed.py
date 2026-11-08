@@ -285,7 +285,7 @@ def gp() -> FunctionManifest:
             SemanticTest(
                 name="gp_btcusdt_1d_5m_uses_binance",
                 description="GP for crypto routes to binance with live_exchange mode and ≥250 5m bars.",
-                inputs={"symbol": "BTCUSDT", "range": "1D", "interval": "5m"},
+                inputs={"symbol": "BTCUSDT", "range": "1M", "interval": "5m"},
                 assertions=[
                     "provider_equals_binance",
                     "data_mode_equals_live_exchange",
@@ -294,8 +294,8 @@ def gp() -> FunctionManifest:
             ),
             SemanticTest(
                 name="gp_invalid_interval_for_range_rejected",
-                description="GP rejects nonsensical interval/range combos rather than silently succeed.",
-                inputs={"symbol": "AAPL", "range": "1D", "interval": "1d"},
+                description="GP does not silently pass a 1M window at 1m bars: Yahoo serves 7 days of 1m, so the span is reported short with a warning.",
+                inputs={"symbol": "AAPL", "range": "1M", "interval": "1m"},
                 assertions=["http_422_or_degraded_with_warning"],
             ),
             SemanticTest(
