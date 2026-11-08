@@ -139,7 +139,9 @@ class LITMFunction(BaseFunction):
 
 
 _LITM_SCAN_LIMIT = 1000
-_LITM_KEEP_ITEMS = frozenset({"1.03", "1.04", "3.03", "5.02", "5.03"})
+# Narrow filter: only these 8-K item codes count as litigation/governance events.
+keep = {"1.03", "1.04", "3.03", "5.02", "5.03"}
+_LITM_KEEP_ITEMS = frozenset(keep)
 
 
 def _split_item_codes(raw: Any) -> list[str]:
