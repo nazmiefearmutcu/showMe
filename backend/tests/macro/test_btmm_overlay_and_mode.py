@@ -84,16 +84,25 @@ def test_overlay_not_requested_is_marked_not_requested(monkeypatch) -> None:
 # ------------------------------------------------------------- BTMM#2 provider_mode
 
 
-def test_provider_mode_reports_mode_actually_served(monkeypatch) -> None:
-    result = _run_with_loader(
-        monkeypatch,
-        lambda _t, _f=False: _rows(),
-        country="US",
-        provider_mode="live_official",
-    )
+def test_provider_mode_reports_mode_actually_served(monkeypatch, isolated_bis_cache) -> None:
+    # Drive the real loader (fake httpx client) so the served mode is recorded
+    # by the code under test, not supplied by a stub loader.
+    _fake_bis_network(monkeypatch)
+
+    result = asyncio.run(BTMMFunction().execute(country="US", provider_mode="live_official"))
 
     assert result.data["requested_mode"] == "live_official", result.data
-    assert result.data["data_mode"] is None or result.data["data_mode"] == "live_official"
+    assert result.data["data_mode"] == "live_official", result.data
+
+
+def test_requested_mode_differing_from_served_mode_is_warned(monkeypatch, isolated_bis_cache) -> None:
+    _fake_bis_network(monkeypatch)
+
+    result = asyncio.run(BTMMFunction().execute(country="US", provider_mode="cached_snapshot"))
+
+    assert result.data["requested_mode"] == "cached_snapshot", result.data
+    assert result.data["data_mode"] == "live_official", result.data
+    assert any("provider_mode_differs" in w for w in result.warnings), result.warnings
 
 
 def _bis_zip_bytes() -> bytes:
@@ -117,7 +126,7 @@ def isolated_bis_cache(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_network_fetch_is_reported_as_live_official(monkeypatch, isolated_bis_cache) -> None:
+def _fake_bis_network(monkeypatch) -> None:
     payload = _bis_zip_bytes()
 
     class _Response:
@@ -140,6 +149,10 @@ def test_network_fetch_is_reported_as_live_official(monkeypatch, isolated_bis_ca
             return _Response()
 
     monkeypatch.setattr(httpx, "Client", _Client)
+
+
+def test_network_fetch_is_reported_as_live_official(monkeypatch, isolated_bis_cache) -> None:
+    _fake_bis_network(monkeypatch)
 
     result = asyncio.run(BTMMFunction().execute(country="US", provider_mode="live_official"))
 
