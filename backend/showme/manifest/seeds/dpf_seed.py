@@ -116,18 +116,19 @@ def dpf() -> FunctionManifest:
             "DPF reads FINRA OTC Transparency weekly ATS / off-exchange share volume for the "
             "symbol. dark_pool_pct = 100 x ATS share volume / real consolidated weekly volume "
             "from yfinance for the same week. When the real total volume is unavailable for a "
-            "week, dark_pool_pct and estimated_total_volume are null rather than estimated. Rows "
-            "from a labelled shape model (not FINRA data) carry a non-FINRA source_mode and null "
-            "dark_pool_pct, and a stale FINRA snapshot is labelled provider_unavailable."
+            "week, dark_pool_pct and estimated_total_volume are null rather than estimated. Every "
+            "returned row is a FINRA weekly aggregate. When FINRA returns no rows (or fails), the "
+            "result is provider_unavailable with a reason and an empty row set; no shape-model or "
+            "synthetic rows are generated. A stale FINRA snapshot is labelled provider_unavailable."
         ),
         field_dict={
             "symbol": FieldDef(description="Equity or ETF ticker.", source="instrument"),
             "weekStartDate": FieldDef(description="ISO date of the Monday starting the reporting week.", source="provider"),
             "venue": FieldDef(description="ATS / MPID venue reported by FINRA.", source="provider"),
-            "ats_share_volume": FieldDef(description="Off-exchange (ATS) shares reported for the symbol.", source="provider"),
+            "ats_share_volume": FieldDef(description="Off-exchange (ATS) shares FINRA reported for the symbol that week; empty rows (not estimates) when FINRA returns nothing.", source="provider"),
             "estimated_total_volume": FieldDef(description="Real consolidated weekly share volume (yfinance); null when unavailable.", source="provider"),
             "dark_pool_pct": FieldDef(description="ATS share of the real weekly total volume, in percent (0-100).", source="computed"),
-            "source_mode": FieldDef(description="Live FINRA row or a labelled non-FINRA fallback.", source="provider"),
+            "source_mode": FieldDef(description="Live FINRA weekly row (finra_ats_weekly) or a stale FINRA row (finra_ats_weekly_stale); no fallback rows exist.", source="provider"),
             "rows": FieldDef(description="Weekly ATS rows, most recent first.", source="provider"),
         },
         provenance=ProvenanceSpec(
@@ -147,12 +148,12 @@ def dpf() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="dpf_fallback_rows_are_labelled_not_finra",
-                description="Rows that did not come from FINRA carry a non-FINRA source_mode and no dark-pool ratio.",
+                name="dpf_no_rows_without_finra",
+                description="Without FINRA rows, DPF returns provider_unavailable with an empty row set; no generated rows carry a dark-pool ratio.",
                 inputs={"symbol": "AAPL", "weeks": 8},
                 assertions=[
                     "status_in_ok_or_provider_unavailable",
-                    "non_finra_rows_have_null_dark_pool_pct",
+                    "rows_empty_without_finra",
                 ],
             ),
         ],
