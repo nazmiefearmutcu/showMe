@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -102,6 +103,22 @@ class EMSXFunction(BaseFunction):
                 sources=["paper_ticket"],
                 metadata={"preview_only": True},
             )
+        # WB1-G16 (EMSX#1-#3, TSOX#4): the EMSX/TSOX ticket contract is checked
+        # before any preview or broker call. BBGT and FXGO inherit this method
+        # and keep their existing behaviour; only the codes listed in
+        # _STRICT_TICKET_CODES go through the validation below.
+        strict_ticket = self.code in _STRICT_TICKET_CODES
+        ticket: dict[str, Any] = {}
+        if strict_ticket:
+            ticket_error, ticket = _validate_ticket_fields(
+                quantity=quantity, side=side, order_type=order_type, tif=tif,
+                price=params.get("price"), leverage=params.get("leverage"),
+            )
+            if ticket_error is not None:
+                return _ticket_input_error_result(
+                    self.code, instrument, ticket_error,
+                    side=side, quantity=quantity, order_type=order_type, tif=tif,
+                )
         broker = _select_broker(self.deps, instrument.asset_class)
         if broker is None and live_armed:
             return FunctionResult(
@@ -140,8 +157,12 @@ class EMSXFunction(BaseFunction):
             # "Price: —" row, hiding the fact that the value the user typed
             # was carried through. Echo both fields back so the preview is
             # actually a faithful round-trip of what the trader requested.
-            price_param = _float_param(params.get("price"), default=0.0) if params.get("price") not in (None, "") else None
-            leverage_param = params.get("leverage")
+            if strict_ticket:
+                price_param = ticket["price"]
+                leverage_param = ticket["leverage"]
+            else:
+                price_param = _float_param(params.get("price"), default=0.0) if params.get("price") not in (None, "") else None
+                leverage_param = params.get("leverage")
             preview = {
                 "broker": "paper",
                 "status": "preview",
@@ -181,9 +202,9 @@ class EMSXFunction(BaseFunction):
             side=OrderSide(side),
             quantity=quantity,
             order_type=OrderType(order_type),
-            price=params.get("price"),
+            price=ticket["price"] if strict_ticket else params.get("price"),
             time_in_force=TimeInForce(tif),
-            leverage=params.get("leverage"),
+            leverage=ticket["leverage"] if strict_ticket else params.get("leverage"),
         )
         order_id = await broker.place_order(order)
         # Per PY-LINT-05 P0: do NOT silently swallow audit-write failures
@@ -228,8 +249,8 @@ class EMSXFunction(BaseFunction):
                 "order_type": order_type,
                 "time_in_force": tif,
                 "tif": tif,
-                "price": params.get("price"),
-                "leverage": params.get("leverage"),
+                "price": ticket["price"] if strict_ticket else params.get("price"),
+                "leverage": ticket["leverage"] if strict_ticket else params.get("leverage"),
                 "next_actions": [
                     "Track the working order in AIM (broker + order_id).",
                     "A fill will appear in the AIM ledger once the broker reports it.",
@@ -529,6 +550,14 @@ class TSOXFunction(EMSXFunction):
     name = "Treasury Order Entry"
     # Cash Treasuries (BOND) and CME Treasury futures (DERIVATIVE, e.g. ZN=F).
     asset_classes = (AssetClass.BOND, AssetClass.DERIVATIVE)
+
+    async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        result = await super().execute(instrument=instrument, **params)
+        if isinstance(result.data, dict):
+            # WB1-G16 TSOX#3: bond-ticket analytics are not in the ticket inputs,
+            # so say so explicitly instead of leaving them silently absent.
+            result.data["analytics"] = _tsox_analytics_not_computed()
+        return result
 
 
 @FunctionRegistry.register
@@ -949,6 +978,116 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# WB1-G16: the EMSX/TSOX ticket contract. BBGT and FXGO inherit
+# EMSXFunction.execute too and are deliberately excluded here.
+_STRICT_TICKET_CODES = frozenset({"EMSX", "TSOX"})
+_TICKET_SIDES = ("BUY", "SELL")
+_TICKET_ORDER_TYPES = ("MARKET", "LIMIT")
+_TICKET_TIFS = ("DAY", "GTC", "IOC", "FOK")
+_TICKET_LEVERAGE_MAX = 125  # EMSX seed leverage max
+
+
+def _validate_ticket_fields(
+    *, quantity: float, side: str, order_type: str, tif: str, price: Any, leverage: Any,
+) -> tuple[dict[str, str] | None, dict[str, Any]]:
+    """Check a ticket against the EMSX/TSOX seed options and ranges.
+
+    Returns ``(error, normalised)``. ``error`` is ``{"field", "reason"}`` for
+    the first invalid field, else None. ``normalised`` holds the values the
+    preview and the broker order are built from: ``price`` is None on MARKET
+    and a positive float on LIMIT, ``leverage`` is an int or None.
+    """
+    def _bad(field: str, reason: str) -> tuple[dict[str, str], dict[str, Any]]:
+        return {"field": field, "reason": reason}, {}
+
+    if not math.isfinite(quantity) or quantity <= 0:
+        return _bad("quantity", "Quantity must be a finite number greater than 0.")
+    if side not in _TICKET_SIDES:
+        return _bad("side", f"side must be BUY or SELL; got {side!r}.")
+    if order_type not in _TICKET_ORDER_TYPES:
+        return _bad("order_type", f"order_type must be MARKET or LIMIT; got {order_type!r}.")
+    if tif not in _TICKET_TIFS:
+        return _bad("tif", f"tif must be one of DAY, GTC, IOC, FOK; got {tif!r}.")
+    limit_price: float | None = None
+    if order_type == "LIMIT":
+        try:
+            limit_price = float(price) if price not in (None, "") else float("nan")
+        except (TypeError, ValueError):
+            limit_price = float("nan")
+        if not math.isfinite(limit_price) or limit_price <= 0:
+            return _bad("price", "LIMIT tickets need a limit price greater than 0.")
+    lev: int | None = None
+    if leverage not in (None, ""):
+        try:
+            lev_f = float(leverage)
+        except (TypeError, ValueError):
+            lev_f = float("nan")
+        if (
+            not math.isfinite(lev_f)
+            or lev_f != int(lev_f)
+            or not 1 <= lev_f <= _TICKET_LEVERAGE_MAX
+        ):
+            return _bad(
+                "leverage",
+                f"leverage must be a whole number from 1 to {_TICKET_LEVERAGE_MAX}; got {leverage!r}.",
+            )
+        lev = int(lev_f)
+    return None, {"side": side, "order_type": order_type, "tif": tif,
+                  "price": limit_price, "leverage": lev}
+
+
+def _ticket_input_error_result(
+    code: str, instrument: Instrument, error: dict[str, str], *,
+    side: str, quantity: float, order_type: str, tif: str,
+) -> FunctionResult:
+    """Honest ``input_error`` for an invalid ticket; nothing reaches a broker."""
+    field = error["field"]
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": error["reason"],
+            "field": field,
+            "broker": "paper",
+            "submit": False,
+            "symbol": instrument.symbol,
+            "asset_class": instrument.asset_class.value,
+            "side": side,
+            # NaN/inf cannot be serialised as JSON, so echo them as null.
+            "quantity": quantity if math.isfinite(quantity) else None,
+            "order_type": order_type,
+            "time_in_force": tif,
+            "tif": tif,
+            "price": None,
+            "leverage": None,
+            "next_actions": [
+                f"Correct the {field} field in the ticket controls and preview again.",
+                "Nothing was sent to a broker.",
+            ],
+        },
+        sources=["paper_ticket"],
+        metadata={"preview_only": True, "submitted": False},
+    )
+
+
+def _tsox_analytics_not_computed() -> dict[str, Any]:
+    """Explicit TSOX analytics state: listed, never estimated or defaulted."""
+    return {
+        "status": "not_computed",
+        "reason": (
+            "DV01, accrued interest, dirty price, settlement date and contract multiplier "
+            "need the bond's modified duration, coupon schedule or the contract specification. "
+            "The ticket inputs do not carry them and this ticket does not source them, "
+            "so none are estimated."
+        ),
+        "not_computed": [
+            "dv01", "accrued_interest", "dirty_price",
+            "settlement_date", "contract_multiplier", "notional_face",
+        ],
+    }
 
 
 def _paper_mode_enabled(value: Any) -> bool:
