@@ -157,6 +157,10 @@ class TLHFunction(BaseFunction):
                     "total_estimated_tax_savings": 0,
                     "total_harvestable_loss": 0,
                     "n_loss_positions": 0,
+                    "candidate_count": 0,
+                    "wash_blocked_count": 0,
+                    "st_loss": 0,
+                    "lt_loss": 0,
                 },
                 sources=["portfolio_state"],
                 warnings=warnings,
@@ -219,19 +223,36 @@ class TLHFunction(BaseFunction):
             unrealized = (price - pos.avg_cost) * pos.quantity
             if unrealized >= 0 or -unrealized < min_loss:
                 continue
-            opened = pos.opened_at if pos.opened_at.tzinfo else pos.opened_at.replace(tzinfo=timezone.utc)
-            held_days = max(1, (now - opened).days)
-            # US rule: long-term means held MORE than one year (366+ days).
-            is_long = held_days > lt_threshold_days
-            tax_rate = lt_rate if is_long else bracket
+            # TLH#2: only a recorded open date is a purchase date. A row with no
+            # recorded date (the book stamps the build time) has an unknown
+            # holding period, so it is never blocked on that stamp.
+            known = bool(getattr(pos, "opened_at_known", False))
+            if known:
+                opened = pos.opened_at if pos.opened_at.tzinfo else pos.opened_at.replace(tzinfo=timezone.utc)
+                held_days = max(1, (now - opened).days)
+                # US rule: long-term means held MORE than one year (366+ days).
+                is_long = held_days > lt_threshold_days
+                tax_rate = lt_rate if is_long else bracket
+            else:
+                opened = None
+                held_days = None
+                is_long = None
+                tax_rate = bracket  # holding period unknown: priced at the short-term rate
             replacement = _SECTOR_REPLACEMENT.get(sector) if (sector and suggest_replacement) else None
             if replacement and replacement.upper() == pos.instrument.symbol.upper():
                 replacement = None  # would be substantially identical
             # A purchase inside the window disallows the loss. The only buy
-            # date available here is the position open date, so this is a
+            # date available here is a recorded open date, so this is a
             # positive finding only; absence of a blocking buy is NOT proven.
-            if held_days <= wash_days:
-                wash_safe: bool | None = False
+            if not known:
+                wash_safe = None
+                wash_status = "not_checked"
+                wash_reason = (
+                    "No open date is recorded for this position, so its purchase history cannot be "
+                    "checked; broker buy history is not read."
+                )
+            elif held_days <= wash_days:
+                wash_safe = False
                 wash_status = "blocked_open_date_in_window"
                 wash_reason = (
                     f"Position was opened on {opened.strftime('%Y-%m-%d')}, inside the {wash_days}-day "
@@ -251,7 +272,8 @@ class TLHFunction(BaseFunction):
                 "avg_cost": pos.avg_cost,
                 "current_price": price,
                 "unrealized_pnl": unrealized,
-                "opened_at": opened.strftime("%Y-%m-%d"),
+                "opened_at": opened.strftime("%Y-%m-%d") if known else None,
+                "holding_period_known": known,
                 "held_days": held_days,
                 "long_term": is_long,
                 "tax_rate_applied": tax_rate,
@@ -275,9 +297,10 @@ class TLHFunction(BaseFunction):
         blocked = [c for c in candidates if c["wash_sale_safe"] is False]
         gross_total = sum(c["estimated_tax_savings"] for c in harvestable)
         total_harvestable_loss = sum(-c["unrealized_pnl"] for c in harvestable)
+        # Unknown holding periods are priced at the short-term rate, so they sit in the ST bucket.
+        st_loss = sum(-c["unrealized_pnl"] for c in harvestable if c["long_term"] is not True)
+        lt_loss = sum(-c["unrealized_pnl"] for c in harvestable if c["long_term"] is True)
         if gains_supplied:
-            st_loss = sum(-c["unrealized_pnl"] for c in harvestable if not c["long_term"])
-            lt_loss = sum(-c["unrealized_pnl"] for c in harvestable if c["long_term"])
             baseline = _tax_on_net_gains(st_gain, lt_gain, bracket, lt_rate)
             after = _tax_on_net_gains(st_gain - st_loss, lt_gain - lt_loss, bracket, lt_rate)
             total_savings = baseline - after
@@ -295,6 +318,12 @@ class TLHFunction(BaseFunction):
                 f"{len(blocked)} position(s) blocked by a purchase inside the wash-sale window; "
                 "excluded from the savings total."
             )
+        unknown_open = sum(1 for c in candidates if not c["holding_period_known"])
+        if unknown_open:
+            warnings.append(
+                f"{unknown_open} position(s) have no recorded open date: wash-sale status is not checked "
+                "and their holding period is assumed short-term for the saving."
+            )
         unpriced_symbols = sorted(set(unpriced))
         if unpriced_symbols:
             warnings.append(f"No current quote for {', '.join(unpriced_symbols)}; those positions were not evaluated.")
@@ -311,6 +340,8 @@ class TLHFunction(BaseFunction):
                       "next_actions": ["Retry when the quote provider is reachable."],
                       "candidates": [], "rows": [], "total_estimated_tax_savings": 0, "n_loss_positions": 0,
                       "total_harvestable_loss": 0,
+                      "candidate_count": None, "wash_blocked_count": None,
+                      "st_loss": None, "lt_loss": None,
                       "unpriced_symbols": unpriced_symbols},
                 sources=["portfolio_state"], warnings=warnings,
             )
@@ -327,6 +358,11 @@ class TLHFunction(BaseFunction):
                 "total_estimated_tax_savings": total_savings,
                 "total_harvestable_loss": total_harvestable_loss,
                 "n_loss_positions": len(candidates),
+                # Card slots read these top-level keys (tlh_seed card_schema).
+                "candidate_count": len(candidates),
+                "wash_blocked_count": len(blocked),
+                "st_loss": st_loss,
+                "lt_loss": lt_loss,
                 "unpriced_symbols": unpriced_symbols,
                 "summary": {
                     "positions_evaluated": priced,
@@ -407,6 +443,8 @@ def _field_dictionary() -> dict[str, str]:
         "wash_sale_window": "Observation window: 30 days before through 30 days after sale. Not a check of buy history.",
         "wash_sale_status": "blocked_open_date_in_window when the open date is inside the window; not_checked otherwise.",
         "wash_sale_safe": "False when blocked; null when not checked (never a proof of safety).",
+        "opened_at": "Recorded open date; null when the book has none (the holding period is then unknown).",
+        "holding_period_known": "False when no open date is recorded: the saving is priced at the short-term rate and long_term is null.",
         "replacement_etf": "Similar sector ETF candidate, not guaranteed to be tax-safe.",
         "granularity": "position: one row per symbol in the local book, not per tax lot.",
     }

@@ -54,10 +54,13 @@ def tlh() -> FunctionManifest:
         inputs=[
             InputSpec(
                 name="credential_id",
-                label="Account",
+                label="Account (not used)",
                 control=ControlKind.SELECT,
-                required=True,
-                description="Broker account whose lots to scan.",
+                required=False,
+                description=(
+                    "Not used: TLH reads the local position book, not a broker account. "
+                    "A value given here is reported as ignored."
+                ),
             ),
             InputSpec(
                 name="min_loss_threshold",
@@ -219,7 +222,8 @@ def tlh() -> FunctionManifest:
             "inside ±wash_sale_window_days of today is blocked "
             "(wash_sale_safe=false, with wash_sale_reason naming that open "
             "date) and excluded from the total. Any other position is reported "
-            "as not checked (wash_sale_safe=null): broker buy history is NOT "
+            "as not checked (wash_sale_safe=null), and so is a position with no recorded open date, "
+            "which is priced at the short-term rate: broker buy history is NOT "
             "read, so the absence of a block is not proof of safety. Because "
             "that check is not run, wash_sale_checked is false and "
             "wash_sale_rule_respected is null on every response. The "

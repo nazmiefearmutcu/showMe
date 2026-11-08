@@ -44,9 +44,11 @@ def _book(monkeypatch, positions):
 
 
 def _pos(sym, qty, cost, days_held):
+    # These helper rows carry an explicit open date, so the open date is known.
     return PortfolioPosition(instrument=Instrument(symbol=sym, asset_class=AssetClass.EQUITY),
                              quantity=qty, avg_cost=cost,
-                             opened_at=datetime.now(timezone.utc) - timedelta(days=days_held))
+                             opened_at=datetime.now(timezone.utc) - timedelta(days=days_held),
+                             opened_at_known=True)
 
 
 def _run(fn, **params):
