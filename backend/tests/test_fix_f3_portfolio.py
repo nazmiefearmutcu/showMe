@@ -101,7 +101,7 @@ def test_btune_model_rows_carry_params_dict(deps, equity):
     """The pane renders rows[].params; it must be a dict (never flattened to
     a string on the backend)."""
     res = _run(BTUNEFunction(deps).execute(instrument=equity))
-    assert res.data["status"] == "reference"
+    assert res.data["status"] == "needs_input"
     first = res.data["rows"][0]
     assert isinstance(first["params"], dict)
     assert {"fast", "slow"} <= set(first["params"])

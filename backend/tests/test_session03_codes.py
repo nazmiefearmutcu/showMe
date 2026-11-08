@@ -61,8 +61,9 @@ def test_btune_live_fallback_emits_warning_and_status(deps, equity):
     `status="computed_fallback"` + a warning."""
     fn = BTUNEFunction(deps)
     res = _run(fn.execute(instrument=equity, live_backtest=True, days=120))
-    assert res.data["status"] == "computed_fallback"
-    assert res.sources == ["local_backtest_model"]
+    # 2026-11-08 truth fix: no synthetic-history backtest is substituted.
+    assert res.data["status"] == "provider_unavailable"
+    assert res.sources == []
     assert any("yfinance" in w or "live OHLCV" in w for w in (res.warnings or []))
     assert res.metadata.get("live") is False
 
@@ -70,8 +71,8 @@ def test_btune_live_fallback_emits_warning_and_status(deps, equity):
 def test_btune_no_live_uses_reference_model(deps, equity):
     fn = BTUNEFunction(deps)
     res = _run(fn.execute(instrument=equity))
-    assert res.sources == ["local_backtest_model"]
-    assert res.data["status"] == "reference"
+    assert res.sources == []
+    assert res.data["status"] == "needs_input"
 
 
 def test_btune_requires_instrument(deps):
