@@ -108,3 +108,35 @@ def test_history_row_matching_live_order_is_not_duplicated(monkeypatch):
     ids = [r["order_id"] for r in res.data["rows"]]
     assert ids.count("ord-1") == 1
     assert res.data["cards"]["open_count"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# AIM#2 — broker_filter must also restrict the order-history tail.
+# --------------------------------------------------------------------------- #
+def test_broker_filter_restricts_history_rows(monkeypatch):
+    rows = [
+        _hist("h-alpaca", broker="alpaca-paper", status="filled"),
+        _hist("h-binance", broker="binance", symbol="BTCUSDT", status="filled"),
+    ]
+    _install_history(monkeypatch, rows)
+    deps = SimpleNamespace(alpaca_broker=_Broker("alpaca-paper"))
+    res = _run(_aim(deps).execute(broker_filter=["alpaca_broker"]))
+    ids = [r["order_id"] for r in res.data["rows"]]
+    assert ids == ["h-alpaca"], ids
+
+
+def test_broker_filter_matches_history_by_adapter_name_and_key(monkeypatch):
+    """A history row is attributed to an adapter by the name it was stored
+    under (adapter.name), so an adapter-key filter must still match it."""
+    rows = [_hist("h-recording", broker="recording_broker", status="filled")]
+    _install_history(monkeypatch, rows)
+    deps = SimpleNamespace(alpaca_broker=_Broker("recording_broker"))
+    res = _run(_aim(deps).execute(broker_filter=["alpaca_broker"]))
+    assert [r["order_id"] for r in res.data["rows"]] == ["h-recording"]
+
+
+def test_broker_filter_with_no_matching_broker_returns_no_history(monkeypatch):
+    _install_history(monkeypatch, [_hist("h-alpaca", broker="alpaca-paper")])
+    res = _run(_aim(SimpleNamespace()).execute(broker_filter=["oanda_broker"]))
+    assert res.data["rows"] == []
+    assert res.data["status"] == "empty"

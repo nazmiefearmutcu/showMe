@@ -357,7 +357,20 @@ class AIMFunction(BaseFunction):
         history_rows: list[dict[str, Any]] = []
         try:
             from showme.engine.services.order_history import list_orders
-            for raw in (list_orders(limit=limit_int) or []):
+            if broker_filter:
+                # History rows are stored under the adapter's .name (not its
+                # config key), so query every name the filtered adapters use.
+                identities: set[str] = set()
+                for name in targets:
+                    identities |= self._broker_identities(name, getattr(self.deps, name, None))
+                raw_history: list[dict[str, Any]] = []
+                for ident in sorted(identities):
+                    raw_history.extend(list_orders(broker=ident, limit=limit_int) or [])
+                raw_history.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+                raw_history = raw_history[:limit_int]
+            else:
+                raw_history = list_orders(limit=limit_int) or []
+            for raw in raw_history:
                 history_rows.append(self._normalise_order("history", raw, from_history=True))
         except Exception as exc:  # noqa: BLE001
             provider_errors.append(f"order_history.list_orders: {exc}")
