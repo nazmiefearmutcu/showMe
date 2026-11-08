@@ -77,13 +77,16 @@ def test_reba_live_zero_value_positions_are_honest(deps, monkeypatch):
     assert res.data["orders"] == []
 
 
-def test_reba_live_falls_back_to_avg_cost_when_quotes_unavailable(deps, monkeypatch):
+def test_reba_live_withholds_preview_when_quotes_unavailable(deps, monkeypatch):
     # `FunctionDeps()` has no yfinance provider, so `_px` returns 0.0 for the
-    # symbol; the book must be valued at average cost, not $0.
+    # symbol. REBA#3: valuing the book at average cost mixed cost with live
+    # marks, so the preview is withheld with an explicit state instead.
     _patch_portfolio(monkeypatch, [_Position("AAPL", 10.0, 100.0)])
     res = _run(REBAFunction(deps).execute(targets={"AAPL": 1.0}, live_portfolio=True))
-    assert res.data["total_value"] == pytest.approx(1000.0)
-    assert res.data["current_weights_pct"]["AAPL"] == pytest.approx(100.0)
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["orders"] == []
+    assert "total_value" not in res.data
+    assert [p["symbol"] for p in res.data["unpriced_positions"]] == ["AAPL"]
 
 
 def test_reba_model_path_unchanged(deps):

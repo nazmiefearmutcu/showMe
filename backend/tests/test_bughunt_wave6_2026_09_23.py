@@ -101,7 +101,7 @@ class _RebaPortfolio:
         return 0
 
 
-def test_reba_liquidation_without_quote_is_price_unavailable(monkeypatch) -> None:
+def test_reba_liquidation_without_quote_withholds_preview(monkeypatch) -> None:
     from showme.engine.functions.portfolio import reba as reba_mod
 
     # FunctionDeps() has no yfinance → every quote is unavailable.
@@ -113,25 +113,32 @@ def test_reba_liquidation_without_quote_is_price_unavailable(monkeypatch) -> Non
             targets={"SPY": 1.0}, live_portfolio=True
         )
     )
-    liq = res.data["liquidations"]
-    assert len(liq) == 1
-    row = liq[0]
-    # The old `prices.get(sym) or 1` produced SELL 16250 BTC — never again.
-    assert row["symbol"] == "BTCUSDT"
-    assert row["quantity"] is None
-    assert row["price"] is None
-    assert row["price_unavailable"] is True
-    assert row["notional_delta"] == pytest.approx(-0.25 * 65_000.0)
+    # The old `prices.get(sym) or 1` produced SELL 16250 BTC, and the REBA#3
+    # cost fallback produced a liquidation valued at 65,000 per coin. Neither
+    # may appear: the held position has no live mark, so no liquidation row.
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["liquidations"] == []
+    assert res.data["orders"] == []
+    assert [p["symbol"] for p in res.data["unpriced_positions"]] == ["BTCUSDT"]
 
 
 def test_reba_target_order_without_quote_is_price_unavailable(monkeypatch) -> None:
     from showme.engine.functions.portfolio import reba as reba_mod
 
+    class _PriceAaplOnly:
+        async def fetch(self, request):
+            if request.instrument.symbol != "AAPL":
+                raise RuntimeError("no quote")
+            return Quote(symbol="AAPL", timestamp=utcnow(), last=110.0)
+
+    # AAPL is held and marked; SPY (the target) has no quote. A target with no
+    # quote is still an honest price_unavailable row (REBA#3 only withholds
+    # when a HELD position is unpriced, since that is what skews the weights).
     monkeypatch.setattr(
         reba_mod, "PortfolioState", lambda: _RebaPortfolio([_RebaPosition("AAPL", 10.0, 100.0)])
     )
     res = _run(
-        reba_mod.REBAFunction(FunctionDeps()).execute(
+        reba_mod.REBAFunction(FunctionDeps(yfinance=_PriceAaplOnly())).execute(
             targets={"SPY": 1.0}, live_portfolio=True
         )
     )

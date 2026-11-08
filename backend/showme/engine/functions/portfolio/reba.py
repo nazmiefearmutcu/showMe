@@ -108,14 +108,51 @@ class REBAFunction(BaseFunction):
                 return sym, 0.0
         for sym, px in await asyncio.gather(*(_px(s) for s in all_syms)):
             prices[sym] = px
-        # Total equity. A quote of 0.0 means "unavailable" (see `_px`), so
-        # fall back to average cost per position instead of valuing the book
-        # at $0. An empty (or all-zero) book has no basis to rebalance
+        # REBA#3: a held position with no live quote used to be valued at
+        # average cost, so the weights mixed cost with live marks and the
+        # orders were sized against a wrong total. Withhold the preview
+        # instead and name the unpriced positions. Zero-quantity rows carry
+        # no exposure and do not block the preview.
+        unpriced_held: dict[str, float] = {}
+        for p in portfolio.positions:
+            sym = p.instrument.symbol.upper()
+            if abs(float(p.quantity or 0)) > 0 and not prices.get(sym):
+                unpriced_held[sym] = unpriced_held.get(sym, 0.0) + float(p.quantity)
+        if unpriced_held:
+            names = ", ".join(sorted(unpriced_held))
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "provider_unavailable",
+                    "rows": [],
+                    "orders": [],
+                    "liquidations": [],
+                    "unpriced_positions": [
+                        {"symbol": s, "quantity": q} for s, q in sorted(unpriced_held.items())
+                    ],
+                    "reason": (
+                        f"No live quote for held position(s) {names}. Weights need "
+                        "live marks for every holding, so no orders were computed."
+                    ),
+                    "next_actions": [
+                        "Retry when the quote provider is reachable.",
+                        "Or run the model mode (live_portfolio=false) against the supplied capital.",
+                    ],
+                },
+                sources=["portfolio_state", "yfinance"],
+                metadata={"live": True, "unpriced": True},
+                warnings=[
+                    f"REBA: no live quote for {names}; orders withheld rather than "
+                    "valuing these positions at average cost."
+                ],
+            )
+        # Total equity. An empty (or all-zero) book has no basis to rebalance
         # against — the old `or 1.0` silently produced $1-notional orders.
         cur_value: dict[str, float] = {}
         for p in portfolio.positions:
             sym = p.instrument.symbol.upper()
-            px = prices.get(sym) or p.avg_cost
+            px = prices.get(sym) or 0.0
             cur_value[sym] = cur_value.get(sym, 0) + p.quantity * px
         total = sum(cur_value.values())
         if total <= 0:
