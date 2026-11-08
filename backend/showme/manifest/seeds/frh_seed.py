@@ -63,7 +63,8 @@ def frh() -> FunctionManifest:
                 required=False,
                 description=(
                     "Number of symbols when no explicit list is given: the built-in list of 25 "
-                    "majors, or above 25 the Binance 24h quote-volume ranking."
+                    "majors, or above 25 the Binance 24h quote-volume ranking. If that ranking is "
+                    "unavailable the 25 majors are returned and a warning reports the shortfall."
                 ),
                 min=1,
                 max=100,
@@ -131,14 +132,17 @@ def frh() -> FunctionManifest:
         ),
         methodology=(
             "FRH fetches the current perpetual funding rate for each symbol from Binance "
-            "(/fapi/v1/premiumIndex lastFundingRate, last settled), Bybit (/v5/market/tickers "
-            "fundingRate) and OKX (/api/v5/public/funding-rate settFundingRate, last settled; "
+            "(/fapi/v1/premiumIndex lastFundingRate, last settled), Bybit (/v5/market/funding/history "
+            "fundingRate, last settled; the tickers fundingRate is the pending estimate and is not used) "
+            "and OKX (/api/v5/public/funding-rate settFundingRate, last settled; "
             "OKX fundingRate is the current-period estimate and is not used). Each value is a "
             "fraction per funding interval; venues do not share one interval, so rates are not "
             "annualised. avg is the mean of the venues that returned a rate. A row with fewer "
             "than two venues carries no cross-venue signal (signal_suppressed=true). Universe: "
             "explicit symbols, else the built-in list of 25 majors, else (above 25) Binance 24h "
-            "quote-volume ranking; universe_basis reports which. Missing venues are null, never 0."
+            "quote-volume ranking; universe_basis reports which. If that ranking is unavailable the "
+            "25 majors are returned with a warning that reports the shortfall (universe_requested vs "
+            "universe_returned). Missing venues are null, never 0."
         ),
         formula_dict={
             "avg": Formula(
@@ -153,7 +157,7 @@ def frh() -> FunctionManifest:
         field_dict={
             "rows[].symbol": FieldDef(description="Perpetual symbol (e.g. BTCUSDT).", source="binance"),
             "rows[].binance": FieldDef(unit="fraction_per_interval", description="Binance last settled funding rate.", source="binance"),
-            "rows[].bybit": FieldDef(unit="fraction_per_interval", description="Bybit current funding rate.", source="bybit"),
+            "rows[].bybit": FieldDef(unit="fraction_per_interval", description="Bybit last settled funding rate (funding history, not the pending tickers estimate).", source="bybit"),
             "rows[].okx": FieldDef(unit="fraction_per_interval", description="OKX last settled funding rate (settFundingRate).", source="okx"),
             "rows[].avg": FieldDef(unit="fraction_per_interval", description="Mean of the venue rates that were returned.", source="computed"),
             "rows[].provider_count": FieldDef(unit="count", description="Number of venues that returned a rate.", source="computed"),

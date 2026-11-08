@@ -101,13 +101,16 @@ async def _binance_funding(client: httpx.AsyncClient, symbol: str) -> float | No
 
 
 async def _bybit_funding(client: httpx.AsyncClient, symbol: str) -> float | None:
+    # The tickers ``fundingRate`` is the pending estimate for the next settlement;
+    # the funding history endpoint returns the settled rate, the same basis as
+    # Binance ``lastFundingRate`` and OKX ``settFundingRate``.
     try:
-        r = await client.get("https://api.bybit.com/v5/market/tickers",
-                              params={"category": "linear", "symbol": symbol})
+        r = await client.get("https://api.bybit.com/v5/market/funding/history",
+                              params={"category": "linear", "symbol": symbol, "limit": 1})
         if r.status_code == 200:
             items = ((r.json() or {}).get("result") or {}).get("list") or []
-            if items:
-                return float(items[0].get("fundingRate", 0) or 0)
+            if items and items[0].get("fundingRate") not in (None, ""):
+                return float(items[0]["fundingRate"])
     except Exception:
         return None
     return None
@@ -207,9 +210,18 @@ class FRHFunction(BaseFunction):
             if missing
             else []
         )
+        if not explicit and len(symbols) < limit:
+            # The volume ranking failed and the 25-symbol default list was used:
+            # say so instead of silently returning fewer names than requested.
+            warnings.insert(0, (
+                f"requested {limit} symbols; only {len(symbols)} returned because the "
+                "Binance 24h volume ranking was unavailable, so the built-in default list was used"
+            ))
         usable.sort(key=lambda x: -(x.get("avg") or 0))
         data = _payload(usable, live=True)
         data["universe_basis"] = basis
+        data["universe_requested"] = limit
+        data["universe_returned"] = len(symbols)
         return FunctionResult(
             code=self.code, instrument=None,
             data=data, sources=["binance", "bybit", "okx"],
