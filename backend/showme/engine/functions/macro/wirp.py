@@ -45,8 +45,10 @@ class WIRPFunction(BaseFunction):
         warnings: list[str] = []
         sources: list[str] = []
         status = "ok"
-        data_mode = "live_official"
-        source_mode = "live_fed_funds_futures"
+        # Neutral until a real source produces rows: no label may claim a live
+        # futures feed before one has.
+        data_mode = "provider_unavailable"
+        source_mode = "provider_unavailable"
         anchor: dict[str, Any] = {}
 
         if central_bank != "FED":
@@ -165,9 +167,9 @@ class WIRPFunction(BaseFunction):
                 "live keyless sources returned no usable target range or 13-week T-bill rate"
             )
         warnings.append(
-            "Hike/cut probabilities unavailable: no keyless market-implied policy-rate source. They need fed funds "
-            "or SOFR futures (CME FedWatch), which need a key. Showing the "
-            "FRED target range, EFFR and 13-week T-bill basis only."
+            "Hike/cut probabilities unavailable: no CME FedWatch adapter is wired and no fed funds or "
+            "SOFR futures feed is wired here. Showing the FRED target range, EFFR and 13-week T-bill "
+            "basis only."
         )
         return _result(
             self.code, central_bank, [], "provider_unavailable", "provider_unavailable",
@@ -243,7 +245,7 @@ def _result(
             "data_mode": data_mode,
             "provenance": {"sources": list(sources)},
         },
-        sources=sources or [source_mode],
+        sources=list(sources),
         warnings=warnings,
     )
 

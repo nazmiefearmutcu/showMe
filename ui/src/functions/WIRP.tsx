@@ -6,10 +6,11 @@
  * is built live and keyless (FRED target range + ^IRX-implied near-term
  * rate, or the CME FedWatch adapter when wired); ECB/BoE report
  * `provider_unavailable` rather than fabricated numbers. The header pill
- * classifies on the backend's actual `source_mode` values
- * (`live_fed_funds_futures` / `cme_fedwatch` / `live_fred_target_no_irx`),
- * so live data is never mislabelled as a reference table — and unknown
- * modes never over-claim live.
+ * classifies on the backend's actual `source_mode` values (only
+ * `cme_fedwatch` earns the live pill; the keyless path emits
+ * `provider_unavailable` with anchors and no probability rows), so live data
+ * is never mislabelled as a reference table, and unknown modes never
+ * over-claim live.
  */
 import { useEffect, useMemo, type CSSProperties } from "react";
 import {
