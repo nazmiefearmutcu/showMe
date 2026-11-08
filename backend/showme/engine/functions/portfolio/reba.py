@@ -67,10 +67,10 @@ class REBAFunction(BaseFunction):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_rebalance_model(targets, threshold, cash_cap, min_trade),
+                data=_rebalance_model(targets, cash_cap),
                 sources=["rebalance_model"],
                 metadata={"live": False},
-                warnings=notes,
+                warnings=[*notes, "REBA: model mode has no current holdings; no orders were sized."],
             )
 
         portfolio = PortfolioState()
@@ -394,59 +394,59 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _rebalance_model(
-    targets: dict[str, float],
-    threshold: float,
-    cash_cap: Any,
-    min_trade: float = 0.0,
-) -> dict[str, Any]:
-    total = float(cash_cap or 100000.0)
-    current_weights = {sym.upper(): round(max(0.0, weight - 0.04), 4) for sym, weight in targets.items()}
-    orders: list[dict[str, Any]] = []
-    suppressed: list[dict[str, Any]] = []
-    for idx, (sym, target_w) in enumerate(targets.items()):
-        sym = sym.upper()
-        if sym == "CASH":
-            continue
-        cur_w = current_weights.get(sym, 0.0)
-        drift = target_w - cur_w
-        if abs(drift) < threshold:
-            continue
-        px = 100.0 + idx * 25.0
-        delta_notional = drift * total
-        if abs(delta_notional) < min_trade:
-            suppressed.append({"symbol": sym, "reason": "below_min", "notional_delta": delta_notional})
-            continue
-        qty = delta_notional / px if px else 0.0
-        orders.append({
-            "symbol": sym,
-            "action": "BUY" if qty > 0 else "SELL",
-            "quantity": abs(qty),
-            "price": px,
-            "notional_delta": delta_notional,
-            "current_weight_pct": cur_w * 100,
-            "target_weight_pct": target_w * 100,
-            "drift_pct": drift * 100,
-        })
-    return {
-        "total_value": total,
-        "current_weights_pct": {k: v * 100 for k, v in current_weights.items()},
-        "target_weights_pct": {k.upper(): v * 100 for k, v in targets.items()},
-        "orders": orders,
+def _rebalance_model(targets: dict[str, float], cash_cap: Any) -> dict[str, Any]:
+    """Model mode: no current holdings are known, so no drift and no orders.
+
+    REBA#5 / data policy: the old path invented current weights (target - 0.04),
+    prices (100 + 25*idx) and a 100000 capital default. It now reports the
+    normalized targets, and dollar targets only when the caller supplied the
+    capital (max_notional). Returns an explicit needs_input state.
+    """
+    target_weights_pct = {k.upper(): v * 100 for k, v in targets.items()}
+    capital = _positive_float(cash_cap)
+    data: dict[str, Any] = {
+        "status": "needs_input",
+        "target_weights_pct": target_weights_pct,
+        "orders": [],
         "liquidations": [],
-        "rows": orders,
-        "suppressed": suppressed,
+        "rows": [],
+        "suppressed": [],
         "summary": {
-            "n_orders": len(orders),
+            "n_orders": 0,
             "n_liquidations": 0,
-            "n_suppressed": len(suppressed),
-            "gross_notional": sum(abs(o["notional_delta"]) for o in orders),
+            "n_suppressed": 0,
+            "gross_notional": 0.0,
         },
-        "min_trade_size": min_trade,
         "execution": "preview_only",
         "methodology": _methodology(),
         "field_dictionary": _field_dictionary(),
+        "reason": (
+            "Model mode has no current holdings, so drift and orders cannot be computed. "
+            "Orders need the live portfolio book."
+        ),
+        "next_actions": [
+            "Run with live_portfolio=true to size orders against the portfolio book.",
+        ],
     }
+    if capital is not None:
+        data["total_value"] = capital
+        data["target_notional"] = {
+            k.upper(): v * capital for k, v in targets.items() if k.upper() != "CASH"
+        }
+        data["target_notional_note"] = "Target allocation of the supplied capital, not an order."
+    else:
+        data["next_actions"].append("Supply max_notional (capital) to see target dollar allocations.")
+    return data
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return number
 
 
 def _methodology() -> str:
