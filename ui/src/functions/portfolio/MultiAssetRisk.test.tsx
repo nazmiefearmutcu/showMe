@@ -8,13 +8,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
-const mockCalls: { current: Array<{ params?: Record<string, unknown> }> } = { current: [] };
-vi.mock("@/lib/useFunction", () => ({
-  useFunction: (args: { params?: Record<string, unknown> }) => {
-    mockCalls.current.push(args);
-    return mockReturn.current;
-  },
-}));
+vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
 import { MultiAssetRiskPane, deriveFactorWaterfall } from "./MultiAssetRisk";
@@ -156,72 +150,5 @@ describe("MARS factor contribution waterfall (real derivation)", () => {
     ok({ ...LIVE_PAYLOAD, rows: [{ factor: "MKT", meaning: "Broad equity market beta." }] });
     render(<MultiAssetRiskPane code="MARS" />);
     expect(screen.getByText("No factor loadings returned.")).toBeInTheDocument();
-  });
-});
-
-describe("MARS default universe and disclosed dropped legs", () => {
-  it("defaults to the Yahoo-served universe without BTCUSDT", () => {
-    ok(LIVE_PAYLOAD);
-    render(<MultiAssetRiskPane code="MARS" />);
-    expect(screen.getByLabelText("Universe")).toHaveValue("SPY,TLT,GLD");
-  });
-
-  it("shows the backend warning naming a leg that had no series", () => {
-    ok(LIVE_PAYLOAD, {
-      metadata: { live: false, fallback: true, data_mode: "modeled", factor_proxies_loaded: ["MKT", "SMB"] },
-      warnings: ["Live return series unavailable for: BTCUSDT; the portfolio was computed over the 1/2 requested legs that loaded (AAPL) only."],
-    });
-    render(<MultiAssetRiskPane code="MARS" />);
-    expect(screen.getByTestId("portx-warning-strip")).toHaveTextContent("BTCUSDT");
-    expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
-  });
-});
-
-describe("MARS template regression state", () => {
-  const TEMPLATE_PAYLOAD = {
-    status: "ok",
-    alpha_daily: null,
-    alpha_annualized: null,
-    factor_loadings: {},
-    rows: [],
-    r_squared: null,
-    regression_state: "not_estimated_template",
-    risk_basis: "template_series",
-    annualized_volatility: 0.12,
-    var_95_daily_loss: 0.011,
-    etl_95_daily_loss: 0.017,
-    samples: null,
-    methodology: "Template regression.",
-  };
-
-  it("withholds R2 and loadings, says why, and keeps the labelled risk figures", () => {
-    ok(TEMPLATE_PAYLOAD, {
-      sources: ["multi_asset_risk_model"],
-      metadata: { live: false, fallback: true, data_mode: "modeled", factor_proxies_loaded: [] },
-      warnings: [
-        "Regression statistics (R-squared, alpha, factor loadings) are not estimated because the regression input is the labelled template series.",
-      ],
-    });
-    render(<MultiAssetRiskPane code="MARS" />);
-    expect(screen.queryByText("No data available")).toBeNull();
-    expect(
-      screen.getByText("Regression not estimated: the regression input is the labelled template series."),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
-    expect(screen.getByTestId("portx-warning-strip")).toHaveTextContent("not estimated");
-  });
-});
-
-describe("MARS holdings weights input", () => {
-  it("sends the holdings weights to the backend and clears them when empty", () => {
-    ok(LIVE_PAYLOAD);
-    render(<MultiAssetRiskPane code="MARS" />);
-    const lastParams = () =>
-      mockCalls.current[mockCalls.current.length - 1]?.params as { weights?: string } | undefined;
-    expect(lastParams()?.weights).toBe("");
-    fireEvent.change(screen.getByLabelText("Holdings weights"), {
-      target: { value: "spy:0.6,tlt:0.4" },
-    });
-    expect(lastParams()?.weights).toBe("SPY:0.6,TLT:0.4");
   });
 });

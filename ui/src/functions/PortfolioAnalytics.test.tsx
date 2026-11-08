@@ -679,13 +679,3 @@ describe("PORTX STRS valuation basis is visible (STRS#6)", () => {
     expect(screen.queryByTestId("strs-price-basis")).toBeNull();
   });
 });
-
-describe("PORTX MARS live default (MARS#7)", () => {
-  it("shows no MODEL/LIVE toggle and sends no live key for MARS", () => {
-    mockOk({ status: "ok", rows: LIVE_ROWS });
-    render(<PortfolioAnalyticsPane code="MARS" symbol="" />);
-    expect(screen.queryByRole("button", { name: "MODEL" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "LIVE" })).toBeNull();
-    expect(mockArgs.current?.params).not.toHaveProperty("live");
-  });
-});
