@@ -470,3 +470,22 @@ def test_allq4_rows_and_summary_carry_an_explicit_synthetic_flag() -> None:
     )
     assert all(r.get("synthetic") is True for r in override.data["rows"])
     assert override.data["summary"].get("synthetic") is True
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ALLQ#6 (wording) — semantic tests describe modeled rows, not proxy dealers
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_allq6_semantic_tests_describe_modeled_rows_not_proxy_dealers() -> None:
+    """No semantic test names or describes the ladder as proxy dealers.
+
+    Red on the old code: 'allq_proxy_quotes_are_labelled' and
+    'allq_three_proxy_dealers_present' implied dealer quotes the code never has.
+    """
+    from showme.manifest.seeds.allq_seed import allq
+
+    assert not any("proxy" in t.name for t in allq.semantic_tests)
+    assert not any("proxy dealer" in t.description.lower() for t in allq.semantic_tests)
+    assertions = [a for t in allq.semantic_tests for a in t.assertions]
+    assert "warning_mentions_proxy_or_composite" not in assertions

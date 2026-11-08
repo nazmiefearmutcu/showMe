@@ -204,7 +204,7 @@ def allq() -> FunctionManifest:
         ),
         semantic_tests=[
             SemanticTest(
-                name="allq_proxy_quotes_are_labelled",
+                name="allq_modeled_quotes_are_labelled",
                 description=(
                     "Without a live dealer feed the response is marked"
                     " source_mode=indicative_anchored_to_real_reference and a warning explains the rows"
@@ -213,7 +213,7 @@ def allq() -> FunctionManifest:
                 inputs={"symbol": "US10Y"},
                 assertions=[
                     "source_mode_equals_indicative_anchored_to_real_reference",
-                    "warning_mentions_proxy_or_composite",
+                    "warning_mentions_modeled_or_composite",
                 ],
             ),
             SemanticTest(
@@ -232,8 +232,8 @@ def allq() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="allq_three_proxy_dealers_present",
-                description="Without a live feed the ladder ships three composite/proxy rows so the layout stays stable.",
+                name="allq_three_composite_rows_present",
+                description="The ladder always ships three modeled composite rows so the layout stays stable.",
                 inputs={"symbol": "US10Y"},
                 assertions=["rows_length_equals_3"],
             ),
