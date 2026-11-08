@@ -55,9 +55,8 @@ def lang() -> FunctionManifest:
                 ],
             ),
         ],
-        defaults={
-            "lang": "tr",
-        },
+        # No default language: a missing lang is an input_error (LANG#1), never a
+        # silent Turkish preference.
         provider_chain=ProviderChain(
             primary="internal",
             fallbacks=[],

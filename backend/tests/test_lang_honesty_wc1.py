@@ -110,5 +110,18 @@ def test_lang_unsupported_envelope_next_action_is_language_specific(lang_file) -
         "data": res.data, "sources": res.sources, "metadata": {}, "warnings": res.warnings,
     })
     assert env["status"] == "input_error"
-    assert "asset class" not in (env.get("nextAction") or "").lower()
-    assert "tr" in (env.get("nextAction") or "")
+    next_action = env.get("nextAction") or ""
+    assert "asset class" not in next_action.lower()
+    tokens = {tok.strip(".,:;") for tok in next_action.split()}
+    for code in LANGFunction.SUPPORTED:
+        assert code in tokens, f"envelope nextAction must name {code}"
+
+
+# LANG#1 (seed) ---------------------------------------------------------
+
+def test_lang_seed_declares_no_default_language() -> None:
+    from showme.manifest.seeds.lang_seed import lang as lang_manifest
+
+    # A Turkish default in the manifest would be a silent substitution for a
+    # missing lang; the handler now refuses that call instead.
+    assert "lang" not in (lang_manifest.defaults or {})
