@@ -195,6 +195,11 @@ def test_fxgo_missing_quote_time_is_flagged_not_stamped(monkeypatch):
     assert data["rows"][0]["quote_time"] is None
     assert data["fetched_at"]
     assert any("quote time" in w.lower() for w in res.warnings)
+    # FXGO#1: a quote whose age cannot be verified is not a live price.
+    assert data["data_mode"] == "delayed_reference"
+    assert data["cards"]["data_mode"] == "delayed_reference"
+    assert data["cards"]["status"] == "stale"
+    assert any("reference" in w.lower() for w in res.warnings)
 
 
 # --------------------------------------------------------------------------- #

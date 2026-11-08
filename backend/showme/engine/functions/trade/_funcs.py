@@ -811,39 +811,43 @@ class FXGOFunction(EMSXFunction):
         # while most pairs 404'd is exactly the false-labelling defect the
         # FN-WAVE survey caught.
         total_requested = len(rows) + len(provider_errors)
+        # FXGO#1: a row without a provider quote time has unverifiable age, so
+        # it can never be presented as a live price (data policy: explicit state).
+        unknown_time = [r["pair"] for r in rows if r.get("quote_time") is None]
         if provider_errors and len(rows) < total_requested:
             board_mode = "delayed_reference"
             board_warnings.append(
                 f"Board degraded: {len(rows)}/{total_requested} pairs returned "
                 "quotes; the rest failed upstream and are NOT shown."
             )
-        elif stale_rows:
+        elif stale_rows or unknown_time:
             # The feed answered, but the newest quote is old (e.g. the FX
-            # market is closed): this is a reference price, not a live one.
+            # market is closed) or its age is unknown: a reference price, not a live one.
             board_mode = "delayed_reference"
-            board_warnings.append(
-                f"Stale quotes: {len(stale_rows)}/{len(rows)} pair(s) were last "
-                f"quoted more than {self._QUOTE_STALE_AFTER_SECONDS // 60} minutes "
-                f"before the request (oldest quote {as_of}). Shown as reference, "
-                "not a live price."
-            )
+            if stale_rows:
+                board_warnings.append(
+                    f"Stale quotes: {len(stale_rows)}/{len(rows)} pair(s) were last "
+                    f"quoted more than {self._QUOTE_STALE_AFTER_SECONDS // 60} minutes "
+                    f"before the request (oldest quote {as_of}). Shown as reference, "
+                    "not a live price."
+                )
         else:
             # Yahoo spot quotes with an indicative spread - not a venue's
             # two-way board, so never "live_exchange".
             board_mode = "live_yfinance_quote"
-        unknown_time = [r["pair"] for r in rows if r.get("quote_time") is None]
         if unknown_time:
             board_warnings.append(
                 "Quote time not reported by the provider for: "
                 + ", ".join(unknown_time)
-                + "; freshness of these rows is unknown."
+                + "; freshness of these rows is unknown, so they are shown as "
+                "reference, not a live price."
             )
 
         # Card summary mirrors the EMSX/manifest card slots while reflecting the
         # live board: show the top pair's indicative two-way quote.
         top = rows[0]
         cards = {
-            "status": "stale" if stale_rows else "ok",
+            "status": "stale" if (stale_rows or unknown_time) else "ok",
             "broker": "indicative",
             "symbol": top["pair"],
             "side": "TWO_WAY",
