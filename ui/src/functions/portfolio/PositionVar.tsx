@@ -54,6 +54,9 @@ interface PvarPayload {
   portfolio_total_notional?: number | null;
   portfolio_annualized_vol?: number | null;
   positions_analyzed?: number;
+  positions_eligible?: number;
+  coverage_pct?: number | null;
+  excluded_symbols?: string[];
   samples?: number;
   confidence_level?: number;
   method?: string;
@@ -62,6 +65,23 @@ interface PvarPayload {
   series?: Row[];
   methodology?: string;
   [key: string]: unknown;
+}
+
+/**
+ * Book coverage label: analysed / eligible positions and the share of the full
+ * eligible book behind the headline VaR. Missing coverage renders an honest
+ * dash rather than implying full coverage.
+ */
+function coverageLabel(payload: PvarPayload | undefined): string {
+  const pct = typeof payload?.coverage_pct === "number" ? payload.coverage_pct : null;
+  if (pct == null) return "—";
+  const analysed = payload?.positions_analyzed;
+  const eligible = payload?.positions_eligible;
+  const share = fmtPct(pct, { fromFraction: true, digits: 1 });
+  if (typeof analysed === "number" && typeof eligible === "number") {
+    return `${share} (${analysed}/${eligible})`;
+  }
+  return share;
 }
 
 /**
@@ -302,6 +322,12 @@ export function PositionVarPane({ code }: FunctionPaneProps) {
                   label: "Positions / samples",
                   value: `${payload?.positions_analyzed ?? rows.length} / ${payload?.samples ?? "—"}`,
                   title: "Positions analyzed / return observations used",
+                },
+                {
+                  key: "coverage",
+                  label: "Book coverage",
+                  value: coverageLabel(payload),
+                  title: "Share of the full eligible book analysed by this VaR (PVAR#1)",
                 },
               ]}
             />
