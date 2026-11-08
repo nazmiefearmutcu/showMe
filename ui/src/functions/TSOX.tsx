@@ -60,7 +60,8 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<OrderType>("LIMIT");
   const [tif, setTif] = useState<Tif>("GTC");
-  const [quantity, setQuantity] = useState("1");
+  // No placeholder quantity either: the user enters contracts before a preview is possible.
+  const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [state, setState] = useState<"idle" | "loading" | "ok" | "error">("idle");
   const [result, setResult] = useState<FunctionCallResult<unknown> | null>(null);

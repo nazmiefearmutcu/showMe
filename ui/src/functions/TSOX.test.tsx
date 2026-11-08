@@ -61,6 +61,8 @@ describe("TSOX pane — ticket input honesty", () => {
     render(<TSOXPane code="TSOX" />);
     expect(screen.getByLabelText("Symbol / CUSIP")).toHaveValue("");
     expect(screen.getByLabelText("Limit price")).toHaveValue("");
+    expect((screen.getByLabelText("Quantity (contracts)") as HTMLInputElement).value).toBe("");
+    expect(previewButton()).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Quantity (contracts)"), { target: { value: "2" } });
     expect(previewButton()).toBeDisabled();
     expect(runFunctionMock).not.toHaveBeenCalled();
