@@ -368,8 +368,32 @@ describe("OVDV pane — honesty notices + KPI budget", () => {
     const footer = container.querySelector(".ds-pane-footer");
     expect(footer?.textContent).toMatch(/yfinance/);
     expect(footer?.textContent).toMatch(/delayed_reference/);
-    // No live notice when the payload is anchored to realized vol.
-    expect(screen.queryByTestId("ovdv-notice")).toBeNull();
+    // A live realized-vol surface still states that it is not implied vol.
+    const notice = screen.getByTestId("ovdv-notice");
+    expect(notice.textContent).toMatch(/Realized vol, not implied/);
+  });
+
+  it("shows the 25Δ RR / BF cards as not quoted when the backend has no smile quote", () => {
+    // okPayload carries RR/BF numbers in `cards` but no smile_source: the
+    // pane must not present them as market quotes.
+    render(<OVDVPane code="OVDV" />);
+    const rrCard = screen.getByText("25Δ risk reversal").closest(".stat-card") as HTMLElement;
+    const bfCard = screen.getByText("25Δ butterfly").closest(".stat-card") as HTMLElement;
+    expect(rrCard.textContent).toMatch(/—/);
+    expect(rrCard.textContent).toMatch(/not quoted/);
+    expect(bfCard.textContent).toMatch(/not quoted/);
+    expect(screen.getByTestId("ovdv-notice").textContent).toMatch(/25Δ RR \/ BF not quoted/);
+  });
+
+  it("shows the 25Δ RR / BF values only for a user-quoted smile", () => {
+    const payload = okPayload();
+    (payload.data.data as Record<string, unknown>).smile_source = "user_quotes";
+    mockFn.data = payload.data;
+    render(<OVDVPane code="OVDV" />);
+    const rrCard = screen.getByText("25Δ risk reversal").closest(".stat-card") as HTMLElement;
+    expect(rrCard.textContent).toMatch(/\+0\.43/);
+    expect(rrCard.textContent).toMatch(/user quote/);
+    expect(screen.queryByText(/25Δ RR \/ BF not quoted/)).toBeNull();
   });
 
   it("renders the error branch with Retry", () => {

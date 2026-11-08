@@ -101,26 +101,34 @@ def test_ovdv_atm_anchored_to_live_realized_vol_not_constant():
         assert 0.0 < v < 100.0
 
 
-def test_ovdv_smile_is_anchored_around_atm():
-    """For each tenor, 25C/25P straddle the ATM cell (smile is a perturbation
-    of the real ATM, not independent constants)."""
+def test_ovdv_unquoted_surface_is_atm_only_no_invented_smile():
+    """Without caller-supplied 25d RR/BF quotes there is no keyless source, so
+    no wing cells are emitted (the former model-invented 25C/25P were not
+    market data and are not shown as implied vol)."""
     fn = OVDVFunction()
     result = _run(fn.execute(pair="GBPUSD"))
-    if _is_reference_fallback(result):
-        pytest.skip("yfinance history unavailable")
 
     surface = result.data["surface"]
+    assert surface
+    assert {row["delta"] for row in surface} == {"ATM"}
+    assert result.data["risk_reversal_25d_pct"] is None
+    assert result.data["butterfly_25d_pct"] is None
+
+
+def test_ovdv_quoted_smile_straddles_atm():
+    """With both user quotes the 25C/25P wings straddle the ATM cell."""
+    fn = OVDVFunction()
+    result = _run(
+        fn.execute(pair="GBPUSD", risk_reversal_25d=-0.005, butterfly_25d=0.002)
+    )
     by_tenor: dict[str, dict[str, float]] = {}
-    for row in surface:
+    for row in result.data["surface"]:
         by_tenor.setdefault(row["tenor"], {})[row["delta"]] = float(row["vol_decimal"])
 
     assert by_tenor
     for tenor, cells in by_tenor.items():
         atm = cells["ATM"]
-        # butterfly premium keeps both 25-delta wings near (not collapsed onto)
-        # the ATM; they must be finite, positive vols.
         assert cells["25C"] > 0 and cells["25P"] > 0
-        # average of the two 25d wings sits at/above ATM by the butterfly.
         wing_avg = 0.5 * (cells["25C"] + cells["25P"])
         assert wing_avg >= atm - 1e-9, f"{tenor}: wings below ATM minus tolerance"
 
