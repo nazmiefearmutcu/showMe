@@ -32,11 +32,13 @@ rows.
 
 from __future__ import annotations
 
+import calendar
 import logging
 import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -65,6 +67,8 @@ _PROP_OCCUPATION = "P106"
 _PROP_EMPLOYER = "P108"
 _PROP_POSITION = "P39"
 _PROP_CITIZENSHIP = "P27"
+_PROP_START_TIME = "P580"   # qualifier: start time
+_PROP_END_TIME = "P582"     # qualifier: end time
 
 # Disclosed fallback for pages that have no Wikidata claims to check P31
 # against. The keywords are matched on word boundaries over the summary
@@ -240,6 +244,7 @@ def _fetch_summaries(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _claim_qids(entity: dict[str, Any] | None, prop: str) -> list[str]:
+    """All non-deprecated object values of ``prop``, in provider order."""
     if not entity:
         return []
     out: list[str] = []
@@ -249,6 +254,95 @@ def _claim_qids(entity: dict[str, Any] | None, prop: str) -> list[str]:
         value = claim.get("mainsnak", {}).get("datavalue", {}).get("value")
         if isinstance(value, dict) and value.get("id"):
             out.append(str(value["id"]))
+    return out
+
+
+_TIME_RE = re.compile(r"^([+-]?)(\d{4,})-(\d{2})-(\d{2})")
+
+
+def _parse_wikidata_time(raw: Any, *, end: bool) -> datetime | None:
+    """Parse a Wikidata time value such as ``+2026-08-31T00:00:00Z``.
+
+    Wikidata writes ``00`` for an unknown month or day. An end time is then
+    taken as the latest possible date and a start time as the earliest, so
+    that an uncertain boundary never makes a claim look current by accident.
+    """
+    match = _TIME_RE.match(str(raw or "").strip())
+    if not match:
+        return None
+    sign, year_text, month_text, day_text = match.groups()
+    year = int(year_text) * (-1 if sign == "-" else 1)
+    month = int(month_text)
+    day = int(day_text)
+    if year < 1:
+        return None
+    if month == 0:
+        month = 12 if end else 1
+    if day == 0:
+        day = calendar.monthrange(year, month)[1] if end else 1
+    try:
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _qualifier_time(claim: dict[str, Any], prop: str, *, end: bool) -> tuple[bool, datetime | None]:
+    """Return ``(present, parsed)`` for a time qualifier. ``novalue``/``somevalue`` count as absent."""
+    snaks = (claim.get("qualifiers") or {}).get(prop) or []
+    for snak in snaks:
+        if not isinstance(snak, dict) or snak.get("snaktype") != "value":
+            continue
+        value = (snak.get("datavalue") or {}).get("value")
+        raw = value.get("time") if isinstance(value, dict) else None
+        return True, _parse_wikidata_time(raw, end=end)
+    return False, None
+
+
+def _claim_is_current(claim: dict[str, Any], moment: datetime) -> bool:
+    """A claim is current when its end time (P582) has not passed and its start (P580) has begun.
+
+    A present end time that cannot be parsed is treated as not provably current
+    and excluded, so an ambiguous qualifier cannot produce a false current role.
+    """
+    has_end, end = _qualifier_time(claim, _PROP_END_TIME, end=True)
+    if has_end and (end is None or end <= moment):
+        return False
+    has_start, start = _qualifier_time(claim, _PROP_START_TIME, end=False)
+    if has_start and start is not None and start > moment:
+        return False
+    return True
+
+
+def _current_claim_qids(
+    entity: dict[str, Any] | None, prop: str, *, now: datetime | None = None
+) -> list[str]:
+    """Object values of ``prop`` whose qualifiers say they are current, best first.
+
+    Ordering: ``preferred`` rank first, then the most recent start time (P580),
+    then provider order. Ended claims (P582 in the past) are dropped, which is
+    what stops a former CEO from being reported as the current one.
+    """
+    if not entity:
+        return []
+    moment = now or datetime.now(timezone.utc)
+    ranked: list[tuple[tuple[int, float], str]] = []
+    for claim in entity.get("claims", {}).get(prop, []) or []:
+        if not isinstance(claim, dict) or claim.get("rank") == "deprecated":
+            continue
+        if not _claim_is_current(claim, moment):
+            continue
+        value = claim.get("mainsnak", {}).get("datavalue", {}).get("value")
+        if not (isinstance(value, dict) and value.get("id")):
+            continue
+        _, start = _qualifier_time(claim, _PROP_START_TIME, end=False)
+        start_key = -start.timestamp() if start is not None else float("inf")
+        preferred = 0 if claim.get("rank") == "preferred" else 1
+        ranked.append(((preferred, start_key), str(value["id"])))
+    ranked.sort(key=lambda item: item[0])
+    out: list[str] = []
+    for _, qid in ranked:
+        if qid not in out:
+            out.append(qid)
     return out
 
 
@@ -291,7 +385,7 @@ def _fetch_referenced_labels(
             _PROP_EMPLOYER,
             _PROP_CITIZENSHIP,
         ):
-            referenced.update(_claim_qids(ent, prop))
+            referenced.update(_current_claim_qids(ent, prop))
     wanted = sorted(q for q in referenced if q not in labels)
     for start in range(0, len(wanted), 50):
         chunk = wanted[start : start + 50]
@@ -354,7 +448,7 @@ def _labels_for(
     entity: dict[str, Any] | None, prop: str, labels: dict[str, str]
 ) -> list[str]:
     out: list[str] = []
-    for qid in _claim_qids(entity, prop):
+    for qid in _current_claim_qids(entity, prop):
         label = labels.get(qid) or qid
         if label not in out:
             out.append(label)
