@@ -493,12 +493,9 @@ class TRAFunction(BaseFunction):
                 (pd.to_numeric(df["splits"], errors="coerce").fillna(0.0) > 0).sum()
             )
         else:
+            # No split column: closes stay unadjusted and split_adjusted says so.
             split_factor = np.ones(len(close), dtype=float)
             splits_count = None
-            warnings.append(
-                "Split events are unavailable from this data source; a split inside the "
-                "window would read as a price move and is not adjusted."
-            )
             for bar in _unconfirmed_split_dates(close):
                 warnings.append(
                     f"TRA: the one-day price move on {bar.strftime('%Y-%m-%d')} matches a stock "
@@ -604,7 +601,7 @@ class TRAFunction(BaseFunction):
                     "IRR from buy, dividend, and sale cash flows. Max drawdown is measured on the full "
                     "daily total-return index. Without a dividend series, TWR and CAGR are price-only "
                     "and total_return_basis says so. Without split events, split_adjusted is false and "
-                    "the warnings say so."
+                    "a one-day move that matches a split ratio is named in the warnings."
                 ),
                 "field_dictionary": {
                     "split_adjusted": "True when the source reported split events and closes were adjusted for them; false when no split events were available.",

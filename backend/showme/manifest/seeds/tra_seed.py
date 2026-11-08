@@ -141,8 +141,8 @@ def tra() -> FunctionManifest:
             "close. CAGR annualizes the total-return index over the observed span. Max drawdown "
             "is measured on the full daily total-return index. Closes and dividends are first "
             "split-adjusted with the cumulative split ratio, so a stock split is not read as a "
-            "loss; when the source reports no split events, split_adjusted is false and the "
-            "warnings say so. When the dividend series is unavailable, total_return_basis is "
+            "loss; when the source reports no split events, split_adjusted is false, and a "
+            "one-day move that matches a split ratio is named in the warnings. When the dividend series is unavailable, total_return_basis is "
             "price_only_dividends_unavailable and TWR and CAGR are price-based."
         ),
         formula_dict={

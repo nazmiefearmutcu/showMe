@@ -116,14 +116,22 @@ def test_irr_on_a_split_window_is_finite_or_null_and_never_raises() -> None:
     assert irr_flagged is None or (isinstance(irr_flagged, float) and math.isfinite(irr_flagged))
 
 
-def test_missing_split_events_are_flagged_not_silent() -> None:
+def test_missing_split_events_are_labelled_and_suspected_splits_named() -> None:
     closes, _ = _split_path(ratio=4.0)
     res = _run(_frame(closes, [0.0] * N))
     assert res.data["split_adjusted"] is False
     assert res.data["splits_count"] is None
-    assert any("Split events are unavailable" in w for w in res.warnings)
     # The 4:1-sized one-day drop is named as a possible unconfirmed split.
     assert any("matches a stock split" in w for w in res.warnings)
+
+
+def test_frames_without_split_column_and_no_split_sized_move_stay_quiet() -> None:
+    # Mocked or template frames without a split column are labelled through
+    # split_adjusted, and carry no warning when no move looks like a split.
+    closes = [100.0, 101.0, 99.5, 98.0, 103.0, 104.0]
+    res = _run(_frame(closes, [0.0] * len(closes)))
+    assert res.warnings == []
+    assert res.data["split_adjusted"] is False
 
 
 def test_ordinary_daily_moves_are_not_flagged_as_splits() -> None:
