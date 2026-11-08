@@ -287,10 +287,20 @@ def _parse_wikidata_time(raw: Any, *, end: bool) -> datetime | None:
 
 
 def _qualifier_time(claim: dict[str, Any], prop: str, *, end: bool) -> tuple[bool, datetime | None]:
-    """Return ``(present, parsed)`` for a time qualifier. ``novalue``/``somevalue`` count as absent."""
+    """Return ``(present, parsed)`` for a time qualifier.
+
+    ``novalue`` means the qualifier is explicitly absent and returns ``(False, None)``.
+    ``somevalue`` means the qualifier exists but its date is unknown and returns
+    ``(True, None)``: callers treat that as present-but-unparseable, never as absent.
+    """
     snaks = (claim.get("qualifiers") or {}).get(prop) or []
     for snak in snaks:
-        if not isinstance(snak, dict) or snak.get("snaktype") != "value":
+        if not isinstance(snak, dict):
+            continue
+        snaktype = snak.get("snaktype")
+        if snaktype == "somevalue":
+            return True, None
+        if snaktype != "value":
             continue
         value = (snak.get("datavalue") or {}).get("value")
         raw = value.get("time") if isinstance(value, dict) else None
@@ -301,14 +311,16 @@ def _qualifier_time(claim: dict[str, Any], prop: str, *, end: bool) -> tuple[boo
 def _claim_is_current(claim: dict[str, Any], moment: datetime) -> bool:
     """A claim is current when its end time (P582) has not passed and its start (P580) has begun.
 
-    A present end time that cannot be parsed is treated as not provably current
-    and excluded, so an ambiguous qualifier cannot produce a false current role.
+    A present qualifier whose date cannot be parsed (including Wikidata's
+    'unknown value') is treated as not provably current and excluded, so an
+    ambiguous qualifier cannot produce a false current role. An absent qualifier
+    (no P580 / P582 at all, or 'no value') places no constraint.
     """
     has_end, end = _qualifier_time(claim, _PROP_END_TIME, end=True)
     if has_end and (end is None or end <= moment):
         return False
     has_start, start = _qualifier_time(claim, _PROP_START_TIME, end=False)
-    if has_start and start is not None and start > moment:
+    if has_start and (start is None or start > moment):
         return False
     return True
 
@@ -475,8 +487,11 @@ def _map_item(
     role = positions[0] if positions else ", ".join(occupations[:2])
     if not role:
         role = description or None
-    company = employers[0] if employers else _organization_from_text(
-        f"{description}\n{extract}"
+    # When the only employer claims have ended, the summary text names a former
+    # employer; it must not be read back as the current company.
+    employer_ended = not employers and bool(_claim_qids(entity, _PROP_EMPLOYER))
+    company = employers[0] if employers else (
+        None if employer_ended else _organization_from_text(f"{description}\n{extract}")
     )
     company_source = (
         "wikidata:P108" if employers else ("summary_pattern" if company else None)
