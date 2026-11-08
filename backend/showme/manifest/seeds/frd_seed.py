@@ -173,11 +173,12 @@ def frd() -> FunctionManifest:
         methodology=(
             "FRD prices the FX forward via covered interest parity. Spot is "
             "fetched from yfinance for the BASE/QUOTE pair (or overridden "
-            "manually). Tenor is mapped to a year fraction T (1W=7/365, "
-            "1M=30/365, etc.). The forward rate is "
-            "F = S × (1 + r_dom × T) / (1 + r_for × T) where r_dom is the "
-            "base-currency rate and r_for is the quote-currency rate (both "
-            "actual/365 simple interest). Forward points are quoted as "
+            "manually). Tenor is mapped to a year fraction T on a 365-day basis "
+            "(1W=7/365, 1M=30/365, etc.). The forward rate is "
+            "F = S × (1 + r_dom × T') / (1 + r_for × T') where r_dom is the "
+            "quote-currency (pricing currency) rate and r_for is the base-currency "
+            "rate. Both are simple-interest ACT/360 rates, so T' = T × 365/360 "
+            "(calendar days / 360). Forward points are quoted as "
             "(F - S) in pips. Implied carry is annualized (F/S - 1) / T × "
             "100. The card row exposes r_dom, r_for, tenor, and spot source "
             "so users can audit the price."
@@ -187,9 +188,9 @@ def frd() -> FunctionManifest:
                 expression=r"F = S \cdot \frac{1 + r_{dom} \cdot T}{1 + r_{for} \cdot T}",
                 variables={
                     "S": "Spot",
-                    "r_dom": "Domestic (base) annualized rate",
-                    "r_for": "Foreign (quote) annualized rate",
-                    "T": "Year fraction (actual/365)",
+                    "r_dom": "Domestic = quote-currency (pricing currency) annualized rate",
+                    "r_for": "Foreign = base-currency annualized rate",
+                    "T": "Tenor year fraction (days/365); the rate basis is T' = T × 365/360 (ACT/360)",
                 },
                 notes="Simple-interest CIP; the continuous-comp form is F = S × exp((r_dom - r_for) × T).",
             ),
@@ -211,8 +212,8 @@ def frd() -> FunctionManifest:
             "forward_rate": FieldDef(description="No-arbitrage forward from CIP.", source="computed"),
             "forward_points": FieldDef(unit="pips", description="(F - S) × 10000.", source="computed"),
             "implied_carry": FieldDef(unit="%", description="(F/S - 1) / T × 100.", source="computed"),
-            "r_dom": FieldDef(unit="decimal", description="Domestic rate (echoed).", source="input"),
-            "r_for": FieldDef(unit="decimal", description="Foreign rate (echoed).", source="input"),
+            "r_dom": FieldDef(unit="decimal", description="Domestic (quote-currency) rate (echoed).", source="input"),
+            "r_for": FieldDef(unit="decimal", description="Foreign (base-currency) rate (echoed).", source="input"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -231,7 +232,8 @@ def frd() -> FunctionManifest:
                 name="frd_eurusd_3m_matches_cip_within_tolerance",
                 description=(
                     "For known spot/r_dom/r_for, the returned forward rate "
-                    "matches S × (1 + r_dom T) / (1 + r_for T) within 1e-9."
+                    "matches S × (1 + r_dom T') / (1 + r_for T') with T' = T × 365/360 "
+                    "(ACT/360) within 1e-9."
                 ),
                 inputs={
                     "base": "EUR",
