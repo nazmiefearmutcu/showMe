@@ -174,6 +174,19 @@ class LOTSFunction(BaseFunction):
             # SPECIFIC; otherwise FIFO would silently ignore the caller's choice.
             lot_ids = _lot_ids(params.get("lot_ids"))
             method = "SPECIFIC" if lot_ids else params.get("method", "FIFO")
+            # LOTS#6: the short/long cutoff is an input; an invalid value is
+            # rejected rather than silently replaced by the default.
+            raw_threshold = params.get("long_term_threshold_days")
+            if raw_threshold in (None, ""):
+                threshold = tax_lots.DEFAULT_LONG_TERM_DAYS
+            else:
+                parsed = _number(raw_threshold)
+                if parsed is None or parsed < 1 or parsed != int(parsed):
+                    return _input_error(
+                        "sell needs long_term_threshold_days as a whole number of days >= 1; no lot was sold.",
+                        ["long_term_threshold_days"],
+                    )
+                threshold = int(parsed)
             res = tax_lots.sell(
                 symbol=symbol,
                 quantity=quantity,
@@ -181,6 +194,7 @@ class LOTSFunction(BaseFunction):
                 method=method,
                 account=params.get("account"),
                 specific_lot_ids=lot_ids or None,
+                long_term_days=threshold,
             )
             if lot_ids:
                 res["method_note"] = "lot_ids were given, so the lots were selected by id (SPECIFIC); the method input was not used."

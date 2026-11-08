@@ -244,6 +244,14 @@ describe("PORTX generic renderer shape fixes (F3)", () => {
     expect(text).not.toContain("1.74B");
   });
 
+  it("describes LOTS as the local ledger, not a harvest-candidate list (LOTS#6)", () => {
+    mockOk({ status: "ok", rows: [] });
+    const { container } = render(<PortfolioAnalyticsPane code="LOTS" symbol="" />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Local tax-lot ledger");
+    expect(text).not.toMatch(/harvest candidates/i);
+  });
+
   it("never forwards the linked dock symbol to LOTS (review of LOTS#1: it would filter the ledger)", () => {
     mockOk({ status: "ok", rows: [] });
     render(<PortfolioAnalyticsPane code="LOTS" symbol="AAPL" />);

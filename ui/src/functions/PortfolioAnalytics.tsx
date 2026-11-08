@@ -139,7 +139,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   LOTS: {
     sendsDockSymbol: false,
     title: "Tax Lots",
-    subtitle: "Lot-level basis and harvest candidates",
+    subtitle: "Local tax-lot ledger: open lots, sells and realized P&L",
   },
   MARS: {
     title: "Multi-Asset Risk",

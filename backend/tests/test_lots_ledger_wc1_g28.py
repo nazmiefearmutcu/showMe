@@ -95,3 +95,27 @@ def test_sell_lot_ids_accepts_a_comma_separated_string() -> None:
     res = _run(instrument=SYM, action="sell", quantity=2, price=120, lot_ids=f"{new.data['lot_id']}")
     assert [row["lot_id"] for row in res.data["consumed_lots"]] == [new.data["lot_id"]]
     assert old.data["lot_id"] not in [row["lot_id"] for row in res.data["consumed_lots"]]
+
+
+# LOTS#6: the long-term cutoff is an input (default 365 days), not a fixed constant.
+def test_sell_long_term_threshold_is_an_input() -> None:
+    from datetime import timedelta
+
+    held_since = (datetime.now(timezone.utc) - timedelta(days=60)).date().isoformat()
+    _run(instrument=SYM, action="open", quantity=10, price=100, acquired_at=held_since)
+    short = _run(instrument=SYM, action="sell", quantity=1, price=120, method="FIFO")
+    assert short.data["consumed_lots"][0]["term"] == "short"
+    long_ = _run(instrument=SYM, action="sell", quantity=1, price=120, method="FIFO",
+                 long_term_threshold_days=30)
+    assert long_.data["consumed_lots"][0]["term"] == "long"
+
+
+def test_sell_rejects_a_non_positive_long_term_threshold_and_keeps_the_lot() -> None:
+    _run(instrument=SYM, action="open", quantity=10, price=100, acquired_at="2024-01-15")
+    for bad in (0, -5, "soon"):
+        res = _run(instrument=SYM, action="sell", quantity=1, price=120, method="FIFO",
+                   long_term_threshold_days=bad)
+        assert res.data["status"] == "input_error", bad
+        assert "long_term_threshold_days" in res.data["missing"]
+    lots = tax_lots.list_open_lots(symbol="WCTEST")
+    assert lots[0]["closed_qty"] == pytest.approx(0.0)
