@@ -167,12 +167,8 @@ LOCATION_PRESETS: dict[str, dict[str, Any]] = {
         "lon": -87.63,
         "commodity_context": "corn, soybeans, and crop weather",
     },
-    "EUROPE_GAS": {
-        "label": "Northwest Europe",
-        "lat": 52.52,
-        "lon": 13.4,
-        "commodity_context": "European gas and heating demand",
-    },
+    # EUROPE_GAS was removed: its "Northwest Europe" label carried Berlin
+    # coordinates (52.52, 13.4). EU_NW below is the Rotterdam preset.
     # WETR#1: the pane and manifest offer these regions; each needs its own
     # coordinates (they previously fell back to New York weather).
     "EU_NW": {
