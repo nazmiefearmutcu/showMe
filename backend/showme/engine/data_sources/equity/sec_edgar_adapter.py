@@ -199,11 +199,15 @@ class SECEdgarAdapter(BaseDataSource):
         return rows
 
     async def standard_fundamentals(
-        self, ticker: str, period: str = "annual"
+        self, ticker: str, period: str | None = None
     ) -> dict[str, pd.Series]:
         """Return canonical ShowMe fundamentals dict by canonical key.
 
-        ``period`` selects which XBRL facts are kept:
+        ``period=None`` (the default, used by the FUNDAMENTALS fetch path and
+        other non-FA callers) keeps the legacy behaviour: the first XBRL tag per
+        canonical key, built from every USD fact.
+
+        ``period`` selects which XBRL facts are kept (FA passes it explicitly):
           * ``annual``    — 10-K/20-F fiscal-year (``fp == FY``) facts; flow
                             items must span ~12 months (a 10-K also carries
                             ~3-month quarterly rows).
@@ -218,7 +222,7 @@ class SECEdgarAdapter(BaseDataSource):
         ``attrs["filed_by_end"]`` (period end -> SEC ``filed`` date) so callers
         can report the real filing date.
         """
-        if period not in _SEC_PERIODS:
+        if period is not None and period not in _SEC_PERIODS:
             raise DataSourceError(
                 f"unsupported period {period!r}; expected one of {sorted(_SEC_PERIODS)}"
             )
@@ -228,6 +232,25 @@ class SECEdgarAdapter(BaseDataSource):
         facts = await self.company_facts(cik)
         from showme.engine.core.accounting_taxonomy import to_canonical
         us_gaap = (facts.get("facts") or {}).get("us-gaap") or {}
+
+        if period is None:
+            # Legacy shared path: first XBRL tag per canonical key, every USD fact.
+            legacy: dict[str, pd.Series] = {}
+            for tag, payload in us_gaap.items():
+                key = to_canonical(tag)
+                if key in legacy:
+                    continue
+                units = payload.get("units") or {}
+                usd = units.get("USD") or units.get("USD/shares") or []
+                if not usd:
+                    continue
+                df = pd.DataFrame(usd)
+                if df.empty:
+                    continue
+                df["end"] = pd.to_datetime(df["end"])
+                df = df.set_index("end").sort_index()
+                legacy[key] = df["val"]
+            return legacy
 
         # canonical key -> [(tag, {period_end: (filed, value)})]
         candidates: dict[str, list[tuple[str, dict[str, tuple[str, float]]]]] = {}

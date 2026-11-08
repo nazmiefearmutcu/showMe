@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parents[3]
 ENGINE = ROOT / "backend"
 if str(ENGINE) not in sys.path:
@@ -220,3 +222,14 @@ def test_quarterly_ratio_basis_says_not_annualized() -> None:
     # values; the payload must say so instead of reading like annual ratios.
     assert "not annualized" in _run_fa("quarterly").data["ratio_basis"]
     assert "fiscal-year" in _run_fa("annual").data["ratio_basis"]
+
+
+def test_standard_fundamentals_without_period_keeps_legacy_unfiltered_output() -> None:
+    # Shared-path guard: standard_fundamentals is also the FUNDAMENTALS fetch
+    # path for non-FA callers. Calling it without ``period`` must keep the
+    # legacy behaviour (every USD fact, quarterly 10-Q rows included); only FA's
+    # explicit period-scoped call applies the annual/quarterly selection.
+    series = asyncio.run(_adapter().standard_fundamentals("AAPL"))
+    revenue = series["revenue"]
+    assert pd.Timestamp("2026-03-28") in revenue.index
+    assert pd.Timestamp("2026-06-27") in revenue.index
