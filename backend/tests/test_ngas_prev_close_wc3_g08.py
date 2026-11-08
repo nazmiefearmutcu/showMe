@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+import sys
 from typing import Any
 
 import pandas as pd
@@ -118,3 +119,18 @@ def test_no_previous_close_and_no_daily_bars_gives_no_change() -> None:
     assert row["change"] is None
     assert row["change_pct"] is None
     assert row["prev_source"] is None
+
+
+def test_evening_quote_uses_the_eastern_trade_day_not_the_utc_date(monkeypatch) -> None:
+    """NGAS#2: at 20:00 ET the UTC date is already tomorrow. The forming bar of
+    the current trade day must not be taken as the prior close."""
+    import showme.engine.functions.commodity._funcs as funcs
+
+    evening = datetime(2024, 6, 4, 0, 30, tzinfo=UTC)  # 2024-06-03 20:30 ET
+    monkeypatch.setattr(sys.modules[__name__], "MARKET_TIME", evening)
+    result = _ngas(_Yahoo(close_prev=3.00, bars=_daily_bars()))
+    row = result.data["rows"][0]
+    assert funcs._exchange_trade_day(evening.isoformat()) == "2024-06-03"
+    assert row["prev"] == pytest.approx(3.00)
+    assert row["change"] == pytest.approx(0.10)
+    assert row["prev_check"] == "matches_daily_bar"

@@ -1024,6 +1024,28 @@ class BGASFunction(BaseFunction):
 _NGAS_PREV_TOLERANCE = 0.005
 
 
+def _exchange_trade_day(stamp: object) -> str:
+    """NYMEX trade day of a quote time: its calendar date in US Eastern time.
+
+    NGAS#2: the UTC date rolls over at 19:00-20:00 ET, so an evening quote's
+    UTC date is already tomorrow and the forming daily bar would be taken as
+    the prior close. A date-only stamp is used as given.
+    """
+    text = str(stamp or "").strip()
+    if len(text) <= 10:
+        return text[:10]
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if moment.tzinfo is None:
+            return text[:10]
+        return moment.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    except (ValueError, KeyError):
+        return text[:10]
+
+
 def _ngas_verify_previous_close(result: FunctionResult) -> FunctionResult:
     """Check the quote's previous close against the served daily bars.
 
@@ -1041,7 +1063,7 @@ def _ngas_verify_previous_close(result: FunctionResult) -> FunctionResult:
     if len(rows) != 1:
         return result
     row = dict(rows[0])
-    as_of_day = str(row.get("as_of") or "")[:10]
+    as_of_day = _exchange_trade_day(row.get("as_of"))
     prior_bars = [
         bar for bar in (data.get("history") or [])
         if as_of_day and str(bar.get("date") or "") < as_of_day and _finite(bar.get("close")) is not None
