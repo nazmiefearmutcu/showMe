@@ -39,6 +39,17 @@ _MGMT_HINTS = (
 # A "SPEAKER: utterance" line. Capture group 1 = speaker label, 2 = text.
 _SPEAKER_LINE = re.compile(r"^\s*([A-Z][\w .,'&/-]{0,60}?)\s*[:\-—]\s+(.*\S.*)$")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+# TSAR#1-RQ: a speaker label never spans a sentence end. "Strong quarter
+# overall. Management Discussion: ..." is prose, not a speaker named
+# "Strong quarter overall. Management Discussion".
+_LABEL_SENTENCE_END = re.compile(r"[.!?]\s")
+
+
+def _speaker_match(line: str) -> "re.Match[str] | None":
+    m = _SPEAKER_LINE.match(line)
+    if m and _LABEL_SENTENCE_END.search(m.group(1)):
+        return None
+    return m
 # TSAR#1: a speaker label that follows a sentence end inside the same block
 # ("... headwinds. Kevan Parekh, CFO: We expect ...") starts a new utterance.
 # A candidate label is accepted only when it is a "Name, Role" label (a name of
@@ -760,7 +771,7 @@ def _segment(text: str) -> list[dict[str, Any]]:
 
     known_speakers = {
         m.group(1).strip()
-        for m in (_SPEAKER_LINE.match(ln) for ln in lines)
+        for m in (_speaker_match(ln) for ln in lines)
         if m
     }
     pieces = [
@@ -775,7 +786,7 @@ def _segment(text: str) -> list[dict[str, Any]]:
         ):
             section = "qa"
             saw_qa = True
-        m = _SPEAKER_LINE.match(ln)
+        m = _speaker_match(ln)
         if m:
             matched_any = True
             current_speaker = m.group(1).strip()
