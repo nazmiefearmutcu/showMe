@@ -1002,11 +1002,23 @@ def _annualized_vol_by_symbol(
     return {symbol: _symbol_annualized_vol(frame, symbol, frequency) for symbol in symbols}
 
 
-def _realized_annualization_factor(values: pd.Series, frequency: str) -> float | None:
-    """Annualization factor based on the *realized* observation density.
+_NOMINAL_PERIODS_PER_YEAR = {"daily": 252.0, "weekly": 52.0, "monthly": 12.0}
+# Realized density within this band of the nominal count is the same
+# calendar: exchange daily bars (holidays, window edges) land at ~250-262 a
+# year, so they keep the conventional sqrt(252). Outside it the series runs
+# on a different calendar (crypto 365/yr) or has real gaps, and the realized
+# density is used (XCON-7-RQ).
+_NOMINAL_DENSITY_BAND = 0.05
 
-    Falls back to the nominal sqrt(252/52/12) when the series is too thin
-    or the index is not datetime-like.
+
+def _realized_annualization_factor(values: pd.Series, frequency: str) -> float | None:
+    """Annualization factor from the realized observation density.
+
+    Intervals per year = (n - 1) / calendar span. When that is within 5% of
+    the nominal count for the frequency (252 / 52 / 12) the nominal factor is
+    used, so a complete exchange series is not overstated by window edges;
+    otherwise sqrt(intervals per year). Falls back to the nominal factor when
+    the series is too thin or the index is not datetime-like.
     """
     if values is None or values.empty or values.shape[0] < 2:
         return _annualization_factor(frequency)
@@ -1018,10 +1030,13 @@ def _realized_annualization_factor(values: pd.Series, frequency: str) -> float |
     span_years = span_days / 365.25
     if span_years <= 0:
         return _annualization_factor(frequency)
-    obs_per_year = values.shape[0] / span_years
-    if obs_per_year <= 0:
+    per_year = (values.shape[0] - 1) / span_years
+    if per_year <= 0:
         return _annualization_factor(frequency)
-    return math.sqrt(obs_per_year)
+    nominal = _NOMINAL_PERIODS_PER_YEAR.get(frequency, 252.0)
+    if abs(per_year / nominal - 1.0) <= _NOMINAL_DENSITY_BAND:
+        return _annualization_factor(frequency)
+    return math.sqrt(per_year)
 
 
 def _impactor_matrix(frame: pd.DataFrame, symbols: list[str], method: str = "pearson") -> list[dict[str, Any]]:
