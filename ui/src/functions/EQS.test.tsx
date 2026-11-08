@@ -208,3 +208,24 @@ describe("EQS pane — result honesty (F6)", () => {
     );
   });
 });
+
+describe("EQS pane — dividend yield unit (UI-6)", () => {
+  it("renders the decimal dividend_yield as a percent, not a bare decimal", async () => {
+    runFunctionMock.mockResolvedValue({
+      code: "EQS",
+      data: {
+        rows: [{ symbol: "AAA", sector: "Utilities", dividend_yield: 0.0123, change_pct: 1.5 }],
+      },
+      metadata: { matched: 1, scanned: 1 },
+      sources: ["yfinance"],
+      elapsed_ms: 5,
+    });
+    render(<EQSPane code="EQS" />);
+    fireEvent.click(screen.getByRole("button", { name: /^run$/i }));
+
+    expect(await screen.findByText("1.23%")).toBeInTheDocument();
+    expect(screen.queryByText("0.01")).toBeNull();
+    expect(screen.queryByText("0.01%")).toBeNull();
+    expect(screen.getByText("dividend_yield (%)")).toBeInTheDocument();
+  });
+});
