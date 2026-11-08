@@ -44,4 +44,22 @@ describe("DCF pane — legacy storage", () => {
     expect(lastParams?.fcfe).toBe(12e9);
     expect(lastParams).not.toHaveProperty("shares_outstanding");
   });
+
+  it("ignores the pre-fix pane placeholders for growth and years (DCF#4)", () => {
+    // The pre-fix pane wrote growth 10 and years 5 on mount under these keys.
+    // Those were never user choices: the pane must send the manifest defaults.
+    localStorage.setItem("showme.dcf.growth", "10");
+    localStorage.setItem("showme.dcf.years", "5");
+    render(<DCFPane code="DCF" symbol="AAPL" />);
+    expect(lastParams).toMatchObject({ growth_high: 0.08, years: 10 });
+  });
+
+  it("still honours a growth and horizon the user chose under the new keys", () => {
+    localStorage.setItem("showme.dcf.growth", "10");
+    localStorage.setItem("showme.dcf.growth_high_pct", "6");
+    localStorage.setItem("showme.dcf.years", "5");
+    localStorage.setItem("showme.dcf.projection_years", "7");
+    render(<DCFPane code="DCF" symbol="AAPL" />);
+    expect(lastParams).toMatchObject({ growth_high: 0.06, years: 7 });
+  });
 });

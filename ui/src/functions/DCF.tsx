@@ -98,7 +98,10 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
   const fcfeOverride = parseOverrideM(fcfeM);
   const sharesOverride = parseOverrideM(sharesM);
   // Defaults mirror the manifest (dcf_seed.py): stage-1 growth 8%, terminal 2.5%, 10y.
-  const [growthPct, setGrowthPct] = usePersistentNumber("showme.dcf.growth", 8);
+  // Growth and horizon keys were renamed (DCF#4): the pre-fix pane wrote 10 and 5
+  // to showme.dcf.growth / showme.dcf.years on mount, and those placeholders must
+  // not be read back as user choices.
+  const [growthPct, setGrowthPct] = usePersistentNumber("showme.dcf.growth_high_pct", 8);
   const [termPct, setTermPct] = usePersistentNumber("showme.dcf.gterm", 2.5);
   // Review of DCF#1: WACC is optional. Empty = the backend's WACC model
   // (labelled wacc_source); the old always-sent 8% default made that path
@@ -107,7 +110,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
   const waccOverridePct = parseOverrideM(waccM);
   const [markPct, setMarkPct] = usePersistentNumber("showme.dcf.price", 0);
   const [years, setYears] = usePersistentOption<number>(
-    "showme.dcf.years",
+    "showme.dcf.projection_years",
     YEARS_IDS,
     10,
   );

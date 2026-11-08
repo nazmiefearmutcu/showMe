@@ -296,7 +296,7 @@ describe("DCF pane — model inputs", () => {
     render(<DCFPane code="DCF" symbol="AAPL" />);
     fireEvent.click(screen.getByText("7y"));
     expect(lastParams?.years).toBe(7);
-    expect(localStorage.getItem("showme.dcf.years")).toBe("7");
+    expect(localStorage.getItem("showme.dcf.projection_years")).toBe("7");
   });
 });
 
