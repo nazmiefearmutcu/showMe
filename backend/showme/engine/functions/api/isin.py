@@ -229,6 +229,9 @@ class ISINFunction(BaseFunction):
                     failures[i] = reason
                 continue
             for i, item in zip(idxs, got):
+                if (item or {}).get("error"):
+                    failures[i] = f"OpenFIGI: {item['error']}"
+                    continue
                 resolved[i] = item
 
         out: list[dict[str, Any]] = []
@@ -287,6 +290,16 @@ class ISINFunction(BaseFunction):
         reason = None
         if unresolved and not flat_rows:
             reason = limited_reason or next(iter(failures.values()))
+        # Provenance follows the outcome (ISIN data_mode fix, merged onto the
+        # batched lookup): live only when OpenFIGI answered at least one job.
+        provider_attempts = len(query)
+        provider_failures = sum(1 for i in query if i in failures)
+        if provider_attempts == 0:
+            data_mode = "explicit_unavailable"
+        elif provider_failures == provider_attempts:
+            data_mode = "provider_unavailable"
+        else:
+            data_mode = "live_official"
         # Exchange-level total across every group (match_groups keep the full
         # OpenFIGI list; only the flat ``rows`` view is capped by ``limit``).
         exchange_total = sum(len(g.get("matches") or []) for g in out)
@@ -310,7 +323,7 @@ class ISINFunction(BaseFunction):
                 "matches": exchange_total,
                 "inputs_resolved": inputs_resolved,
                 "inputs_failed": inputs_failed,
-                "data_mode": "live_official",
+                "data_mode": data_mode,
                 "as_of": datetime.now(timezone.utc).isoformat(),
                 "methodology": (
                     "ISIN maps the visible identifier to an OpenFIGI lookup type. "

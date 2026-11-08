@@ -140,3 +140,64 @@ def test_isin_provider_unavailable_declares_its_data_mode(monkeypatch):
     assert res.data["data_mode"] in {"not_configured", "provider_unavailable"}
 
 
+
+
+# ---------------------------------------------------------------- ISIN #8 (provenance)
+
+
+class _RaisingOpenFIGI:
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    async def lookup_by(self, id_type, id_value):
+        self.calls.append((id_type, id_value))
+        raise RuntimeError("openfigi 503")
+
+
+class _FlakyOpenFIGI:
+    """First identifier fails, second resolves: a partial provider outage."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def lookup_by(self, id_type, id_value):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("openfigi 503")
+        return _figi_rows(1)
+
+    async def lookup_batch(self, jobs, *, max_wait_seconds):
+        out = []
+        for id_type, id_value in jobs:
+            try:
+                out.append({"data": await self.lookup_by(id_type=id_type, id_value=id_value), "warning": None})
+            except Exception as exc:  # a per-job OpenFIGI error, as the mapping API reports it
+                out.append({"data": [], "warning": None, "error": str(exc)})
+        return out
+
+
+def test_isin_all_lookups_failing_is_provider_unavailable_not_live():
+    res = _run(_isin_fn(_RaisingOpenFIGI()).execute(ids="US0378331005"))
+    d = res.data
+    # Nothing was received from the provider, so the mode must not claim live data.
+    assert d["status"] == "provider_unavailable"
+    assert d["data_mode"] == "provider_unavailable"
+    assert d["inputs_failed"] == 1 and d["inputs_resolved"] == 0
+    assert d["reason"]
+    assert d["next_actions"]
+
+
+def test_isin_partial_outage_keeps_live_mode_and_counts_the_failure():
+    res = _run(_isin_fn(_FlakyOpenFIGI()).execute(ids="US0378331005,US5949181045"))
+    d = res.data
+    assert d["data_mode"] == "live_official"
+    assert d["status"] == "partial"  # data.status; the envelope publishes ok (ISIN#1 semantics)
+    assert d["inputs_failed"] == 1 and d["inputs_resolved"] == 1
+
+
+def test_isin_no_provider_query_is_not_queried_not_live():
+    res = _run(_isin_fn(_FlakyOpenFIGI()).execute(ids="US0378331006"))
+    d = res.data
+    # Only an invalid check digit: OpenFIGI was never queried.
+    assert d["data_mode"] == "explicit_unavailable"  # sanctioned vocabulary for "nothing was queried"
+    assert d["status"] == "input_error"  # only invalid input (merged with ISIN#1)

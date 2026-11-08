@@ -123,7 +123,10 @@ class OpenFIGIAdapter(BaseDataSource):
             item = results[idx] if isinstance(results, list) and idx < len(results) else {}
             if not isinstance(item, dict):
                 item = {}
-            out.append({"data": item.get("data") or [], "warning": item.get("warning")})
+            # Per-job errors (e.g. invalid identifier) are passed through, never
+            # folded into "no match".
+            out.append({"data": item.get("data") or [], "warning": item.get("warning"),
+                        "error": item.get("error")})
         return out
 
     @throttle(rps=4.0)

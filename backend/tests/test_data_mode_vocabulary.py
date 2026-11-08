@@ -67,6 +67,9 @@ SANCTIONED_DATA_MODES = frozenset({
     "imported",
     # computed / model states
     "modeled",
+    # EXEC (2026-11-08): an execution schedule replayed on real historical
+    # bars - neither live nor synthetic.
+    "historical_replay",
     "user_input",
     "user_supplied",
     # honest failure / absence states
