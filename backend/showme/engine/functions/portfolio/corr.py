@@ -589,6 +589,9 @@ def _correlation_payload(
     market = frame.mean(axis=1, skipna=True)
     down = frame[market < 0]
     downside_df = down.corr().round(3) if not down.empty else pd.DataFrame()
+    # XCON-7: same realized factor as _return_series_summary (observation
+    # density), so one symbol never shows two annualized vols in one response.
+    # HEAD's per-symbol helper already applies it and returns None when undefined.
     vol = _annualized_vol_by_symbol(frame, ordered_symbols, frequency)
     pearson = _df_to_nested_dict(pearson_df)
     spearman = _df_to_nested_dict(spearman_df)
@@ -669,7 +672,7 @@ def _correlation_payload(
             "pearson": "Linear return correlation from -1 to +1.",
             "spearman": "Rank correlation, less sensitive to extreme return magnitudes.",
             "downside": "Correlation estimated only on negative equal-weight universe days.",
-            "annualized_vol": "Return standard deviation multiplied by the selected-period annualization factor.",
+            "annualized_vol": "Return standard deviation multiplied by the realized annualization factor (sqrt of observations per year), the same factor used in return_series_summary.",
             "covariance": "Sample covariance of overlapping return observations.",
             "observations": "Pairwise overlapping return count after frequency and missing-data handling.",
         },
