@@ -1431,6 +1431,10 @@ def _security_text_search(rows: list[dict[str, Any]], query: str) -> list[dict[s
     terms = [term.lower() for term in re.split(r"[\s,;]+", query or "") if term.strip()]
     if not terms:
         return rows
+    # SECF#1: whole-word matching. A term must start at a word boundary, so
+    # "technology" does not match inside "biotechnology" while the prefix
+    # "tech" still finds "technology".
+    patterns = [re.compile(r"(?<!\w)" + re.escape(term)) for term in terms]
     matched: list[dict[str, Any]] = []
     for row in rows:
         haystack = " ".join(
@@ -1440,9 +1444,9 @@ def _security_text_search(rows: list[dict[str, Any]], query: str) -> list[dict[s
         ).lower()
         tags = " ".join(str(item) for item in row.get("tags", [])).lower() if isinstance(row.get("tags"), list) else ""
         combined = f"{haystack} {tags}"
-        if all(term in combined for term in terms):
+        if all(pattern.search(combined) for pattern in patterns):
             matched.append({**row, "match": "all_terms"})
-        elif any(term in combined for term in terms):
+        elif any(pattern.search(combined) for pattern in patterns):
             matched.append({**row, "match": "partial"})
     return sorted(matched, key=lambda row: 0 if row.get("match") == "all_terms" else 1)
 
