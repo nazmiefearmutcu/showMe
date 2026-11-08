@@ -903,8 +903,17 @@ class FXGOFunction(EMSXFunction):
         # Card summary mirrors the EMSX/manifest card slots while reflecting the
         # live board: show the top pair's indicative two-way quote.
         top = rows[0]
+        # FXGO#1-RQ: cards.status must follow board_mode, not only staleness.
+        # A degraded board (upstream failures) is not "ok" even when the rows
+        # that survived are fresh.
+        if board_mode == "live_yfinance_quote":
+            card_status = "ok"
+        elif provider_errors and len(rows) < total_requested and not (stale_rows or unknown_time):
+            card_status = "degraded"
+        else:
+            card_status = "stale"
         cards = {
-            "status": "stale" if (stale_rows or unknown_time) else "ok",
+            "status": card_status,
             "broker": "indicative",
             "symbol": top["pair"],
             "side": "TWO_WAY",

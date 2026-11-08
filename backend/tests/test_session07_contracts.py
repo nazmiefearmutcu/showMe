@@ -147,10 +147,12 @@ def test_fxgo_no_symbol_returns_live_board_not_opaque_error():
     if data["status"] == "ok":
         assert data["rows"], "live board must carry rows"
         # FXGO never claims live_exchange; a stale quote is delayed_reference.
-        if data["cards"]["status"] == "stale":
-            assert data["data_mode"] == "delayed_reference"
-        else:
+        # FXGO#1-RQ: cards.status is "ok" only for a live board; degraded or
+        # stale boards are delayed_reference (never live).
+        if data["cards"]["status"] == "ok":
             assert data["data_mode"] == "live_yfinance_quote"
+        else:
+            assert data["data_mode"] == "delayed_reference"
     else:
         assert data["data_mode"] == "provider_unavailable"
         assert result.warnings or data.get("warning")
