@@ -25,12 +25,12 @@ def _run(coro):
 
 
 class _EmptySec:
-    async def standard_fundamentals(self, ticker: str) -> dict[str, Any]:
+    async def standard_fundamentals(self, ticker: str, period: str = "annual") -> dict[str, Any]:
         return {}
 
 
 class _NoSec:
-    async def standard_fundamentals(self, ticker: str) -> dict[str, Any]:
+    async def standard_fundamentals(self, ticker: str, period: str = "annual") -> dict[str, Any]:
         raise RuntimeError("no CIK")
 
 
@@ -88,7 +88,7 @@ def test_sec_statements_still_preferred_when_present() -> None:
     idx = pd.to_datetime(["2024-12-31", "2025-12-31"])
 
     class _Sec:
-        async def standard_fundamentals(self, ticker: str) -> dict[str, pd.Series]:
+        async def standard_fundamentals(self, ticker: str, period: str = "annual") -> dict[str, pd.Series]:
             return {
                 "revenue": pd.Series([100.0, 120.0], index=idx),
                 "net_income": pd.Series([18.0, 22.0], index=idx),

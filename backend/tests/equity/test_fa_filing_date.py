@@ -46,13 +46,22 @@ def _sec_payload() -> dict[str, pd.Series]:
     }
 
 
-def test_filing_date_populated_from_latest_sec_period_end() -> None:
+def test_period_end_populated_from_latest_sec_period_end() -> None:
     payload = _normalise_fa_payload(
         "AAPL", "annual", "sec_edgar", sec_data=_sec_payload()
     )
     # Latest period end across all series is 2025-03-31 (the net_income series).
-    assert payload["filing_date"] == "2025-03-31"
+    assert payload["period_end"] == "2025-03-31"
     assert payload["status"] == "ok"
+
+
+def test_filing_date_is_not_the_period_end_without_sec_filed_metadata() -> None:
+    # FA#5: the period end is the data date, never reported as the filing date.
+    # Without SEC ``filed`` metadata the filing date stays absent.
+    payload = _normalise_fa_payload(
+        "AAPL", "annual", "sec_edgar", sec_data=_sec_payload()
+    )
+    assert payload["filing_date"] is None
 
 
 def test_filing_date_absent_on_provider_unavailable_path() -> None:
