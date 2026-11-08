@@ -628,13 +628,15 @@ def _function_usage(
         return {
             "purpose": "Black-Litterman market-prior and posterior expected-return weights for a selected universe.",
             "scope": "portfolio model",
-            "inputs": ["symbols", "window", "tau", "delta", "views"],
+            "inputs": ["symbols", "window", "tau", "delta", "views_text", "market_caps", "live"],
             "steps": [
-                "Edit Universe, Window, Tau, Delta and Views (SYMBOL:percent), then Run.",
+                "Edit Universe, Window, Tau, Delta, Views and Market caps, then Run.",
+                "Views: SYMBOL:percent is an absolute annual return (AAPL:8); LONG>SHORT:percent is a relative view (AAPL>SPY:2).",
+                "Market caps: optional SYMBOL:USD overrides (AAPL:3900000000000) for the cap weights; blank uses provider market caps.",
                 "Rows compare market weight, prior return, posterior return, and the long-only optimal weight by symbol; optimal_weight_unconstrained shows the raw solution.",
-                "A malformed tau, delta or view is refused with input_error rather than replaced by a default.",
+                "A malformed tau, delta, view or market cap is refused with input_error rather than replaced by a default.",
             ],
-            "example": {"symbols": ["AAPL", "MSFT", "NVDA"], "window": "1Y", "views_text": "AAPL:8", "live": True},
+            "example": {"symbols": ["AAPL", "MSFT", "NVDA"], "window": "1Y", "views_text": "AAPL:8, AAPL>MSFT:2", "live": True},
         }
     if upper == "BMTX":
         return {

@@ -256,7 +256,13 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   // BLAK#5: the prior's inputs were only reachable through the API. Window,
   // tau, delta and views are sent as typed; the backend validates them and
   // answers input_error for a malformed value instead of a silent default.
-  const [blak, setBlak] = useState<BlakInputs>({ window: "1Y", tau: "0.05", delta: "2.5", views: "" });
+  const [blak, setBlak] = useState<BlakInputs>({
+    window: "1Y",
+    tau: "0.05",
+    delta: "2.5",
+    views: "",
+    marketCaps: "",
+  });
 
   const effectiveSymbol = config.usesSymbol
     ? (symbol || symbolInput || config.defaultSymbol)
@@ -541,8 +547,18 @@ function PortfolioControls({
             <input
               id={fid("views")}
               value={blak.views}
-              placeholder="AAPL:8, SPY:5 (expected annual %)"
+              placeholder="AAPL:8, AAPL>SPY:2 (annual %; > = relative)"
               onChange={(e) => setBlak({ ...blak, views: e.target.value.toUpperCase() })}
+              spellCheck={false}
+            />
+          </label>
+          <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={fid("market-caps")}>
+            <span>Market caps</span>
+            <input
+              id={fid("market-caps")}
+              value={blak.marketCaps}
+              placeholder="SPY:7.9e11, QQQ:3e11 (USD, optional)"
+              onChange={(e) => setBlak({ ...blak, marketCaps: e.target.value })}
               spellCheck={false}
             />
           </label>
@@ -1071,6 +1087,9 @@ function buildParams(
         tau: state.blak.tau,
         delta: state.blak.delta,
         views_text: state.blak.views,
+        // BLAK#5: optional SYMBOL:USD overrides; the engine parses the text and
+        // refuses a malformed value, a blank field means provider market caps.
+        market_caps: state.blak.marketCaps,
       };
     case "MARS":
       return { symbols, live: state.live };
@@ -1145,6 +1164,7 @@ interface BlakInputs {
   tau: string;
   delta: string;
   views: string;
+  marketCaps: string;
 }
 
 /** Lookback windows the BLAK seed declares (calendar days in blak.py). */
