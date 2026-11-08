@@ -270,7 +270,8 @@ class OMONFunction(BaseFunction):
         "requested) expiry: strikes, best bid/ask, open interest, traded volume "
         "and implied volatility per side. Delta is computed with Black-Scholes "
         "(same pricer as OVME) using each leg's own implied vol, the live spot, "
-        "the risk-free rate r (default 4.5%) and dividend yield q (default 0%, "
+        "the risk-free rate r (the live 3-month T-bill, FRED DGS3MO, as GREEKS uses; "
+        "4.5% only as a labelled fallback when that yield is unavailable) and dividend yield q (default 0%, "
         "echoed in the output with their sources), and the calendar time to expiry."
     )
 
