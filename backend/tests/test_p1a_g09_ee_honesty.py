@@ -101,7 +101,13 @@ def test_reference_mode_serves_no_fabricated_figures() -> None:
     assert data["rows"] == []
     assert data["status"] != "ok"
     assert result.metadata.get("live") is False
-    assert result.metadata.get("synthetic") is not False  # never claims real data
+    # Explicit empty state: no figures, no provider source, and no data mode
+    # other than "empty" is claimed. (A bare "synthetic is not False" check
+    # passes whenever the key is absent, so it proved nothing.)
+    assert data["status"] == "empty"
+    assert data["reason"] == "reference_mode_has_no_figures"
+    assert result.metadata.get("data_mode") == "empty"
+    assert result.sources == []
     assert result.warnings, "reference mode must say why there are no figures"
 
 
