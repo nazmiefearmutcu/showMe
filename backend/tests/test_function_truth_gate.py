@@ -75,3 +75,13 @@ def test_lowered_baseline_refuses_to_raise():
     with pytest.raises(ValueError, match="refusing to raise"):
         gate.lowered_baseline({"PSC": {"T4:placeholder_default": 2}}, baseline)
     assert gate.lowered_baseline({}, baseline) == {}
+
+
+def test_extended_baseline_adds_a_new_check_but_refuses_other_rises():
+    baseline = {"PSC": {"T4:placeholder_default": 1}}
+    current = {"PSC": {"T4:placeholder_default": 1, "T9:manifest_input_ignored": 1}}
+    assert gate.extended_baseline(current, baseline, new_prefix="T9:") == current
+    with pytest.raises(ValueError, match="refusing to raise"):
+        gate.extended_baseline({"PSC": {"T4:placeholder_default": 2, "T9:x": 1}}, baseline, new_prefix="T9:")
+    with pytest.raises(ValueError, match="already in the baseline"):
+        gate.extended_baseline(current, current, new_prefix="T9:")

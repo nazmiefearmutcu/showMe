@@ -560,6 +560,250 @@ def check_latency(code: str, seconds: float, *, warm: bool, cfg: TruthConfig, ti
     return []
 
 
+# ── T9 manifest inputs vs handler reads ───────────────────────────────────
+
+# Bound by the server router before the handler runs (symbol -> instrument).
+_ENVELOPE_INPUTS = {"symbol", "asset_class", "topic"}
+# Meta controls rendered from the manifest; ignoring one is a dead control,
+# not a silently dropped data input.
+_CONTROL_INPUTS = {"provider_mode", "paper_mode", "credential_id"}
+# Inputs the router itself consumes for specific codes
+# (server_routes/_agent_runtime.py::_route_function_params).
+_ROUTER_CONSUMED = {
+    "GP": {"range"}, "HP": {"range"}, "TECH": {"range"}, "CHGS": {"range"},
+    "ICX": {"query"}, "TRQA": {"query"}, "SAT": {"days"},
+}
+
+
+@dataclass
+class ParamReads:
+    names: set[str] = field(default_factory=set)
+    constants: set[str] = field(default_factory=set)
+    dynamic: bool = False
+    forwarded: list[str] = field(default_factory=list)
+
+
+def _dotted(node: ast.AST) -> str:
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def handler_param_reads(source: str, *, class_name: str | None = None) -> ParamReads:
+    """Which request-parameter names a handler can read (static, best effort).
+
+    Scope: the handler class (or every class when ``class_name`` is None)
+    plus module-level helpers. Tracks the params dict through aliases
+    (``p = dict(params)``), helper calls (``_first(params, "a")`` and the
+    helper's own ``opts.get``), ``**params`` into local functions, and the
+    ``execute`` signature. ``dynamic`` means some key is not a constant (a
+    loop over names), so every string constant in scope may be a read;
+    ``forwarded`` lists out-of-module callees that receive the params.
+    """
+    tree = ast.parse(source)
+    module_funcs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    all_classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+    reads = ParamReads()
+    if class_name is None:
+        classes = list(all_classes.values())
+    else:
+        # The handler class plus its in-module base classes (TSOX extends
+        # EMSXFunction in the same file); a base from another module hides
+        # its reads, so it counts as forwarding.
+        classes, todo = [], [class_name]
+        while todo:
+            node = all_classes.get(todo.pop())
+            if node is None or node in classes:
+                continue
+            classes.append(node)
+            for base in node.bases:
+                name = _dotted(base).split(".")[-1]
+                if name in all_classes:
+                    todo.append(name)
+                elif name not in {"BaseFunction", "object", "ABC", "Generic"}:
+                    reads.forwarded.append(f"<inherited {name}>")
+    methods: dict[str, ast.AST] = {}
+    for c in reversed(classes):  # subclass overrides win
+        for m in c.body:
+            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                methods[m.name] = m
+    scope: list[ast.AST] = list(module_funcs.values()) + classes
+    containers = set(_PARAM_CONTAINERS)
+
+    def nodes():
+        for root in scope:
+            yield from ast.walk(root)
+
+    def callee(func: ast.AST) -> tuple[ast.AST | None, int]:
+        if isinstance(func, ast.Name) and func.id in module_funcs:
+            return module_funcs[func.id], 0
+        if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                and func.value.id in {"self", "cls"} and func.attr in methods):
+            return methods[func.attr], 1
+        return None, 0
+
+    def is_container(node: ast.AST | None) -> bool:
+        return isinstance(node, ast.Name) and node.id in containers
+
+    for _ in range(6):  # alias propagation to a fixpoint
+        before = len(containers)
+        for node in nodes():
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                value = node.value
+                aliased = (is_container(value)
+                           or (isinstance(value, ast.Call) and _dotted(value.func) in {"dict", "copy.copy"}
+                               and value.args and is_container(value.args[0]))
+                           or (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+                               and value.func.attr == "copy" and is_container(value.func.value))
+                           or (isinstance(value, ast.Dict)
+                               and any(k is None and is_container(v) for k, v in zip(value.keys, value.values))))
+                if aliased:
+                    containers.add(node.targets[0].id)
+            elif isinstance(node, ast.Call):
+                fn, offset = callee(node.func)
+                if fn is None:
+                    continue
+                params = fn.args.posonlyargs + fn.args.args
+                for i, arg in enumerate(node.args):
+                    if is_container(arg) and i + offset < len(params):
+                        containers.add(params[i + offset].arg)
+                for kw in node.keywords:
+                    if kw.arg and is_container(kw.value):
+                        containers.add(kw.arg)
+        if len(containers) == before:
+            break
+
+    for node in nodes():
+        if isinstance(node, ast.Call):
+            func = node.func
+            if (isinstance(func, ast.Attribute) and func.attr in {"get", "pop", "setdefault"}
+                    and is_container(func.value) and node.args):
+                ok, key = _const(node.args[0])
+                if ok and isinstance(key, str):
+                    reads.names.add(key)
+                else:
+                    reads.dynamic = True
+            if any(is_container(a) for a in node.args):
+                for a in node.args:
+                    ok, key = _const(a)
+                    if ok and isinstance(key, str):
+                        reads.names.add(key)
+                if callee(node.func)[0] is None and not (
+                        isinstance(func, ast.Attribute) and is_container(func.value)) and _dotted(func) not in {
+                        "dict", "len", "list", "isinstance", "bool", "str", "repr", "copy.copy"}:
+                    reads.forwarded.append(_dotted(func) or "<call>")
+            for kw in node.keywords:
+                if kw.arg is None and is_container(kw.value):  # **params
+                    fn, offset = callee(func)
+                    if fn is not None:
+                        args = fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
+                        reads.names.update(a.arg for a in args[offset:])
+                    else:
+                        reads.forwarded.append(_dotted(func) or "<call>")
+        elif isinstance(node, ast.Subscript) and is_container(node.value):
+            ok, key = _const(node.slice)
+            if ok and isinstance(key, str):
+                reads.names.add(key)
+            else:
+                reads.dynamic = True
+        elif isinstance(node, ast.Compare) and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
+            if any(is_container(c) for c in node.comparators):
+                ok, key = _const(node.left)
+                if ok and isinstance(key, str):
+                    reads.names.add(key)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            reads.constants.add(node.value)
+    execute = methods.get("execute")
+    if execute is not None:
+        for a in execute.args.args[1:] + execute.args.kwonlyargs:
+            if a.arg != "instrument":
+                reads.names.add(a.arg)
+    reads.forwarded = sorted(set(reads.forwarded))
+    return reads
+
+
+def unread_params(code: str, names: list[str], reads: ParamReads) -> tuple[list[str], list[str]]:
+    """(data names never read, control names never read) for one function."""
+    skip = _ENVELOPE_INPUTS | _ROUTER_CONSUMED.get(code.upper(), set())
+    ignored, controls = [], []
+    for name in names:
+        if name in skip or name in reads.names or (reads.dynamic and name in reads.constants):
+            continue
+        (controls if name in _CONTROL_INPUTS else ignored).append(name)
+    return ignored, controls
+
+
+def check_manifest_inputs(code: str, inputs: list[str], reads: ParamReads, *, cfg: TruthConfig) -> list[Finding]:
+    """T9a: inputs the manifest declares but the handler never reads.
+
+    Contract drift (amber): the manifest drives the help text and the
+    generic ManifestPane form, so it advertises inputs that do nothing. A
+    bespoke pane actually SENDING an unread name is T9b (red).
+    """
+    ignored, controls = unread_params(code, inputs, reads)
+    out: list[Finding] = []
+    if controls:
+        out.append(Finding("T9", "manifest_control_ignored", "amber",
+                           f"manifest control(s) {controls} are never read by the handler (dead control)"))
+    if ignored:
+        if reads.forwarded:
+            out.append(Finding("T9", "manifest_input_maybe_ignored", "amber",
+                               f"manifest input(s) {ignored} not read in this module; params are forwarded to "
+                               f"{reads.forwarded[:4]} (not followed)"))
+        else:
+            out.append(Finding("T9", "manifest_input_ignored", "amber",
+                               f"manifest declares input(s) {ignored} the handler never reads (help and the "
+                               "generic form advertise inputs that do nothing)"))
+    return out
+
+
+def check_pane_params(code: str, sent: list[str], reads: ParamReads, *, pane: str, cfg: TruthConfig,
+                      conditional: list[str] | None = None) -> list[Finding]:
+    """T9b: params a UI pane sends that the handler never reads.
+
+    The YAS/TLH/GREEKS defect class: the user's value (or the pane's own
+    default) is silently dropped. Amber, not red: static analysis cannot see
+    whether the pane compensates client-side (e.g. slicing rows itself), so
+    each hit is a strong candidate for review rather than proof of a wrong
+    number. Keys a shared pane only sends for some codes (``cond ? v :
+    undefined``) and reads that cannot be followed are reported as "maybe".
+    """
+    conditional = set(conditional or [])
+    ignored, controls = unread_params(code, [n for n in sent if n not in conditional], reads)
+    maybe, _ = unread_params(code, [n for n in sent if n in conditional], reads)
+    out: list[Finding] = []
+    names = ignored + controls
+    if maybe:
+        out.append(Finding("T9", "pane_param_maybe_ignored", "amber",
+                           f"{pane} sometimes sends {maybe} (conditional key) and the handler never reads it", pane))
+    if not names:
+        return out
+    if reads.forwarded:
+        out.append(Finding("T9", "pane_param_maybe_ignored", "amber",
+                           f"{pane} sends {names}; not read in the handler module, params are forwarded to "
+                           f"{reads.forwarded[:4]} (not followed)", pane))
+        return out
+    toggles = [n for n in names if n in _CONTROL_INPUTS or _PANE_CONTROL.search(n)]
+    data = [n for n in names if n not in toggles]
+    if toggles:
+        out.append(Finding("T9", "pane_control_ignored", "amber",
+                           f"{pane} sends control(s) {toggles} the handler never reads (dead toggle/option)", pane))
+    if data:
+        out.append(Finding("T9", "pane_param_ignored", "amber",
+                           f"{pane} sends {data} but the handler never reads them: the user's value is silently "
+                           "dropped (strong candidate: check what the pane shows)", pane))
+    return out
+
+
+# Live/model toggles and operational knobs (cache keys, timeouts, polling):
+# a dead one is a broken control, not a silently wrong number.
+_PANE_CONTROL = re.compile(r"^_|^live(_\w+)?$|timeout|_ms$|^refresh$|poll|epoch|cache", re.I)
+
+
 # ── grading ───────────────────────────────────────────────────────────────
 
 GREEN, AMBER, RED, NETWORK_FLAKE = "GREEN", "AMBER", "RED", "NETWORK_FLAKE"

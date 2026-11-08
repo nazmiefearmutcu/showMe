@@ -1,0 +1,1525 @@
+{
+  "codes": {
+    "ACCT": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/portfolio/AccountOverview.tsx"
+      ]
+    },
+    "AIM": {
+      "keys": [
+        "limit"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/AIM.tsx"
+      ]
+    },
+    "ALLQ": {
+      "keys": [
+        "spread"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ALLQ.tsx"
+      ]
+    },
+    "APPL": {
+      "keys": [
+        "live"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/APPL.tsx"
+      ]
+    },
+    "AV": {
+      "keys": [
+        "query",
+        "symbol"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/AV.tsx"
+      ]
+    },
+    "BBGT": {
+      "keys": [
+        "leverage",
+        "paper_mode",
+        "price",
+        "quantity",
+        "side",
+        "submit",
+        "tif",
+        "type"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/BBGT.tsx"
+      ]
+    },
+    "BETA": {
+      "keys": [
+        "rolling_window"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/BETA.tsx"
+      ]
+    },
+    "BLAK": {
+      "keys": [
+        "live",
+        "symbols"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "BMC": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/BMC.tsx"
+      ]
+    },
+    "BMTX": {
+      "keys": [
+        "live_backtest",
+        "symbols"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "BQL": {
+      "keys": [
+        "live",
+        "query"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/BQL.tsx"
+      ]
+    },
+    "BQUANT": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/BQUANT.tsx"
+      ]
+    },
+    "BRIEF": {
+      "keys": [
+        "limit"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/BRIEF.tsx",
+        "ui/src/panes/Welcome.tsx"
+      ]
+    },
+    "BTFW": {
+      "keys": [
+        "live"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "BTMM": {
+      "keys": [
+        "country",
+        "limit",
+        "region"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/BTMM.tsx"
+      ]
+    },
+    "BTUNE": {
+      "keys": [
+        "live_backtest"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "CACT": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/CACT.tsx"
+      ]
+    },
+    "CHGS": {
+      "keys": [
+        "days"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/CHGS.tsx"
+      ]
+    },
+    "CORR": {
+      "keys": [
+        "impactor"
+      ],
+      "conditional": [],
+      "dynamic": true,
+      "files": [
+        "ui/src/functions/CORR.tsx"
+      ]
+    },
+    "COUN": {
+      "keys": [
+        "country",
+        "live",
+        "timeout"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/COUN.tsx"
+      ]
+    },
+    "CPF": {
+      "keys": [
+        "horizon",
+        "series_id",
+        "show_actual_history"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/CPF.tsx"
+      ]
+    },
+    "CRPR": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/CRPR.tsx"
+      ]
+    },
+    "CRVF": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/CRVF.tsx"
+      ]
+    },
+    "CSRC": {
+      "keys": [
+        "limit",
+        "live",
+        "query"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/CSRC.tsx"
+      ]
+    },
+    "DAPI": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DAPI.tsx"
+      ]
+    },
+    "DARK": {
+      "keys": [
+        "weeks"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DARK.tsx"
+      ]
+    },
+    "DCF": {
+      "keys": [
+        "fcfe",
+        "growth_high",
+        "growth_terminal",
+        "shares_outstanding",
+        "wacc",
+        "years"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DCF.tsx"
+      ]
+    },
+    "DCFS": {
+      "keys": [
+        "fcfe",
+        "wacc",
+        "years"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DCFS.tsx"
+      ]
+    },
+    "DDIS": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DDIS.tsx"
+      ]
+    },
+    "DDM": {
+      "keys": [
+        "growth_rate",
+        "required_return"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DDM.tsx"
+      ]
+    },
+    "DEBT": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DEBT.tsx"
+      ]
+    },
+    "DES": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DES.tsx"
+      ]
+    },
+    "DINE": {
+      "keys": [
+        "limit"
+      ],
+      "conditional": [],
+      "dynamic": true,
+      "files": [
+        "ui/src/functions/DINE.tsx"
+      ]
+    },
+    "DPF": {
+      "keys": [
+        "weeks"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DPF.tsx"
+      ]
+    },
+    "DVD": {
+      "keys": [
+        "live",
+        "live_dividends"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/DVD.tsx"
+      ]
+    },
+    "ECFC": {
+      "keys": [
+        "country"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ECFC.tsx"
+      ]
+    },
+    "ECO": {
+      "keys": [
+        "country",
+        "days",
+        "importance",
+        "live_calendar"
+      ],
+      "conditional": [
+        "importance"
+      ],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ECO.tsx"
+      ]
+    },
+    "ECST": {
+      "keys": [
+        "compare_with",
+        "series_id"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ECST.tsx"
+      ]
+    },
+    "EE": {
+      "keys": [
+        "history",
+        "reference"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/EE.tsx"
+      ]
+    },
+    "EMSX": {
+      "keys": [
+        "leverage",
+        "paper_mode",
+        "price",
+        "quantity",
+        "side",
+        "submit",
+        "tif",
+        "type"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/EMSX.tsx"
+      ]
+    },
+    "EQS": {
+      "keys": [
+        "limit",
+        "live_screen",
+        "query",
+        "universe"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/EQS.tsx"
+      ]
+    },
+    "EREV": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/EREV.tsx"
+      ]
+    },
+    "ESG": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ESG.tsx"
+      ]
+    },
+    "EVTS": {
+      "keys": [
+        "reference"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/EVTS.tsx"
+      ]
+    },
+    "EXEC": {
+      "keys": [
+        "action",
+        "algo",
+        "horizon_seconds",
+        "side",
+        "slices",
+        "target_qty"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/EXEC.tsx"
+      ]
+    },
+    "FA": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FA.tsx"
+      ]
+    },
+    "FLDS": {
+      "keys": [
+        "limit",
+        "prefix"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FLDS.tsx"
+      ]
+    },
+    "FLY": {
+      "keys": [
+        "callsign",
+        "country",
+        "limit",
+        "live_flight"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FLY.tsx"
+      ]
+    },
+    "FORM4": {
+      "keys": [
+        "months"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FORM4.tsx"
+      ]
+    },
+    "FRD": {
+      "keys": [
+        "pair"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FRD.tsx"
+      ]
+    },
+    "FRH": {
+      "keys": [
+        "limit",
+        "live"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FRH.tsx"
+      ]
+    },
+    "FSRC": {
+      "keys": [
+        "limit",
+        "live",
+        "query"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FSRC.tsx"
+      ]
+    },
+    "FTS": {
+      "keys": [
+        "forms",
+        "limit",
+        "live",
+        "query",
+        "timeout"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FTS.tsx"
+      ]
+    },
+    "FXFC": {
+      "keys": [
+        "pair"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FXFC.tsx"
+      ]
+    },
+    "FXGO": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FXGO.tsx"
+      ]
+    },
+    "FXH": {
+      "keys": [
+        "base_rate",
+        "days",
+        "hedge_ratio",
+        "home_rate",
+        "notional",
+        "pair",
+        "usd_shock_pct"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FXH.tsx"
+      ]
+    },
+    "FXIP": {
+      "keys": [
+        "days"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/FXIP.tsx"
+      ]
+    },
+    "GC3D": {
+      "keys": [
+        "days"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/GC3D.tsx"
+      ]
+    },
+    "GEX": {
+      "keys": [
+        "live_options",
+        "max_expiries"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/GEX.tsx"
+      ]
+    },
+    "GLCO": {
+      "keys": [
+        "sector"
+      ],
+      "conditional": [
+        "sector"
+      ],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/GLCO.tsx"
+      ]
+    },
+    "GMM": {
+      "keys": [
+        "countries"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/GMM.tsx"
+      ]
+    },
+    "GP": {
+      "keys": [
+        "bars",
+        "days",
+        "interval",
+        "range"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/GP.tsx",
+        "ui/src/lib/useDailyTrend.ts"
+      ]
+    },
+    "GRAB": {
+      "keys": [
+        "recipient",
+        "target"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/GRAB.tsx"
+      ]
+    },
+    "GREEKS": {
+      "keys": [
+        "positions"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/GREEKS.tsx"
+      ]
+    },
+    "HDS": {
+      "keys": [
+        "live"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/HDS.tsx"
+      ]
+    },
+    "HFS": {
+      "keys": [
+        "issuer",
+        "live"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/HFS.tsx"
+      ]
+    },
+    "HP": {
+      "keys": [
+        "bars",
+        "days",
+        "interval",
+        "range"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/HP.tsx"
+      ]
+    },
+    "HVT": {
+      "keys": [
+        "days"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/HVT.tsx"
+      ]
+    },
+    "ICX": {
+      "keys": [
+        "index"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ICX.tsx"
+      ]
+    },
+    "ISIN": {
+      "keys": [
+        "ids"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ISIN.tsx"
+      ]
+    },
+    "IVOL": {
+      "keys": [
+        "underlying"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/IVOL.tsx"
+      ]
+    },
+    "LANG": {
+      "keys": [
+        "lang"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/LANG.tsx"
+      ]
+    },
+    "LITM": {
+      "keys": [
+        "live"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/LITM.tsx"
+      ]
+    },
+    "LOTS": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "MAP": {
+      "keys": [
+        "live",
+        "live_screen",
+        "period",
+        "quote_timeout",
+        "screen_timeout"
+      ],
+      "conditional": [
+        "period"
+      ],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/MarketHeatmap.tsx"
+      ]
+    },
+    "MARS": {
+      "keys": [
+        "reference",
+        "symbols"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/portfolio/MultiAssetRisk.tsx"
+      ]
+    },
+    "MEET": {
+      "keys": [
+        "countries",
+        "data_filter",
+        "days_ahead",
+        "days_back",
+        "impact",
+        "kind",
+        "limit",
+        "mode",
+        "query",
+        "symbols",
+        "tags"
+      ],
+      "conditional": [],
+      "dynamic": true,
+      "files": [
+        "ui/src/functions/MEET.tsx"
+      ]
+    },
+    "MGN": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "MICRO": {
+      "keys": [
+        "depth_levels"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/MICRO.tsx"
+      ]
+    },
+    "MLSIG": {
+      "keys": [
+        "live_ml"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "MOSS": {
+      "keys": [
+        "days",
+        "limit",
+        "live"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/MOSS.tsx"
+      ]
+    },
+    "MOST": {
+      "keys": [
+        "asset_class",
+        "limit",
+        "live",
+        "live_screen",
+        "sort"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/MOST.tsx",
+        "ui/src/panes/Welcome.tsx"
+      ]
+    },
+    "NALRT": {
+      "keys": [
+        "max_alert_age_hours",
+        "threshold"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/NALRT.tsx"
+      ]
+    },
+    "NI": {
+      "keys": [
+        "topic"
+      ],
+      "conditional": [],
+      "dynamic": true,
+      "files": [
+        "ui/src/functions/NI.tsx"
+      ]
+    },
+    "NSE": {
+      "keys": [
+        "include_gdelt",
+        "limit",
+        "live",
+        "query"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/NSE.tsx"
+      ]
+    },
+    "OMON": {
+      "keys": [
+        "expiry"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/OMON.tsx"
+      ]
+    },
+    "ONCH": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/ONCH.tsx"
+      ]
+    },
+    "OSA": {
+      "keys": [
+        "asset_class",
+        "div_yield",
+        "legs",
+        "rate",
+        "spot",
+        "strategy"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/OSA.tsx"
+      ]
+    },
+    "OVDV": {
+      "keys": [
+        "pair"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/OVDV.tsx"
+      ]
+    },
+    "OVME": {
+      "keys": [
+        "asset_class",
+        "div_yield",
+        "rate",
+        "spot",
+        "strike",
+        "type",
+        "vol",
+        "years_to_expiry"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/OVME.tsx"
+      ]
+    },
+    "PCAS": {
+      "keys": [
+        "include_legacy",
+        "k_sigma",
+        "live",
+        "live_prices",
+        "pc_index"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/portfolio/PcaStress.tsx"
+      ]
+    },
+    "PEOP": {
+      "keys": [
+        "action",
+        "query"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PEOP.tsx"
+      ]
+    },
+    "PIB": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PIB.tsx"
+      ]
+    },
+    "POLY": {
+      "keys": [
+        "min_liquidity_usd",
+        "status"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/POLY.tsx"
+      ]
+    },
+    "PORT": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PORT.tsx",
+        "ui/src/panes/Welcome.tsx"
+      ]
+    },
+    "PORT_OPT": {
+      "keys": [
+        "days",
+        "live",
+        "mode",
+        "risk_free",
+        "symbols"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/portfolio/PortfolioOptimizer.tsx"
+      ]
+    },
+    "PORT_WHATIF": {
+      "keys": [
+        "cost",
+        "quantity"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "PSC": {
+      "keys": [
+        "risk_pct"
+      ],
+      "conditional": [],
+      "dynamic": true,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "PVAR": {
+      "keys": [
+        "confidence",
+        "live_risk",
+        "max_positions",
+        "method"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/portfolio/PositionVar.tsx"
+      ]
+    },
+    "READ": {
+      "keys": [
+        "limit",
+        "status"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/READ.tsx"
+      ]
+    },
+    "REBA": {
+      "keys": [
+        "live_portfolio",
+        "max_notional",
+        "targets"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "REGM": {
+      "keys": [
+        "action",
+        "days"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/REGM.tsx"
+      ]
+    },
+    "RPAR": {
+      "keys": [
+        "live_risk",
+        "method",
+        "model",
+        "symbols"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "RV": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/RV.tsx"
+      ]
+    },
+    "SAT": {
+      "keys": [
+        "aoi",
+        "layer"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/SAT.tsx"
+      ]
+    },
+    "SECF": {
+      "keys": [
+        "query"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/SECF.tsx"
+      ]
+    },
+    "SECT": {
+      "keys": [
+        "live",
+        "live_screen",
+        "period",
+        "quote_timeout",
+        "screen_timeout"
+      ],
+      "conditional": [
+        "period"
+      ],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/MarketHeatmap.tsx"
+      ]
+    },
+    "SOSC": {
+      "keys": [
+        "days"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/SOSC.tsx"
+      ]
+    },
+    "SPLC": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/SPLC.tsx"
+      ]
+    },
+    "SRCH": {
+      "keys": [
+        "limit",
+        "query"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/SRCH.tsx"
+      ]
+    },
+    "SRSK": {
+      "keys": [
+        "countries"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/SRSK.tsx"
+      ]
+    },
+    "STRS": {
+      "keys": [
+        "action",
+        "refresh_prices"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/PortfolioAnalytics.tsx"
+      ]
+    },
+    "TAUC": {
+      "keys": [
+        "action",
+        "horizon_days"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TAUC.tsx"
+      ]
+    },
+    "TCA": {
+      "keys": [
+        "benchmark"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TCA.tsx"
+      ]
+    },
+    "TECH": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TECH.tsx"
+      ]
+    },
+    "TLDR": {
+      "keys": [
+        "quote_timeout",
+        "symbols",
+        "timeout"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TLDR.tsx"
+      ]
+    },
+    "TLH": {
+      "keys": [
+        "include_legacy",
+        "lt_cap_rate",
+        "tax_bracket"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/portfolio/TaxLossHarvest.tsx"
+      ]
+    },
+    "TOP": {
+      "keys": [
+        "_epoch",
+        "days",
+        "limit",
+        "live",
+        "max_age_days",
+        "news_timeout",
+        "query",
+        "timeout"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TOP.tsx",
+        "ui/src/panes/Welcome.tsx"
+      ]
+    },
+    "TRA": {
+      "keys": [
+        "reference",
+        "years"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/portfolio/TotalReturn.tsx"
+      ]
+    },
+    "TRAN": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TRAN.tsx"
+      ]
+    },
+    "TRDH": {
+      "keys": [
+        "exchanges"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TRDH.tsx"
+      ]
+    },
+    "TRQA": {
+      "keys": [
+        "questions",
+        "text"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TRQA.tsx"
+      ]
+    },
+    "TSAR": {
+      "keys": [
+        "action",
+        "limit",
+        "query",
+        "symbol",
+        "text"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TSAR.tsx"
+      ]
+    },
+    "TSOX": {
+      "keys": [
+        "order_type",
+        "price",
+        "quantity",
+        "side",
+        "submit",
+        "tif"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/TSOX.tsx"
+      ]
+    },
+    "VCAP": {
+      "keys": [
+        "action",
+        "dataset",
+        "end_year",
+        "financing_scope",
+        "geographies",
+        "refresh",
+        "source_ids",
+        "start_year",
+        "unit"
+      ],
+      "conditional": [],
+      "dynamic": true,
+      "files": [
+        "ui/src/functions/VCAP.tsx"
+      ]
+    },
+    "WACC": {
+      "keys": [],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/WACC.tsx"
+      ]
+    },
+    "WB": {
+      "keys": [
+        "reference"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/WB.tsx"
+      ]
+    },
+    "WCRS": {
+      "keys": [
+        "bases",
+        "live",
+        "quotes"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/WCRS.tsx"
+      ]
+    },
+    "WEI": {
+      "keys": [
+        "region"
+      ],
+      "conditional": [
+        "region"
+      ],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/WEI.tsx"
+      ]
+    },
+    "WETR": {
+      "keys": [
+        "days",
+        "location"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/WETR.tsx"
+      ]
+    },
+    "WHAL": {
+      "keys": [
+        "limit",
+        "lookback_hours",
+        "market",
+        "symbol",
+        "threshold_usd"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/WHAL.tsx"
+      ]
+    },
+    "WIRP": {
+      "keys": [
+        "central_bank",
+        "meetings"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/WIRP.tsx"
+      ]
+    },
+    "YAS": {
+      "keys": [
+        "benchmark_rate",
+        "coupon",
+        "freq",
+        "maturity_years",
+        "price"
+      ],
+      "conditional": [],
+      "dynamic": false,
+      "files": [
+        "ui/src/functions/YAS.tsx"
+      ]
+    }
+  },
+  "unresolved": [
+    {
+      "where": "ui/src/functions/CDE.tsx:79",
+      "why": "params expression not resolvable (AsExpression)"
+    },
+    {
+      "where": "ui/src/functions/commodity-spot.tsx:102",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
+      "where": "ui/src/functions/NI.tsx:166",
+      "why": "params expression not resolvable (Identifier)"
+    },
+    {
+      "where": "ui/src/functions/portfolio/PerformanceAttribution.tsx:226",
+      "why": "params expression not resolvable (Identifier)"
+    },
+    {
+      "where": "ui/src/lib/market-data.ts:1172",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
+      "where": "ui/src/lib/market-data.ts:1179",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
+      "where": "ui/src/lib/useFunction.ts:122",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
+      "where": "ui/src/manifest/ManifestPane.tsx:139",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
+      "where": "ui/src/panes/function_stub/index.tsx:308",
+      "why": "code not resolvable to a registry entry"
+    },
+    {
+      "where": "ui/src/templates/TemplateRenderer.tsx:52",
+      "why": "code not resolvable to a registry entry"
+    }
+  ]
+}

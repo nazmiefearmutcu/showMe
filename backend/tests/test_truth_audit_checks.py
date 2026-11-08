@@ -388,3 +388,116 @@ def test_percent_probability_reported_once_per_key(cfg):
     body = ok_body(rows=[{"implied_prob": 10.75}, {"implied_prob": 89.25}])
     found = truth.check_numeric_sanity(body, code="POLY", cfg=cfg, now=NOW)
     assert [f.rule for f in found] == ["probability_unit_unlabeled"]
+
+
+# ── T9 manifest inputs vs handler reads (2026-11-08) ─────────────────────
+
+T9_SOURCE = '''
+from elsewhere import svc
+
+
+def _first(opts, *names):
+    for n in names:
+        if opts.get(n) is not None:
+            return opts.get(n)
+
+
+def _helper(cfg):
+    return cfg.get("g")
+
+
+class Fn:
+    async def execute(self, instrument=None, f=1, **params):
+        a = params.get("a")
+        b = params["b"]
+        if "c" in params:
+            pass
+        d = _first(params, "d", "d_alias")
+        p = dict(params)
+        e = p.get("e")
+        g = _helper(params)
+        for key in ("h",):
+            params.get(key)
+        return a, b, d, e, g
+
+
+class Other:
+    async def execute(self, **params):
+        return params.get("only_other")
+'''
+
+T9_FORWARDING = T9_SOURCE.replace("        return a, b, d, e, g", "        svc.run(**params)\n        return a, b, d, e, g")
+
+
+def test_t9_reads_every_access_pattern(cfg):
+    reads = truth.handler_param_reads(T9_SOURCE, class_name="Fn")
+    for name in ("a", "b", "c", "d", "d_alias", "e", "f", "g"):
+        assert name in reads.names, name
+    assert reads.dynamic and "h" in reads.constants
+    assert "only_other" not in reads.names  # the neighbour class is out of scope
+    assert reads.forwarded == []
+
+
+def test_t9_flags_ignored_inputs(cfg):
+    reads = truth.handler_param_reads(T9_SOURCE, class_name="Fn")
+    found = truth.check_manifest_inputs("FN", ["a", "h", "symbol", "zzz", "provider_mode"], reads, cfg=cfg)
+    by_rule = {f.rule: f for f in found}
+    assert set(by_rule) == {"manifest_input_ignored", "manifest_control_ignored"}
+    # Manifest drift is contract/doc debt (amber): bespoke panes may never send it.
+    assert by_rule["manifest_input_ignored"].severity == "amber" and "zzz" in by_rule["manifest_input_ignored"].detail
+    assert by_rule["manifest_control_ignored"].severity == "amber"
+
+
+def test_t9b_pane_sending_an_unread_param_is_flagged(cfg):
+    reads = truth.handler_param_reads(T9_SOURCE, class_name="Fn")
+    found = truth.check_pane_params("FN", ["a", "period", "live_tax", "_epoch"], reads,
+                                    pane="ui/src/functions/Fn.tsx", cfg=cfg)
+    by_rule = {f.rule: f for f in found}
+    assert by_rule["pane_param_ignored"].severity == "amber" and "period" in by_rule["pane_param_ignored"].detail
+    # dead toggles / cache keys are broken controls, not wrong numbers
+    assert by_rule["pane_control_ignored"].severity == "amber"
+    assert "live_tax" in by_rule["pane_control_ignored"].detail and "_epoch" in by_rule["pane_control_ignored"].detail
+    assert truth.check_pane_params("FN", ["a", "b"], reads, pane="x", cfg=cfg) == []
+
+
+INHERITED = """
+class EMSXFunction:
+    async def execute(self, instrument=None, **params):
+        return params.get("quantity"), params.get("side")
+
+
+class TSOXFunction(EMSXFunction):
+    code = "TSOX"
+
+
+class Remote(SomeImportedBase):
+    pass
+"""
+
+
+def test_t9_follows_in_module_inheritance(cfg):
+    reads = truth.handler_param_reads(INHERITED, class_name="TSOXFunction")
+    assert {"quantity", "side"} <= reads.names
+    assert reads.forwarded == []
+    remote = truth.handler_param_reads(INHERITED, class_name="Remote")
+    assert remote.forwarded == ["<inherited SomeImportedBase>"]
+
+
+def test_t9_forwarded_params_are_only_amber(cfg):
+    reads = truth.handler_param_reads(T9_FORWARDING, class_name="Fn")
+    assert reads.forwarded
+    found = truth.check_manifest_inputs("FN", ["zzz"], reads, cfg=cfg)
+    assert [(f.rule, f.severity) for f in found] == [("manifest_input_maybe_ignored", "amber")]
+
+
+def test_t9_router_consumed_inputs_are_not_flagged(cfg):
+    reads = truth.handler_param_reads("class TECHFunction:\n    async def execute(self, **params):\n        return params.get('days')\n",
+                                      class_name="TECHFunction")
+    assert truth.check_manifest_inputs("TECH", ["range", "days"], reads, cfg=cfg) == []
+
+
+
+def test_t9b_conditional_keys_are_only_maybe(cfg):
+    reads = truth.handler_param_reads(T9_SOURCE, class_name="Fn")
+    found = truth.check_pane_params("FN", ["a", "period"], reads, pane="p", cfg=cfg, conditional=["period"])
+    assert [(f.rule, f.severity) for f in found] == [("pane_param_maybe_ignored", "amber")]
