@@ -71,18 +71,10 @@ def bquant() -> FunctionManifest:
                     "change readiness; ok requires a successful loopback probe of the notebook route."
                 ),
             ),
-            InputSpec(
-                name="examples_dir",
-                label="Examples directory",
-                control=ControlKind.TEXT,
-                required=False,
-                description="Local path scanned for example .ipynb files.",
-            ),
         ],
         defaults={
             "notebook_url": "/notebook",
             "jupyter_running": False,
-            "examples_dir": "examples",
         },
         # Internal-only surface: BQUANT is a readiness pointer, not a live
         # data provider. acceptable_modes declares NOT_CONFIGURED so the UI
@@ -129,7 +121,7 @@ def bquant() -> FunctionManifest:
             "base URL comes from SHOWME_JUPYTER_URL). The jupyter_running hint is recorded but never "
             "sets readiness. Kernel modules (showme.data, showme.functions, showme.portfolio) are "
             "reported available only when they import, and example notebooks are the .ipynb files in "
-            "examples_dir. It never claims notebook execution succeeded; running notebooks belongs to "
+            "the backend examples folder. It never claims notebook execution succeeded; running notebooks belongs to "
             "the launcher process that owns the Jupyter runtime."
         ),
         field_dict={
@@ -151,7 +143,7 @@ def bquant() -> FunctionManifest:
             SemanticTest(
                 name="bquant_no_jupyter_returns_not_configured",
                 description="With no jupyter_running hint and no example notebooks present, BQUANT reports status=not_configured.",
-                inputs={"jupyter_running": False, "examples_dir": "/nonexistent"},
+                inputs={"jupyter_running": False},
                 assertions=[
                     "status == 'not_configured'",
                     "summary.notebook_ready == False",
