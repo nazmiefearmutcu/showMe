@@ -203,3 +203,32 @@ def test_template_path_after_yfinance_error_is_honest() -> None:
     assert result.data["status"] == "provider_unavailable"
     assert result.data["sector"] is None and result.data["industry"] is None
     assert "live_yfinance" not in {r.get("source_mode") for r in result.data["rows"]}
+
+
+# ── APPL#4 (review): template paths name the static crosswalk too ───────────
+
+
+def test_reference_template_sources_name_the_crosswalk_when_it_has_rows() -> None:
+    fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(REFDATA)))
+    result = _run(fn.execute(instrument=AAPL, reference=True))
+    assert result.data["crosswalk_status"] == "bundled", result.data
+    assert any(r.get("source_mode") == "reference_taxonomy_crosswalk" for r in result.data["rows"])
+    assert result.sources == ["taxonomy_model", "taxonomy_crosswalk_static"]
+
+
+def test_live_false_template_sources_name_the_crosswalk_when_it_has_rows() -> None:
+    fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(REFDATA)))
+    result = _run(fn.execute(instrument=AAPL, live=False))
+    assert result.sources == ["taxonomy_model", "taxonomy_crosswalk_static"]
+
+
+def test_yfinance_error_template_sources_name_the_crosswalk_when_it_has_rows() -> None:
+    fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(boom=True)))
+    result = _run(fn.execute(instrument=AAPL, live=True))
+    assert result.sources == ["taxonomy_model", "taxonomy_crosswalk_static"]
+
+
+def test_template_sources_omit_the_crosswalk_when_none_is_bundled() -> None:
+    fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(REFDATA)))
+    result = _run(fn.execute(instrument=MSFT, reference=True))
+    assert result.sources == ["taxonomy_model"]

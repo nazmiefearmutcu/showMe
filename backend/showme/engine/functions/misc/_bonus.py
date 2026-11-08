@@ -522,11 +522,12 @@ class APPLFunction(BaseFunction):
                 reason = "yfinance adapter not configured; taxonomy fell back to bundled defaults"
             warnings = [reason] if (live and not self.deps.yfinance) else []
             status = "reference_only" if (reference or not live) else "provider_unavailable"
+            template = _taxonomy_template(instrument, status, reason)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_taxonomy_template(instrument, status, reason),
-                sources=["taxonomy_model"],
+                data=template,
+                sources=_appl_template_sources(template),
                 metadata={"live": False, "fallback": True,
                           "data_mode": "reference",
                           "provider_errors": [reason]},
@@ -544,11 +545,12 @@ class APPLFunction(BaseFunction):
             )
         except Exception as exc:
             reason = f"yfinance refdata failed ({type(exc).__name__}); no live classification returned"
+            template = _taxonomy_template(instrument, "provider_unavailable", reason)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_taxonomy_template(instrument, "provider_unavailable", reason),
-                sources=["taxonomy_model"],
+                data=template,
+                sources=_appl_template_sources(template),
                 metadata={"live": False, "fallback": True, "data_mode": "reference",
                           "provider_errors": [f"yfinance: {exc}"]},
             )
@@ -592,6 +594,14 @@ class APPLFunction(BaseFunction):
 
 
 _APPL_FILING_FORMS = ("10-K", "10-Q", "8-K")
+
+
+def _appl_template_sources(template: dict[str, Any]) -> list[str]:
+    """APPL#4: template payloads name the static crosswalk only when it supplied rows."""
+    sources = ["taxonomy_model"]
+    if template.get("crosswalk_status") == "bundled":
+        sources.append("taxonomy_crosswalk_static")
+    return sources
 
 
 async def _appl_sec_identifiers(sec: Any, symbol: str, timeout: float) -> tuple[dict[str, Any], str | None]:

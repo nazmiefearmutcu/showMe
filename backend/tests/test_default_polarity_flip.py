@@ -148,7 +148,8 @@ def test_litm_default_failure_is_labelled():
 def test_appl_default_failure_is_labelled():
     from showme.engine.functions.misc._bonus import APPLFunction
     result = _run(APPLFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.sources == ["taxonomy_model"]
+    # AAPL's template carries bundled crosswalk rows, so the static source is named (APPL#4).
+    assert result.sources == ["taxonomy_model", "taxonomy_crosswalk_static"]
     assert result.metadata.get("fallback") is True
     assert result.metadata.get("live") is False
     assert result.warnings
