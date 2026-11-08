@@ -247,6 +247,19 @@ _PROFILE_FIELDS = (
 )
 
 
+def _is_profile_value(value: Any) -> bool:
+    """A real profile value: not missing, not blank, and not a zero placeholder.
+
+    Zero market cap, share count or headcount is an unknown value reported as
+    a number (DES#2 follow-up), not a company that happens to have none.
+    """
+    if value is None or value == "" or value == [] or value == {}:
+        return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0:
+        return False
+    return True
+
+
 def _has_profile_content(rd: Any) -> bool:
     """True when a provider answer carries at least one company-profile value.
 
@@ -256,21 +269,20 @@ def _has_profile_content(rd: Any) -> bool:
     live yfinance profile."""
     if rd is None:
         return False
-    empty = (None, "", [], {})
     if isinstance(rd, dict):
         market_data = rd.get("market_data")
-        if isinstance(market_data, dict) and any(v not in empty for v in market_data.values()):
+        if isinstance(market_data, dict) and any(_is_profile_value(v) for v in market_data.values()):
             return True
         values = [rd.get(k) for k in _PROFILE_FIELDS]
         extras = rd.get("extras")
     else:
         values = [getattr(rd, k, None) for k in _PROFILE_FIELDS]
         extras = getattr(rd, "extras", None)
-    if any(v not in empty for v in values):
+    if any(_is_profile_value(v) for v in values):
         return True
     raw = extras.get("raw") if isinstance(extras, dict) else None
     if isinstance(raw, dict):
-        return any(raw.get(k) not in empty for k in _PROMOTED_INFO_KEYS)
+        return any(_is_profile_value(raw.get(k)) for k in _PROMOTED_INFO_KEYS)
     return False
 
 
