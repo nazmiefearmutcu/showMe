@@ -668,7 +668,7 @@ class DDISFunction(BaseFunction):
                 },
                 sources=[],
                 warnings=[reason],
-                metadata={"data_mode": "input_error", "as_of": _as_of()},
+                metadata={"data_mode": "explicit_unavailable", "as_of": _as_of()},
             )
 
         # 1) user-supplied schedule -> verbatim
@@ -709,7 +709,7 @@ class DDISFunction(BaseFunction):
                     },
                     sources=[],
                     warnings=[reason],
-                    metadata={"data_mode": "input_error", "as_of": _as_of()},
+                    metadata={"data_mode": "explicit_unavailable", "as_of": _as_of()},
                 )
             rows, total = self._finalize_rows(supplied)
             return FunctionResult(

@@ -1977,6 +1977,19 @@ def enforce_live_or_label_synthetic(
         data_state = "provider_unavailable"
     elif source_would_be_live and not declares_not_live:
         data_state = "live"
+    elif any(
+        isinstance(container, dict)
+        and str(container.get("status") or "").strip().lower() in _FAILURE_DATA_STATUSES
+        for container in (payload.get("data"), payload)
+    ) and not any(
+        isinstance(container, dict) and (container.get("rows") or container.get("series"))
+        for container in (payload.get("data"), payload)
+    ):
+        # An explicit failure status with no source left to cite (the provider
+        # chain failed and no failed provider is listed - DES#2) carries no data
+        # at all: it is unavailable, not synthetic. "synthetic" below stays for
+        # fallback/template rows that do carry values.
+        data_state = "provider_unavailable"
     else:
         # H-1 fix (2026-09-08): an empty / all-sentinel source summary
         # cannot prove liveness. HVT/IVOL provider-failure templates

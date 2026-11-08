@@ -130,8 +130,10 @@ class FinnhubAdapter(BaseDataSource):
                 symbol=sym, name=data.get("name"), exchange=data.get("exchange"),
                 country=data.get("country"), currency=data.get("currency"),
                 industry=data.get("finnhubIndustry"),
-                market_cap=(data.get("marketCapitalization") or 0) * 1_000_000,
-                shares_outstanding=(data.get("shareOutstanding") or 0) * 1_000_000,
+                # Missing (or zero) means unknown, never a zero-sized company: an
+                # empty profile for an unknown symbol must not read as data (DES#2).
+                market_cap=_millions(data.get("marketCapitalization")),
+                shares_outstanding=_millions(data.get("shareOutstanding")),
                 website=data.get("weburl"),
                 ipo_date=pd.to_datetime(data.get("ipo")) if data.get("ipo") else None,
                 source=self.name, fetched_at=utcnow(),
@@ -194,3 +196,11 @@ class FinnhubAdapter(BaseDataSource):
             })
         return mapped_events
 
+
+def _millions(value):
+    """Finnhub reports market cap / shares in millions; None for missing or zero."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number * 1_000_000 if number > 0 else None

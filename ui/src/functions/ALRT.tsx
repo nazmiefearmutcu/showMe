@@ -493,7 +493,9 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
         const snap = fresh[sym];
         if (!snap) continue;
         const snapAt = Date.parse(snap.fetched_at);
-        await evaluateSymbolRows(
+        // Through the ref (refreshed every render) so the tick effect neither
+        // re-arms on each render nor calls a stale closure.
+        await evaluateRef.current(
           activeRows.filter((r) => r.symbol === sym),
           (field) => quoteValue(snap, field),
           now,

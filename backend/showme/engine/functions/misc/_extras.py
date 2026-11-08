@@ -576,7 +576,7 @@ def _flight_input_error(code: str, field_name: str, raw: Any, expected: str) -> 
         },
         sources=[],
         warnings=[reason],
-        metadata={"live": False, "data_mode": "input_error"},
+        metadata={"live": False, "data_mode": "explicit_unavailable"},
     )
 
 

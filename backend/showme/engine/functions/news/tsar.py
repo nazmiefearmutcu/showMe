@@ -128,7 +128,7 @@ class TSARFunction(BaseFunction):
                 # wc1-g33 (TSAR#3 follow-up): nothing was read, so the archive
                 # source name alone must not earn a LIVE data_state.
                 metadata={"latency_ms": _ms(started), "models": models,
-                          "live": False, "data_mode": "no_text"},
+                          "live": False, "data_mode": "empty"},
             )
 
         # ── 2. Segment into utterances with speaker + role + section ──────────

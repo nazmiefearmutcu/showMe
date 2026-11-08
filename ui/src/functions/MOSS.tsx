@@ -96,7 +96,7 @@ const DAYS_IDS: readonly number[] = DAYS_OPTIONS.map((o) => o.value);
 const SERVER_LIMIT = 200;
 
 const UNIVERSE_MAX = 60;
-const UNIVERSE_TOKEN = /^[A-Z0-9^=.\-\/]{1,24}$/;
+const UNIVERSE_TOKEN = /^[A-Z0-9^=./-]{1,24}$/;
 
 /** Parse the typed universe: blank means the backend default universe. */
 function parseUniverse(raw: string): { symbols: string[]; error: string | null } {

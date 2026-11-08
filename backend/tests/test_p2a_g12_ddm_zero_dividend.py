@@ -37,7 +37,7 @@ def test_ddm_zero_dividend_returns_needs_input_without_fair_value() -> None:
         required_return=0.08,
         growth_rate=0.03,
     )
-    assert res.data["status"] == "needs_input"
+    assert res.data["status"] == "not_applicable"  # a non-payer: Gordon DDM does not apply (merged DDM fixes)
     assert res.data.get("fair_value_per_share") is None
     assert res.data.get("reason")
     assert res.data.get("next_actions")
@@ -46,5 +46,5 @@ def test_ddm_zero_dividend_returns_needs_input_without_fair_value() -> None:
 
 def test_ddm_explicit_zero_dividend_is_not_ok() -> None:
     res = _ddm(FunctionDeps(), dividend_ttm=0.0, required_return=0.08, growth_rate=0.03)
-    assert res.data["status"] == "needs_input"
+    assert res.data["status"] == "not_applicable"
     assert res.data.get("fair_value_per_share") is None

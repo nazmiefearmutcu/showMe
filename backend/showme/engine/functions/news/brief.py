@@ -161,7 +161,7 @@ class BRIEFFunction(BaseFunction):
                 },
                 sources=["watchlist_brief_builder"],
                 warnings=[*base_warnings, "No recognised article section requested."],
-                metadata={"format": "markdown", "live": False, "data_mode": "input_error"},
+                metadata={"format": "markdown", "live": False, "data_mode": "explicit_unavailable"},
             )
 
         # ---- LIVE COMPOSITION (default) -------------------------------------

@@ -514,7 +514,10 @@ class DESFunction(BaseFunction):
             # The describing class is the ETF the registry knows, whatever a provider echoed.
             data["asset_class"] = AssetClass.ETF.value
 
-        data["rows"] = _build_rows(data)
+        # An exhausted provider chain has no profile: no placeholder rows (they
+        # echoed the symbol as the Name and showed empty fields as a table).
+        data["rows"] = ([] if str(data.get("status") or "").lower() == "provider_unavailable"
+                        else _build_rows(data))
         data.setdefault(
             "methodology",
             "DES is a live company profile assembled from yfinance, Finnhub, and SEC reference "
