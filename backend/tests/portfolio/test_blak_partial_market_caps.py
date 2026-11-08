@@ -70,8 +70,10 @@ def test_fund_aum_is_used_as_labelled_market_value_proxy() -> None:
     }
     result = _run(["AAPL", "SPY"], table)
 
-    assert result.data["market_cap_data_state"] == "real"
+    # Fund AUM is a proxy, not a market cap: the label must say so.
+    assert result.data["market_cap_data_state"] == "proxy"
     assert "yfinance_fund_aum" in result.sources
+    assert any("fund AUM" in w and "SPY" in w for w in result.warnings)
     expected_spy = 7.9e11 / (3.9e12 + 7.9e11)
     assert abs(result.data["market_weights"]["SPY"] - expected_spy) < 1e-9
 

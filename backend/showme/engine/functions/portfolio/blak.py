@@ -135,8 +135,8 @@ class BLAKFunction(BaseFunction):
         # other classes we use a yfinance REFDATA pass. Anything we cannot
         # resolve falls back to an equal-weight prior with data_state set to
         # ``approximate`` so the UI can surface the degradation.
-        mcap_lookup, mcap_data_state, mcap_sources = await _resolve_market_caps(
-            self.deps, symbols, market_caps
+        mcap_lookup, mcap_data_state, mcap_sources, mcap_proxied = (
+            await _resolve_market_caps_detail(self.deps, symbols, market_caps)
         )
 
         async def _ret(sym: str) -> tuple[str, pd.Series, float]:
@@ -283,6 +283,12 @@ class BLAKFunction(BaseFunction):
         elif mcap_data_state == "approximate":
             warnings.append(
                 "market_weight set to equal-weight prior; real market cap unavailable"
+            )
+        elif mcap_data_state == "proxy":
+            warnings.append(
+                "fund AUM (totalAssets) used as market-value proxy for "
+                + ", ".join(mcap_proxied)
+                + "; not a market capitalization"
             )
         excluded_no_returns = [s for s in symbols if s not in cols]
         if excluded_no_returns:
@@ -452,11 +458,25 @@ async def _resolve_market_caps(
     symbols: list[str],
     overrides: dict[str, Any] | None,
 ) -> tuple[dict[str, float], str, list[str]]:
+    """Resolve market caps; see ``_resolve_market_caps_detail``."""
+    lookup, state, sources, _proxied = await _resolve_market_caps_detail(
+        deps, symbols, overrides
+    )
+    return lookup, state, sources
+
+
+async def _resolve_market_caps_detail(
+    deps: Any,
+    symbols: list[str],
+    overrides: dict[str, Any] | None,
+) -> tuple[dict[str, float], str, list[str], list[str]]:
     """Resolve real market caps for the universe.
 
     Returns ``(symbol → mcap, data_state, extra_sources)`` where data_state is
-    ``"real"`` when at least one symbol resolved through a provider and
-    ``"approximate"`` when the equal-weight fallback will need to fire.
+    ``"real"`` when every symbol resolved to a market cap, ``"proxy"`` when
+    every symbol resolved but at least one value is ETF / fund AUM (a proxy,
+    not a market cap), ``"partial"`` when only some symbols resolved and
+    ``"approximate"`` when none did (the equal-weight fallback fires).
     Overrides are honoured first so callers can inject deterministic values
     in tests.
     """
@@ -472,7 +492,7 @@ async def _resolve_market_caps(
             if value > 0:
                 lookup[sym] = value
     if lookup and len(lookup) == len(symbols):
-        return lookup, "real", extra_sources
+        return lookup, "real", extra_sources, []
 
     async def _resolve(sym: str) -> tuple[str, float, str | None]:
         if sym in lookup:
@@ -487,16 +507,21 @@ async def _resolve_market_caps(
         return sym, 0.0, None
 
     results = await asyncio.gather(*(_resolve(s) for s in symbols))
+    proxied: list[str] = []
     for sym, mcap, src in results:
         if mcap > 0:
             lookup[sym] = mcap
             if src and src not in extra_sources:
                 extra_sources.append(src)
+            if src == "yfinance_fund_aum":
+                proxied.append(sym)
     resolved = sum(1 for s in symbols if lookup.get(s, 0.0) > 0)
     if symbols and resolved == len(symbols):
-        data_state = "real"
+        # Fund AUM (ETF / mutual-fund totalAssets) is a proxy for market value,
+        # never a market cap, so it must not carry the "real" label.
+        data_state = "proxy" if proxied else "real"
     elif resolved:
         data_state = "partial"
     else:
         data_state = "approximate"
-    return lookup, data_state, extra_sources
+    return lookup, data_state, extra_sources, proxied
