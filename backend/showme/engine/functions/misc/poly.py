@@ -145,6 +145,10 @@ class POLYFunction(BaseFunction):
                     {"key": "as_of", "label": "As of", "value": as_of},
                 ],
                 "as_of": as_of,
+                # Market-level totals, computed once per market (rows repeat
+                # the market liquidity per outcome, so rows must not be summed).
+                "market_count": len(compact),
+                "total_liquidity_usd": total_liquidity,
                 "methodology": (
                     "POLY reads the keyless Polymarket Gamma /markets endpoint, filters closed/past-end markets "
                     "by default (status=open), parses raw outcomes/outcomePrices JSON into per-outcome rows, "

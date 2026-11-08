@@ -190,8 +190,10 @@ export function POLYPane({ code }: FunctionPaneProps) {
             ? r.price * 100
             : 0;
       m.outcomes.push({ label: r.outcome ?? "YES", prob });
+      // Liquidity is a market-level figure repeated on every outcome row:
+      // assign it (idempotent), never accumulate it, or binary markets double.
       const liq = numeric(r.liquidity_usd ?? r.volume_usd);
-      if (liq != null) m.liquidity += liq;
+      if (liq != null) m.liquidity = liq;
       if (!m.url && r.url) m.url = r.url;
       if (!m.category && r.category) m.category = r.category;
       if (!m.endDate && r.end_date) m.endDate = r.end_date;
