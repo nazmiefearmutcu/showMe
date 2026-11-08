@@ -46,7 +46,12 @@ def _window_start(date_range: str, today: datetime.date) -> str:
     count = int(match.group(1))
     unit = match.group(2).upper()
     if unit == "D":
-        start = today - datetime.timedelta(days=count)
+        try:
+            start = today - datetime.timedelta(days=count)
+        except OverflowError as exc:  # timedelta or date arithmetic left the calendar
+            raise ValueError(
+                f"date_range {date_range!r} starts before year 1"
+            ) from exc
     elif unit == "M":
         total = today.year * 12 + (today.month - 1) - count
         year, month0 = divmod(total, 12)

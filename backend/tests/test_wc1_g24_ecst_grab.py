@@ -190,3 +190,20 @@ def test_overlay_does_not_extend_monthly_main_series_past_last_observation(monke
     assert latest_card["value"] == "2026-10-01"
 
 
+
+
+def test_out_of_range_day_window_raises_value_error_not_overflow():
+    today = datetime.date(2026, 11, 8)
+    for rng in ("1000000D", "999999999D"):
+        with pytest.raises(ValueError):
+            ecst_mod._window_start(rng, today)
+
+
+def test_out_of_range_day_window_is_input_error_without_provider_call(monkeypatch):
+    spy = _StartSpy()
+    for rng in ("1000000D", "999999999D"):
+        result = _execute(monkeypatch, spy, series_id="DGS10", date_range=rng)
+        assert result.data["status"] == "input_error"
+        assert result.data["rows"] == []
+        assert rng in result.data["reason"]
+    assert spy.starts == [], "no provider call when the window is out of range"
