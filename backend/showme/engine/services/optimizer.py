@@ -32,6 +32,13 @@ import pandas as pd
 
 
 _ANN = 252
+# Projected-gradient step size used by the min-vol and max-Sharpe solvers.
+_PGD_LR_MINVOL = 0.05
+_PGD_LR_SHARPE = 0.02
+# A solution is stationary when one more projected step moves no weight by more
+# than this (0.01 percentage points). It certifies a stationary point of the
+# long-only problem, not a global optimum.
+_STATIONARY_TOL = 1e-4
 
 
 @dataclass
@@ -41,10 +48,12 @@ class PortfolioResult:
     volatility: float             # annualized
     sharpe: float
     samples: int
-    # Solver diagnostics. Only the risk-parity solver sets these; other modes
-    # leave them None.
+    # Solver diagnostics. risk_parity sets max_rc_error; min_volatility and
+    # max_sharpe set converged and solver_residual (largest weight move of one
+    # more projected step). Frontier points leave them None.
     converged: bool | None = None
     max_rc_error: float | None = None   # max_i |RC_i - 1/n| (share of total risk)
+    solver_residual: float | None = None
 
 
 def _annualize(mu: np.ndarray, cov: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -80,6 +89,15 @@ def _project_simplex(w: np.ndarray) -> np.ndarray:
         return np.full(n, 1.0 / n)
     theta = cssv[rho - 1] / rho
     return np.maximum(w - theta, 0.0)
+
+
+def _pgd_residual(w: np.ndarray, direction: np.ndarray, step: float) -> float:
+    """Largest weight move one more projected step along ``direction`` would make.
+
+    Zero (up to _STATIONARY_TOL) means the iterate is a fixed point of the
+    projected step, i.e. a stationary point of the long-only problem.
+    """
+    return float(np.max(np.abs(_project_simplex(w + step * direction) - w)))
 
 
 def _solve_long_only(
@@ -151,13 +169,26 @@ def min_volatility(returns: pd.DataFrame, *, allow_short: bool = False,
         inv = np.linalg.pinv(cov_a)
         ones = np.ones(len(mu_a))
         w = inv @ ones / float(ones @ inv @ ones)
+        converged, residual = True, 0.0   # closed form
     else:
-        w = _solve_long_only(np.zeros_like(mu_a), cov_a)
+        w = _solve_long_only(np.zeros_like(mu_a), cov_a, lr=_PGD_LR_MINVOL)
+        # Objective w'Σw has gradient 2Σw, so the descent direction is -2Σw.
+        residual = _pgd_residual(w, -2.0 * cov_a @ w, _PGD_LR_MINVOL)
+        converged = residual < _STATIONARY_TOL
     ret, vol, sh = _stats(w, mu_a, cov_a, risk_free)
     return PortfolioResult(
         weights={c: float(wi) for c, wi in zip(returns.columns, w)},
         expected_return=ret, volatility=vol, sharpe=sh, samples=int(len(returns)),
+        converged=bool(converged), solver_residual=float(residual),
     )
+
+
+def _sharpe_gradient(w: np.ndarray, mu_a: np.ndarray, cov_a: np.ndarray, rf: float) -> np.ndarray:
+    """∇Sharpe(w) = (μ·σ − (w·μ − rf)·(Σw/σ)) / σ²  with σ = sqrt(w'Σw)."""
+    excess = float(w @ mu_a) - rf
+    var = float(w @ cov_a @ w)
+    vol = np.sqrt(max(var, 1e-12))
+    return (mu_a * vol - excess * (cov_a @ w) / vol) / max(var, 1e-12)
 
 
 def _max_sharpe_long_only_refine(
@@ -166,23 +197,18 @@ def _max_sharpe_long_only_refine(
     rf: float,
     w0: np.ndarray,
     iters: int = 1500,
-    lr: float = 0.02,
+    lr: float = _PGD_LR_SHARPE,
 ) -> np.ndarray:
     """Long-only Sharpe-maximizing refinement via projected gradient *ascent*.
 
     Sharpe(w) = (w·μ − rf) / sqrt(w'Σw)
-    ∇Sharpe   = (μ·σ − (w·μ − rf)·(Σw/σ)) / σ²    (chain rule)
-    where σ = sqrt(w'Σw).
     """
     w = _project_simplex(w0)
     for _ in range(iters):
-        excess = float(w @ mu_a) - rf
         var = float(w @ cov_a @ w)
-        vol = np.sqrt(max(var, 1e-12))
-        if vol <= 0:
+        if np.sqrt(max(var, 1e-12)) <= 0:
             break
-        grad = (mu_a * vol - excess * (cov_a @ w) / vol) / max(var, 1e-12)
-        w = _project_simplex(w + lr * grad)
+        w = _project_simplex(w + lr * _sharpe_gradient(w, mu_a, cov_a, rf))
     return w
 
 
@@ -197,6 +223,7 @@ def max_sharpe(returns: pd.DataFrame, *, risk_free: float = 0.0,
     if allow_short:
         s = float(np.sum(w_tan))
         w = w_tan / s if abs(s) > 1e-12 else _normalize(np.ones_like(mu_a), allow_short=True)
+        converged, residual = True, 0.0   # closed-form tangency
     else:
         # Audit Q3 #4: analytical tangency, clip negatives, renorm, then SLSQP-
         # equivalent projected-gradient ascent on Sharpe.
@@ -207,10 +234,13 @@ def max_sharpe(returns: pd.DataFrame, *, risk_free: float = 0.0,
         else:
             w_seed = np.full_like(mu_a, 1.0 / max(len(mu_a), 1))
         w = _max_sharpe_long_only_refine(mu_a, cov_a, risk_free, w_seed)
+        residual = _pgd_residual(w, _sharpe_gradient(w, mu_a, cov_a, risk_free), _PGD_LR_SHARPE)
+        converged = residual < _STATIONARY_TOL
     ret, vol, sh = _stats(w, mu_a, cov_a, risk_free)
     return PortfolioResult(
         weights={c: float(wi) for c, wi in zip(returns.columns, w)},
         expected_return=ret, volatility=vol, sharpe=sh, samples=int(len(returns)),
+        converged=bool(converged), solver_residual=float(residual),
     )
 
 

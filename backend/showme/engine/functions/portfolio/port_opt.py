@@ -209,13 +209,25 @@ class PortOptFunction(BaseFunction):
             out["max_sharpe"] = {
                 "weights": ms.weights, "return": ms.expected_return,
                 "vol": ms.volatility, "sharpe": ms.sharpe,
+                "converged": ms.converged, "solver_residual": ms.solver_residual,
             }
+            if not ms.converged:
+                warnings.append(
+                    "max_sharpe did not reach a stationary point "
+                    f"(last step moved weights by {ms.solver_residual:.2e}); weights may not be optimal."
+                )
         if mode in ("min_vol", "all"):
             mv = min_volatility(rets, allow_short=allow_short, risk_free=rf)
             out["min_volatility"] = {
                 "weights": mv.weights, "return": mv.expected_return,
                 "vol": mv.volatility, "sharpe": mv.sharpe,
+                "converged": mv.converged, "solver_residual": mv.solver_residual,
             }
+            if not mv.converged:
+                warnings.append(
+                    "min_volatility did not reach a stationary point "
+                    f"(last step moved weights by {mv.solver_residual:.2e}); weights may not be optimal."
+                )
         if mode in ("risk_parity", "all"):
             try:
                 rp = risk_parity(rets, risk_free=rf)
@@ -276,6 +288,9 @@ class PortOptFunction(BaseFunction):
             "sharpe": "(return - risk_free_rate) / volatility.",
             "weight_pct": "Optimizer allocation weight for a symbol.",
             "samples": "Trading-day return observations used; the lookback itself is in calendar days.",
+            "converged": "Solver stationarity check for max_sharpe and min_volatility: true when one more "
+                         "projected-gradient step moves no weight by more than 1e-4. A stationary point, not a proof of global optimality.",
+            "solver_residual": "Largest weight move of one more projected-gradient step (0 at a stationary point).",
         }
         return FunctionResult(code=self.code, instrument=None, data=out,
                               sources=sources,

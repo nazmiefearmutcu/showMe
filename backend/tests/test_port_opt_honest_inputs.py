@@ -258,3 +258,55 @@ def test_port_opt_does_not_move_candidate_ranking(monkeypatch) -> None:
     assert out["best"] is not None
     assert all(row["signal_functions"] == 0 for row in out["ranked"])
     assert all(row["score"] == 0 for row in out["ranked"])
+
+
+# --- PORT_OPT#6 follow-up: solver convergence diagnostics --------------------
+
+def _returns_frame(seed: int = 0) -> pd.DataFrame:
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({
+        "A": rng.normal(0.0008, 0.010, 252),
+        "B": rng.normal(0.0001, 0.011, 252),
+        "C": rng.normal(0.0004, 0.012, 252),
+    })
+
+
+def test_min_volatility_reports_solver_convergence() -> None:
+    from showme.engine.services.optimizer import min_volatility
+
+    mv = min_volatility(_returns_frame(), allow_short=False)
+    assert mv.converged is True, mv.converged
+    assert mv.solver_residual is not None and mv.solver_residual < 1e-4, mv.solver_residual
+
+
+def test_max_sharpe_reports_solver_convergence() -> None:
+    from showme.engine.services.optimizer import max_sharpe
+
+    ms = max_sharpe(_returns_frame(), risk_free=0.04, allow_short=False)
+    assert ms.converged is True, ms.converged
+    assert ms.solver_residual is not None and ms.solver_residual < 1e-4, ms.solver_residual
+
+
+def test_port_opt_output_carries_solver_diagnostics() -> None:
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, mode="all", live=True, days=756)
+    for section in ("max_sharpe", "min_volatility"):
+        assert result.data[section].get("converged") is True, (section, result.data[section])
+        assert "solver_residual" in result.data[section], section
+
+
+def test_non_stationary_solver_output_is_reported(monkeypatch) -> None:
+    """Equal weights are not the min-vol stationary point: the output must say
+    the solver did not converge instead of presenting the weights as optimal."""
+    import numpy as np
+
+    import showme.engine.services.optimizer as optimizer
+
+    def _unsettled(mu, cov, target_return=None, iters=4000, lr=0.05, seed=0):  # noqa: ANN001
+        return np.full(len(mu), 1.0 / len(mu))
+
+    monkeypatch.setattr(optimizer, "_solve_long_only", _unsettled)
+    result = _run(_FakeYFinance(_VOLS), symbols=SYMBOLS, mode="min_vol", live=True, days=756)
+    assert result.data["min_volatility"]["converged"] is False, result.data["min_volatility"]
+    assert any("min_volatility" in w and "stationary" in w for w in result.warnings), result.warnings
