@@ -83,6 +83,7 @@ interface MarsPayload {
   factor_loadings?: Record<string, number>;
   rows?: Row[];
   r_squared?: number | null;
+  regression_state?: string;
   annualized_volatility?: number | null;
   var_95_daily_loss?: number | null;
   etl_95_daily_loss?: number | null;
@@ -154,7 +155,10 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
   const waterfall = useMemo(() => deriveFactorWaterfall(asRows(payload?.rows)), [payload]);
   const warnings = data?.warnings ?? [];
   const status = str(payload?.status) ?? data?.status ?? "ok";
-  const isEmpty = !payload || rows.length === 0;
+  // A template-only regression withholds R2/alpha/loadings on purpose. That is a
+  // disclosed state, not an empty response, so the risk figures still render.
+  const regressionEstimated = payload?.regression_state !== "not_estimated_template";
+  const isEmpty = !payload || (rows.length === 0 && regressionEstimated);
 
   const alpha = typeof payload?.alpha_annualized === "number" ? payload.alpha_annualized : null;
   const proxiesLoaded = Array.isArray(data?.metadata?.factor_proxies_loaded)
@@ -244,13 +248,19 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
           <div className="portfolio-analytics-grid">
             <section className="portfolio-table-panel">
               <SectionHead title="Factor loadings" meta="regression beta against ETF proxies" />
-              <DataGrid
-                columns={LOADING_COLUMNS}
-                rows={rows}
-                rowKey={(row, idx) => `${String(row.factor ?? idx)}-${idx}`}
-                density="compact"
-                ariaLabel="MARS factor loading table"
-              />
+              {regressionEstimated ? (
+                <DataGrid
+                  columns={LOADING_COLUMNS}
+                  rows={rows}
+                  rowKey={(row, idx) => `${String(row.factor ?? idx)}-${idx}`}
+                  density="compact"
+                  ariaLabel="MARS factor loading table"
+                />
+              ) : (
+                <p className="portfolio-analytics-muted" role="note">
+                  Regression not estimated: the regression input is the labelled template series.
+                </p>
+              )}
             </section>
 
             <aside className="portfolio-analytics-rail">

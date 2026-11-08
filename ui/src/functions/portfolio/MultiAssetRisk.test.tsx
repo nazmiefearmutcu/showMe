@@ -170,3 +170,38 @@ describe("MARS default universe and disclosed dropped legs", () => {
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
   });
 });
+
+describe("MARS template regression state", () => {
+  const TEMPLATE_PAYLOAD = {
+    status: "ok",
+    alpha_daily: null,
+    alpha_annualized: null,
+    factor_loadings: {},
+    rows: [],
+    r_squared: null,
+    regression_state: "not_estimated_template",
+    risk_basis: "template_series",
+    annualized_volatility: 0.12,
+    var_95_daily_loss: 0.011,
+    etl_95_daily_loss: 0.017,
+    samples: null,
+    methodology: "Template regression.",
+  };
+
+  it("withholds R2 and loadings, says why, and keeps the labelled risk figures", () => {
+    ok(TEMPLATE_PAYLOAD, {
+      sources: ["multi_asset_risk_model"],
+      metadata: { live: false, fallback: true, data_mode: "modeled", factor_proxies_loaded: [] },
+      warnings: [
+        "Regression statistics (R-squared, alpha, factor loadings) are not estimated because the regression input is the labelled template series.",
+      ],
+    });
+    render(<MultiAssetRiskPane code="MARS" />);
+    expect(screen.queryByText("No data available")).toBeNull();
+    expect(
+      screen.getByText("Regression not estimated: the regression input is the labelled template series."),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
+    expect(screen.getByTestId("portx-warning-strip")).toHaveTextContent("not estimated");
+  });
+});

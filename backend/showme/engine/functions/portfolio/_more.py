@@ -682,6 +682,8 @@ class MARSFunction(BaseFunction):
                 port_series=port_series,
                 sources=["multi_asset_risk_model"],
                 metadata={"live": False, "data_mode": "modeled"},
+                factors_are_template=True,
+                portfolio_is_template=True,
             )
 
         async def _ret(sym):
@@ -730,9 +732,12 @@ class MARSFunction(BaseFunction):
         loaded_proxies = [str(c) for c in factors.columns]
         missing_proxies = sorted(set(proxies) - set(loaded_proxies))
         metadata: dict[str, Any] = {"live": True, "data_mode": "live_yfinance"}
+        factors_template = False
+        portfolio_template = False
         if factors.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
             factors = _template_returns(list(proxies.keys()), days)
+            factors_template = True
             metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
             warnings.append(
                 "Live ETF factor proxies were unavailable; factor loadings are "
@@ -755,6 +760,7 @@ class MARSFunction(BaseFunction):
         if port_ret.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
             port_ret = _template_returns(requested_legs, days)
+            portfolio_template = True
             metadata.update({"live": False, "fallback": True, "data_mode": "modeled"})
             metadata["legs_loaded"] = []
             metadata["legs_missing"] = requested_legs
@@ -787,6 +793,8 @@ class MARSFunction(BaseFunction):
             sources=["yfinance"] if metadata.get("live") else ["multi_asset_risk_model"],
             warnings=warnings,
             metadata=metadata,
+            factors_are_template=factors_template,
+            portfolio_is_template=portfolio_template,
         )
 
 
@@ -824,6 +832,8 @@ def _mars_result(
     sources: list[str],
     warnings: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    factors_are_template: bool = False,
+    portfolio_is_template: bool = False,
 ) -> FunctionResult:
     factors = _tz_naive_frame(factors)
     port_series = _tz_naive_series(port_series)
@@ -847,16 +857,33 @@ def _mars_result(
         metadata["fallback"] = True
         metadata["data_mode"] = "modeled"
         sources = ["multi_asset_risk_model"]
+        factors_are_template = True
+        portfolio_is_template = True
+    # A regression is only a statistic when both sides are real series. Against
+    # the labelled template the fit is exact by construction (R2 = 1, alpha = 0),
+    # so R2, alpha, loadings and the sample count are withheld and disclosed.
+    regression_valid = not (factors_are_template or portfolio_is_template)
     port_series = joined["portfolio"]
-    y = joined["portfolio"].values
-    X = joined.drop(columns="portfolio").values
-    Xc = np.column_stack([np.ones(X.shape[0]), X])
-    beta, *_ = np.linalg.lstsq(Xc, y, rcond=None)
-    alpha = float(beta[0])
-    loadings = {f: float(b) for f, b in zip(joined.columns[1:], beta[1:])}
-    resid = y - Xc @ beta
-    ss_tot = float(((y - y.mean()) ** 2).sum())
-    r2 = float(1 - (resid ** 2).sum() / ss_tot) if ss_tot else 0.0
+    alpha: float | None = None
+    loadings: dict[str, float] = {}
+    r2: float | None = None
+    samples: int | None = None
+    if regression_valid:
+        y = joined["portfolio"].values
+        X = joined.drop(columns="portfolio").values
+        Xc = np.column_stack([np.ones(X.shape[0]), X])
+        beta, *_ = np.linalg.lstsq(Xc, y, rcond=None)
+        alpha = float(beta[0])
+        loadings = {f: float(b) for f, b in zip(joined.columns[1:], beta[1:])}
+        resid = y - Xc @ beta
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        r2 = float(1 - (resid ** 2).sum() / ss_tot) if ss_tot else 0.0
+        samples = int(len(joined))
+    else:
+        warnings.append(
+            "Regression statistics (R-squared, alpha, factor loadings) are not "
+            "estimated because the regression input is the labelled template series."
+        )
     # Audit Q3 #15 — guard annualized volatility against <30-sample noise.
     if len(port_series) < 30:
         ann_vol = None
@@ -880,7 +907,7 @@ def _mars_result(
         instrument=instrument,
         data={
             "alpha_daily": alpha,
-            "alpha_annualized": alpha * 252,
+            "alpha_annualized": alpha * 252 if alpha is not None else None,
             "factor_loadings": loadings,
             "rows": [
                 {
@@ -892,6 +919,9 @@ def _mars_result(
                 for factor, loading in loadings.items()
             ],
             "r_squared": r2,
+            "regression_state": "estimated" if regression_valid else "not_estimated_template",
+            # Basis of the volatility and VaR figures: the portfolio series actually used.
+            "risk_basis": "template_series" if portfolio_is_template else "live_series",
             "annualized_volatility": ann_vol,
             "var_95_daily": var_95,
             "etl_95_daily": etl_95,
@@ -901,13 +931,13 @@ def _mars_result(
             "annualized_volatility_data_state": (
                 "ok" if ann_vol is not None else "insufficient_samples"
             ),
-            "samples": int(len(joined)),
+            "samples": samples,
             "summary": {
                 "r_squared": r2,
                 "annualized_volatility": ann_vol,
                 "var_95_daily": var_95,
                 "var_95_daily_loss": port_var_95,
-                "samples": int(len(joined)),
+                "samples": samples,
             },
             "methodology": (
                 "Regress the selected multi-asset portfolio return series on ETF factor proxies. "

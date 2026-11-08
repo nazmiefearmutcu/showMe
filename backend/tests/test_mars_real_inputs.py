@@ -169,3 +169,50 @@ def test_mars_dropped_portfolio_leg_is_disclosed_not_live():
     assert result.metadata.get("legs_missing") == ["BTCUSDT"]
     joined = " ".join(result.warnings)
     assert "BTCUSDT" in joined, f"warning must name the dropped leg, got {result.warnings}"
+
+
+# ────────────────────────────────────────────────────────────────────────
+# MARS#5: a regression run on the labelled template reports R² = 1.0 and
+# alpha = 0 as if they were statistics.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def test_mars_reference_mode_publishes_no_regression_statistics():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    result = _run(MARSFunction(FunctionDeps()).execute(
+        instrument=EQ, symbols=["SPY", "TLT", "GLD"], reference=True,
+    ))
+    data = result.data
+    assert data["regression_state"] == "not_estimated_template"
+    assert data["r_squared"] is None, f"template R2 must not be published, got {data['r_squared']}"
+    assert data["alpha_annualized"] is None
+    assert data["factor_loadings"] == {}
+    assert data["rows"] == []
+    assert data["risk_basis"] == "template_series"
+    assert any("not estimated" in w for w in result.warnings)
+
+
+def test_mars_live_factor_fallback_publishes_no_r_squared():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    # Factor proxies all fail, so the factor side is template while the portfolio is live.
+    yf = _KeyedYfinance(ok_symbols={"AAPL"})
+    result = _run(MARSFunction(FunctionDeps(yfinance=yf)).execute(
+        instrument=EQ, symbols=["AAPL"], live=True,
+    ))
+    assert result.data["regression_state"] == "not_estimated_template"
+    assert result.data["r_squared"] is None
+    assert result.data["risk_basis"] == "live_series"
+
+
+def test_mars_live_full_coverage_still_estimates_regression():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    yf = _KeyedYfinance()
+    result = _run(MARSFunction(FunctionDeps(yfinance=yf)).execute(
+        instrument=EQ, symbols=["AAPL"], live=True,
+    ))
+    assert result.data["regression_state"] == "estimated"
+    assert isinstance(result.data["r_squared"], float)
+    assert result.data["factor_loadings"]
