@@ -1,1 +1,348 @@
-/* Awareness sentiment panes (MSENT, SOSC, Welcome gauge) — owned by the sentiment task. Prefix: aw- */
+/* Awareness sentiment panes (MSENT, SOSC, Welcome market mood). Prefix: aw- */
+
+/* ── Fear & Greed gauge, term structure, sentiment bars ─────────────── */
+.aw-gauge {
+  display: block;
+  margin: 0 auto;
+  overflow: visible;
+}
+
+.aw-ts {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 120px;
+  overflow: visible;
+}
+.aw-ts__empty {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-mute);
+}
+
+.aw-bars {
+  display: grid;
+  gap: var(--space-2);
+}
+.aw-bars__svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+.aw-bars__legend {
+  display: flex;
+  gap: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+
+/* ── Welcome: market mood card (336 x 196) ──────────────────────────── */
+.aw-mood {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+}
+.aw-mood__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.aw-mood__title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-display);
+}
+.aw-mood__jump {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.aw-mood__jump:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+.aw-mood__body {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: center;
+  text-align: center;
+}
+.aw-mood__body .aw-gauge {
+  width: 140px;
+  height: 78px;
+}
+.aw-mood__figures {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-3);
+}
+.aw-mood__score {
+  font-family: var(--font-mono);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-display);
+}
+.aw-mood__delta {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.aw-mood__source {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-mood__stale {
+  color: var(--warn);
+  font-weight: 600;
+}
+.aw-mood__reason {
+  margin: 0;
+  max-width: 300px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+/* ── MSENT: card grid ───────────────────────────────────────────────── */
+.aw-msent {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: 300px 248px minmax(0, auto);
+  gap: var(--space-3);
+  padding: var(--space-3);
+  overflow: auto;
+}
+.aw-card {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-sm);
+}
+.aw-card__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-display);
+}
+.aw-card--fg {
+  grid-row: 1 / span 2;
+}
+.aw-card--news {
+  grid-column: 1 / -1;
+}
+.aw-card__asof {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-card__empty {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.aw-figure-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+.aw-figure-row dt {
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-figure-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.aw-components {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aw-components li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px 60px 36px;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+.aw-bar {
+  position: relative;
+  height: 4px;
+  background: var(--surface-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.aw-bar__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+}
+.aw-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.aw-social {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+.aw-social th,
+.aw-social td {
+  padding: 4px 6px;
+  text-align: right;
+  border-bottom: 1px solid var(--border-row);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.aw-social th {
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+  font-family: var(--font-text);
+  font-weight: 400;
+}
+.aw-social td:nth-child(2),
+.aw-social th:nth-child(2) {
+  text-align: left;
+}
+.aw-social td:first-child,
+.aw-social th:first-child {
+  text-align: left;
+}
+
+.aw-ts-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+.aw-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.aw-note--warn {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  background: var(--warn-soft);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+}
+
+.aw-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.aw-toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.aw-toggle {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  padding: 2px 8px;
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-xs);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.aw-toggle:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+
+.aw-spark {
+  width: 100%;
+}
+.aw-spark svg {
+  width: 100%;
+  height: 96px;
+}
+
+.aw-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+.aw-stat-grid dt {
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+.aw-stat-grid dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* SOSC headlines */
+.aw-headlines {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aw-headlines li {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 60px;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-row);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+.aw-headlines__time {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  color: var(--text-mute);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .aw-social tbody tr,
+  .aw-headlines li {
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+}
