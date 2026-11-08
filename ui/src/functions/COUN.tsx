@@ -45,6 +45,7 @@ import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 interface COUNRow {
+  key?: string;
   section?: string;
   metric?: string;
   value?: number | string | null;
@@ -52,6 +53,11 @@ interface COUNRow {
   as_of?: string | null;
   series_id?: string;
   source_mode?: string;
+  // True when the latest provider observation is older than its series limit.
+  // The value keeps its as-of date but is not live.
+  stale?: boolean;
+  reason?: string;
+  note?: string;
 }
 
 interface COUNCard {
@@ -116,17 +122,20 @@ export function COUNPane({ code }: FunctionPaneProps) {
     return out;
   }, [payload]);
 
-  // Live means a row with a value from a real provider; reference-profile and
-  // unavailable rows never make the pane live.
+  // Live means a fresh row with a value from a real provider; reference-profile,
+  // unavailable and stale rows never make the pane live.
   const isLive =
     state === "ok" &&
     rows.some(
       (r) =>
         r.value != null &&
         !isReferenceMode(r.source_mode) &&
-        !isUnavailableMode(r.source_mode),
+        !isUnavailableMode(r.source_mode) &&
+        !r.stale,
     );
   const hasUnavailable = rows.some((r) => isUnavailableMode(r.source_mode));
+  const hasStale = rows.some((r) => r.stale === true);
+  const hasReferenceRows = rows.some((r) => isReferenceMode(r.source_mode));
 
   // CSV export of the country metrics table — RAW payload values (a numeric
   // value stays numeric; string values pass through unchanged).
@@ -212,7 +221,7 @@ export function COUNPane({ code }: FunctionPaneProps) {
           r.source_mode ? (
             <Pill
               tone={
-                isUnavailableMode(r.source_mode)
+                isUnavailableMode(r.source_mode) || r.stale
                   ? "warn"
                   : isReferenceMode(r.source_mode)
                     ? "muted"
@@ -276,7 +285,15 @@ export function COUNPane({ code }: FunctionPaneProps) {
           trailing={
             <FunctionControlGroup>
               <Pill tone={isLive ? "positive" : "warn"} variant="soft">
-                {isLive ? "live+ref" : hasUnavailable ? "unavailable" : "reference"}
+                {isLive
+                  ? hasReferenceRows
+                    ? "live+ref"
+                    : "live"
+                  : hasStale
+                    ? "stale"
+                    : hasUnavailable
+                      ? "unavailable"
+                      : "reference"}
               </Pill>
               <SegmentedControl
                 label="COUNTRY"
@@ -318,11 +335,14 @@ export function COUNPane({ code }: FunctionPaneProps) {
 
 function cardCaption(card: COUNCard, rows: COUNRow[]): string {
   const label = String(card.label ?? "").toLowerCase();
+  // The currency code is a fact, not a statistic: it has no provider row.
+  if (label === "currency") return "CURRENCY CODE";
   const match = rows.find(
     (r) => (r.metric ?? "").toLowerCase() === label || label.includes(String(r.metric ?? "\u0000").toLowerCase()),
   );
-  if (!match) return "REFERENCE PROFILE";
+  if (!match) return "NO LIVE ROW";
   if (isUnavailableMode(match.source_mode)) return "UNAVAILABLE";
+  if (match.stale) return `STALE · ${String(match.as_of ?? "").slice(0, 10)}`;
   if (match.as_of) {
     return `${isReferenceMode(match.source_mode) ? "REF" : "LIVE"} · ${String(match.as_of).slice(0, 10)}`;
   }
