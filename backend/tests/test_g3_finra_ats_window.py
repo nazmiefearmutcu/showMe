@@ -144,3 +144,44 @@ def test_dpf_wired_adapter_returns_newest_weeks_not_2023(monkeypatch) -> None:
     assert weeks[0] == _latest_monday().isoformat()
     assert len(weeks) == 12
     assert weeks == sorted(weeks, reverse=True)
+
+
+class _BoomFinra:
+    async def ats_weekly(self, symbol=None, limit=200):  # noqa: ANN001
+        raise RuntimeError("finra down")
+
+
+def test_dpf_unavailable_path_ships_no_synthetic_volumes(monkeypatch) -> None:
+    """When FINRA cannot be read, DPF must not invent ATS volume rows."""
+    monkeypatch.setattr(dpf_mod, "_weekly_total_volume", _no_yfinance)
+    result = _run(
+        DPFFunction(deps=FunctionDeps(finra=_BoomFinra())).execute(
+            instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY),
+            weeks=12,
+        )
+    )
+    data = result.data
+
+    assert data["status"] == "provider_unavailable"
+    assert data["weekly"] == [], "no placeholder ATS volumes on the outage path"
+    assert data["rows"] == [] and data["history"] == []
+    assert data.get("next_actions")
+
+
+def test_dpf_empty_feed_ships_no_synthetic_volumes(monkeypatch) -> None:
+    """A FINRA response with no rows for the symbol is 'empty', not a model."""
+    monkeypatch.setattr(dpf_mod, "_weekly_total_volume", _no_yfinance)
+    adapter = _wire_adapter(FakeFinra([]))
+    result = _run(
+        DPFFunction(deps=FunctionDeps(finra=adapter)).execute(
+            instrument=Instrument(symbol="ZZZZ", asset_class=AssetClass.EQUITY),
+            weeks=12,
+        )
+    )
+    data = result.data
+
+    assert data["status"] in {"provider_unavailable", "empty"}
+    assert data["weekly"] == []
+    assert not any(
+        r.get("source_mode") == "labelled_current_shape_model" for r in data["weekly"]
+    )
