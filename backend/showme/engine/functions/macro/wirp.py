@@ -290,7 +290,8 @@ async def _fetch_irx_implied_rate() -> tuple[float | None, str | None]:
     This call is *non-raising*: a cold ``^IRX`` pull can be slow and the
     whole live path must not die just because the optional market-implied
     refinement timed out. On any timeout/error we return ``(None, None)``
-    so ``execute()`` can honestly fall back to the FRED target midpoint.
+    so ``execute()`` simply omits the ^IRX anchor and reports the FRED/EFFR
+    values it has, without substituting the T-bill yield for anything else.
     """
 
     def _pull() -> tuple[float | None, str | None]:
