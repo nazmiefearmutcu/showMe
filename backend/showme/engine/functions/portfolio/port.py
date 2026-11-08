@@ -575,12 +575,18 @@ class PORTFunction(BaseFunction):
             warnings.append("realized_pnl_ytd is summed as recorded; closes carry no currency")
         groups = _groups(rows, group_by, priced_mv, warnings) if group_by != "none" else []
 
-        if n_rows and price_sources["yfinance"] == n_rows:
+        # The state describes the VALUED book, not the quote sources: a live
+        # quote with no FX rate is an unpriced row, so it cannot make the book
+        # "live". No valued row at all is unavailable; any unpriced row is partial.
+        n_priced = n_rows - n_unpriced
+        if n_rows and n_priced == 0:
+            price_state = "unavailable"
+        elif n_unpriced:
+            price_state = "partial"
+        elif n_rows and price_sources["yfinance"] == n_rows:
             price_state = "live"
         elif price_sources["yfinance"] == 0 and price_sources["missing"] == 0 and price_sources["legacy_snapshot"]:
             price_state = "legacy_snapshot"
-        elif n_rows and price_sources["missing"] == n_rows:
-            price_state = "unavailable"
         else:
             price_state = "partial"
 
