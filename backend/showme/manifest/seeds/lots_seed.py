@@ -91,6 +91,17 @@ def lots() -> FunctionManifest:
                 min=0,
             ),
             InputSpec(
+                name="acquired_at",
+                label="Acquisition date",
+                control=ControlKind.TEXT,
+                required=False,
+                description=(
+                    "ISO date (YYYY-MM-DD) or datetime the lot was acquired, for action=open. "
+                    "Sets holding period and short/long term; future dates are rejected. "
+                    "Omitted = stamped with the entry time and flagged acquired_at_source=entry_time."
+                ),
+            ),
+            InputSpec(
                 name="method",
                 label="Lot selection",
                 control=ControlKind.SELECT,

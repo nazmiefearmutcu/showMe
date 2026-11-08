@@ -16,7 +16,10 @@ from showme.engine.functions.portfolio import lots as lots_mod
 from showme.engine.services import tax_lots
 from showme.manifest import REGISTRY, load_seeds
 
-_HANDLER_PARAMS = {"action", "symbol", "account", "quantity", "price", "method", "year"}
+_HANDLER_PARAMS = {
+    "action", "symbol", "account", "quantity", "price", "method", "year",
+    "acquired_at", "long_term_threshold_days",
+}
 
 
 @pytest.fixture(scope="module", autouse=True)
