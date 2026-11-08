@@ -113,10 +113,11 @@ def pib() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="filing_date", label="Date", kind="date"),
-                ColumnSpec(key="form_type", label="Form", kind="tag"),
-                ColumnSpec(key="description", label="Description", kind="text"),
-                ColumnSpec(key="filing_url", label="Filing", kind="action"),
+                ColumnSpec(key="filingDate", label="Filed", kind="date"),
+                ColumnSpec(key="reportDate", label="Reported", kind="date"),
+                ColumnSpec(key="form", label="Form", kind="tag"),
+                ColumnSpec(key="accession", label="Accession", kind="text"),
+                ColumnSpec(key="url", label="Filing", kind="action"),
             ],
             sortable=True,
             filterable=True,
@@ -144,7 +145,7 @@ def pib() -> FunctionManifest:
             "filing_count": FieldDef(description="Total filings in the lookback window.", source="computed"),
             "latest_filing_date": FieldDef(description="Most-recent filing date.", source="computed"),
             "summary": FieldDef(description="AI summary of recent material disclosures; always null until implemented.", source="not_implemented"),
-            "filing_url": FieldDef(description="Direct EDGAR document URL.", source="sec_edgar"),
+            "rows[].url": FieldDef(description="Direct EDGAR primary-document URL (CIK, accession and document name).", source="sec_edgar"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

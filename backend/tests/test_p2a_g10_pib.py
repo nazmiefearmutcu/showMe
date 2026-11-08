@@ -89,3 +89,19 @@ def test_pib_filing_url_is_absolute_edgar_document_link():
     assert row["url"] == (
         "https://www.sec.gov/Archives/edgar/data/320193/000032019326000030/a8k.htm"
     )
+
+
+def test_pib_unavailable_feed_reports_no_fake_rows_or_sources():
+    res = _pib_res(FunctionDeps(sec_edgar=None))
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["rows"] == []
+    assert res.sources == []
+    assert "pib_model" not in res.sources
+
+
+def test_pib_seed_table_columns_match_emitted_row_keys():
+    from showme.manifest.seeds.pib_seed import pib
+
+    emitted = {"symbol", "section", "form", "filingDate", "reportDate", "accession", "url", "source_mode"}
+    for col in pib.table_schema.columns:
+        assert col.key in emitted, col.key

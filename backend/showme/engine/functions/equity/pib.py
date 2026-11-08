@@ -115,13 +115,8 @@ class PIBFunction(BaseFunction):
         else:
             data = {
                 "status": "provider_unavailable",
-                "rows": [{
-                    "symbol": instrument.symbol,
-                    "section": "filing",
-                    "form": None,
-                    "filingDate": None,
-                    "source_mode": "sec_edgar_unavailable",
-                }],
+                "rows": [],
+                "filings": [],
                 "sections": [
                     {"section": "profile", "status": "available_via_DES", "function": "DES"},
                     {"section": "financials", "status": "available_via_FA", "function": "FA"},
@@ -133,7 +128,7 @@ class PIBFunction(BaseFunction):
                 "methodology": "PIB requires public filings plus linked profile/financial/news sections.",
                 "next_actions": ["Retry SEC EDGAR or open DES/FA/CN for the linked public-info sections."],
             }
-            sources = ["pib_model"]
+            sources = []  # no provider returned filings; nothing to attribute
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=data,
