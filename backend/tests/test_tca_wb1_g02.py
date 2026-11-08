@@ -122,3 +122,55 @@ def test_unbenchmarked_fill_is_not_plotted_as_zero_slippage(tmp_path, monkeypatc
     assert data["summary"]["avg_slippage_bps"] is None
     assert data["summary"]["worst_slippage_bps"] is None
     assert data["cards"]["avg_slippage_bps"] is None
+
+
+# ---------------------------------------------------------------------------
+# TCA#3 — benchmark=TWAP must compute a time-weighted average, not the VWAP
+# series labelled TWAP. Two bars: typical 100 on volume 1000, typical 200 on
+# volume 1. VWAP is ~100.1, TWAP (equal-weight bars) is 150.0.
+# ---------------------------------------------------------------------------
+class _TwoBarBinance:
+    async def klines(self, symbol, interval="5m", limit=288, **kwargs):
+        return [
+            {"high": 100.0, "low": 100.0, "close": 100.0, "volume": 1000.0},
+            {"high": 200.0, "low": 200.0, "close": 200.0, "volume": 1.0},
+        ]
+
+
+def _seed_btc_fill(fill_px=160.0, signal_px=150.0):
+    BotStore.fresh().save(BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="binance",
+        symbol="BTCUSDT", timeframe="1h", mode="live", enabled=True,
+        signal_log=[SignalEntry(
+            bar_index=0, bar_time="2026-06-01T00:00:00Z", kind="entry",
+            price=signal_px, action="placed", order_id="t1",
+            fill_price=fill_px, qty=1.0,
+        )],
+    ))
+
+
+def test_twap_benchmark_is_time_weighted_not_vwap(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    _seed_btc_fill()
+
+    fn = TCAFunction(deps=FunctionDeps(binance=_TwoBarBinance()))
+    twap = _run(fn.execute(symbol="BTCUSDT", benchmark="TWAP")).data["rows"][0]
+    vwap = _run(fn.execute(symbol="BTCUSDT", benchmark="VWAP")).data["rows"][0]
+
+    assert twap["benchmark_px"] == pytest.approx(150.0)
+    assert vwap["benchmark_px"] == pytest.approx(100.0999, rel=1e-4)
+
+
+def test_unknown_benchmark_is_input_error_not_relabelled(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    _seed_btc_fill()
+    res = _run(TCAFunction(deps=FunctionDeps(binance=_TwoBarBinance())).execute(
+        symbol="BTCUSDT", benchmark="MIDPOINT"))
+    assert res.data["status"] == "input_error"
+    assert res.data["rows"] == []

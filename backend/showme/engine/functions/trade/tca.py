@@ -50,7 +50,8 @@ _FIELD_DICTIONARY = {
     "side": "BUY / SELL (LONG/SHORT normalised).",
     "quantity": "Filled quantity.",
     "avg_fill_px": "Volume-weighted executed fill price.",
-    "benchmark_px": "Live intraday VWAP benchmark for the fill session.",
+    "benchmark_px": "Live intraday benchmark for the fill session: VWAP, or TWAP "
+        "(equal-weight mean of bar typical prices) when benchmark=TWAP.",
     "arrival_px": "Reference (arrival/decision) price at order entry.",
     "slippage_bps": "Signed slippage vs the VWAP benchmark, in basis points.",
     "is_bps": "Implementation shortfall vs arrival price, in basis points.",
@@ -68,6 +69,30 @@ def _crypto_interval(symbol: str) -> bool:
     # TCA#7: a bare "USD"/"BTC"/"ETH" suffix match also caught FX pairs such as
     # EURUSD. Use the canonical crypto alias knowledge base instead.
     return bool(_is_crypto_symbol(symbol))
+
+
+_BENCHMARKS = ("VWAP", "TWAP", "ARRIVAL", "IMPLEMENTATION_SHORTFALL")
+
+
+def _twap_from_candles(candles: list[dict[str, Any]]) -> float | None:
+    """Time-weighted average of typical price: equal weight per bar (TCA#3)."""
+    total = 0.0
+    count = 0
+    for c in candles:
+        try:
+            high = float(c.get("high") or 0)
+            low = float(c.get("low") or 0)
+            close = float(c.get("close") or 0)
+        except (TypeError, ValueError):
+            continue
+        typical = (high + low + close) / 3.0 if (high or low or close) else close
+        if typical <= 0:
+            continue
+        total += typical
+        count += 1
+    if count == 0:
+        return None
+    return total / count
 
 
 def _vwap_from_candles(candles: list[dict[str, Any]]) -> float | None:
@@ -103,6 +128,26 @@ class TCAFunction(BaseFunction):
         symbol = params.get("symbol") or (instrument.symbol if instrument else None)
         benchmark = (params.get("benchmark") or "VWAP").upper()
         as_of = datetime.now(timezone.utc).isoformat()
+        if benchmark not in _BENCHMARKS:
+            # An unknown benchmark used to fall through to VWAP while still being
+            # echoed back as the requested label. Reject it instead.
+            reason = (f"Unsupported TCA benchmark '{benchmark}'; expected one of "
+                      f"{', '.join(_BENCHMARKS)}.")
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "reason": reason,
+                    "as_of": as_of,
+                    "benchmark": benchmark,
+                    "rows": [],
+                    "series": [],
+                    "summary": {"benchmark": benchmark, "fill_count": 0},
+                    "next_actions": [f"Choose one of: {', '.join(_BENCHMARKS)}."],
+                },
+                sources=[],
+                warnings=[reason],
+            )
         inner_params = params.copy()
         inner_params.pop("symbol", None)
         inner_params.pop("benchmark", None)
@@ -175,8 +220,11 @@ class TCAFunction(BaseFunction):
         provider_failed = False
         sources: set[str] = {"bot_fills", "order_history"}
         vwap_by_symbol: dict[str, tuple[float | None, str]] = {}
+        # TCA#3: TWAP selects the time-weighted bar mean; every other live
+        # benchmark (VWAP, and the VWAP fallback of ARRIVAL/IS) uses VWAP.
+        bench_kind = "TWAP" if benchmark == "TWAP" else "VWAP"
         for sym in {f["symbol"] for f in fills if f.get("symbol")}:
-            vwap, src, failed = await self._live_vwap(sym, instrument)
+            vwap, src, failed = await self._live_vwap(sym, instrument, kind=bench_kind)
             vwap_by_symbol[sym] = (vwap, src)
             if failed:
                 provider_failed = True
@@ -455,9 +503,14 @@ class TCAFunction(BaseFunction):
         return float(av), filled_qty
 
     async def _live_vwap(
-        self, symbol: str, instrument: Instrument | None,
+        self, symbol: str, instrument: Instrument | None, *, kind: str = "VWAP",
     ) -> tuple[float | None, str, bool]:
-        """Return (vwap, source, failed). Keyless: Binance for crypto, yfinance else."""
+        """Return (benchmark, source, failed). Keyless: Binance for crypto, yfinance else.
+
+        ``kind`` selects the bar aggregation: ``"VWAP"`` (volume-weighted) or
+        ``"TWAP"`` (equal-weight mean of bar typical prices).
+        """
+        aggregate = _twap_from_candles if kind == "TWAP" else _vwap_from_candles
         is_crypto = _crypto_interval(symbol)
         if instrument is not None and instrument.symbol == symbol:
             is_crypto = instrument.asset_class == AssetClass.CRYPTO
@@ -465,18 +518,18 @@ class TCAFunction(BaseFunction):
         if is_crypto:
             try:
                 candles = await self._binance_klines(symbol)
-                vwap = _vwap_from_candles(candles)
-                if vwap is not None:
-                    return vwap, "binance", False
+                px = aggregate(candles)
+                if px is not None:
+                    return px, "binance", False
                 return None, "binance", False
             except Exception:  # noqa: BLE001 — network/parse failure
                 return None, "arrival", True
 
         try:
             candles = await self._yfinance_intraday(symbol)
-            vwap = _vwap_from_candles(candles)
-            if vwap is not None:
-                return vwap, "yfinance", False
+            px = aggregate(candles)
+            if px is not None:
+                return px, "yfinance", False
             return None, "yfinance", False
         except Exception:  # noqa: BLE001 — network/parse failure
             return None, "arrival", True
