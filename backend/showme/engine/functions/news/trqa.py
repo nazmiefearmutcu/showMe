@@ -331,7 +331,7 @@ async def _answer_questions(
                     "transcript when possible. If unknown, say 'not stated'."
                 ),
                 user=f"TRANSCRIPT:\n{text[:30000]}\n\nQUESTION: {q}",
-                max_tokens=500,
+                max_tokens=_max_tokens_per_answer(params),
                 temperature=0.1,
                 expected_complexity="med",
             )
@@ -367,6 +367,26 @@ async def _answer_questions(
             }
 
     return list(await asyncio.gather(*(_answer(q) for q in questions)))
+
+
+_DEFAULT_MAX_TOKENS_PER_ANSWER = 512
+_MIN_MAX_TOKENS_PER_ANSWER = 64
+_MAX_MAX_TOKENS_PER_ANSWER = 2048
+
+
+def _max_tokens_per_answer(params: dict[str, Any]) -> int:
+    """LLM answer-length cap from the declared input, clamped to its 64..2048 range.
+
+    An absent or unparseable value falls back to the seed default (512).
+    """
+    raw = params.get("max_tokens_per_answer")
+    if raw is None or raw == "":
+        return _DEFAULT_MAX_TOKENS_PER_ANSWER
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_TOKENS_PER_ANSWER
+    return max(_MIN_MAX_TOKENS_PER_ANSWER, min(_MAX_MAX_TOKENS_PER_ANSWER, value))
 
 
 def _coerce_questions(value: Any, query: Any = None) -> list[str]:
