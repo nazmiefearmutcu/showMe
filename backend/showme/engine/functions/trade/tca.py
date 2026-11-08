@@ -21,6 +21,7 @@ import io
 import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from showme.crypto_aliases import is_crypto_symbol as _is_crypto_symbol
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -34,8 +35,10 @@ _METHODOLOGY = (
     "TCA loads executed fills from the autonomous bot fill ledger (bot_fills) "
     "and the manual order_history store, then joins each fill against a live "
     "intraday benchmark sourced keyless (Binance klines for crypto, yfinance "
-    "intraday candles otherwise) over the fill's own session, i.e. the "
-    "UTC calendar day of the fill (TCA#2: never a window ending today). The "
+    "intraday candles otherwise) over the fill's own session: the UTC calendar "
+    "day of the fill for crypto, and the exchange-local trading day of the fill "
+    "for exchange-listed equities, since yfinance reads its bars in the exchange "
+    "timezone (TCA#2: never a window ending today, never another session). The "
     "benchmark is the session VWAP (volume-weighted typical price) by default, "
     "or the TWAP (equal-weight mean of bar typical prices) when benchmark=TWAP; "
     "ARRIVAL and IMPLEMENTATION_SHORTFALL use the recorded arrival price. A fill "
@@ -118,9 +121,26 @@ def _parse_ts(value: Any) -> datetime | None:
 
 
 def _session_day(value: Any) -> date | None:
-    """UTC calendar day of a fill: the session its benchmark is drawn from."""
+    """UTC calendar day of a fill: the key its benchmark window is fetched under."""
     dt = _parse_ts(value)
     return dt.date() if dt is not None else None
+
+
+def _exchange_session_day(instant: datetime | None, tz_name: str | None) -> date | None:
+    """Trading day of ``instant`` in the exchange timezone ``tz_name``.
+
+    Crypto (no exchange timezone) uses the UTC calendar day. Returns None when the
+    timezone name is unusable, so the fill is reported rather than benchmarked
+    against another session.
+    """
+    if instant is None:
+        return None
+    if not tz_name:
+        return instant.astimezone(timezone.utc).date()
+    try:
+        return instant.astimezone(ZoneInfo(tz_name)).date()
+    except Exception:  # noqa: BLE001 — unknown timezone name
+        return None
 
 
 def _day_bounds_ms(day: date) -> tuple[int, int]:
@@ -475,8 +495,9 @@ class TCAFunction(BaseFunction):
         # TCA#3: TWAP selects the time-weighted bar mean; every other live
         # benchmark (VWAP, and the VWAP fallback of ARRIVAL/IS) uses VWAP.
         bench_kind = "TWAP" if benchmark == "TWAP" else "VWAP"
-        # TCA#2: the benchmark is looked up per (symbol, fill session), where the
-        # session is the UTC day of the fill. Fills with no timestamp get None.
+        # TCA#2: the benchmark is looked up per (symbol, UTC day of the fill). The
+        # window it fetches covers the exchange-local days that day can touch, and
+        # each fill then takes the bars of its own session (see _fill_benchmark).
         keys = sorted(
             {(f["symbol"], _session_day(f.get("filled_at")))
              for f in fills if f.get("symbol")},
@@ -486,19 +507,39 @@ class TCAFunction(BaseFunction):
             self._live_vwap(sym, instrument, kind=bench_kind, session_day=day)
             for sym, day in keys
         ))
-        vwap_by_key: dict[tuple[str, date | None], tuple[float | None, str]] = {}
-        no_session: set[str] = set()
-        no_bars: set[str] = set()
-        for (sym, day), (vwap, src, failed) in zip(keys, lookups):
-            vwap_by_key[(sym, day)] = (vwap, src)
+        # (symbol, UTC day) -> (benchmark per session day, exchange timezone, source)
+        window_by_key: dict[tuple[str, date | None], tuple[dict[date, float | None], str | None, str]] = {}
+        for (sym, day), (by_session, tz_name, src, failed) in zip(keys, lookups):
+            window_by_key[(sym, day)] = (by_session, tz_name, src)
             if failed:
                 provider_failed = True
-            elif vwap is None and day is None:
-                no_session.add(sym)
-            elif vwap is None and src != "none":
-                no_bars.add(f"{sym} {day.isoformat()}")
             if src and src not in ("arrival", "none"):
                 sources.add(src)
+
+        def _fill_benchmark(f: dict[str, Any]) -> tuple[float | None, str, date | None]:
+            """Return (VWAP/TWAP of the fill's own session, source, session day)."""
+            instant = _parse_ts(f.get("filled_at"))
+            day = _session_day(f.get("filled_at"))
+            if day is None:
+                return None, "none", None
+            by_session, tz_name, src = window_by_key.get((f["symbol"], day), ({}, None, "none"))
+            session = _exchange_session_day(instant, tz_name)
+            if session is None:
+                return None, src, None
+            return by_session.get(session), src, session
+
+        no_session: set[str] = set()
+        no_bars: set[str] = set()
+        for f in fills:
+            sym = f.get("symbol")
+            if not sym:
+                continue
+            if _session_day(f.get("filled_at")) is None:
+                no_session.add(sym)
+                continue
+            px, src, session = _fill_benchmark(f)
+            if px is None and src not in ("none", "arrival"):
+                no_bars.add(f"{sym} {session.isoformat() if session else 'unknown session'}")
         if no_session:
             benchmark_warnings.append(
                 "Fill timestamp missing for "
@@ -508,9 +549,9 @@ class TCAFunction(BaseFunction):
         if no_bars:
             benchmark_warnings.append(
                 "No intraday bars for the fill session of "
-                f"{', '.join(sorted(no_bars))} (session = UTC day of the fill; "
-                "yfinance keeps 5-minute bars for about 60 days); those fills fell "
-                "back to their arrival price where one was recorded."
+                f"{', '.join(sorted(no_bars))} (session = UTC day for crypto, exchange-local "
+                "trading day for equities; yfinance keeps 5-minute bars for about 60 days); "
+                "those fills fell back to their arrival price where one was recorded."
             )
 
         # ---- 3) Build contract rows + series.
@@ -526,8 +567,7 @@ class TCAFunction(BaseFunction):
             avg_fill = f["avg_fill_px"]
             qty = f["quantity"]
             arrival = f.get("arrival_px")
-            live_vwap, bench_src = vwap_by_key.get(
-                (sym, _session_day(f.get("filled_at"))), (None, "none"))
+            live_vwap, bench_src, _session = _fill_benchmark(f)
 
             # Benchmark selection: VWAP path uses live VWAP, fall back to arrival.
             if benchmark == "ARRIVAL" or benchmark == "IMPLEMENTATION_SHORTFALL":
@@ -856,16 +896,18 @@ class TCAFunction(BaseFunction):
     async def _live_vwap(
         self, symbol: str, instrument: Instrument | None, *, kind: str = "VWAP",
         session_day: date | None = None,
-    ) -> tuple[float | None, str, bool]:
-        """Return (benchmark, source, failed) for the fill session ``session_day``.
+    ) -> tuple[dict[date, float | None], str | None, str, bool]:
+        """Return (benchmark per session day, exchange timezone, source, failed).
 
         Keyless: Binance for crypto, yfinance otherwise. ``kind`` selects the bar
         aggregation: ``"VWAP"`` (volume-weighted) or ``"TWAP"`` (equal-weight mean
-        of bar typical prices). A fill with no session (no timestamp) is never
-        benchmarked against some other window (TCA#2).
+        of bar typical prices). ``session_day`` is the UTC day of the fill; the
+        benchmark is keyed by each session day the fetched bars belong to, so a
+        fill takes only the bars of its own session (TCA#2). A fill with no
+        session (no timestamp) is never benchmarked against another window.
         """
         if session_day is None:
-            return None, "none", False
+            return {}, None, "none", False
         aggregate = _twap_from_candles if kind == "TWAP" else _vwap_from_candles
         is_crypto = _crypto_interval(symbol)
         if instrument is not None and instrument.symbol == symbol:
@@ -876,23 +918,28 @@ class TCAFunction(BaseFunction):
                 candles = await self._binance_klines(symbol, session_day)
                 px = aggregate(candles)
                 if px is not None:
-                    return px, "binance", False
-                return None, "binance", False
+                    return {session_day: px}, None, "binance", False
+                return {}, None, "binance", False
             except Exception:  # noqa: BLE001 — network/parse failure
-                return None, "arrival", True
+                return {}, None, "arrival", True
 
         age_days = (datetime.now(timezone.utc).date() - session_day).days
         if age_days > _INTRADAY_RETENTION_DAYS:
             # Outside the provider's 5-minute history: no bars, not an outage.
-            return None, "yfinance", False
+            return {}, None, "yfinance", False
         try:
             candles = await self._yfinance_intraday(symbol, session_day)
-            px = aggregate(candles)
-            if px is not None:
-                return px, "yfinance", False
-            return None, "yfinance", False
         except Exception:  # noqa: BLE001 — network/parse failure
-            return None, "arrival", True
+            return {}, None, "arrival", True
+        tz_name = next((c.get("tz") for c in candles if c.get("tz")), None)
+        groups: dict[date, list[dict[str, Any]]] = {}
+        for candle in candles:
+            local = candle.get("local_date")
+            # Bars without an exchange session (provider adapters) belong to the fill's UTC day.
+            key = date.fromisoformat(local) if local else session_day
+            groups.setdefault(key, []).append(candle)
+        by_session = {day: aggregate(group) for day, group in groups.items()}
+        return by_session, tz_name, "yfinance", False
 
     async def _binance_klines(self, symbol: str, session_day: date) -> list[dict[str, Any]]:
         start_ms, end_ms = _day_bounds_ms(session_day)
@@ -914,8 +961,12 @@ class TCAFunction(BaseFunction):
         return _normalise_klines(resp.json())
 
     async def _yfinance_intraday(self, symbol: str, session_day: date) -> list[dict[str, Any]]:
-        start = session_day.isoformat()
-        end = (session_day + timedelta(days=1)).isoformat()
+        # yfinance reads a naive start/end date in the exchange's timezone, so the
+        # request spans the exchange-local days that a UTC day can touch (UTC-12 to
+        # UTC+14): the day before, the day and the day after. Each bar carries its
+        # exchange-local date, and the caller picks the fill's own session from it.
+        start = (session_day - timedelta(days=1)).isoformat()
+        end = (session_day + timedelta(days=2)).isoformat()
         provider = self.deps.get("yfinance")
         if provider is not None and hasattr(provider, "ohlcv"):
             return await provider.ohlcv(symbol, start=start, end=end, interval="5m")
@@ -924,13 +975,18 @@ class TCAFunction(BaseFunction):
             import yfinance as yf
 
             hist = yf.Ticker(symbol).history(start=start, end=end, interval="5m")
+            index_tz = getattr(hist.index, "tz", None)
+            tz_name = str(index_tz) if index_tz is not None else None
             rows: list[dict[str, Any]] = []
-            for _, row in hist.iterrows():
+            for stamp, row in hist.iterrows():
+                local_date = stamp.date().isoformat() if hasattr(stamp, "date") else None
                 rows.append({
                     "high": float(row.get("High", 0) or 0),
                     "low": float(row.get("Low", 0) or 0),
                     "close": float(row.get("Close", 0) or 0),
                     "volume": float(row.get("Volume", 0) or 0),
+                    "local_date": local_date,
+                    "tz": tz_name,
                 })
             return rows
 
