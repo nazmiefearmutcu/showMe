@@ -467,3 +467,22 @@ def test_sat_hanging_open_meteo_is_bounded_by_its_own_budget(monkeypatch) -> Non
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"conditions call was not bounded: {elapsed:.1f}s"
     assert any("open_meteo" in w for w in result.warnings), result.warnings
+
+
+def test_sat_unknown_aoi_or_layer_is_an_input_error_not_cushing():
+    """Review of SAT#1: an unknown area must never be silently replaced by Cushing."""
+    import asyncio
+
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.misc.sat import SATFunction
+
+    fn = SATFunction(FunctionDeps())
+    bad_aoi = asyncio.run(fn.execute(aoi="atlantis")).data
+    assert bad_aoi["status"] == "input_error" and "atlantis" in bad_aoi["reason"]
+    bad_layer = asyncio.run(fn.execute(aoi="cushing_ok", layer="xray")).data
+    assert bad_layer["status"] == "input_error" and "xray" in bad_layer["reason"]
+
+
+def test_sat_warning_names_the_exception_type_when_the_message_is_empty():
+    text = f"open_meteo: {str(TimeoutError()) or type(TimeoutError()).__name__}"
+    assert text == "open_meteo: TimeoutError"

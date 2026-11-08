@@ -82,10 +82,22 @@ class SATFunction(BaseFunction):
 
         # Allow a raw bbox override (legacy) but default to curated AOI presets.
         bbox_override = _parse_bbox(params.get("bbox"))
+        # An unknown area or layer the caller asked for is an input error, not a
+        # silent switch to Cushing / true colour (data policy: no default
+        # location for an unknown input - review of SAT#1).
+        unknown = []
         if aoi_key not in _AOI_PRESETS and bbox_override is None:
-            aoi_key = "cushing_ok"
+            unknown.append(f"aoi {aoi_key!r} (presets: {', '.join(sorted(_AOI_PRESETS))})")
         if layer_key not in _GIBS_LAYERS:
-            layer_key = "true_color"
+            unknown.append(f"layer {layer_key!r} (layers: {', '.join(sorted(_GIBS_LAYERS))})")
+        if unknown:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={"status": "input_error", "reason": "Unknown " + "; ".join(unknown) + ".",
+                      "next_actions": ["Pick a preset area and layer, or pass bbox=minLon,minLat,maxLon,maxLat."],
+                      "rows": []},
+                warnings=["unknown " + "; ".join(unknown)],
+            )
 
         if bbox_override is not None:
             bbox = bbox_override
@@ -215,7 +227,7 @@ class SATFunction(BaseFunction):
             )
             sources.append("open_meteo")
         except Exception as exc:  # genuine outage of the conditions provider
-            warnings.append(f"open_meteo: {exc or type(exc).__name__}")
+            warnings.append(f"open_meteo: {str(exc) or type(exc).__name__}")
 
         if not tile_reachable and cloud_pct is None and not weather_summary:
             # Both providers down -> honest outage, no fabrication.

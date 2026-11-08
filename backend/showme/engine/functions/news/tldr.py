@@ -48,7 +48,7 @@ class TLDRFunction(BaseFunction):
                 watchlist_source = "portfolio" if symbols else "portfolio_empty"
             except Exception as exc:
                 watchlist_source = "portfolio_unavailable"
-                warnings.append(f"portfolio: {exc}")
+                warnings.append(f"portfolio: {str(exc) or type(exc).__name__}")
 
         # Quotes (best-effort) — BugHunt 2026-05-24:
         # TLDR previously walked deps.yfinance / deps.ccxt_failover with its
@@ -127,7 +127,7 @@ class TLDRFunction(BaseFunction):
             sources += list(top.sources or [])
         except Exception as e:
             news_reason = str(e) or type(e).__name__
-            warnings.append(f"top: {e}")
+            warnings.append(f"top: {str(e) or type(e).__name__}")
 
         # Today's economic events. ECO answers with a dict envelope whose rows
         # live under "events". A failed call is "unavailable", never a zero count.
@@ -155,7 +155,7 @@ class TLDRFunction(BaseFunction):
             sources += list(eco.sources or [])
         except Exception as e:
             calendar_reason = str(e) or type(e).__name__
-            warnings.append(f"eco: {e}")
+            warnings.append(f"eco: {str(e) or type(e).__name__}")
 
         # LLM summary if available
         prose = ""
