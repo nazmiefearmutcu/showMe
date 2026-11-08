@@ -33,6 +33,23 @@ def _is_bank_or_insurer(industry: str) -> bool:
     return not ("insurance" in industry and any(t in industry for t in _NOT_AN_INSURER_TOKENS))
 
 
+def _issuer_effective_tax(raw: dict[str, Any]) -> float | None:
+    """Effective tax rate from the issuer's income tax expense over pre-tax income.
+
+    None unless both figures are present, pre-tax income is positive and the
+    ratio is a plausible rate.
+    """
+    try:
+        tax_expense = float(raw.get("incomeTaxExpense"))
+        pretax = float(raw.get("pretaxIncome"))
+    except (TypeError, ValueError):
+        return None
+    if pretax <= 0:
+        return None
+    rate = tax_expense / pretax
+    return rate if 0.0 <= rate < 0.5 else None
+
+
 def _first_set(params: dict[str, Any], *names: str) -> Any:
     """First caller value that is actually set (None and "" count as unset)."""
     for name in names:
@@ -268,8 +285,9 @@ class WACCFunction(BaseFunction):
                     rd_source = "fred_aaa"
             except Exception as e:
                 warnings.append(f"fred AAA: {e}")
-        # Tax rate / E/V/D ratios — best-effort from yfinance
-        tax = float(params.get("tax_rate")) if params.get("tax_rate") not in (None, "") else 0.21
+        # Tax rate / E/V/D ratios — best-effort from yfinance. The tax rate is
+        # resolved after this block, once the issuer's own figures are read.
+        issuer_tax: float | None = None
         # Audit Q3 #16: capital-structure provenance. ``debt_value_source``
         # is "book" when sourced from totalDebt (yfinance balance sheet),
         # "market" when from a bond-price feed (not yet wired), or
@@ -290,6 +308,7 @@ class WACCFunction(BaseFunction):
                     timeout=float(params.get("yfinance_timeout", 8)),
                 )
                 raw = (rd_data.extras or {}).get("raw", {}) if hasattr(rd_data, "extras") else {}
+                issuer_tax = _issuer_effective_tax(raw)
                 mc = raw.get("marketCap") or 0
                 debt = raw.get("totalDebt") or 0
                 v = (mc or 0) + (debt or 0)
@@ -331,6 +350,24 @@ class WACCFunction(BaseFunction):
                 sources.append("yfinance")
         except Exception as e:
             warnings.append(f"yfinance ratios: {e}")
+        # WACC#4: the tax rate is labelled with where it came from. A caller
+        # value wins, then the issuer's own effective rate, then the 21% US
+        # statutory rate, which is flagged as a default.
+        tax_user = _first_set(params, "tax_rate_override", "tax_rate")
+        tax: float
+        if tax_user is not None:
+            tax = float(tax_user)
+            tax_source = "user_input"
+        elif issuer_tax is not None:
+            tax = issuer_tax
+            tax_source = "issuer_effective"
+        else:
+            tax = 0.21
+            tax_source = "statutory_us_21pct"
+            warnings.append(
+                "effective tax rate not available from the provider; WACC uses the 21% US "
+                "statutory rate (tax_source statutory_us_21pct). Pass tax_rate_override to set it."
+            )
         re_capm: float | None = (
             rf + beta * erp if rf is not None and beta is not None else None
         )
@@ -408,6 +445,7 @@ class WACCFunction(BaseFunction):
                 "erp_source": erp_source,
                 "rd": float(rd) if rd is not None else None,
                 "tax_rate": float(tax),
+                "tax_source": tax_source,
                 "equity_weight": ev_ratio, "debt_weight": dv_ratio,
                 "rows": rows,
                 "surface": surface,
@@ -417,6 +455,7 @@ class WACCFunction(BaseFunction):
                     "re_capm": "Cost of equity from CAPM.",
                     "rf": "Risk-free rate.",
                     "erp": "Equity risk premium as a decimal.",
+                    "tax_source": "Where the tax rate came from: user_input, issuer_effective (income tax expense over pre-tax income) or statutory_us_21pct (a 21% US default, not the issuer's rate).",
                     "erp_source": "Where the ERP came from: user_input, damodaran_cache, damodaran_live, damodaran_snapshot_2025_01 (stale, January 2025 table) or assumption_default_5pct (a 5.0% constant).",
                     "rd": "Pre-tax cost of debt proxy.",
                     "equity_weight": "Equity share of capital structure.",

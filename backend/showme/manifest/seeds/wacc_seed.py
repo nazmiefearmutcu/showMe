@@ -74,7 +74,7 @@ def wacc() -> FunctionManifest:
                 label="Tax rate override",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=False,
-                description="Override the effective tax rate; default uses FA-derived T.",
+                description="Override the tax rate. Without it T is the issuer's effective rate when the provider gives income tax and pre-tax income (tax_source issuer_effective), else the 21% US statutory rate (tax_source statutory_us_21pct).",
                 min=0.0,
                 max=0.45,
                 step=0.005,
@@ -155,7 +155,8 @@ def wacc() -> FunctionManifest:
         methodology=(
             "WACC pulls rf from FRED (DGS10 by default), R_d from the FRED ICE BofA BBB corporate "
             "YIELD (BAMLC0A4CBBBEY, Aaa yield fallback; the option-adjusted spread is not used), "
-            "the effective tax rate T from FA (or override), and the market-value equity / debt "
+            "the tax rate T (the issuer's effective rate when the provider supplies it, else the 21% "
+            "US statutory rate, labelled tax_source; or the override), and the market-value equity / debt "
             "split from FA / yfinance. β is computed by the shared BetaFunction at the requested "
             "window. R_e is the CAPM expression rf + β × ERP. WACC = (E/V) × R_e + (D/V) × R_d × "
             "(1 − T). The handler renders the β × R_d sensitivity surface (3 × 3) so the operator "
@@ -191,7 +192,7 @@ def wacc() -> FunctionManifest:
             "beta": FieldDef(description="Equity beta from BetaFunction.", source="internal"),
             "erp": FieldDef(unit="decimal", description="Equity risk premium (input or Damodaran).", source="input"),
             "rd": FieldDef(unit="decimal annualized", description="Pre-tax cost of debt.", source="fred"),
-            "tax_rate": FieldDef(unit="decimal", description="Effective tax rate (FA or override).", source="provider"),
+            "tax_rate": FieldDef(unit="decimal", description="Tax rate: override, issuer effective rate, or the 21% statutory default (see tax_source).", source="provider"),
             "equity_weight": FieldDef(unit="decimal", description="E / (E+D).", source="computed"),
             "debt_weight": FieldDef(unit="decimal", description="D / (E+D).", source="computed"),
             "assumptions": FieldDef(description="Echoed inputs (market_premium, beta_window, tax_rate_override).", source="input"),

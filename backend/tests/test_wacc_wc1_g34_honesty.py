@@ -298,3 +298,45 @@ class _FakeDamodaran:
 
     async def get_erp_with_source(self, country: str = "US"):
         return self._erp, self._source
+
+
+# ---- WACC#4: the tax rate is labelled with its source ---------------------
+
+
+def _deps_with_raw(raw: dict[str, Any]) -> FunctionDeps:
+    return FunctionDeps(
+        yfinance=_FakeYf(raw=raw),
+        fred=_FakeFred({"DGS10": 4.0, "BAMLC0A4CBBBEY": 5.93}),
+        damodaran=_FakeDamodaran(),
+    )
+
+
+def test_wacc4_default_tax_is_a_labelled_statutory_rate(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_deps())
+    assert res.data["tax_rate"] == pytest.approx(0.21)
+    assert res.data["tax_source"] == "statutory_us_21pct"
+    assert any("21%" in w for w in res.warnings)
+
+
+def test_wacc4_tax_rate_override_alias_is_user_input(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_deps(), tax_rate_override=0.15)
+    assert res.data["tax_rate"] == pytest.approx(0.15)
+    assert res.data["tax_source"] == "user_input"
+
+
+def test_wacc4_tax_rate_param_is_user_input(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    res = _run(_deps(), tax_rate=0.18)
+    assert res.data["tax_rate"] == pytest.approx(0.18)
+    assert res.data["tax_source"] == "user_input"
+
+
+def test_wacc4_issuer_effective_tax_is_used_when_the_provider_gives_it(monkeypatch) -> None:
+    monkeypatch.setattr(wacc_mod, "BetaFunction", _StubBetaOk)
+    raw = {"marketCap": 300.0, "totalDebt": 100.0, "sector": "Consumer Cyclical",
+           "incomeTaxExpense": 30.0, "pretaxIncome": 150.0}
+    res = _run(_deps_with_raw(raw))
+    assert res.data["tax_rate"] == pytest.approx(0.20)
+    assert res.data["tax_source"] == "issuer_effective"
