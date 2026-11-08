@@ -105,7 +105,7 @@ def whal() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=30, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["rows", "provider", "data_mode"],
+            must_have=["rows", "provider", "status"],
             rows=True,
             series=False,
             cards=True,
@@ -133,7 +133,6 @@ def whal() -> FunctionManifest:
                 CardSlot(key="rows_count", label="Alerts", kind="kpi"),
                 CardSlot(key="threshold_hits", label="Crossed", kind="kpi"),
                 CardSlot(key="native_transfer_feed", label="Transfer feed", kind="mode_pill"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
