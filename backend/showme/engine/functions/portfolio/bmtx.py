@@ -35,11 +35,7 @@ class BMTXFunction(BaseFunction):
         # Fix A7-C3: GET ?symbols=AAPL,MSFT,NVDA arrives as a string and used
         # to iterate character-by-character into ["A","P","S"]. Mirror the
         # guard BLAK/RPAR already implement.
-        symbols = params.get("symbols") or [
-            "SPY", "QQQ", "IWM", "AAPL", "MSFT", "TSLA", "NVDA", "AMZN",
-        ]
-        if isinstance(symbols, str):
-            symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+        symbols = _requested_symbols(params)
         strategies = params.get("strategies") or list(STRATEGY_REGISTRY.keys())
         if isinstance(strategies, str):
             strategies = [s.strip() for s in strategies.split(",") if s.strip()]
@@ -69,11 +65,7 @@ class BMTXFunction(BaseFunction):
         instrument: Instrument | None = None,
         **params: Any,
     ) -> FunctionResult:
-        symbols = params.get("symbols") or [
-            "SPY", "QQQ", "IWM", "AAPL", "MSFT", "TSLA", "NVDA", "AMZN",
-        ]
-        if isinstance(symbols, str):
-            symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+        symbols = _requested_symbols(params)
         strategies = params.get("strategies") or list(STRATEGY_REGISTRY.keys())
         if isinstance(strategies, str):
             strategies = [s.strip() for s in strategies.split(",") if s.strip()]
@@ -126,6 +118,8 @@ class BMTXFunction(BaseFunction):
                 reason="Live OHLCV providers returned no usable bars for any requested symbol.",
                 failures=failures,
             )
+        # BMTX: a requested name that is not registered is not run; name it, do not drop it silently.
+        unknown_strategies = [s for s in strategies if s not in STRATEGY_REGISTRY]
         cells = []
         strategy_errors: dict[str, list[str]] = {}
         oos_windows: dict[str, dict[str, Any]] = {}
@@ -169,10 +163,15 @@ class BMTXFunction(BaseFunction):
         for sym in list(bars_dict):
             if sym not in ok_symbols:
                 reasons = [f"{strat}: {msg}" for strat, msg in strategy_errors.get(sym, [])]
-                failures[sym] = (
-                    "all strategy backtests failed (" + "; ".join(reasons) + ")"
-                    if reasons else "no registered strategy produced a run"
-                )
+                if reasons:
+                    failures[sym] = "all strategy backtests failed (" + "; ".join(reasons) + ")"
+                elif unknown_strategies:
+                    failures[sym] = (
+                        "no registered strategy produced a run (not registered: "
+                        + ", ".join(unknown_strategies) + ")"
+                    )
+                else:
+                    failures[sym] = "no registered strategy produced a run"
                 del bars_dict[sym]
                 oos_windows.pop(sym, None)
         if not bars_dict:
@@ -207,10 +206,11 @@ class BMTXFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=None,
             data={
-                "status": "partial" if (failures or failed_cells) else "ok",
+                "status": "partial" if (failures or failed_cells or unknown_strategies) else "ok",
                 "symbols": list(bars_dict.keys()),
                 "unavailable_symbols": list(failures),
                 "failed_cells": failed_cells,
+                "unknown_strategies": unknown_strategies,
                 "strategies": strategies,
                 "cells": cells,
                 "surface": surface,
@@ -252,6 +252,10 @@ class BMTXFunction(BaseFunction):
             + [
                 f"BMTX: {cell['strategy']} failed on {cell['symbol']} ({cell['error']}); that cell is excluded."
                 for cell in failed_cells if cell["symbol"] in ok_symbols
+            ]
+            + [
+                f"BMTX: strategy '{name}' is not registered and was not run."
+                for name in unknown_strategies
             ],
             metadata={"days": days, "fee_bps": fee_bps, "live": True,
                       "unavailable_symbols": list(failures)},
@@ -306,6 +310,20 @@ def _unavailable(
         metadata={"days": days, "fee_bps": fee_bps, "live": True,
                   "provider_errors": [reason], "unavailable_symbols": list(failures) or list(symbols)},
     )
+
+
+_DEFAULT_UNIVERSE = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "TSLA", "NVDA", "AMZN"]
+
+
+def _requested_symbols(params: dict[str, Any]) -> list[str]:
+    """Symbols from ``symbols`` (pane) or ``universe`` (seed control name).
+
+    Both accept a comma-separated string (GET query) or a list.
+    """
+    raw = params.get("symbols") or params.get("universe") or list(_DEFAULT_UNIVERSE)
+    if isinstance(raw, str):
+        return [s.strip() for s in raw.split(",") if s.strip()]
+    return list(raw)
 
 
 def _truthy(value: Any) -> bool:

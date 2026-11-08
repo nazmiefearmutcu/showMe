@@ -57,36 +57,11 @@ def bmtx() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="strategy_id",
-                label="Strategy",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Strategy spec to backtest (from STRA store).",
-            ),
-            InputSpec(
                 name="universe",
                 label="Universe",
                 control=ControlKind.MULTISELECT,
                 required=True,
                 description="Symbols to evaluate.",
-            ),
-            InputSpec(
-                name="walk_forward_windows",
-                label="WF windows",
-                control=ControlKind.CONSTRAINT_SET,
-                required=True,
-                description=(
-                    "Ordered list of (train_start, train_end, test_start, "
-                    "test_end) tuples. Each is one matrix column."
-                ),
-            ),
-            InputSpec(
-                name="frequency",
-                label="Bar frequency",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Bar size for OHLCV + signal evaluation.",
-                options=["1m", "5m", "15m", "1h", "4h", "1d", "1wk"],
             ),
             InputSpec(
                 name="initial_equity",
@@ -141,7 +116,6 @@ def bmtx() -> FunctionManifest:
             ),
         ],
         defaults={
-            "frequency": "1d",
             "initial_equity": 100000,
             "commission_bps": 5.0,
             "slippage_bps": 2.0,
