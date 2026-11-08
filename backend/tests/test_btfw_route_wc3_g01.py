@@ -91,7 +91,8 @@ def test_caller_days_still_wins_on_the_routed_path():
     assert routed["days"] == 90
 
 
-def test_agent_path_without_window_keeps_its_injected_days():
-    # No window_length was sent, so the router keeps its own 120-day agent window.
+def test_route_without_window_injects_no_days():
+    # BTFW#1 / route probe policy: no window was sent, so the route injects no
+    # 120-day window; the handler's own lookback applies.
     routed = _route({"symbol": "AAPL", "asset_class": "EQUITY", "live": True})
-    assert routed["days"] == 120
+    assert "days" not in routed
