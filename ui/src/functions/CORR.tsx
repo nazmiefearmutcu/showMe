@@ -979,7 +979,7 @@ function MatrixHeatmap({
                     >
                       <div title={cellTitle}>
                         <HeatCell
-                          value={value ?? 0}
+                          value={value ?? null}
                           size={32}
                           fractionDigits={2}
                           ariaLabel={ariaLabel}
