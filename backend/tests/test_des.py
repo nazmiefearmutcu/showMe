@@ -328,8 +328,10 @@ def test_coingecko_mapper_flattens_market_data() -> None:
     assert out["regularMarketPrice"] == 92_345.0
     assert out["market_cap"] == 1_800_000_000_000
     assert out["regularMarketChangePercent"] == pytest.approx(1.25)
-    # previousClose synthesized from change_pct
-    assert out["previousClose"] == pytest.approx(92_345.0 / 1.0125)
+    # ASOF-9: crypto has no prior session close; the 24h-ago price is exposed under its own name.
+    assert out["previousClose"] is None
+    assert out["price_24h_ago"] == pytest.approx(92_345.0 / 1.0125)
+    assert out["change_basis"] == "24h_rolling"
     assert out["all_time_high"] == 109_000.0
     assert out["all_time_high_date"] == "2025-01-20T14:30:00.000Z"
     assert out["circulating_supply"] == 19_700_000
