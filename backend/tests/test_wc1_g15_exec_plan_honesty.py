@@ -218,3 +218,27 @@ def test_plan_reports_schedule_not_fill(monkeypatch) -> None:
     assert "pace" not in data["series"]
     assert "schedule" in data["series"]
     assert data["field_dictionary"]["schedule_pct"]
+
+
+# --- review follow-up: non-finite quantities and prices -----------------------
+
+@pytest.mark.parametrize("target", [float("nan"), float("inf"), "nan", "inf"])
+def test_non_finite_target_qty_needs_input(monkeypatch, target) -> None:
+    """A NaN/inf quantity passes a plain ``<= 0`` guard; it must still be refused."""
+    _patch_feed(monkeypatch)
+    res = _plan(target_qty=target)
+    data = res.data
+    assert data["status"] == "needs_input", data
+    assert data["missing_fields"] == ["target_qty"], data
+    assert data["rows"] == [] and data["orders"] == []
+
+
+@pytest.mark.parametrize("arrival", [float("nan"), float("inf"), "abc"])
+def test_non_finite_or_non_numeric_arrival_price_is_refused(monkeypatch, arrival) -> None:
+    """A caller-supplied arrival that is not a finite number must be reported as
+    invalid, not silently dropped or propagated into shortfall figures."""
+    _patch_feed(monkeypatch)
+    res = _plan(arrival_price=arrival)
+    data = res.data
+    assert data["status"] == "invalid_request", data
+    assert "arrival_price" in data["reason"], data

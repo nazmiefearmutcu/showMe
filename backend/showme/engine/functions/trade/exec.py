@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -463,7 +464,8 @@ class EXECFunction(BaseFunction):
         except (TypeError, ValueError) as exc:
             return _error_result(self.code, "plan", f"invalid field value: {exc}")
         # EXEC#6: no silent 100-unit schedule when the parent quantity is missing.
-        if target_qty is None or target_qty <= 0:
+        # NaN and inf pass a plain ``<= 0`` test, so require a finite positive value.
+        if target_qty is None or not math.isfinite(target_qty) or target_qty <= 0:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -472,7 +474,7 @@ class EXECFunction(BaseFunction):
                     "action": "plan",
                     "symbol": symbol,
                     "algo": algo,
-                    "reason": "target_qty (total quantity to schedule) is required and must be greater than 0.",
+                    "reason": "target_qty (total quantity to schedule) is required and must be a finite number greater than 0.",
                     "missing_fields": ["target_qty"],
                     "rows": [],
                     "orders": [],
@@ -488,10 +490,23 @@ class EXECFunction(BaseFunction):
             )
         slices = max(2, min(slices, 24))
         side = (params.get("side") or "BUY").upper()
+        # A caller-supplied arrival must be a finite number; anything else is reported,
+        # not dropped silently (a dropped arrival would relabel the IS figures).
         arrival_price = params.get("arrival_price")
-        try:
-            arrival_price = float(arrival_price) if arrival_price is not None else None
-        except (TypeError, ValueError):
+        if arrival_price is not None and str(arrival_price).strip() != "":
+            try:
+                arrival_price = float(arrival_price)
+            except (TypeError, ValueError):
+                return _error_result(
+                    self.code, "plan",
+                    f"invalid field value: arrival_price must be a number, got {arrival_price!r}",
+                )
+            if not math.isfinite(arrival_price):
+                return _error_result(
+                    self.code, "plan",
+                    f"invalid field value: arrival_price must be a finite number, got {arrival_price!r}",
+                )
+        else:
             arrival_price = None
 
         slot_s = horizon_s / slices
