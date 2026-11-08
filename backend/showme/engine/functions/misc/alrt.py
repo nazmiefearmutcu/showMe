@@ -227,9 +227,8 @@ def _parse_cooldown(raw: Any) -> tuple[int, str | None]:
     warning names the replaced value so the caller can see it (ALRT#7)."""
     if raw is None:
         return _DEFAULT_COOLDOWN_S, None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
+    value = _whole_seconds(raw)
+    if value is None:
         return _DEFAULT_COOLDOWN_S, (
             f"cooldown {raw!r} is not a whole number of seconds; using {_DEFAULT_COOLDOWN_S} s."
         )
@@ -238,6 +237,24 @@ def _parse_cooldown(raw: Any) -> tuple[int, str | None]:
             f"cooldown {raw!r} is negative; using {_DEFAULT_COOLDOWN_S} s."
         )
     return value, None
+
+
+def _whole_seconds(raw: Any) -> int | None:
+    """Return raw as whole seconds, or None when it is not exactly an integer.
+
+    ALRT#7 follow-up: int() silently truncated 60.7 to 60 and turned True into 1,
+    so booleans and non-integral numbers are rejected instead of coerced.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw) if math.isfinite(raw) and raw.is_integer() else None
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return None
 
 
 def _clean_note(value: Any) -> str | None:
