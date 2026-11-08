@@ -35,7 +35,7 @@ class MLSIGFunction(BaseFunction):
             )
         days = int(params.get("days", 365 * 5))
         horizon = _label_horizon(params)
-        live = _truthy(params.get("live_ml") or params.get("live_returns") or params.get("live"))
+        live = _requested_live(params)
         if not live:
             return FunctionResult(
                 code=self.code,
@@ -127,6 +127,19 @@ def _truthy(value: Any) -> bool:
 
 def _present(value: Any) -> bool:
     return value is not None and value != "" and value != []
+
+
+def _requested_live(params: dict[str, Any]) -> bool:
+    """The first live flag the caller actually sent wins, explicit false included.
+
+    The routed agent defaults inject ``live=True``; an explicit ``live_ml=false``
+    from the pane must not be overridden by that default.
+    """
+    for key in ("live_ml", "live_returns", "live"):
+        value = params.get(key)
+        if _present(value):
+            return _truthy(value)
+    return False
 
 
 def _label_horizon(params: dict[str, Any]) -> int:
