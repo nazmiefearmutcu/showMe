@@ -115,3 +115,10 @@ def test_brief_semantic_tests_describe_the_methodology_not_read():
     for test in REGISTRY.get("BRIEF").semantic_tests:
         assert "READ returns" not in test.description, test.name
         assert "READ()" not in test.description or "not called" in test.description, test.name
+
+
+def test_needs_input_next_actions_do_not_point_at_the_disabled_legacy_import(offline):
+    """BRIEF cross-cutting — the legacy-crypto import is off by default, so advice to run it is a dead end."""
+    res = _run(brief_mod.BRIEFFunction(None).execute())
+    assert res.data["status"] == "needs_input"
+    assert not any("legacy" in a.lower() for a in res.data["next_actions"]), res.data["next_actions"]

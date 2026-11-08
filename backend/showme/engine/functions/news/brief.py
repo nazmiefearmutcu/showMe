@@ -110,7 +110,7 @@ class BRIEFFunction(BaseFunction):
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards([], 0, "needs_input", 0),
                     "next_actions": [
-                        "Add positions in PORT (or run the legacy-crypto import).",
+                        "Add positions in PORT.",
                         "Save a watchlist, or pass watchlist=AAPL,MSFT to brief specific symbols.",
                     ],
                 },
