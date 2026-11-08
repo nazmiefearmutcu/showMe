@@ -493,10 +493,7 @@ def _correlation_payload(
     market = frame.mean(axis=1, skipna=True)
     down = frame[market < 0]
     downside_df = down.corr().round(3) if not down.empty else pd.DataFrame()
-    vol = {
-        symbol: _round_or_none(float(frame[symbol].std(skipna=True) * _annualization_factor(frequency)))
-        for symbol in ordered_symbols
-    }
+    vol = _annualized_vol_by_symbol(frame, ordered_symbols, frequency)
     pearson = _df_to_nested_dict(pearson_df)
     spearman = _df_to_nested_dict(spearman_df)
     downside = _df_to_nested_dict(downside_df)
@@ -528,7 +525,7 @@ def _correlation_payload(
             {
                 "symbol": symbol,
                 "market": _infer_market(symbol),
-                "annualized_vol": float(vol.get(symbol) or 0.0),
+                "annualized_vol": vol.get(symbol),
                 "avg_pearson_correlation": _avg_off_diagonal(pearson, symbol),
                 "avg_downside_correlation": _avg_off_diagonal(downside, symbol),
                 "return_observations": int(frame[symbol].dropna().shape[0]) if symbol in frame else 0,
@@ -856,6 +853,28 @@ def _return_series_summary(symbols: list[str], frame: pd.DataFrame, frequency: s
             }
         )
     return rows
+
+
+def _annualized_vol_by_symbol(
+    frame: pd.DataFrame,
+    symbols: list[str],
+    frequency: str,
+) -> dict[str, float | None]:
+    """CORR#2: each symbol is annualized with its own realized observation density.
+
+    The same factor is used by ``return_series_summary``, so the matrix diagonal,
+    the rows table and the return summary agree. An undefined volatility (fewer
+    than two observations) is None, never zero (CORR#8).
+    """
+    out: dict[str, float | None] = {}
+    for symbol in symbols:
+        values = pd.to_numeric(frame[symbol], errors="coerce").dropna() if symbol in frame else pd.Series(dtype=float)
+        factor = _realized_annualization_factor(values, frequency)
+        if values.shape[0] > 1 and factor is not None:
+            out[symbol] = _round_or_none(float(values.std() * factor))
+        else:
+            out[symbol] = None
+    return out
 
 
 def _realized_annualization_factor(values: pd.Series, frequency: str) -> float | None:
