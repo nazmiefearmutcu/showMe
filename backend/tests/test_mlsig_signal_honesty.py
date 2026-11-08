@@ -90,6 +90,6 @@ def test_signal_comes_from_latest_prediction_not_accuracy(no_ml_backends: None) 
 def test_reference_model_does_not_emit_a_signal() -> None:
     """The deterministic reference profile has no prediction, so it must not label a bias."""
     out = asyncio.run(MLSIGFunction().execute(symbol="BTCUSDT", asset_class="CRYPTO", days=365))
-    assert out.data["status"] == "reference"
+    assert out.data["status"] == "needs_input"
     assert out.data["signal"] is None
     assert out.data["latest_prediction"] is None
