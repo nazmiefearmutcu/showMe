@@ -84,10 +84,10 @@ class RVFunction(BaseFunction):
                     "status": "provider_unavailable",
                     "source_mode": "provider_unavailable",
                 }]
-            # Failure semantics: no live claim survives and no source produced
-            # values, so none is listed. The envelope is stamped as a provider
-            # failure (same contract as the EREV outage envelope).
-            sources = []
+            # Failure semantics: the status is a provider failure. Only yfinance
+            # is listed, and only when the target's own live multiples came back;
+            # with no target row no source produced values, so none is listed.
+            sources = ["yfinance"] if target in by_symbol else []
             metadata.update({
                 "fallback": True,
                 "data_mode": "provider_unavailable",

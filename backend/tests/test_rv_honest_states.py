@@ -159,3 +159,17 @@ def test_rv_user_peers_are_labelled_user_input_and_skip_finnhub():
     assert res.data["peers"] == ["MSFT"]
     assert res.data["peer_source"] == "user_input"
     assert "finnhub" not in res.sources
+
+
+# ── Provenance when only the target is live ────────────────────────────
+
+
+def test_rv_target_live_without_peers_lists_yfinance_as_the_source():
+    # The target's multiples are real yfinance values; only the peers failed.
+    # The status stays provider_unavailable, but the live target row must be
+    # attributed to yfinance rather than listed under no source at all.
+    yf = _YF({"AAPL": _full_raw()}, default={"info_error": "timeout"})
+    res = _run(yf, peers=["MSFT"])
+    assert res.data["status"] == "provider_unavailable"
+    assert _row(res, "AAPL")["source_mode"] == "live_yfinance"
+    assert res.sources == ["yfinance"]
