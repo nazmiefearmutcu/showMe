@@ -11,10 +11,51 @@ For each sector i:
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+
+# Weights must sum to 100% on each side. The Brinson identity
+# (allocation + selection + interaction = active return) only holds for fully
+# invested weights; anything else leaves an unexplained residual.
+_WEIGHT_SUM_TOLERANCE = 1e-4
+
+
+def _input_state(status: str, reason: str, next_actions: list[str]) -> FunctionResult:
+    """Explicit non-result: no rows, no totals, no headline."""
+    return FunctionResult(
+        code="PFA", instrument=None,
+        data={"status": status, "reason": reason, "next_actions": next_actions,
+              "rows": [], "totals": {}, "summary": {}},
+        sources=[],
+    )
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _validate_maps(port: Any, port_ret: Any, bench: Any, bench_ret: Any) -> str | None:
+    """Return a reason string when the inputs cannot reconcile, else None."""
+    named = (("port_weights", port), ("port_returns", port_ret),
+             ("bench_weights", bench), ("bench_returns", bench_ret))
+    for name, value in named:
+        if not isinstance(value, dict):
+            return f"{name} must be a mapping of sector to number."
+        if not all(_is_number(v) for v in value.values()):
+            return f"{name} contains a non-numeric value."
+    for name, weights in (("port", port), ("bench", bench)):
+        total = sum(weights.values())
+        if abs(total - 1.0) > _WEIGHT_SUM_TOLERANCE:
+            return (f"{name}_weights sum to {total * 100:.4f}%, not 100%; the attribution "
+                    "effects would not reconcile to the active return.")
+    for name, weights, returns in (("port", port, port_ret), ("bench", bench, bench_ret)):
+        for sector, weight in weights.items():
+            if weight != 0 and sector not in returns:
+                return f"{sector} has a {name} weight but no {name}_returns entry."
+    return None
 
 
 @FunctionRegistry.register
@@ -25,22 +66,29 @@ class PFAFunction(BaseFunction):
     description = "Brinson-Hood-Beebower attribution by sector — allocation + selection + interaction."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        # Inputs: portfolio weights/returns by sector, benchmark weights/returns by sector.
-        # Caller can pass dicts; otherwise we use a small default sample.
+        # Inputs: portfolio weights/returns by sector, benchmark weights/returns by sector,
+        # as {sector: fraction}. No sample is substituted: missing or inconsistent inputs
+        # return an explicit state with no headline (P1a-g12 PFA#1 / PFA#2).
         port = params.get("port_weights")     # {sector: weight}
-        port_ret = params.get("port_returns")  # {sector: total return %}
+        port_ret = params.get("port_returns")  # {sector: total return}
         bench = params.get("bench_weights")
         bench_ret = params.get("bench_returns")
         if not all((port, port_ret, bench, bench_ret)):
-            # Sample data for UI demo
-            port = {"Technology": 0.45, "Financials": 0.20, "Healthcare": 0.15,
-                     "Energy": 0.10, "Consumer": 0.10}
-            port_ret = {"Technology": 0.18, "Financials": 0.05, "Healthcare": 0.07,
-                         "Energy": -0.04, "Consumer": 0.03}
-            bench = {"Technology": 0.30, "Financials": 0.18, "Healthcare": 0.18,
-                     "Energy": 0.08, "Consumer": 0.10, "Industrials": 0.16}
-            bench_ret = {"Technology": 0.12, "Financials": 0.04, "Healthcare": 0.05,
-                          "Energy": -0.06, "Consumer": 0.02, "Industrials": 0.06}
+            missing = [name for name, value in (
+                ("port_weights", port), ("port_returns", port_ret),
+                ("bench_weights", bench), ("bench_returns", bench_ret)) if not value]
+            return _input_state(
+                "input_required",
+                "Brinson attribution needs portfolio and benchmark weights and returns by sector "
+                f"(missing: {', '.join(missing)}). No sample is computed.",
+                ["Enter port weights, port returns, bench weights and bench returns as Sector: percent pairs."],
+            )
+
+        problem = _validate_maps(port, port_ret, bench, bench_ret)
+        if problem is not None:
+            return _input_state("input_error", problem,
+                                ["Correct the sector weights/returns so each side sums to 100% "
+                                 "and every weighted sector has a return."])
 
         sectors = sorted(set(port) | set(bench))
         # Total benchmark return

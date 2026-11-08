@@ -6,9 +6,11 @@
  * the full signed sector table (weights, returns, allocation / selection /
  * interaction / total).
  *
- * The backend serves a small default SAMPLE when no weight/return maps are
- * passed, so the shared data-quality badge must stay visible — the pane never
- * drops or restyles it.
+ * The backend never computes on invented inputs: with no weight/return maps it
+ * returns `input_required`, and with maps that do not reconcile (weights not
+ * summing to 100%, or a weighted sector without a return) it returns
+ * `input_error`. Both render the explicit empty state with the reason, never a
+ * headline. The shared data-quality badge stays visible on every rendered state.
  */
 import { useMemo, useState } from "react";
 import {
@@ -96,7 +98,7 @@ export function parseSectorMap(raw: string): Record<string, number> {
   return out;
 }
 
-/** All four maps are required — the backend silently falls back otherwise. */
+/** All four maps are required — the backend refuses partial input (input_required). */
 function pfaParamsFor(fields: PfaEditorFields): Record<string, unknown> | undefined {
   const portWeights = parseSectorMap(fields.portWeights);
   const portReturns = parseSectorMap(fields.portReturns);
@@ -219,8 +221,8 @@ export function PerformanceAttributionPane({ code }: FunctionPaneProps) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [fields, setFields] = useState<PfaEditorFields>(EMPTY_PFA_FIELDS);
   const [applied, setApplied] = useState<PfaEditorFields | null>(null);
-  // Params stay `undefined` until the user applies a COMPLETE editor, so the
-  // untouched pane keeps the backend's labelled default SAMPLE unchanged.
+  // Params stay `undefined` until the user applies a COMPLETE editor; the untouched
+  // pane then shows the backend's input_required state instead of a sample.
   const params = useMemo(() => (applied ? pfaParamsFor(applied) : undefined), [applied]);
   const canApply = useMemo(() => pfaParamsFor(fields) !== undefined, [fields]);
   const { state, data, error, refetch } = useFunction<PfaPayload>({ code, params });
@@ -433,8 +435,8 @@ export function PerformanceAttributionPane({ code }: FunctionPaneProps) {
 /**
  * G3: compact editor over the backend's existing `port_weights /
  * port_returns / bench_weights / bench_returns` params. Apply is disabled
- * until all four maps parse — the backend silently serves the sample when
- * any map is missing, so a partial send would look like "my data is wrong".
+ * until all four maps parse — the backend answers input_required when any map
+ * is missing, so a partial send would look like "my data is wrong".
  */
 function PfaEditor({
   open,
@@ -484,7 +486,7 @@ function PfaEditor({
           <span>
             {applied
               ? "custom inputs applied"
-              : "optional — the backend sample runs until applied"}
+              : "enter all four maps and apply to run the attribution"}
           </span>
         </div>
         <button
@@ -524,12 +526,12 @@ function PfaEditor({
               onClick={onReset}
               data-testid="pfa-editor-reset"
             >
-              Reset to sample
+              Clear inputs
             </button>
           </div>
           <span className="u-text-secondary">
-            Enter percentages as “Sector: value” pairs; the backend falls back to
-            the sample when any of the four maps is missing.
+            Enter percentages as “Sector: value” pairs. Each side's weights must sum
+            to 100%; the attribution runs only when all four maps are provided.
           </span>
         </div>
       ) : null}
