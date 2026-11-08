@@ -3,7 +3,9 @@
 Two backends:
     * macOS Keychain (default) via ``keyring``; service name
       ``com.showme.exchanges``, account key ``{exchange_id}:{credential_id}``.
-    * In-memory (test) — selected via ``SHOWME_CREDENTIAL_BACKEND=memory``.
+    * In-memory (test) — selected via ``SHOWME_CREDENTIAL_BACKEND=memory`` AND
+      ``SHOWME_ALLOW_PLAINTEXT_VAULT=1``. It stores secrets as plaintext JSON,
+      so without the second flag the keyring is used and an error is logged.
 
 Non-secret metadata is mirrored to a JSON file at
 ``$SHOWME_HOME/credentials.json`` so the Connect-Exchange UI can list
@@ -73,10 +75,36 @@ class _SecretBackend(Protocol):
     def delete(self, key: str) -> bool: ...
 
 
+PLAINTEXT_VAULT_FLAG = "SHOWME_ALLOW_PLAINTEXT_VAULT"
+"""Env var that must be truthy before the plaintext memory backend is used."""
+
+
+def _plaintext_vault_allowed() -> bool:
+    raw = os.environ.get(PLAINTEXT_VAULT_FLAG) or ""
+    return raw.strip().lower() in {"1", "true", "yes"}
+
+
+def _write_owner_only(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` readable and writable by the owner only.
+
+    ``O_TRUNC`` keeps the mode of an existing file, so the mode is set again
+    explicitly. On Windows the POSIX bits are not enforced and the call is a
+    best-effort no-op.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 class _MemoryBackend:
-    """In-memory backend used by tests. Persists to a JSON sidecar so
-    multi-process tests (and the multi-process-flavoured fixture in
-    ``test_credential_store.py``) can observe each other."""
+    """Plaintext test backend. Persists to a JSON sidecar so multi-process
+    tests (and the multi-process-flavoured fixture in
+    ``test_credential_store.py``) can observe each other. Only reachable with
+    ``SHOWME_ALLOW_PLAINTEXT_VAULT=1``; see ``CredentialStore.fresh``."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -89,7 +117,7 @@ class _MemoryBackend:
 
     def _flush(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(self._cache))
+        _write_owner_only(self._path, json.dumps(self._cache))
 
     def put(self, key: str, blob: str) -> None:
         self._cache[key] = blob
@@ -176,9 +204,25 @@ class CredentialStore:
             )
             backend_name = "keyring"
         index_path = credentials_path()
-        if backend_name == "memory":
+        use_memory = backend_name == "memory"
+        if use_memory and not _plaintext_vault_allowed():
+            # Never write exchange secrets to plaintext because of a stray env
+            # var. Fall back to the keyring and say so loudly.
+            LOG.error(
+                "SHOWME_CREDENTIAL_BACKEND=memory refused: it stores exchange secrets as "
+                "plaintext. Set %s=1 for test runs only. Using the OS keyring.",
+                PLAINTEXT_VAULT_FLAG,
+            )
+            use_memory = False
+        backend: _SecretBackend
+        if use_memory:
             mem_sidecar = index_path.with_suffix(".memvault.json")
-            backend: _SecretBackend = _MemoryBackend(mem_sidecar)
+            LOG.warning(
+                "PLAINTEXT credential vault active (%s=1): exchange API secrets are written "
+                "unencrypted to %s. Test use only.",
+                PLAINTEXT_VAULT_FLAG, mem_sidecar,
+            )
+            backend = _MemoryBackend(mem_sidecar)
         else:
             backend = _KeyringBackend()
         return cls(backend, index_path)
