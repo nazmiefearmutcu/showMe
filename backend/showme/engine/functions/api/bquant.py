@@ -76,9 +76,13 @@ async def _probe_notebook(url: str) -> tuple[bool, str]:
             response = await client.get(url)
     except Exception as exc:  # noqa: BLE001 - any transport failure means not reachable
         return False, f"GET {url} failed ({type(exc).__name__})"
-    if response.status_code < 400:
-        return True, f"GET {url} returned HTTP {response.status_code}"
-    return False, f"GET {url} returned HTTP {response.status_code}"
+    status = response.status_code
+    if 200 <= status < 300:
+        return True, f"GET {url} returned HTTP {status}"
+    if 300 <= status < 400:
+        # A redirect (for example to a login page) shows a server exists, not that the notebook answers.
+        return False, f"GET {url} returned HTTP {status} (redirect, not a notebook answer)"
+    return False, f"GET {url} returned HTTP {status}"
 
 
 @FunctionRegistry.register
@@ -153,7 +157,7 @@ class BQuantFunction(BaseFunction):
                 "reason": None if ready else probe_detail,
                 "next_actions": [] if ready else [
                     f"Start a Jupyter server from the ShowMe launcher and set {_BASE_URL_ENV} to its loopback address.",
-                    "Make sure the notebook route answers the probe (HTTP status below 400).",
+                    "Make sure the notebook route answers the probe directly with an HTTP 2xx response.",
                 ],
                 "rows": rows,
                 "summary": {

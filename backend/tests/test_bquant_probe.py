@@ -121,3 +121,17 @@ def test_examples_are_scanned_from_examples_dir(tmp_path, probe_status: dict[str
     found = _run(examples_dir=str(tmp_path))
     assert found["summary"]["examples_found"] == 2
     assert _rows_by_component(found)["Examples"]["status"] == "found"
+
+
+def test_redirect_is_not_a_notebook_answer(
+    probe_status: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 3xx (for example a login redirect) proves a server exists, not that the notebook route answers."""
+    monkeypatch.setenv("SHOWME_JUPYTER_URL", LOOPBACK_BASE)
+    probe_status["state"]["status"] = 302
+    data = _run()
+
+    assert data["status"] == "not_configured"
+    assert data["summary"]["notebook_ready"] is False
+    assert data["summary"]["probe_result"] == "unreachable"
+    assert "302" in data["reason"]
