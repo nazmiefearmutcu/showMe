@@ -71,7 +71,7 @@ class HFSFunction(BaseFunction):
                     "field_dictionary": FIELD_DICTIONARIES["holders"],
                     "next_actions": [],
                 },
-                sources=["sec_13f"],
+                sources=[],
                 metadata=base_metadata,
             )
 
@@ -80,7 +80,7 @@ class HFSFunction(BaseFunction):
             return _unavailable(
                 self.code, instrument, issuer, quarter,
                 reason="The local SEC 13F store is not wired, so no holder rows can be returned.",
-                sources=["sec_13f"], metadata=base_metadata, next_actions=[_INGEST_ACTION],
+                sources=[], metadata=base_metadata, next_actions=[_INGEST_ACTION],
             )
 
         try:
@@ -102,7 +102,7 @@ class HFSFunction(BaseFunction):
             return _unavailable(
                 self.code, instrument, issuer, quarter,
                 reason=f"Local 13F store lookup failed: {e}",
-                sources=["sec_13f"],
+                sources=[],
                 metadata={**base_metadata, "provider_errors": [f"sec_13f: {e}"]},
                 next_actions=[_INGEST_ACTION, "Retry the local SEC 13F store once the lookup is available."],
             )
@@ -117,7 +117,7 @@ class HFSFunction(BaseFunction):
                     f"No 13F holdings for {issuer or cusip} in the local store "
                     "(the store may be unpopulated, or the issuer is not held)."
                 ),
-                sources=["sec_13f"], metadata=base_metadata, next_actions=[_INGEST_ACTION],
+                sources=[], metadata=base_metadata, next_actions=[_INGEST_ACTION],
             )
 
         return FunctionResult(
