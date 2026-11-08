@@ -168,3 +168,47 @@ def test_13f_only_path_still_returns_13f_rows():
     res = _run(fn)
     assert [r["source_mode"] for r in res.data["rows"]] == ["sec_13f"], res.data
     assert res.sources == ["sec_13f"]
+
+
+def _emitted_keys() -> tuple[set[str], set[str]]:
+    """Top-level and row keys actually emitted, from live-shaped runs of both paths."""
+    top: set[str] = set()
+    row: set[str] = set()
+    major_yahoo = _Yahoo(_institutional_frame(), _mutualfund_frame())
+    major_yahoo.payload["major"] = pd.DataFrame({"Value": [0.01655]}, index=["insidersPercentHeld"])
+    runs = [
+        _run(_fn(yfinance=major_yahoo, sec_13f=_Sec13FFiler(), sec_edgar=_SecEdgarApple())),
+        _run(_fn(yfinance=None, sec_13f=_Sec13FFiler(), sec_edgar=_SecEdgarApple())),
+        _run(_fn(yfinance=_Failing(), sec_13f=_Sec13F(), sec_edgar=None)),
+    ]
+    for res in runs:
+        top |= set(res.data)
+        for r in res.data["rows"]:
+            row |= set(r)
+    return top, row
+
+
+class _Failing:
+    async def fetch(self, request: Any) -> Any:
+        raise RuntimeError("provider down")
+
+
+def test_manifest_field_dict_names_only_emitted_keys():
+    from showme.manifest.seeds.hds_seed import hds as hds_manifest
+
+    top, row = _emitted_keys()
+    declared = set(hds_manifest.field_dict)
+    # RED before fix: field_dict declared 'symbol' and 'holders', which the handler never emits at top level.
+    assert declared <= (top | row), sorted(declared - (top | row))
+    assert "holders" not in declared and "symbol" not in declared, sorted(declared)
+
+
+def test_manifest_card_and_table_slots_name_only_emitted_keys():
+    from showme.manifest.seeds.hds_seed import hds as hds_manifest
+
+    top, row = _emitted_keys()
+    card_keys = {slot.key for slot in hds_manifest.card_schema.slots}
+    # RED before fix: card_schema declared float_shares, pct_institutional, pct_insider, institutional_count.
+    assert card_keys <= top, sorted(card_keys - top)
+    table_keys = {col.key for col in hds_manifest.table_schema.columns}
+    assert table_keys <= row, sorted(table_keys - row)

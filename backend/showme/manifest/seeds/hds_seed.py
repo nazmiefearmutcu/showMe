@@ -106,37 +106,35 @@ def hds() -> FunctionManifest:
                 ColumnSpec(key="holder", label="Holder", kind="text"),
                 ColumnSpec(key="holder_type", label="Type", kind="tag"),
                 ColumnSpec(key="shares", label="Shares", kind="number", format="%.0f"),
-                ColumnSpec(key="pct_held", label="% held", kind="percent", format="%.2f"),
-                ColumnSpec(key="value", label="Value", kind="currency", format="%.0f"),
-                ColumnSpec(key="as_of_filing", label="As of", kind="date"),
+                ColumnSpec(key="pct_outstanding", label="% out", kind="percent", format="%.2f"),
+                ColumnSpec(key="market_value", label="Value", kind="currency", format="%.0f"),
+                ColumnSpec(key="date_reported", label="Reported", kind="date"),
+                ColumnSpec(key="quarter", label="Quarter", kind="date"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="pct_institutional", label="% institutional", kind="big_number", unit="%"),
-                CardSlot(key="pct_insider", label="% insider", kind="kpi", unit="%"),
-                CardSlot(key="institutional_count", label="Inst. holders", kind="kpi"),
-                CardSlot(key="float_shares", label="Float", kind="kpi"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="holder_type_filter", label="Holder type", kind="kpi"),
+                CardSlot(key="status", label="Status", kind="mode_pill"),
             ],
         ),
         methodology=(
-            "HDS lists the issuer's institutional and mutual-fund holders from the Yahoo holder "
-            "tables (yfinance institutional_holders / mutualfund_holders) and, when the local SEC "
-            "13F store holds the issuer, from its per-filer 13F aggregate (filer CIK, shares, report "
-            "date). Each row is typed (institutional / mutual_fund / institutional_13f). pct_outstanding "
-            "is Yahoo's pctHeld: the holder's shares divided by shares outstanding, as a fraction "
-            "(0.08 = 8%); it is blank for 13F rows, which carry no percentage. 13F market value is not "
-            "shown because the InfoTable unit is unresolved. Yahoo major-holder percentages are a "
-            "summary block, not holder rows. When live=false no rows are returned (status needs_input); "
-            "no synthetic or reference rows are served."
+            "HDS lists one holder source per table. The Yahoo institutional / mutual-fund holder tables "
+            "(yfinance institutional_holders / mutualfund_holders) are the rows when they return any. "
+            "Otherwise the rows are the issuer's per-filer aggregate from the local SEC 13F store (filer CIK, "
+            "shares, report date), and the 13F aggregate is also returned as sec_13f_top when present. "
+            "Each row is typed (institutional / mutual_fund / institutional_13f). pct_outstanding is Yahoo's "
+            "pctHeld: the holder's shares divided by shares outstanding, as a fraction (0.08 = 8%); it is "
+            "blank for 13F rows, which carry no percentage. 13F market value is not shown because the "
+            "InfoTable unit is unresolved. Yahoo major-holder percentages are a summary block, not holder "
+            "rows. When live=false no rows are returned (status needs_input); no synthetic or reference "
+            "rows are served."
         ),
         field_dict={
-            "symbol": FieldDef(description="Equity ticker.", source="instrument"),
-            "holders": FieldDef(description="Ranked list of holder rows (rows) with shares and holder_type.", source="provider"),
+            "rows": FieldDef(description="Ranked holder rows, one source per table, each with shares and holder_type.", source="provider"),
+            "sec_13f_top": FieldDef(description="Local SEC 13F per-filer aggregate for the issuer (filer CIK, shares, report date), when the store holds it.", source="provider"),
             "pct_outstanding": FieldDef(unit="fraction", description="Fraction from 0 to 1: holder shares divided by shares outstanding (Yahoo pctHeld); blank for 13F rows.", source="provider"),
             "major_holders_summary": FieldDef(description="Yahoo major-holder summary block (not holder rows).", source="provider"),
             "holder_type_filter": FieldDef(description="The holder_type filter that was applied to rows.", source="input"),
