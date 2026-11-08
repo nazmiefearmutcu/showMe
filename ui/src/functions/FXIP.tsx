@@ -133,6 +133,15 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
     rateBasis
       .map((src) => (typeof src === "string" ? src.match(/\d{4}-\d{2}/)?.[0] : undefined))
       .find((v) => v != null) ?? "undated";
+  // FXIP#2 follow-up: name only the currencies whose rate is a reference constant.
+  const referenceCurrencies = [
+    [payload?.base, rateBasis[0]],
+    [payload?.quote, rateBasis[1]],
+  ]
+    .filter(
+      ([, src]) => typeof src === "string" && src.startsWith("reference_policy_rate"),
+    )
+    .map(([ccy]) => ccy ?? "?");
 
   const trend = useMemo(() => {
     const closes = (payload?.history ?? [])
@@ -241,9 +250,16 @@ export function FXIPPane({ code, symbol }: FunctionPaneProps) {
       ) : null}
       {ratesAreReference ? (
         <div role="note" style={warnStyle} aria-label="FXIP rate vintage notice">
-          <strong>Reference policy rates.</strong> Base and quote rates are
-          dated reference constants ({rateVintage}), NOT current policy rates.
-          Forwards and carry use them.
+          <strong>
+            Reference policy rate{referenceCurrencies.length > 1 ? "s" : ""}.
+          </strong>{" "}
+          {referenceCurrencies.join(" and ")}{" "}
+          {referenceCurrencies.length > 1
+            ? "rates are dated reference constants"
+            : "rate is a dated reference constant"}{" "}
+          ({rateVintage}), NOT current policy rate
+          {referenceCurrencies.length > 1 ? "s" : ""}. Forwards and carry use{" "}
+          {referenceCurrencies.length > 1 ? "them" : "it"}.
         </div>
       ) : null}
       <section style={kpiGridStyle} aria-label="FXIP portal summary">

@@ -186,6 +186,22 @@ describe("FXIP pane — rate vintage honesty", () => {
     expect(note.textContent).toContain("2024-06");
   });
 
+  it("names only the reference currency when the basis is mixed", () => {
+    setMockFn({
+      state: "ok",
+      ...fxipPayload("live_yfinance_quote", {
+        base: "reference_policy_rate_2024-06",
+        quote: "user_input",
+      }),
+    });
+    render(<FXIPPane code="FXIP" symbol="EURUSD" />);
+    const note = screen.getByRole("note", { name: "FXIP rate vintage notice" });
+    expect(note.textContent).toContain("EUR");
+    expect(note.textContent).toContain("2024-06");
+    expect(note.textContent).not.toContain("USD");
+    expect(note.textContent).toMatch(/Reference policy rate\./);
+  });
+
   it("does not warn when the caller supplied the rates", () => {
     setMockFn({
       state: "ok",

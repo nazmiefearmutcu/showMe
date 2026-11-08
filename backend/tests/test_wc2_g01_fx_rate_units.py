@@ -115,3 +115,20 @@ def test_frd_implied_carry_is_annualized_percent_and_matches_forward() -> None:
     assert row["implied_carry"] == pytest.approx(expected, rel=1e-6)
     assert res.data["implied_carry"] == pytest.approx(expected, rel=1e-6)
     assert res.data["forward_points"] == pytest.approx(res.data["forward_rate"] - 1.10, abs=1e-6)
+
+
+# ── FXIP#2-RQ: the rate-vintage warning names only the reference currency ──
+
+
+def test_fxip_mixed_rate_basis_warns_only_about_the_reference_currency() -> None:
+    """Base EUR is a 2024-06 reference constant; quote USD is caller input.
+
+    The warning must name EUR and must not describe the user-supplied USD rate
+    as a reference constant.
+    """
+    res = _run(fx.FXIPFunction().execute(pair="EURUSD", spot=1.085, live=False, r_quote=0.045))
+    assert res.data["rate_basis"] == {"base": "reference_policy_rate_2024-06", "quote": "user_input"}
+    vintage = [w for w in res.warnings if "2024-06" in w]
+    assert len(vintage) == 1, res.warnings
+    assert "EUR" in vintage[0]
+    assert "USD" not in vintage[0]

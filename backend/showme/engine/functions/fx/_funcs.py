@@ -434,10 +434,19 @@ class FXIPFunction(BaseFunction):
             warnings.append(f"live spot unavailable; using labelled reference spot (vintage {_REFERENCE_AS_OF})")
         # FXIP#2: the policy rates are 2024-06 reference constants unless the
         # caller supplied them; forwards and carry inherit that vintage.
-        if any(src.startswith("reference_policy_rate") for src in (base_rate_source, quote_rate_source)):
+        # Per currency: a caller-supplied leg is not a reference constant, so the
+        # warning names only the leg(s) that actually fell back to the table.
+        reference_ccys = [
+            ccy
+            for ccy, src in ((base, base_rate_source), (quote, quote_rate_source))
+            if src.startswith("reference_policy_rate")
+        ]
+        if reference_ccys:
+            which = " and ".join(reference_ccys)
+            verb = "are reference constants" if len(reference_ccys) > 1 else "is a reference constant"
             warnings.append(
-                f"policy rates are reference constants (vintage {_REFERENCE_AS_OF}), not current rates; "
-                "forwards and carry use them"
+                f"{which} policy rate {verb} (vintage {_REFERENCE_AS_OF}), not current; "
+                "forwards and carry use it"
             )
         metadata: dict[str, Any] = (
             {"data_mode": "delayed_reference", "reference_as_of": _REFERENCE_AS_OF}
