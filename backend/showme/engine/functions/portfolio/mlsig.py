@@ -179,7 +179,10 @@ def _enrich_report(
         ),
         "field_dictionary": {
             "test_accuracy": "Share of non-zero test labels where predicted direction matched realized direction.",
-            "strategy_sharpe": "Annualized Sharpe proxy from following the model signal on the next-bar target series.",
+            "strategy_sharpe": (
+                "Annualized Sharpe of out-of-sample model positions (test split only) times the realised "
+                "next-bar return. In-sample fitted values are never used."
+            ),
             "importance": "Relative contribution reported by the selected model backend.",
             "horizon_days": "Forward return horizon used to build the target label.",
         },

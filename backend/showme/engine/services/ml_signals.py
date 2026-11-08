@@ -69,13 +69,27 @@ def make_features(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
     # Target: sign of forward N-bar return
     fwd = df["close"].pct_change(horizon).shift(-horizon)
     f["target"] = np.sign(fwd)
+    # Realised return over the NEXT bar (t -> t+1): the P&L of a position
+    # decided at the close of bar t. Kept out of the feature matrix.
+    f["fwd_ret_1"] = df["close"].pct_change().shift(-1)
     return f.dropna()
+
+
+def _oos_sharpe(positions: np.ndarray, realised_next: pd.Series) -> float:
+    """Annualised Sharpe of out-of-sample positions times next-bar returns."""
+    strat = pd.Series(np.asarray(positions, dtype=float) * realised_next.to_numpy(dtype=float))
+    if len(strat) < 2:
+        return float("nan")
+    sd = float(strat.std())
+    if not np.isfinite(sd) or sd == 0.0:
+        return float("nan")
+    return float(strat.mean() / sd * (252 ** 0.5))
 
 
 def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
     """Train a classifier on features (last 30% as test) and report metrics."""
     y = features["target"]
-    X = features.drop(columns="target")
+    X = features.drop(columns=["target", "fwd_ret_1"])
     n = len(features)
     if n < 100:
         return {"error": "need at least 100 rows"}
@@ -84,7 +98,6 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
     y_train, y_test = y.iloc[:split], y.iloc[split:]
 
     pred_test = None
-    pred_full = None
     feat_imp: dict[str, float] = {}
     backend = "logistic"
     try:
@@ -93,7 +106,6 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
                                  learning_rate=0.05, verbose=-1)
         m.fit(X_train, y_train)
         pred_test = m.predict(X_test)
-        pred_full = m.predict(X)
         feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
         backend = "lightgbm"
     except Exception:
@@ -104,8 +116,8 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
             m = xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05,
                                     use_label_encoder=False, eval_metric="logloss")
             m.fit(X_train, y_train.replace({-1: 0, 0: 0, 1: 1}))
-            pred_test = m.predict(X_test)
-            pred_full = m.predict(X)
+            # xgboost labels were 0/1 (down/not-up vs up): map to a signed position.
+            pred_test = np.where(np.asarray(m.predict(X_test), dtype=float) > 0.5, 1, -1)
             feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
             backend = "xgboost"
         except Exception:
@@ -116,7 +128,6 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
             m = GradientBoostingClassifier(n_estimators=200, max_depth=3, learning_rate=0.05)
             m.fit(X_train, y_train.replace({0: 1}))
             pred_test = m.predict(X_test)
-            pred_full = m.predict(X)
             feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
             backend = "sklearn_gb"
         except Exception:
@@ -129,8 +140,7 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
         try:
             beta, *_ = np.linalg.lstsq(Xt, yt, rcond=None)
             Xtest_aug = np.column_stack([np.ones(len(X_test)), X_test.values])
-            pred_test = np.sign(Xtest_aug @ beta - 0.5)
-            pred_full = np.sign(np.column_stack([np.ones(n), X.values]) @ beta - 0.5)
+            pred_test = np.where(Xtest_aug @ beta > 0.5, 1, -1)
             feat_imp = dict(zip(X.columns, np.abs(beta[1:]).tolist()))
             backend = "lstsq_logistic"
         except Exception:
@@ -141,16 +151,9 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
     # Accuracy ignoring zeros
     mask = actual != 0
     acc = float((pred_test[mask] == actual[mask]).mean()) if mask.any() else float("nan")
-    # Sharpe of strategy = take pred * next-bar return
-    if pred_full is not None:
-        sig = pd.Series(pred_full, index=X.index)
-        # next-bar realized return
-        # Use 1-step return shift
-        rets = features["target"].astype(float)
-        strat = sig.shift(1) * rets
-        sharpe = float(strat.mean() / (strat.std() + 1e-9)) * (252 ** 0.5)
-    else:
-        sharpe = float("nan")
+    # Strategy: out-of-sample position decided at bar t's close, earning the
+    # realised t -> t+1 return. In-sample fitted values are never used.
+    sharpe = _oos_sharpe(pred_test, features["fwd_ret_1"].iloc[split:])
     return {
         "backend": backend,
         "test_accuracy": acc,
