@@ -25,8 +25,15 @@ def test_manifest_name_and_intent_describe_fund_screener() -> None:
 
 
 def test_manifest_asset_classes_match_served_function() -> None:
+    from showme.engine.functions.screen._funcs import FSRCFunction
+
     entry = _fsrc()
     assert AssetClass.ETF in entry.asset_classes
+    # FSRC#3 follow-up: the served class declares (FUND, ETF); the manifest must
+    # carry the same fund taxonomy, not only ETF.
+    served = {str(c.value).lower() for c in FSRCFunction.asset_classes}
+    manifest = {str(c.value).lower() for c in entry.asset_classes}
+    assert served <= manifest, (served, manifest)
     assert AssetClass.FUTURE not in entry.asset_classes
     assert AssetClass.COMMODITY not in entry.asset_classes
 

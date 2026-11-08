@@ -45,7 +45,7 @@ def fsrc() -> FunctionManifest:
             "yield, and a live last-price overlay when the quote provider answers. AUM and YTD "
             "are not served."
         ),
-        asset_classes=[AssetClass.ETF],
+        asset_classes=[AssetClass.FUND, AssetClass.ETF],
         inputs=[
             InputSpec(
                 name="query",

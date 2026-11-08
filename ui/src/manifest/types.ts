@@ -51,6 +51,7 @@ export const CATEGORY_VALUES: readonly Category[] = [
 export type AssetClass =
   | "equity"
   | "etf"
+  | "fund"
   | "crypto"
   | "fx"
   | "commodity"
@@ -63,6 +64,7 @@ export type AssetClass =
 export const ASSET_CLASS_VALUES: readonly AssetClass[] = [
   "equity",
   "etf",
+  "fund",
   "crypto",
   "fx",
   "commodity",
