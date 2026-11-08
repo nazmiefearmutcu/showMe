@@ -2,7 +2,7 @@
  * GRAB — Screenshot → Email (honest capture-plan form).
  *
  * The backend GRAB function NEVER sends anything: it returns a two-step
- * capture plan (local capture = ready, email = draft_only / not_configured)
+ * capture plan (local capture = planned, email = draft_only / not_configured)
  * and refuses to auto-transmit. The pane mirrors that contract honestly:
  * a real form (target + recipient) whose submit calls the backend function,
  * a plan view of the returned steps, and a standing notice that nothing is

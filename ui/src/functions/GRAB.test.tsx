@@ -58,8 +58,8 @@ function draftPayload() {
         {
           step: "capture",
           target: "current_pane",
-          status: "ready",
-          output: "local screenshot artifact",
+          status: "planned",
+          output: "capture plan only: no screenshot is taken by this function",
           transmits_data: false,
         },
         {

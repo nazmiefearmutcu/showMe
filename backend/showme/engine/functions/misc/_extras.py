@@ -47,7 +47,9 @@ class GRABFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
-                "status": "draft_only",
+                # Mirrors the email step: a draft is only "prepared" when a
+                # recipient exists; without one nothing is drafted at all.
+                "status": "draft_only" if recipient else "not_configured",
                 "target": target,
                 "recipient": recipient or None,
                 "rows": rows,
