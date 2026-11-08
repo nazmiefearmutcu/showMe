@@ -129,7 +129,6 @@ def alrt() -> FunctionManifest:
             slots=[
                 CardSlot(key="count", label="Rules", kind="kpi"),
                 CardSlot(key="evaluator_status", label="Evaluator", kind="badge"),
-                CardSlot(key="storage_mode", label="Storage", kind="badge"),
             ],
         ),
         methodology=(
@@ -159,12 +158,12 @@ def alrt() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="alrt_add_then_list_round_trip",
-                description="Adding an alert persists the row; reload returns it intact with active=True.",
+                description="Adding an alert persists the row; reload returns it with enabled=True and armed=False (no evaluator in this build).",
                 inputs={"symbol": "AAPL", "field": "price", "direction": "above", "threshold": 200.0},
                 assertions=[
                     "row_present_after_reload",
-                    "active_is_true",
-                    "fired_count_equals_zero",
+                    "enabled_is_true",
+                    "armed_is_false",
                 ],
             ),
             SemanticTest(
@@ -175,7 +174,7 @@ def alrt() -> FunctionManifest:
             ),
             SemanticTest(
                 name="alrt_internal_only_no_external_provider_calls",
-                description="ALRT consumes WATCH/QUOTE/TOP outputs; it never opens a fresh upstream HTTP call.",
+                description="ALRT reads only its own alerts.json store; it consumes no WATCH/QUOTE/TOP output and never opens an upstream HTTP call.",
                 inputs={},
                 assertions=["no_outbound_http_during_evaluate"],
             ),
