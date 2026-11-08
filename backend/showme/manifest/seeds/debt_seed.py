@@ -110,7 +110,7 @@ def debt() -> FunctionManifest:
         card_schema=CardSchema(
             slots=[
                 CardSlot(key="countries", label="Countries", kind="kpi"),
-                CardSlot(key="avg_debt_to_gdp", label="Avg debt/GDP", kind="big_number", unit="%"),
+                CardSlot(key="avg_debt_to_gdp", label="Avg debt/GDP (unweighted)", kind="big_number", unit="%"),
                 CardSlot(key="portfolio_linked", label="Portfolio", kind="badge"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
@@ -119,9 +119,11 @@ def debt() -> FunctionManifest:
         methodology=(
             "DEBT is a sovereign macro exposure table. Debt/GDP is pulled live from the World Bank"
             " general-government debt-to-GDP indicator (annual, keyless), taking the most recent"
-            " non-null observation per country; each row reports the observation ``year`` so the data"
-            " vintage is distinct from the fetch timestamp. local_currency_share is a published"
-            " REFERENCE (a stable, labelled lookup), NOT a live World Bank series. Without a portfolio"
+            " non-null observation per country that is at most 5 years old. Countries with no current"
+            " observation are excluded and named in warnings, never silently dropped. The average is an"
+            " unweighted mean. Each row reports the observation ``year`` so the data vintage is distinct"
+            " from the fetch timestamp. local_currency_share is a hard-coded REFERENCE table without a"
+            " cited source (null where a country is not in it), NOT a live World Bank series. Without a portfolio"
             " link the bundled baseline pins ``portfolio_weight_pct = 0`` for every country so it is"
             " never misread as actual operator exposure; ``summary.portfolio_linked`` reports the"
             " wiring state explicitly. Country rows can be restricted via the ``countries`` filter"
@@ -131,7 +133,7 @@ def debt() -> FunctionManifest:
         field_dict={
             "rows[].country": FieldDef(description="ISO-2 country code.", source="catalog"),
             "rows[].debt_to_gdp": FieldDef(unit="%", description="General government debt as percent of GDP (World Bank, latest annual).", source="worldbank"),
-            "rows[].local_currency_share": FieldDef(unit="%", description="Published REFERENCE share of sovereign debt issued in local currency (not a live World Bank series).", source="worldbank_reference"),
+            "rows[].local_currency_share": FieldDef(unit="%", description="Hard-coded REFERENCE share of sovereign debt issued in local currency (unsourced; null when absent; not a live World Bank series).", source="worldbank_reference"),
             "rows[].year": FieldDef(description="Year of the World Bank debt-to-GDP observation.", source="worldbank"),
             "rows[].portfolio_weight_pct": FieldDef(unit="%", description="Portfolio country weight; zero when no portfolio link.", source="portfolio_state"),
         },

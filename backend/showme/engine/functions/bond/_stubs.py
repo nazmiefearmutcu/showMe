@@ -89,6 +89,14 @@ def _as_of() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
+def _obs_year(value: Any) -> int | None:
+    """Calendar year of a World Bank observation date ('2024' or '2024Q1')."""
+    try:
+        return int(str(value).strip()[:4])
+    except (TypeError, ValueError):
+        return None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -753,19 +761,25 @@ class DEBTFunction(BaseFunction):
     _METHODOLOGY = (
         "DEBT pulls live general-government debt-to-GDP from the World Bank indicator API "
         f"({_WB_DEBT_TO_GDP}, keyless) for each requested country, taking the most recent "
-        "non-null annual observation. local_currency_share is a published reference where the "
-        "World Bank does not expose a keyless series. portfolio_weight_pct is 0 unless portfolio "
-        "holdings are wired (``summary.portfolio_linked`` reports the state). Supplying "
+        "non-null annual observation that is at most 5 years old. Countries with no observation, "
+        "or only older ones, are excluded from rows and the average and named in warnings and "
+        "``summary.excluded_countries``. The average is an unweighted mean. local_currency_share is "
+        "a hard-coded reference table without a cited source (the World Bank exposes no keyless "
+        "series); it is null for countries not in that table. portfolio_weight_pct is 0 unless "
+        "portfolio holdings are wired (``summary.portfolio_linked`` reports the state). Supplying "
         "``exposures`` directly bypasses the World Bank fetch."
     )
     _FIELD_DICT = {
         "country": "ISO-2 country code.",
-        "debt_to_gdp": "General government debt as percent of GDP (World Bank, latest annual).",
-        "local_currency_share": "Reference share of sovereign debt issued in local currency.",
+        "debt_to_gdp": "General government debt as percent of GDP (World Bank, latest annual, at most 5 years old).",
+        "local_currency_share": "Hard-coded reference share of sovereign debt in local currency (unsourced); null when the country has no reference value.",
         "portfolio_weight_pct": "Portfolio country weight; zero when no portfolio link.",
         "year": "Year of the World Bank debt-to-GDP observation.",
     }
-    # Reference local-currency shares (broad, stable; labelled as reference).
+    # A country's latest World Bank value must be at most this many years old.
+    _DEBT_MAX_OBS_AGE_YEARS = 5
+    _AVG_BASIS = "unweighted mean of the listed countries (not GDP-weighted)"
+    # Hard-coded local-currency shares, unsourced reference values (not live data).
     _LOCAL_CCY_REF = {
         "US": 99.0, "JP": 92.0, "DE": 96.0, "GB": 97.0, "FR": 95.0,
         "IT": 94.0, "TR": 56.0, "BR": 90.0, "MX": 80.0, "ZA": 89.0,
@@ -835,6 +849,9 @@ class DEBTFunction(BaseFunction):
         started = time.monotonic()
         rows: list[dict[str, Any]] = []
         any_error: Exception | None = None
+        # Requested countries that yield no current row, each with its reason.
+        excluded: list[dict[str, str]] = []
+        cutoff_year = datetime.now(timezone.utc).year - self._DEBT_MAX_OBS_AGE_YEARS
         import asyncio
         try:
             client = await get_client()
@@ -854,15 +871,25 @@ class DEBTFunction(BaseFunction):
                 except Exception as exc:  # noqa: BLE001 — per-country tolerant
                     nonlocal any_error
                     any_error = exc
+                    excluded.append({"country": iso2, "reason": "World Bank request failed"})
                     return None
                 series = payload[1] if isinstance(payload, list) and len(payload) > 1 and isinstance(payload[1], list) else []
                 latest = next((obs for obs in series if obs.get("value") is not None), None)
                 if latest is None:
+                    excluded.append({"country": iso2, "reason": "no observation in the World Bank series"})
+                    return None
+                observed = _obs_year(latest.get("date"))
+                if observed is None or observed < cutoff_year:
+                    excluded.append({
+                        "country": iso2,
+                        "reason": f"latest observation is {latest.get('date')}, older than {cutoff_year}",
+                    })
                     return None
                 return {
                     "country": iso2,
                     "debt_to_gdp": round(float(latest["value"]), 2),
-                    "local_currency_share": self._LOCAL_CCY_REF.get(iso2, 0.0),
+                    # None, not 0.0: a missing reference value is not a 0% local share.
+                    "local_currency_share": self._LOCAL_CCY_REF.get(iso2),
                     "portfolio_weight_pct": 0.0,
                     "year": latest.get("date"),
                 }
@@ -873,6 +900,41 @@ class DEBTFunction(BaseFunction):
             any_error = exc
 
         latency_ms = int((time.monotonic() - started) * 1000)
+        excluded.sort(key=lambda e: normalised.index(e["country"]))
+        excluded_warnings = [
+            f"{e['country']}: {e['reason']}; not shown in rows or the average."
+            for e in excluded
+        ]
+
+        if not rows and any_error is None and excluded:
+            # The World Bank answered, but no requested country has a current value.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "empty",
+                    "reason": (
+                        f"No World Bank debt-to-GDP observation from {cutoff_year} onward for: "
+                        + ", ".join(e["country"] for e in excluded) + "."
+                    ),
+                    "rows": [],
+                    "summary": {
+                        "countries": 0,
+                        "avg_debt_to_gdp": None,
+                        "avg_debt_to_gdp_basis": self._AVG_BASIS,
+                        "measure": "world_bank_debt_to_gdp",
+                        "portfolio_linked": False,
+                        "unsupported_countries": unsupported,
+                        "excluded_countries": excluded,
+                    },
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Try other countries, or retry later if the World Bank has not published these years yet."],
+                },
+                sources=["worldbank"],
+                warnings=[*excluded_warnings, *unsupported_warning],
+                metadata={"latency_ms": latency_ms, "data_mode": "live_official", "as_of": _as_of()},
+            )
 
         if not rows:
             return FunctionResult(
@@ -881,18 +943,22 @@ class DEBTFunction(BaseFunction):
                 data={
                     "status": "provider_unavailable",
                     "rows": [],
-                    "summary": {"countries": 0, "avg_debt_to_gdp": 0.0, "measure": "world_bank", "portfolio_linked": False},
+                    "summary": {"countries": 0, "avg_debt_to_gdp": 0.0, "measure": "world_bank", "portfolio_linked": False, "excluded_countries": excluded},
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
                     "next_actions": ["Retry when the World Bank API (api.worldbank.org) is reachable."],
                 },
                 sources=["worldbank"],
-                warnings=[f"World Bank debt-to-GDP fetch returned no data{f': {any_error}' if any_error else ''}.", *unsupported_warning],
+                warnings=[f"World Bank debt-to-GDP fetch returned no data{f': {any_error}' if any_error else ''}.", *unsupported_warning, *excluded_warnings],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 
         avg = round(sum(r["debt_to_gdp"] for r in rows) / len(rows), 2)
-        warnings = ["local_currency_share is a published reference, not a live World Bank series.", *unsupported_warning]
+        warnings = [
+            "local_currency_share is an unsourced hard-coded reference table, not a live World Bank series; null where no reference value is held.",
+            *unsupported_warning,
+            *excluded_warnings,
+        ]
         if any_error:
             warnings.append("Some countries were skipped due to World Bank fetch errors.")
         return FunctionResult(
@@ -901,7 +967,15 @@ class DEBTFunction(BaseFunction):
             data={
                 "status": "ok",
                 "rows": rows,
-                "summary": {"countries": len(rows), "avg_debt_to_gdp": avg, "measure": "world_bank_debt_to_gdp", "portfolio_linked": False, "unsupported_countries": unsupported},
+                "summary": {
+                    "countries": len(rows),
+                    "avg_debt_to_gdp": avg,
+                    "avg_debt_to_gdp_basis": self._AVG_BASIS,
+                    "measure": "world_bank_debt_to_gdp",
+                    "portfolio_linked": False,
+                    "unsupported_countries": unsupported,
+                    "excluded_countries": excluded,
+                },
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             },

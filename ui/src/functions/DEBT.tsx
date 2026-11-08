@@ -550,8 +550,9 @@ export function DEBTPane({ code, symbol }: FunctionPaneProps) {
               />
 
               <p style={refFootnoteStyle}>
-                The <strong>Local ccy</strong> column is a published{" "}
-                <em>reference</em>, not a live World Bank series.{" "}
+                The <strong>Local ccy</strong> column is a hard-coded, unsourced{" "}
+                <em>reference</em>, not a live World Bank series; "—" means no
+                reference value is held.{" "}
                 <strong>Data year</strong> shows the observation vintage —{" "}
                 <code>as of</code> is the fetch time.
               </p>
