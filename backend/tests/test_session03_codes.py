@@ -121,11 +121,12 @@ def test_crpr_default_payload_reference_baseline(deps):
     (``source_mode='sovereign_reference'``) with a warning saying the SEC model
     is not applicable — never a silent fake-data table tagged plain ``ok``."""
     res = _run(CRPRFunction(deps).execute(instrument=None))
-    assert res.data["status"] == "ok"
-    assert res.data["summary"]["source_mode"] == "sovereign_reference"
-    # The label must honestly disclose it is a reference / non-model profile.
-    assert any("reference sovereign profile" in w or "not applicable" in w
-               for w in (res.warnings or [])), res.warnings
+    # CRPR#2 (G1): the sovereign default is no longer a constant AA+ row; it is
+    # an honest empty state that says the SEC model does not apply.
+    assert res.data["status"] == "empty"
+    assert res.data["rows"] == []
+    assert res.data["summary"]["source_mode"] == "sovereign_not_applicable"
+    assert any("does not apply" in w for w in (res.warnings or [])), res.warnings
 
 
 def test_crpr_user_input_overrides_status(deps):

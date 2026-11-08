@@ -166,6 +166,28 @@ function emptyModelPayload() {
   };
 }
 
+/** Sovereign not-applicable branch — honest empty state, no rating row. */
+function sovereignNotApplicablePayload() {
+  return {
+    data: {
+      code: "CRPR",
+      data: {
+        status: "empty",
+        rows: [],
+        summary: { issuer: "BTP", implied_bucket: "n/a", agencies: 0, source_mode: "sovereign_not_applicable" },
+        reason:
+          "'BTP' is a sovereign issuer: CRPR's SEC-financials model does not apply and no keyless sovereign rating feed is wired, so no rating is shown.",
+        scale: ["AAA", "AA", "A", "BBB", "BB", "B", "CCC"],
+        next_actions: ["Pass a ``rating`` override with the sovereign's published agency ratings."],
+      },
+      sources: ["no_live_source"],
+      warnings: ["'BTP' is a sovereign issuer."],
+      elapsed_ms: 2,
+      metadata: { data_mode: "empty", as_of: FIN_DATE },
+    },
+  };
+}
+
 /** Null-coverage corporate (interest expense = 0 → coverage null). */
 function nullCoveragePayload() {
   const p = corporatePayload();
@@ -274,10 +296,12 @@ describe("CRPR pane — D2 rationale surfaced", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the sovereign disclosure rationale", () => {
-    setMockFn({ state: "ok", ...sovereignPayload() });
-    render(<CRPRPane code="CRPR" />);
-    expect(screen.getByText(/Sovereign issuer has no SEC CIK/i)).toBeInTheDocument();
+  it("shows the honest sovereign reason and no fabricated rating", () => {
+    setMockFn({ state: "ok", ...sovereignNotApplicablePayload() });
+    render(<CRPRPane code="CRPR" symbol="BTP" />);
+    expect(screen.getByText(/sovereign issuer: CRPR's SEC-financials model does not apply/i)).toBeInTheDocument();
+    expect(screen.queryByText("AA+")).toBeNull();
+    expect(screen.queryByText(/Model-implied rating/i)).toBeNull();
   });
 });
 
@@ -289,12 +313,6 @@ describe("CRPR pane — D3 data_mode in footer", () => {
     expect(footerMode.textContent ?? "").toMatch(/live_official/i);
   });
 
-  it("shows reference mode for the sovereign branch", () => {
-    setMockFn({ state: "ok", ...sovereignPayload() });
-    render(<CRPRPane code="CRPR" />);
-    const footerMode = screen.getByTestId("crpr-data-mode");
-    expect(footerMode.textContent ?? "").toMatch(/reference/i);
-  });
 });
 
 describe("CRPR pane — A1 accessible rating ladder meter", () => {

@@ -532,7 +532,10 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
               {hasIssuer ? (
                 <Empty
                   title="No rating data"
-                  body="The credit model returned no implied bucket for this issuer."
+                  body={
+                    payload.reason ||
+                    "The credit model returned no implied bucket for this issuer."
+                  }
                 />
               ) : (
                 <Empty

@@ -198,7 +198,9 @@ def _rating_bucket_from_coverage(leverage: float | None, coverage: float | None)
 class CRPRFunction(BaseFunction):
     code = "CRPR"
     name = "Credit Rating Profile"
-    asset_classes = (AssetClass.BOND,)
+    # Must match crpr_seed.py (BOND + EQUITY): the route's compatibility guard
+    # rejects any instrument class not listed here before execute() runs.
+    asset_classes = (AssetClass.BOND, AssetClass.EQUITY)
     category = "bond"
 
     _METHODOLOGY = (
@@ -247,26 +249,35 @@ class CRPRFunction(BaseFunction):
                 metadata={"data_mode": "user_input", "as_of": _as_of()},
             )
 
-        # 2) sovereign / non-tickerable issuer -> labelled reference profile
+        # 2) sovereign / non-tickerable issuer -> honest not-applicable state.
+        # CRPR's model is built from SEC financials, which sovereigns do not
+        # file, and no keyless sovereign-rating feed is wired. A constant rating
+        # here would be placeholder data presented as model output, so the
+        # payload carries no rating row at all.
         if _is_sovereign(issuer):
-            rows = [
-                {"agency": "model_implied", "rating": "AA+", "outlook": "stable", "watch": "none", "rating_date": _as_of(), "rationale": "Sovereign issuer has no SEC CIK; CRPR's financial-derived model does not apply. Reference high-grade sovereign profile shown."},
-            ]
+            reason = (
+                f"{issuer!r} is a sovereign issuer: CRPR's SEC-financials model does not apply "
+                "and no keyless sovereign rating feed is wired, so no rating is shown."
+            )
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "ok",
-                    "rows": rows,
-                    "summary": {"issuer": issuer, "implied_bucket": "high_grade", "agencies": len(rows), "source_mode": "sovereign_reference"},
-                    "implied_bucket": "high_grade",
+                    "status": "empty",
+                    "rows": [],
+                    "summary": {"issuer": issuer, "implied_bucket": "n/a", "agencies": 0, "source_mode": "sovereign_not_applicable"},
+                    "reason": reason,
                     "scale": self._SCALE,
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
+                    "next_actions": [
+                        "Pass a ``rating`` override with the sovereign's published agency ratings.",
+                        "Pick a tickerable corporate issuer for a model-implied profile from SEC financials.",
+                    ],
                 },
-                sources=["reference"],
-                warnings=["Sovereign issuer: CRPR's SEC-financials model is not applicable; showing a reference sovereign profile."],
-                metadata={"data_mode": "reference", "as_of": _as_of()},
+                sources=["no_live_source"],
+                warnings=[reason],
+                metadata={"data_mode": "empty", "as_of": _as_of()},
             )
 
         # 3) corporate -> derive from SEC EDGAR companyfacts
