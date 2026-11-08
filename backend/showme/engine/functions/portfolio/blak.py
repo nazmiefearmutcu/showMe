@@ -25,6 +25,15 @@ LOG = logging.getLogger("showme.blak")
 
 _PRIOR_COV_ESTIMATORS = ("sample_cov", "ledoit_wolf", "exp_cov")
 _EXP_COV_SPAN = 180  # EWMA span in trading days (PyPortfolioOpt convention)
+# BLAK#1: the seeded lookback window (blak_seed.py "window", default 1Y) is the
+# history used to estimate the prior. Values are calendar days, the unit the
+# yfinance OHLCV start date uses.
+_WINDOW_DAYS = {"180d": 180, "1Y": 365, "2Y": 730, "5Y": 1825}
+_DEFAULT_WINDOW = "1Y"
+# BLAK#4: the REFDATA budget must cover a cold yfinance info call (about 4.4 s
+# for SPY measured live). The old 4 s cap cancelled it, so the ETF totalAssets
+# proxy never arrived and every default ETF prior fell back to equal weight.
+_REFDATA_TIMEOUT_S = 8
 
 
 def _ledoit_wolf_covariance(x: np.ndarray) -> tuple[np.ndarray, float]:
@@ -222,7 +231,26 @@ class BLAKFunction(BaseFunction):
                 },
                 warnings=[f"unsupported prior_covariance: {estimator}"],
             )
-        days = int(params.get("days", 504))
+        window = str(params.get("window") or _DEFAULT_WINDOW).strip()
+        if window not in _WINDOW_DAYS:
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (f"window {window!r} is not supported; "
+                               f"use one of {', '.join(_WINDOW_DAYS)}"),
+                    "next_actions": ["Choose 180d, 1Y, 2Y or 5Y."],
+                },
+                warnings=[f"unsupported window: {window}"],
+            )
+        # An explicit calendar-day count wins; otherwise the seeded window applies.
+        explicit_days = params.get("days")
+        if explicit_days in (None, ""):
+            days = _WINDOW_DAYS[window]
+            window_label = window
+        else:
+            days = int(explicit_days)
+            window_label = f"{days}d"
         delta = float(params.get("delta", 2.5))
         tau = float(params.get("tau", 0.05))
         market_caps = params.get("market_caps") or {}  # symbol → mcap
@@ -241,11 +269,13 @@ class BLAKFunction(BaseFunction):
         # other classes we use a yfinance REFDATA pass. Anything we cannot
         # resolve falls back to an equal-weight prior with data_state set to
         # ``approximate`` so the UI can surface the degradation.
-        mcap_lookup, mcap_data_state, mcap_sources, mcap_proxied = (
-            await _resolve_market_caps_detail(self.deps, symbols, market_caps)
+        # BLAK#4: market caps and return history are fetched concurrently, so the
+        # REFDATA budget does not add to the OHLCV budget.
+        mcap_task = asyncio.ensure_future(
+            _resolve_market_caps_detail(self.deps, symbols, market_caps)
         )
 
-        async def _ret(sym: str) -> tuple[str, pd.Series, float]:
+        async def _ret(sym: str) -> tuple[str, pd.Series]:
             # B4: narrow the catch to expected provider failures so genuine
             # bugs (NameError, type errors, etc.) surface at the call site
             # instead of being papered over with an empty series.
@@ -264,31 +294,31 @@ class BLAKFunction(BaseFunction):
                     timeout=8,
                 )
                 rets = close_to_daily_returns(df)
-                mcap = float(mcap_lookup.get(sym) or 0.0)
                 if rets is not None and not rets.empty:
                     live_fetch_ok_symbols.append(sym)
-                return sym, rets, mcap
+                return sym, rets
             except asyncio.CancelledError:
                 raise
             except (asyncio.TimeoutError, DataSourceError) as exc:
                 LOG.warning("BLAK live fetch failed for %s: %s", sym, exc)
                 live_fetch_errors.append(f"{sym}: {type(exc).__name__}: {exc}")
-                return sym, pd.Series(dtype=float), float(mcap_lookup.get(sym) or 0.0)
+                return sym, pd.Series(dtype=float)
             except Exception as exc:  # noqa: BLE001
                 # Last-resort catch for unexpected provider quirks (httpx
                 # transport errors, yfinance JSONDecode, etc). Still surface
                 # the message so the response is honest about what failed.
                 LOG.warning("BLAK live fetch unexpected error for %s: %s", sym, exc)
                 live_fetch_errors.append(f"{sym}: {type(exc).__name__}: {exc}")
-                return sym, pd.Series(dtype=float), float(mcap_lookup.get(sym) or 0.0)
+                return sym, pd.Series(dtype=float)
         if live and self.deps.yfinance:
             results = await asyncio.gather(*(_ret(s) for s in symbols))
             # Audit Q3 #7: pairwise covariance for mixed universes.
             df = align_return_series(
-                ((s, r) for s, r, _ in results), policy="pairwise"
+                ((s, r) for s, r in results), policy="pairwise"
             )
         else:
             df = pd.DataFrame()
+        mcap_lookup, mcap_data_state, mcap_sources, mcap_proxied = await mcap_task
         if df.shape[0] < 10:
             # BLAK#6 / BLAK#3-RQ: the former deterministic sine template is not
             # market data, so no prior, covariance or posterior is built from it
@@ -432,10 +462,15 @@ class BLAKFunction(BaseFunction):
                 "delta": delta, "tau": tau,
                 "n_views": len(P_rows),
                 "samples": int(df.shape[0]),
+                # BLAK#1: the effective lookback is disclosed, not implied.
+                "window": window_label,
+                "lookback_days": days,
                 "summary": {
                     "symbols": len(cols),
                     "n_views": len(P_rows),
                     "samples": int(df.shape[0]),
+                    "window": window_label,
+                    "lookback_days": days,
                     "tau": tau,
                     "delta": delta,
                     "market_cap_data_state": mcap_data_state,
@@ -531,7 +566,7 @@ async def _market_cap_from_yfinance(deps: Any, symbol: str) -> tuple[float, str 
                 inst = r
         meta = await asyncio.wait_for(
             yfin.fetch(DataRequest(kind=DataKind.REFDATA, instrument=inst)),
-            timeout=4,
+            timeout=_REFDATA_TIMEOUT_S,
         )
     except Exception:
         return 0.0, None
