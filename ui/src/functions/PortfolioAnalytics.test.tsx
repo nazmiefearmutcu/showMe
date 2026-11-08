@@ -275,6 +275,14 @@ describe("PORTX generic renderer shape fixes (F3)", () => {
     render(<PortfolioAnalyticsPane code="PORT_WHATIF" symbol="" />);
     expect(mockArgs.current?.params?.quantity).toBe(100);
   });
+
+  it("sends no placeholder cost for PORT_WHATIF until the user types one", () => {
+    mockOk({ status: "needs_input", rows: [] });
+    render(<PortfolioAnalyticsPane code="PORT_WHATIF" symbol="" />);
+    expect(mockArgs.current?.params?.cost).toBeUndefined();
+    fireEvent.change(screen.getByLabelText("Entry"), { target: { value: "342.37" } });
+    expect(mockArgs.current?.params?.cost).toBe(342.37);
+  });
 });
 
 describe("PORTX parameter wiring (F3)", () => {

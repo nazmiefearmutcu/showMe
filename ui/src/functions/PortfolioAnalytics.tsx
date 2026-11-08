@@ -243,7 +243,10 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   // the portfolio value for account, and requires the stop.
   const isPsc = upper === "PSC";
   const [account, setAccount] = useState(() => (isPsc ? "" : "100"));
-  const [entry, setEntry] = useState(() => (isPsc ? "" : "100"));
+  // PORT_WHATIF starts with no cost: the backend prices a what-if only from a
+  // cost the user typed (a 100 placeholder used to show as a real P&L gain).
+  const isWhatIf = upper === "PORT_WHATIF";
+  const [entry, setEntry] = useState(() => (isPsc || isWhatIf ? "" : "100"));
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
 
@@ -519,7 +522,9 @@ function PortfolioControls({
               value={entry}
               onChange={(e) => setEntry(e.target.value)}
               inputMode="decimal"
-              placeholder={code === "PSC" ? "live price" : undefined}
+              placeholder={
+                code === "PSC" ? "live price" : code === "PORT_WHATIF" ? "cost per share (required)" : undefined
+              }
             />
           </label>
           {code === "PSC" ? (
@@ -1034,8 +1039,14 @@ function buildParams(
       }
       return out;
     }
-    case "PORT_WHATIF":
-      return { quantity: num(state.account, 100), cost: num(state.entry, 100) };
+    case "PORT_WHATIF": {
+      // Cost is sent only when typed; a blank cost is never replaced by a
+      // placeholder (the backend answers needs_input instead).
+      const out: Record<string, unknown> = { quantity: num(state.account, 100) };
+      const cost = optionalNumber(state.entry);
+      if (cost !== undefined) out.cost = cost;
+      return out;
+    }
     case "TRA":
       return { years: 5, live_return: state.live };
     case "BTFW":
