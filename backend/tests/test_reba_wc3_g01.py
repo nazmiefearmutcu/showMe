@@ -85,22 +85,24 @@ def test_reba1_default_model_mode_sizes_no_orders_and_no_weights():
 
 
 def test_reba2_live_current_weights_sum_to_one_hundred_percent(monkeypatch):
-    # The book is worth more than max_notional; the old code divided the full
-    # book by the capped total and reported weights above 100 percent.
+    # NAV is AAPL 1500 + SPY 10000 + USD 1000 = 12500. max_notional (5000) sits
+    # BELOW that NAV, so the cap binds. The old code divided the full book by the
+    # capped total (5000) and reported weights of about 230 percent.
     book = _Book(
         [_Pos("AAPL", 10, 100.0), _Pos("SPY", 20, 400.0)],
         cash={"USD": 1_000.0},
     )
     _patch_book(monkeypatch, book)
     res = _run(REBAFunction(_deps({"AAPL": 150.0, "SPY": 500.0})).execute(
-        targets={"AAPL": 0.5, "SPY": 0.5}, live_portfolio=True, max_notional=100_000,
+        targets={"AAPL": 0.5, "SPY": 0.5}, live_portfolio=True, max_notional=5_000,
     ))
     assert "status" not in res.data  # a computed preview, not a withheld state
     weights = res.data["current_weights_pct"]
     assert sum(weights.values()) == pytest.approx(100.0, abs=1e-6)
-    # AAPL 1500 + SPY 10000 + USD 1000 = 12500 NAV.
     assert res.data["total_value"] == pytest.approx(12_500.0)
     assert weights["AAPL"] == pytest.approx(1_500.0 / 12_500.0 * 100)
+    # The cap that would have bound is named, not silently applied.
+    assert any("max_notional" in w and "not applied" in w for w in res.warnings)
 
 
 # ── REBA#3-RQ: a NaN quote is unpriced, not a number ─────────────────────
