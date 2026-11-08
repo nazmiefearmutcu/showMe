@@ -69,6 +69,9 @@ interface ToolConfig {
   defaultSymbol?: string;
   usesUniverse?: boolean;
   usesSymbol?: boolean;
+  /** false: never forward the dock/linked symbol (portfolio-wide tools whose
+   *  backend treats a symbol as a filter, e.g. LOTS list). */
+  sendsDockSymbol?: boolean;
   supportsLive?: boolean;
   modes?: readonly string[];
 }
@@ -133,6 +136,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
     supportsLive: true,
   },
   LOTS: {
+    sendsDockSymbol: false,
     title: "Tax Lots",
     subtitle: "Lot-level basis and harvest candidates",
   },
@@ -250,7 +254,11 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
 
-  const effectiveSymbol = config.usesSymbol ? (symbol || symbolInput || config.defaultSymbol) : symbol;
+  const effectiveSymbol = config.usesSymbol
+    ? (symbol || symbolInput || config.defaultSymbol)
+    : config.sendsDockSymbol === false
+      ? undefined
+      : symbol;
   const params = useMemo(
     () =>
       buildParams(upper, {

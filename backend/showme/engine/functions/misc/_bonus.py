@@ -94,6 +94,21 @@ class LITMFunction(BaseFunction):
             }]
             reason = ("SEC EDGAR filing rows carry no 8-K item codes, so litigation items cannot be "
                       "classified; this is not a verified absence of events.")
+        elif not rows and not scanned:
+            status = "empty"
+            reason = ("The SEC filing feed has no 8-K filings in the scanned window, so there were no 8-K "
+                      "items to classify; this is not a verified absence of litigation events.")
+            rows = [{
+                "symbol": instrument.symbol,
+                "event_type": "no_8k_filings_in_window",
+                "item_code": None,
+                "filing_date": None,
+                "severity": "none",
+                "source_mode": "sec_edgar_no_8k_rows",
+                "all_8k_events": 0,
+                "scanned_8k": 0,
+                "scan_window": None,
+            }]
         elif not rows:
             status = "empty"
             reason = None
@@ -168,6 +183,15 @@ def _scan_8k_candidates(events: list[dict[str, Any]], frame: Any, scan_limit: in
                 "item_codes": _split_item_codes(r.get("items")),
             })
     for e in events:
+        if not isinstance(e, dict):
+            continue
+        # CACT puts a placeholder ({category, status: provider_unavailable})
+        # into events_8k when the feed has no 8-K rows: that is not a filing
+        # and must never count as a scanned 8-K (review of LITM#1).
+        if str(e.get("status") or "").lower() in {"provider_unavailable", "unavailable", "empty"} or not (
+            e.get("accession") or e.get("filing_date") or e.get("document")
+        ):
+            continue
         acc = str(e.get("accession") or "")
         if acc and acc in seen:
             continue

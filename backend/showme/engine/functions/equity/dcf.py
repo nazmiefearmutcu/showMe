@@ -118,6 +118,8 @@ class DCFFunction(BaseFunction):
         g_high = float(params.get("growth_high", 0.10))
         g_terminal = float(params.get("growth_terminal", 0.025))
         wacc = params.get("wacc")
+        # Review of DCF#1: say where WACC came from (caller input vs the WACC model).
+        wacc_source = "input" if wacc is not None else "wacc_model"
         fcfe = params.get("fcfe")
         shares = params.get("shares_outstanding")
         warnings: list[str] = []
@@ -143,7 +145,7 @@ class DCFFunction(BaseFunction):
                       "reason": "WACC is unavailable for this instrument; pass wacc to run the model.",
                       "next_actions": ["Enter WACC (decimal, e.g. 0.08) as an input.",
                                        "Retry once the WACC inputs recover."],
-                      "wacc": None, "g_high": g_high, "g_terminal": g_terminal,
+                      "wacc": None, "wacc_source": None, "g_high": g_high, "g_terminal": g_terminal,
                       "years": N, "starting_fcfe": None,
                       "fcfe_source": None, "shares_source": None,
                       "shares_outstanding": None,
@@ -187,7 +189,7 @@ class DCFFunction(BaseFunction):
                       "reason": "Provider free cash flow is unavailable for this instrument; pass fcfe to run the model.",
                       "next_actions": ["Enter FCFE (USD) as a manual override.",
                                        "Retry once the yfinance reference data recovers."],
-                      "wacc": wacc, "g_high": g_high, "g_terminal": g_terminal,
+                      "wacc": wacc, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
                       "years": N, "starting_fcfe": None,
                       "fcfe_source": "missing",
                       "shares_source": "user_override" if shares is not None else None,
@@ -263,7 +265,7 @@ class DCFFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={"status": "ok" if fcfe > 0 and per_share is not None else "needs_input",
-                   "wacc": wacc, "g_high": g_high, "g_terminal": g_terminal,
+                   "wacc": wacc, "wacc_source": wacc_source, "g_high": g_high, "g_terminal": g_terminal,
                    "years": N, "starting_fcfe": fcfe,
                    "fcfe_source": fcfe_source,
                    "shares_source": shares_source or "missing",

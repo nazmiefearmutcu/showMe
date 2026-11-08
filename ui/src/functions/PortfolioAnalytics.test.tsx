@@ -244,6 +244,12 @@ describe("PORTX generic renderer shape fixes (F3)", () => {
     expect(text).not.toContain("1.74B");
   });
 
+  it("never forwards the linked dock symbol to LOTS (review of LOTS#1: it would filter the ledger)", () => {
+    mockOk({ status: "ok", rows: [] });
+    render(<PortfolioAnalyticsPane code="LOTS" symbol="AAPL" />);
+    expect(mockArgs.current?.symbol).toBeUndefined();
+  });
+
   it("prefers portfolio_vol over a leading symbol count in the hero KPI", () => {
     mockOk({
       status: "ok",

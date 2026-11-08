@@ -843,7 +843,7 @@ class CPFFunction(BaseFunction):
                     "forecast": [],
                     "forecast_vintage": None,
                     "as_of": now.isoformat(),
-                    "data_mode": "unsupported_series",
+                    "data_mode": "explicit_unavailable",
                     "rows": [],
                     "series": [],
                     "cards": {},

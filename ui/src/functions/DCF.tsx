@@ -60,7 +60,8 @@ interface DCFBridgeRow {
 interface DCFData {
   status?: string;
   error?: string;
-  wacc?: number;
+  wacc?: number | null;
+  wacc_source?: "input" | "wacc_model" | null;
   g_high?: number;
   g_terminal?: number;
   years?: number;
@@ -98,7 +99,11 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
   const sharesOverride = parseOverrideM(sharesM);
   const [growthPct, setGrowthPct] = usePersistentNumber("showme.dcf.growth", 10);
   const [termPct, setTermPct] = usePersistentNumber("showme.dcf.gterm", 2.5);
-  const [waccPct, setWaccPct] = usePersistentNumber("showme.dcf.wacc", 8);
+  // Review of DCF#1: WACC is optional. Empty = the backend's WACC model
+  // (labelled wacc_source); the old always-sent 8% default made that path
+  // unreachable. A new key so a persisted legacy "8" is not resurrected.
+  const [waccM, setWaccM] = usePersistentString("showme.dcf.wacc_override_pct", "");
+  const waccOverridePct = parseOverrideM(waccM);
   const [markPct, setMarkPct] = usePersistentNumber("showme.dcf.price", 0);
   const [years, setYears] = usePersistentOption<number>(
     "showme.dcf.years",
@@ -115,7 +120,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
       ...(sharesOverride != null ? { shares_outstanding: sharesOverride * 1e6 } : {}),
       growth_high: round6(growthPct / 100),
       growth_terminal: round6(termPct / 100),
-      wacc: round6(waccPct / 100),
+      ...(waccOverridePct != null ? { wacc: round6(waccOverridePct / 100) } : {}),
       years,
     },
     enabled: !!effectiveSymbol,
@@ -267,13 +272,13 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
           step={0.25}
           min={0}
         />
-        <NumField
+        <OverrideField
           label="WACC %"
           ariaLabel="WACC percent"
-          value={waccPct}
-          onCommit={setWaccPct}
+          value={waccM}
+          onCommit={setWaccM}
           step={0.25}
-          min={0}
+          placeholder="model"
         />
         <NumField
           label="MARK $"
@@ -380,7 +385,7 @@ export function DCFPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`DCF — ${effectiveSymbol ?? ""}`}
-          subtitle={`two-stage FCFE · ${payload?.years ?? years}y @ WACC ${fmtPct(payload?.wacc ?? round6(waccPct / 100))}${manualOverride ? " · manual override" : ""}`}
+          subtitle={`two-stage FCFE · ${payload?.years ?? years}y @ WACC ${payload?.wacc != null ? fmtPct(payload.wacc) : "—"}${payload?.wacc_source === "wacc_model" ? " (WACC model)" : payload?.wacc_source === "input" ? " (input)" : ""}${manualOverride ? " · manual override" : ""}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>

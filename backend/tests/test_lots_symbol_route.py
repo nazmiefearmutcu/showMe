@@ -107,3 +107,32 @@ def test_sell_with_non_positive_quantity_is_input_error_and_keeps_the_lot() -> N
     lots = tax_lots.list_open_lots(symbol="AUDTEST")
     assert len(lots) == 1
     assert lots[0]["quantity"] == pytest.approx(10.0)
+
+
+# Review of LOTS#1 (P0 wave): the list must not narrow to a symbol the user
+# never chose. The router injects a default symbol with __explicit_symbol=False.
+def test_router_default_symbol_does_not_filter_the_list(monkeypatch, tmp_path):
+
+    tax_lots.open_lot(symbol="AAPL", quantity=10, price=150.0)
+    tax_lots.open_lot(symbol="MSFT", quantity=5, price=300.0)
+    btc = Instrument(symbol="BTCUSDT", asset_class=AssetClass.CRYPTO)
+    res = asyncio.run(LOTSFunction(FunctionDeps()).execute(instrument=btc, __explicit_symbol=False))
+    assert sorted(r["symbol"] for r in res.data["rows"]) == ["AAPL", "MSFT"]
+
+
+def test_explicit_symbol_still_filters_the_list(monkeypatch, tmp_path):
+
+    tax_lots.open_lot(symbol="AAPL", quantity=10, price=150.0)
+    tax_lots.open_lot(symbol="MSFT", quantity=5, price=300.0)
+    aapl = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    res = asyncio.run(LOTSFunction(FunctionDeps()).execute(instrument=aapl))
+    assert [r["symbol"] for r in res.data["rows"]] == ["AAPL"]
+
+
+def test_router_default_symbol_never_writes_a_lot(monkeypatch, tmp_path):
+
+    btc = Instrument(symbol="BTCUSDT", asset_class=AssetClass.CRYPTO)
+    res = asyncio.run(LOTSFunction(FunctionDeps()).execute(
+        instrument=btc, action="open", quantity=1, price=100.0, __explicit_symbol=False))
+    assert res.data["status"] == "input_error"
+    assert tax_lots.list_open_lots() == []

@@ -65,6 +65,12 @@ class LOTSFunction(BaseFunction):
         from showme.engine.services import tax_lots
         action = str(params.get("action", "list") or "list").lower()
         symbol = _symbol(params, instrument)
+        # Review of LOTS#1: when the caller chose no symbol the router injects a
+        # default one and flags it __explicit_symbol=False. That symbol must
+        # never narrow the list (the user would see an empty or partial
+        # ledger) and must never receive a lot.
+        if params.get("__explicit_symbol", True) is False and not str(params.get("symbol") or "").strip():
+            symbol = None
         quantity = _number(params.get("quantity"))
         price = _number(params.get("price"))
         if action in ("open", "sell"):

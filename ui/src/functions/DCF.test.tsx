@@ -255,11 +255,12 @@ describe("DCF pane — model inputs", () => {
     expect(lastParams).toMatchObject({
       growth_high: 0.1,
       growth_terminal: 0.025,
-      wacc: 0.08,
       years: 5,
     });
     expect(lastParams).not.toHaveProperty("fcfe");
     expect(lastParams).not.toHaveProperty("shares_outstanding");
+    // review of DCF#1: no silent 8% WACC - the backend WACC model decides
+    expect(lastParams).not.toHaveProperty("wacc");
   });
 
   it("drives fcfe from the $M input and persists it", () => {
@@ -279,7 +280,14 @@ describe("DCF pane — model inputs", () => {
       target: { value: "9" },
     });
     expect(lastParams?.wacc).toBe(0.09);
-    expect(localStorage.getItem("showme.dcf.wacc")).toBe("9");
+    expect(localStorage.getItem("showme.dcf.wacc_override_pct")).toBe("9");
+  });
+
+  it("sends no WACC by default so the backend WACC model is used (review of DCF#1)", () => {
+    localStorage.setItem("showme.dcf.wacc", "8"); // a legacy persisted default must not come back
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DCFPane code="DCF" symbol="AAPL" />);
+    expect(lastParams).not.toHaveProperty("wacc");
   });
 
   it("switches the forecast horizon via the segmented control", () => {
