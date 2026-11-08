@@ -175,7 +175,11 @@ def normalize_function_contract(
     data = _attach_data_status(data, status, reason, next_action)
     payload["data"] = data
     payload["status"] = status
-    payload["asOf"] = payload.get("fetched_at") or _utcnow()
+    # asOf is the observation date of the data, never the compute time: a
+    # monthly CPI print must not read as current because it was served today.
+    # The retrieval time is kept separately as retrievedAt.
+    payload["asOf"] = _observation_as_of(metadata, data, rows)
+    payload["retrievedAt"] = payload.get("fetched_at") or _utcnow()
     payload["inputEcho"] = _clean_input(params)
     payload["payload"] = _contract_payload(data)
     payload["rows"] = rows
@@ -481,7 +485,65 @@ def _clean_input(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _source_details(sources: list[Any], as_of: str, status: FnStatus) -> list[dict[str, Any]]:
+_OBSERVATION_KEYS = ("as_of", "asOf", "observation_date", "last_observation", "last_updated", "lastUpdated")
+_ROW_OBSERVATION_KEYS = ("as_of", "asOf", "observation_date", "date", "timestamp", "time")
+
+
+def _parse_observation(value: Any) -> datetime | None:
+    """A UTC datetime for an observation stamp (ISO text, datetime or epoch seconds)."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, bool):
+        return None
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    elif isinstance(value, (int, float)) and value > 0:
+        try:
+            parsed = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _observation_as_of(metadata: dict[str, Any], data: Any, rows: list[dict] | None) -> str | None:
+    """Latest observation date the payload declares, or None when it declares none.
+
+    Looks at metadata and top-level data keys first, then at each row's date-like
+    field. Falls back to None rather than the compute time.
+    """
+    found: list[datetime] = []
+    for holder in (metadata, data if isinstance(data, dict) else None):
+        if not isinstance(holder, dict):
+            continue
+        for key in _OBSERVATION_KEYS:
+            parsed = _parse_observation(holder.get(key))
+            if parsed is not None:
+                found.append(parsed)
+                break
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        for key in _ROW_OBSERVATION_KEYS:
+            parsed = _parse_observation(row.get(key))
+            if parsed is not None:
+                found.append(parsed)
+                break
+    if not found:
+        return None
+    return max(found).isoformat()
+
+
+def _source_details(sources: list[Any], as_of: str | None, status: FnStatus) -> list[dict[str, Any]]:
     if not sources:
         return [{"name": "none", "asOf": as_of, "status": "missing"}]
     source_status = "ok" if status == OK else status
