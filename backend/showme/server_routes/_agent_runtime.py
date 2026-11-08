@@ -536,20 +536,8 @@ def _standalone_function_defaults(code: str) -> dict[str, Any]:
         # are the option itself: a route must not price a made-up contract
         # (OVME returns needs_input when they are absent).
         return {"type": "CALL"}
-    if upper == "OSA":
-        return {
-            "spot": 100,
-            "strike": 100,
-            "short_strike": 110,
-            "years_to_expiry": 0.25,
-            "vol": 0.25,
-            "rate": 0.045,
-            "strategy": "CALL_SPREAD",
-            "legs": [
-                {"qty": 1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-                {"qty": -1, "strike": 110, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-            ],
-        }
+    # OSA: no injected spot or template legs (T10). The pane / caller supplies
+    # them; with none, the function returns an explicit needs_input state.
     return {}
 
 
@@ -615,7 +603,15 @@ def _function_usage(
                 "Run to inspect the expiration payoff/P&L curve, net debit, and leg premium table.",
                 "Open Advanced only for custom legs arrays.",
             ],
-            "example": _standalone_function_defaults("OSA"),
+            "example": {
+                "spot": 100,
+                "rate": 0.045,
+                "strategy": "CALL_SPREAD",
+                "legs": [
+                    {"qty": 1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25},
+                    {"qty": -1, "strike": 110, "type": "CALL", "expiry": 0.25, "vol": 0.25},
+                ],
+            },
         }
     if upper == "MLSIG":
         return {

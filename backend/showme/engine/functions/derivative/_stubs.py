@@ -382,6 +382,48 @@ def _reference_hvt(symbol: str, spot: float, *, reason: str) -> dict[str, Any]:
     }
 
 
+def _osa_finite_positive(value: Any) -> float | None:
+    """A finite, strictly positive float, else None (never a default)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return number
+
+
+def _osa_needs_input(reason: str, instrument: Instrument | None) -> FunctionResult:
+    """OSA input gap: no priced curve, no placeholder numbers, explicit reason."""
+    return FunctionResult(
+        code="OSA",
+        instrument=instrument,
+        data={
+            "status": "needs_input",
+            "reason": reason,
+            "spot": None,
+            "legs": [],
+            "rows": [],
+            "curve": [],
+            "pnl_curve": [],
+            "summary": {},
+            "methodology": (
+                "Premiums use Black-Scholes-Merton at the spot used, with the per-leg "
+                "implied vol entered (or solved from market_price). Nothing is priced "
+                "until every input is supplied."
+            ),
+            "next_actions": [
+                "Enter a positive spot price (or an underlying ticker with a live quote).",
+                "Give every leg a CALL/PUT type, positive strike, positive expiry in years, "
+                "signed qty and an implied vol (or a market_price to solve it).",
+            ],
+        },
+        sources=["black_scholes_formula"],
+    )
+
+
 @FunctionRegistry.register
 class OSAFunction(BaseFunction):
     """OSA — Option Strategy Analysis."""
@@ -391,24 +433,44 @@ class OSAFunction(BaseFunction):
     category = "derivative"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        legs = params.get("legs") or [
-            {"qty": 1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-            {"qty": -1, "strike": 110, "type": "CALL", "expiry": 0.25, "vol": 0.25},
-        ]
-        S = float(params.get("spot", 100))
+        # T10 (honesty): OSA never invents a spot, a strike/expiry template or a
+        # vol. Missing inputs return an explicit needs_input state.
+        legs = params.get("legs") or []
+        if not isinstance(legs, list) or not legs:
+            return _osa_needs_input(
+                "Add at least one option leg (side, type, strike, expiry, vol).",
+                instrument,
+            )
+        S = _osa_finite_positive(params.get("spot"))
+        if S is None:
+            return _osa_needs_input(
+                "Enter a spot price for the underlying to price the strategy.",
+                instrument,
+            )
         r = float(params.get("rate", 0.045))
         q = float(params.get("div_yield", 0.0))
         initial_premiums: list[dict[str, Any]] = []
         net_debit = 0.0
         # D03-2026-05-24 (H19): per-leg vol resolution — if a leg quotes a
-        # market price, solve the IV implied by that market price instead of
-        # the 0.25 placeholder. Real SPX/NDX skew is 10-15 vol pts wide so
-        # the placeholder gave systematically wrong premiums.
+        # market price, solve the IV implied by that market price. A leg with
+        # neither an entered vol nor a solvable market price is an input gap,
+        # not a 0.25 placeholder.
         for idx, leg in enumerate(legs, start=1):
-            strike = float(leg["strike"])
-            expiry = float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25)
-            opt_type = str(leg.get("type") or "CALL").upper()
-            qty = float(leg.get("qty") or 0)
+            if not isinstance(leg, dict):
+                return _osa_needs_input(f"Leg {idx} is not a valid leg object.", instrument)
+            strike = _osa_finite_positive(leg.get("strike"))
+            expiry = _osa_finite_positive(leg.get("expiry") or leg.get("years_to_expiry"))
+            if strike is None or expiry is None:
+                return _osa_needs_input(
+                    f"Leg {idx} needs a positive strike and expiry (years).", instrument,
+                )
+            opt_type = str(leg.get("type") or "").upper()
+            if opt_type not in {"CALL", "PUT"}:
+                return _osa_needs_input(f"Leg {idx} type must be CALL or PUT.", instrument)
+            try:
+                qty = float(leg.get("qty"))
+            except (TypeError, ValueError):
+                return _osa_needs_input(f"Leg {idx} needs a numeric quantity (qty).", instrument)
             vol = leg.get("vol")
             iv_source = "input"
             market = leg.get("market_price")
@@ -424,9 +486,12 @@ class OSAFunction(BaseFunction):
                         iv_source = f"solved_{iv_res['method']}"
                 except Exception:
                     pass
-            if vol is None:
-                vol = 0.25
-                iv_source = "default_0.25"
+            if vol is None or float(vol) <= 0:
+                return _osa_needs_input(
+                    f"Leg {idx} has no implied vol (vol) and its market_price could not be "
+                    "solved for one.",
+                    instrument,
+                )
             vol = float(vol)
             premium = _bs_price(S, strike, expiry, r, vol, q, opt_type == "CALL")["price"]
             net_debit += qty * premium
@@ -465,7 +530,7 @@ class OSAFunction(BaseFunction):
         # pay intrinsic value, longer legs are marked at Black-Scholes with
         # their remaining time and the same per-leg vol. Valuing every leg at
         # intrinsic on the longest horizon zeroed out a calendar's time value.
-        leg_expiries = [float(leg.get("expiry") or leg.get("years_to_expiry") or 0.25) for leg in legs]
+        leg_expiries = [float(prem["expiry_years"]) for prem in initial_premiums]
         t_eval = min(leg_expiries, default=0.25)
         fv_debit = net_debit * math.exp(r * t_eval)
         leg_terms: list[tuple[float, float, float, str, float, float]] = []

@@ -110,7 +110,16 @@ def test_leg_market_price_back_solves_iv() -> None:
 # ---------------- Sanity: existing happy path unchanged ----------------
 
 
-def test_default_call_spread_still_works() -> None:
-    res = _run_osa()
+def test_explicit_call_spread_still_works() -> None:
+    # T10: the old no-argument call priced a hard-coded 100/110 spread at spot
+    # 100. Missing inputs now return needs_input; an explicit spread still prices.
+    assert _run_osa().data["status"] == "needs_input"
+    res = _run_osa(
+        spot=100,
+        legs=[
+            {"qty": 1, "strike": 100, "type": "CALL", "expiry": 0.25, "vol": 0.25},
+            {"qty": -1, "strike": 110, "type": "CALL", "expiry": 0.25, "vol": 0.25},
+        ],
+    )
     assert res.data["status"] == "ok"
     assert len(res.data["curve"]) == 101
