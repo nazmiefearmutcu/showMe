@@ -90,7 +90,7 @@ class CDEFunction(BaseFunction):
                 return FunctionResult(
                     code=self.code,
                     instrument=None,
-                    data=_payload(store, status="input_error", reason=f"formula parse error: {e}"),
+                    data=_payload(store, status="input_error", reason=f"formula parse error: {str(e) or type(e).__name__}"),
                 )
             store[name] = formula
             _save(store)
@@ -123,7 +123,7 @@ class CDEFunction(BaseFunction):
                 return FunctionResult(
                     code=self.code,
                     instrument=None,
-                    data=_payload(store, status="input_error", reason=f"row must be a JSON object: {e}"),
+                    data=_payload(store, status="input_error", reason=f"row must be a JSON object: {str(e) or type(e).__name__}"),
                 )
             try:
                 ast = parse_dsl(store[name])
@@ -164,7 +164,7 @@ class CDEFunction(BaseFunction):
                 return FunctionResult(
                     code=self.code,
                     instrument=None,
-                    data=_payload(store, status="calc_error", reason=f"eval error: {e}"),
+                    data=_payload(store, status="calc_error", reason=f"eval error: {str(e) or type(e).__name__}"),
                 )
         return FunctionResult(code=self.code, instrument=None,
                               data=_payload(store, status="ready"))

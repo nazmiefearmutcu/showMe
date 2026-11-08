@@ -91,7 +91,7 @@ class FORM4Function(BaseFunction):
             return FunctionResult(code=self.code, instrument=instrument,
                                   data=data,
                                   sources=["yfinance", "form4_model"] if yfin_rows else ["form4_model"],
-                                  metadata={"provider_errors": [f"sec_edgar: {e}"]})
+                                  metadata={"provider_errors": [f"sec_edgar: {str(e) or type(e).__name__}"]})
         # Aggregate counts
         rows = _filter_rows(rows, months=months, transaction_types=transaction_types)
         # FORM4#6: the yfinance rows are the returned table, so the same window and

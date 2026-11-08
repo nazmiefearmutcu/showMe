@@ -210,7 +210,7 @@ class TLDRFunction(BaseFunction):
                 summary_model = f"llm:{r.model}"
                 sources.append(summary_model)
         except Exception as e:
-            warnings.append(f"llm: {e}")
+            warnings.append(f"llm: {str(e) or type(e).__name__}")
 
         has_live_content = (
             any(q.get("last") is not None or q.get("change_pct") is not None for q in quotes)

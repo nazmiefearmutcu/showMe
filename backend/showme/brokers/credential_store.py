@@ -145,13 +145,13 @@ class _KeyringBackend:
         try:
             self._k.set_password(SERVICE, key, blob)
         except Exception as exc:  # noqa: BLE001
-            raise CredentialError(f"vault: cannot write {key}: {exc}") from exc
+            raise CredentialError(f"vault: cannot write {key}: {str(exc) or type(exc).__name__}") from exc
 
     def get(self, key: str) -> str | None:
         try:
             return self._k.get_password(SERVICE, key)
         except Exception as exc:  # noqa: BLE001
-            raise CredentialError(f"vault: cannot read {key}: {exc}") from exc
+            raise CredentialError(f"vault: cannot read {key}: {str(exc) or type(exc).__name__}") from exc
 
     def delete(self, key: str) -> bool:
         try:

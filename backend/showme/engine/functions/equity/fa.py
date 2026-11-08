@@ -63,7 +63,7 @@ class FAFunction(BaseFunction):
                     timeout=float(params.get("sec_timeout", 8)),
                 )
         except Exception as e:
-            warnings.append(f"sec_edgar: {e}")
+            warnings.append(f"sec_edgar: {str(e) or type(e).__name__}")
         # An empty SEC dict (no us-gaap facts, e.g. IFRS/ADR filers) is NOT usable
         # statement data: it must fall through to yfinance rather than be shown.
         sec_usable = _has_statement_payload(sec_data)
@@ -87,7 +87,7 @@ class FAFunction(BaseFunction):
                     if _has_statement_payload(yfin_data):
                         sources_used.append("yfinance")
             except Exception as e:
-                warnings.append(f"yfinance: {e}")
+                warnings.append(f"yfinance: {str(e) or type(e).__name__}")
 
         if sec_usable and isinstance(sec_data, dict):
             data = _normalise_fa_payload(

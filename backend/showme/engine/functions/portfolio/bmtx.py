@@ -49,7 +49,7 @@ class BMTXFunction(BaseFunction):
         except (asyncio.TimeoutError, TimeoutError) as exc:
             # BMTX#3: a timed-out run is an honest outage, not a reference
             # matrix with invented Sharpe values under the requested tickers.
-            reason = f"BMTX execution timed out after {LIVE_TIMEOUT_S:g}s: {exc}"
+            reason = f"BMTX execution timed out after {LIVE_TIMEOUT_S:g}s: {str(exc) or type(exc).__name__}"
             return _unavailable(
                 instrument=instrument,
                 symbols=symbols,

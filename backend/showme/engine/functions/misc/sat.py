@@ -505,7 +505,7 @@ async def _check_tile(url: str) -> tuple[str, str]:
     try:
         resp = await _http_get_raw(url)
     except Exception as exc:
-        return "unreachable", f"nasa_gibs: {exc}"
+        return "unreachable", f"nasa_gibs: {str(exc) or type(exc).__name__}"
     try:
         status = int(getattr(resp, "status_code", 0) or 0)
     except (TypeError, ValueError):

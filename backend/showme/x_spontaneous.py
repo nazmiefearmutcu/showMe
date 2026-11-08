@@ -456,7 +456,7 @@ class SpontaneousXScraper:
                     if len(posts) >= limit:
                         break
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{fn.__name__}: {exc}")
+                errors.append(f"{fn.__name__}: {str(exc) or type(exc).__name__}")
 
         if not posts:
             # Fallbacks if every search engine + syndication produced nothing.
@@ -467,7 +467,7 @@ class SpontaneousXScraper:
                         posts = fresh
                         break
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{fn.__name__}: {exc}")
+                    errors.append(f"{fn.__name__}: {str(exc) or type(exc).__name__}")
 
         if posts and (since_dt or until_dt or lang):
             posts = _filter_posts(posts, since_dt=since_dt, until_dt=until_dt, lang=lang)
@@ -659,7 +659,7 @@ class SpontaneousXScraper:
                 last_error = f"{mirror}: 0 posts"
                 _NITTER.mark_failure(mirror, ban_seconds=300)
             except Exception as exc:  # noqa: BLE001
-                last_error = f"{mirror}: {exc}"
+                last_error = f"{mirror}: {str(exc) or type(exc).__name__}"
                 _NITTER.mark_failure(mirror)
                 continue
         if last_error:

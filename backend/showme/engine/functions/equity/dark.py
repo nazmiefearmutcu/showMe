@@ -59,7 +59,7 @@ class DARKFunction(BaseFunction):
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"DARK execution timed out: {exc}"
+            reason = f"DARK execution timed out: {str(exc) or type(exc).__name__}"
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data=_unavailable(sym, reason, [reason]),
@@ -95,14 +95,14 @@ class DARKFunction(BaseFunction):
             try:
                 return await self._fetch_finra_ats(sym, weeks)
             except Exception as exc:
-                provider_errors.append(f"finra: {exc}")
+                provider_errors.append(f"finra: {str(exc) or type(exc).__name__}")
                 return []
 
         async def _safe_weekly():
             try:
                 return await self._weekly_total_volume(sym)
             except Exception as exc:
-                provider_errors.append(f"yfinance weekly volume: {exc}")
+                provider_errors.append(f"yfinance weekly volume: {str(exc) or type(exc).__name__}")
                 return {}
 
         raw_rows, week_total_volume = await asyncio.gather(

@@ -76,7 +76,7 @@ class WIRPFunction(BaseFunction):
             except Exception as exc:  # noqa: BLE001
                 rows = []
                 warnings.append(
-                    f"cme_fedwatch adapter error: {exc.__class__.__name__}: {exc}"
+                    f"cme_fedwatch adapter error: {exc.__class__.__name__}: {str(exc) or type(exc).__name__}"
                 )
             if rows:
                 sources.append("cme_fedwatch")
@@ -113,7 +113,7 @@ class WIRPFunction(BaseFunction):
             upper = lower = effr = None
             warnings.append(
                 "FRED target-range source unavailable: "
-                f"{exc.__class__.__name__}: {exc}"
+                f"{exc.__class__.__name__}: {str(exc) or type(exc).__name__}"
             )
 
         irx_budget = min(20.0, max(1.0, 13.0 - (time.monotonic() - fred_started)))
@@ -129,7 +129,7 @@ class WIRPFunction(BaseFunction):
         except Exception as exc:  # noqa: BLE001 — already non-raising, belt+braces
             implied_rate, irx_asof = None, None
             warnings.append(
-                f"^IRX implied-rate refinement unavailable: {exc.__class__.__name__}: {exc}"
+                f"^IRX implied-rate refinement unavailable: {exc.__class__.__name__}: {str(exc) or type(exc).__name__}"
             )
 
         target_mid = None

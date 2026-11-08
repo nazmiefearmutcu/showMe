@@ -69,7 +69,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             spec = StrategySpec(**spec_dict)
         except Exception as exc:  # noqa: BLE001
-            return {"spec": spec_dict, "notes": notes + [f"validation failed: {exc}"],
+            return {"spec": spec_dict, "notes": notes + [f"validation failed: {str(exc) or type(exc).__name__}"],
                     "saved_id": None}
 
         # B5 — catalog-validate the produced spec against the SAME indicator
@@ -90,7 +90,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             except ValueError as err:
                 return {
                     "spec": spec_dict,
-                    "notes": notes + [f"catalog validation failed: {err}"],
+                    "notes": notes + [f"catalog validation failed: {str(err) or type(err).__name__}"],
                     "saved_id": None,
                 }
 

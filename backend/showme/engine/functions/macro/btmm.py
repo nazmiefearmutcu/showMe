@@ -313,7 +313,7 @@ class BTMMFunction(BaseFunction):
         except Exception as exc:
             # DATA POLICY: no stored or hard-coded policy-rate snapshot is served
             # in place of the BIS feed. Report the outage explicitly instead.
-            warnings.append(f"BIS CBPOL unavailable: {exc}")
+            warnings.append(f"BIS CBPOL unavailable: {str(exc) or type(exc).__name__}")
             return _unavailable_result(
                 self.code,
                 country=country,

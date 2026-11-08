@@ -23,7 +23,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             out = int(value) if value not in (None, "") else default
         except (TypeError, ValueError) as exc:
             raise HTTPException(
-                status_code=400, detail=f"invalid integer value: {value!r} ({exc})"
+                status_code=400, detail=f"invalid integer value: {value!r} ({str(exc) or type(exc).__name__})"
             ) from exc
         if low is not None:
             out = max(low, out)
@@ -49,7 +49,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             factory = factory_mod.get_factory()
         except Exception as exc:  # noqa: BLE001
             LOG.exception("get_factory failed")
-            raise HTTPException(status_code=500, detail=f"factory: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"factory: {str(exc) or type(exc).__name__}") from exc
         body = payload or {}
         phases = body.get("phases")
         if isinstance(phases, list):

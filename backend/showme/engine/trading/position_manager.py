@@ -414,7 +414,7 @@ class PositionManager:
                 self.positions[symbol] = Position.from_dict(pdata)
                 logger.info(f"Restored position for {symbol}")
             except Exception as e:
-                logger.error(f"Failed to restore position for {symbol}: {e}")
+                logger.error(f"Failed to restore position for {symbol}: {str(e) or type(e).__name__}")
 
     def load_trade_history(self, history_data: list[dict]) -> None:
         """Restore trade history from saved state."""
@@ -422,4 +422,4 @@ class PositionManager:
             try:
                 self.trade_history.append(TradeRecord.from_dict(record_data))
             except Exception as e:
-                logger.error(f"Failed to restore trade record: {e}")
+                logger.error(f"Failed to restore trade record: {str(e) or type(e).__name__}")

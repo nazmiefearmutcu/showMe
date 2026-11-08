@@ -197,7 +197,7 @@ class WBFunction(BaseFunction):
                     return country, float("nan"), f"fred {country} ({fred_id}): observation date unavailable", None
                 return country, float(df["value"].iloc[-1]), None, obs
             except Exception as exc:
-                return country, float("nan"), f"fred {country} ({fred_id}): {exc}", None
+                return country, float("nan"), f"fred {country} ({fred_id}): {str(exc) or type(exc).__name__}", None
         results = await asyncio.gather(*(
             _one(c, fid) for c, fid in fred_ids.items()
         ))

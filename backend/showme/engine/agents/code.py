@@ -104,7 +104,7 @@ def _validate_code(code: str) -> None:
     except SyntaxError as exc:
         # Refuse rather than letting the subprocess silently print a
         # syntax error — keeps the contract uniform.
-        raise _SandboxViolation(f"syntax error: {exc}") from exc
+        raise _SandboxViolation(f"syntax error: {str(exc) or type(exc).__name__}") from exc
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -163,7 +163,7 @@ class CodeAgent(BaseAgent):
             return AgentResult(
                 agent=self.name,
                 task=task,
-                error=f"sandbox: {exc}",
+                error=f"sandbox: {str(exc) or type(exc).__name__}",
                 output={"refused": True, "reason": str(exc)},
             )
         wrapped = textwrap.dedent("""

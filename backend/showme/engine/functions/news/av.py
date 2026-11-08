@@ -126,7 +126,7 @@ class AVFunction(BaseFunction):
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"AV execution timed out: {exc}"
+            reason = f"AV execution timed out: {str(exc) or type(exc).__name__}"
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,

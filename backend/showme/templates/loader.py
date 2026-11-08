@@ -113,7 +113,7 @@ def load_template_catalog(path: str | Path) -> TemplateCatalog:
     try:
         raw_list = yaml.safe_load(p.read_text(encoding="utf-8")) or []
     except yaml.YAMLError as exc:
-        raise TemplateCatalogError(f"YAML parse error: {exc}") from exc
+        raise TemplateCatalogError(f"YAML parse error: {str(exc) or type(exc).__name__}") from exc
     if not isinstance(raw_list, list):
         raise TemplateCatalogError("catalog must be a YAML list")
     return TemplateCatalog(entries=tuple(_coerce_entry(r) for r in raw_list))

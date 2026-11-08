@@ -783,7 +783,7 @@ class HVTFunction(BaseFunction):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_reference_hvt(symbol, float(params.get("spot", 100)), reason=f"yfinance: {exc}"),
+                data=_reference_hvt(symbol, float(params.get("spot", 100)), reason=f"yfinance: {str(exc) or type(exc).__name__}"),
                 sources=[],
                 metadata={"fallback": True},
             )

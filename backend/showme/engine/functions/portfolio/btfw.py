@@ -181,7 +181,7 @@ class BTFWFunction(BaseFunction):
                 result.warnings = [*cfg.notes, *result.warnings]
             return result
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"BTFW execution timed out: {exc}"
+            reason = f"BTFW execution timed out: {str(exc) or type(exc).__name__}"
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -262,7 +262,7 @@ class BTFWFunction(BaseFunction):
                 code=self.code, instrument=instrument,
                 data=_walk_forward_template(instrument.symbol, strategy_name, cash),
                 sources=["local_backtest_model"],
-                warnings=[f"walk-forward could not run on this history: {exc}"],
+                warnings=[f"walk-forward could not run on this history: {str(exc) or type(exc).__name__}"],
                 metadata={"days": days, "fee_bps": fee_bps,
                           "allow_short": allow_short, "live": False,
                           "is_placeholder": True},

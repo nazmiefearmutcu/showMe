@@ -77,7 +77,7 @@ class POLYFunction(BaseFunction):
                     timeout=timeout,
                 )
             except Exception as e:  # noqa: BLE001 - fall through to keyless HTTP
-                provider_errors.append(f"polymarket_adapter: {e}")
+                provider_errors.append(f"polymarket_adapter: {str(e) or type(e).__name__}")
                 raw_rows = None
 
         # 2) DEFAULT keyless path: fetch the public Gamma markets directly.
@@ -97,7 +97,7 @@ class POLYFunction(BaseFunction):
                     warnings=[
                         "Polymarket Gamma feed unavailable; showing no markets rather than fabricated odds."
                     ],
-                    metadata={"provider_errors": provider_errors + [f"gamma: {e}"], "query": query},
+                    metadata={"provider_errors": provider_errors + [f"gamma: {str(e) or type(e).__name__}"], "query": query},
                 )
 
         compact: list[dict[str, Any]] = []

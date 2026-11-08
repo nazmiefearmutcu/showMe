@@ -45,7 +45,7 @@ def _enforce_position_sizing(payload: dict[str, Any]) -> None:
             sv = float(pos["sizing_value"])
         except (TypeError, ValueError) as exc:
             raise HTTPException(
-                400, detail=f"position.sizing_value must be numeric: {exc}",
+                400, detail=f"position.sizing_value must be numeric: {str(exc) or type(exc).__name__}",
             )
         if not math.isfinite(sv):
             raise HTTPException(
@@ -149,7 +149,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             spec = StrategySpec(**payload)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(400, detail=f"invalid spec: {exc}")
+            raise HTTPException(400, detail=f"invalid spec: {str(exc) or type(exc).__name__}")
         cat_ids = _catalog_ids()
         if cat_ids:
             try:
@@ -196,7 +196,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             updated = StrategySpec(**payload)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(400, detail=f"invalid spec: {exc}")
+            raise HTTPException(400, detail=f"invalid spec: {str(exc) or type(exc).__name__}")
         cat_ids = _catalog_ids()
         if cat_ids:
             try:

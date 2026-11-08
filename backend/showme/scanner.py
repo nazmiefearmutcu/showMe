@@ -372,7 +372,7 @@ async def run_scan(req: ScanRequest, deps: Any) -> ScannerResult:
                 row = await _scan_one(deps, sym, asset_class, zak, days)
                 rows.append(row)
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"{sym}: {exc}")
+                warnings.append(f"{sym}: {str(exc) or type(exc).__name__}")
 
     await asyncio.gather(*(_task(s) for s in symbols))
     rows.sort(key=lambda r: -abs(r.get("score") or 0))
@@ -561,7 +561,7 @@ async def _phase_c(
             try:
                 await _enrich(r)
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"phase_c {r['symbol']}: {exc}")
+                warnings.append(f"phase_c {r['symbol']}: {str(exc) or type(exc).__name__}")
 
     await asyncio.gather(*(_wrap(r) for r in targets))
 
@@ -594,7 +594,7 @@ def _phase_d_overlay(
             ac_name = getattr(ac, "value", str(ac))
             by_class[ac_name] = by_class.get(ac_name, 0) + 1
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"phase_d portfolio: {exc}")
+        warnings.append(f"phase_d portfolio: {str(exc) or type(exc).__name__}")
     new_long = 0
     new_short = 0
     held = 0

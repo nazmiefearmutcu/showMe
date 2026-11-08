@@ -324,13 +324,13 @@ class GREEKSFunction(BaseFunction):
                 instrument=None,
                 data={
                     "status": "calc_error",
-                    "reason": f"Greeks aggregation failed: {e}",
+                    "reason": f"Greeks aggregation failed: {str(e) or type(e).__name__}",
                     "rows": [],
                     "next_actions": [
                         "Verify each position has numeric qty, strike, expiry, vol, rate, and spot.",
                     ],
                 },
-                warnings=[f"aggregate: {e}"],
+                warnings=[f"aggregate: {str(e) or type(e).__name__}"],
             )
         failed = [row for row in agg.get("positions", []) if row.get("error")]
         if failed:

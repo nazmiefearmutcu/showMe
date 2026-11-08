@@ -201,7 +201,7 @@ class StatusExporter:
                 json.dump(data, f, indent=2, default=str)
             tmp.replace(self.output_path)
         except Exception as e:
-            logger.error(f"Failed to write dashboard status: {e}")
+            logger.error(f"Failed to write dashboard status: {str(e) or type(e).__name__}")
 
 
 def _compute_performance(trade_history: list[dict[str, Any]]) -> dict[str, Any]:

@@ -583,7 +583,7 @@ def _fetch_people(query: str, *, limit: int) -> dict[str, Any]:
             "ok": False,
             "items": [],
             "sources": [],
-            "reason": f"wikipedia/wikidata: {exc}",
+            "reason": f"wikipedia/wikidata: {str(exc) or type(exc).__name__}",
         }
 
 

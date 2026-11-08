@@ -52,7 +52,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             LOG.exception("MIS config save failed")
-            raise HTTPException(status_code=500, detail=f"save_mis_config: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"save_mis_config: {str(exc) or type(exc).__name__}") from exc
 
     @router.get("/api/mis/scan/progress")
     async def mis_scan_progress() -> dict[str, Any]:
@@ -99,7 +99,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 out = int(value) if value not in (None, "") else default
             except (TypeError, ValueError) as exc:
                 raise HTTPException(
-                    status_code=400, detail=f"invalid integer value: {value!r} ({exc})"
+                    status_code=400, detail=f"invalid integer value: {value!r} ({str(exc) or type(exc).__name__})"
                 ) from exc
             if low is not None:
                 out = max(low, out)
@@ -112,7 +112,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 return float(value) if value not in (None, "") else default
             except (TypeError, ValueError) as exc:
                 raise HTTPException(
-                    status_code=400, detail=f"invalid number value: {value!r} ({exc})"
+                    status_code=400, detail=f"invalid number value: {value!r} ({str(exc) or type(exc).__name__})"
                 ) from exc
 
         top_n = _as_int(body.get("top_n"), 50, low=1, high=500)
@@ -136,7 +136,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             factory = factory_mod.get_factory()
         except Exception as exc:  # noqa: BLE001
             LOG.exception("get_factory failed")
-            raise HTTPException(status_code=500, detail=f"factory: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"factory: {str(exc) or type(exc).__name__}") from exc
 
         req = MisScanRequest(
             markets=markets,
@@ -158,7 +158,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
                 _progress_update(status="error")
             except Exception:  # noqa: BLE001
                 pass
-            raise HTTPException(status_code=500, detail=f"mis_scan: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"mis_scan: {str(exc) or type(exc).__name__}") from exc
         # Indicator results may carry numpy.bool / numpy.float64 inside their
         # ``raw_values`` payloads. FastAPI's pydantic serializer rejects them
         # outright, so coerce the whole tree through ``json_safe`` first.

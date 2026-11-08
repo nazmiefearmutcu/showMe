@@ -468,7 +468,7 @@ class CORRFunction(BaseFunction):
                     # B6: never swallow cancellation; let the caller unwind.
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    last_error = f"{source_name}: {exc}"
+                    last_error = f"{source_name}: {str(exc) or type(exc).__name__}"
                     status.update(
                         {
                             "source": source_name,

@@ -371,7 +371,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             rec = BotRecord(**payload)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(400, detail=f"invalid bot: {exc}")
+            raise HTTPException(400, detail=f"invalid bot: {str(exc) or type(exc).__name__}")
         try:
             saved = _store().save(rec)
         except ValueError as exc:
@@ -642,7 +642,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             rec = BotRecord(**payload)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(400, detail=f"invalid bot: {exc}")
+            raise HTTPException(400, detail=f"invalid bot: {str(exc) or type(exc).__name__}")
         try:
             saved = _store().save(rec)
         except ValueError as exc:
@@ -709,7 +709,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             updated = await _runner().enable(bot_id, store)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(500, detail=f"enable failed: {exc}")
+            raise HTTPException(500, detail=f"enable failed: {str(exc) or type(exc).__name__}")
         return updated.model_dump()
 
     @router.post("/api/bots/{bot_id}/disable")
@@ -722,7 +722,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         except ValueError:
             raise HTTPException(400, detail="invalid bot id")
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(500, detail=f"disable failed: {exc}")
+            raise HTTPException(500, detail=f"disable failed: {str(exc) or type(exc).__name__}")
         return updated.model_dump()
 
     @router.get("/api/bots/{bot_id}/signals")

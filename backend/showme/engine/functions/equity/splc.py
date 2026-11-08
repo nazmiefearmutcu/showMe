@@ -89,9 +89,9 @@ class SPLCFunction(BaseFunction):
                                         suppliers = _extract_concentration(
                                             text, TENK_SUPPLIER_PATTERNS, headings)
                             except Exception as e:
-                                warnings.append(f"10-K fetch: {e}")
+                                warnings.append(f"10-K fetch: {str(e) or type(e).__name__}")
         except Exception as e:
-            warnings.append(f"sec_edgar: {e}")
+            warnings.append(f"sec_edgar: {str(e) or type(e).__name__}")
         data: dict[str, Any] = {
             "status": "ok" if customers or suppliers else "reference_relationships",
             "filings": filings,

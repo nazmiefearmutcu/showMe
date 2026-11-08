@@ -103,7 +103,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             from showme.engine.portfolio.state import PortfolioPosition, PortfolioState
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
-                status_code=503, detail=f"portfolio state unavailable: {exc}"
+                status_code=503, detail=f"portfolio state unavailable: {str(exc) or type(exc).__name__}"
             ) from exc
         portfolio = PortfolioState()
         if body.get("import_legacy", True):
@@ -149,7 +149,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             from showme.engine.portfolio.state import PortfolioState
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
-                status_code=503, detail=f"portfolio state unavailable: {exc}"
+                status_code=503, detail=f"portfolio state unavailable: {str(exc) or type(exc).__name__}"
             ) from exc
         dry_run = _truthy_value(body.get("dry_run", True))
         exit_price = body.get("exit_price")

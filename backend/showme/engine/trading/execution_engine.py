@@ -285,11 +285,11 @@ class ExecutionEngine:
                 # exchange would fill at its current/default leverage, which can
                 # be many times riskier than the sized-for leverage (sizing math
                 # assumed `leverage`). Refusing the order is the safe outcome.
-                logger.error(f"Failed to set leverage for {symbol}: {e} — order refused")
+                logger.error(f"Failed to set leverage for {symbol}: {str(e) or type(e).__name__} — order refused")
                 return {
                     "executed": False,
                     "action": action.value,
-                    "reason": f"Leverage change failed: {e}",
+                    "reason": f"Leverage change failed: {str(e) or type(e).__name__}",
                 }
 
         if action == TradeAction.OPEN_LONG:

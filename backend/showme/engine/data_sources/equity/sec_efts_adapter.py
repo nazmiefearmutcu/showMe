@@ -144,7 +144,7 @@ class SECFullTextSearch(BaseDataSource):
             r = await client.get(self.base_url, params=params)
             r.raise_for_status()
         except httpx.HTTPError as e:
-            raise DataSourceError(f"SEC EFTS: {e}")
+            raise DataSourceError(f"SEC EFTS: {str(e) or type(e).__name__}")
         body = r.json() or {}
         hits_block = body.get("hits") or {}
         hits = hits_block.get("hits") or []

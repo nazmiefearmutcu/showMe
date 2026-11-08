@@ -1538,7 +1538,7 @@ async def _run_mis_scan(req: MisScanRequest, deps: Any) -> MisScanResult:
                 "tf": tf, "weight": int(weight),
                 "direction": "NEUTRAL", "final_signal": "NEUTRAL",
                 "score": 0.0, "confidence": 0.0, "contribution": 0.0,
-                "skipped": f"calc_error: {exc}",
+                "skipped": f"calc_error: {str(exc) or type(exc).__name__}",
             }, df
         consensus = payload["consensus"]
         final_signal = consensus.get("final_signal") or "NEUTRAL"

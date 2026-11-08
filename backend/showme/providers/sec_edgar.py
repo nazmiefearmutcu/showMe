@@ -64,7 +64,7 @@ class SecEdgarAdapter(ProviderAdapter):
             data = r.json()
         except Exception as exc:  # noqa: BLE001 — record-and-reraise
             self._record_failure(exc)
-            raise AdapterError(f"sec_edgar GET {url} failed: {exc}") from exc
+            raise AdapterError(f"sec_edgar GET {url} failed: {str(exc) or type(exc).__name__}") from exc
         latency_ms = int((time.monotonic() - started) * 1000)
         self._record_success(latency_ms)
         return data

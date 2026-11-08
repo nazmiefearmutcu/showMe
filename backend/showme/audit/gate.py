@@ -61,7 +61,7 @@ def registry_sources() -> tuple[dict[str, Source], dict[str, str]]:
             path = Path(inspect.getsourcefile(cls) or "")
             files[code.upper()] = (path.read_text(encoding="utf-8"), path.name, cls.__name__)
         except (OSError, TypeError) as exc:
-            errors[f"{cls.__module__}.{cls.__name__}"] = f"source unavailable: {exc}"
+            errors[f"{cls.__module__}.{cls.__name__}"] = f"source unavailable: {str(exc) or type(exc).__name__}"
     return files, errors
 
 

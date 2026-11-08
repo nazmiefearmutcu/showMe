@@ -225,12 +225,12 @@ class TECHFunction(BaseFunction):
                     "rows": [],
                     "ohlcv": [],
                     "summary": {"symbol": instrument.symbol, "days": days},
-                    "reason": f"yfinance fetch failed: {exc}",
+                    "reason": f"yfinance fetch failed: {str(exc) or type(exc).__name__}",
                     "next_actions": [
                         "Try again later or check symbol support.",
                     ],
                 },
-                warnings=[f"yfinance: {exc}"],
+                warnings=[f"yfinance: {str(exc) or type(exc).__name__}"],
                 sources=["yfinance"],
             )
         if df.empty:

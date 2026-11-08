@@ -164,7 +164,7 @@ class RssAdapter(ProviderAdapter):
             xml_text = resp.text
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"rss fetch failed for {url}: {exc}") from exc
+            raise AdapterError(f"rss fetch failed for {url}: {str(exc) or type(exc).__name__}") from exc
         self._record_success(int((time.perf_counter() - t0) * 1000))
         if _HAVE_FEEDPARSER:
             try:

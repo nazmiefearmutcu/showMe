@@ -77,13 +77,13 @@ class FTSFunction(BaseFunction):
         except Exception as e:
             return FunctionResult(code=self.code, instrument=instrument,
                                   data={"status": "provider_unavailable", "rows": [], "query": query,
-                                        "reason": f"sec_efts adapter raised: {e}",
+                                        "reason": f"sec_efts adapter raised: {str(e) or type(e).__name__}",
                                         "total_hits": None,
                                         "next_actions": ["Retry once the SEC EDGAR provider recovers.", "Open Raw payload to inspect the provider error."],
                                         "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. Provider errors are shown instead of unrelated hits.",
                                         "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type."}},
                                   sources=["no_live_source"],
-                                  metadata={"provider_errors": [f"sec_efts: {e}"]})
+                                  metadata={"provider_errors": [f"sec_efts: {str(e) or type(e).__name__}"]})
         limit = max(1, min(int(params.get("limit", 50) or 50), 100))
         rows = _normalise_hits(hits, instrument)[:limit]
         # EFTS reports the match count with a relation. Only relation "eq" is an

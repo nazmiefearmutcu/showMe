@@ -144,7 +144,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         except HTTPException:
             raise
         except TypeError as exc:
-            raise HTTPException(status_code=400, detail=f"argument error: {exc}")
+            raise HTTPException(status_code=400, detail=f"argument error: {str(exc) or type(exc).__name__}")
         except TimeoutError:
             return fallback_function_payload(
                 code,

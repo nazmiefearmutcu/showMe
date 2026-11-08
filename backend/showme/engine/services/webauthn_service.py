@@ -224,7 +224,7 @@ def complete_registration(user_id: str, response: dict[str, Any]) -> dict[str, A
         try:
             auth_data = server.register_complete(state, response)
         except Exception as e:
-            return {"error": f"registration verification failed: {e}"}
+            return {"error": f"registration verification failed: {str(e) or type(e).__name__}"}
         cred_id = bytes(auth_data.credential_data.credential_id)
         public_key = bytes(auth_data.credential_data.public_key)
         con.execute("INSERT INTO credentials(user_id, credential_id, public_key, sign_count, created_at) VALUES (?,?,?,?,?)",
@@ -303,7 +303,7 @@ def complete_authentication(user_id: str, response: dict[str, Any]) -> dict[str,
         try:
             credential_id, sign_count = _verify_assertion(server, state, creds, response)
         except Exception as e:
-            return {"error": f"verification failed: {e}"}
+            return {"error": f"verification failed: {str(e) or type(e).__name__}"}
         # FR-03: bump ONLY the credential that authenticated (the old
         # UPDATE raised every credential the user owns) and store the
         # counter the assertion carried so fido2's clone detector has a

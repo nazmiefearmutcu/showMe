@@ -363,7 +363,7 @@ async def aggregate(
                 "account": None,
                 "positions": [],
                 "orders": [],
-                "error": f"unknown broker: {exc}",
+                "error": f"unknown broker: {str(exc) or type(exc).__name__}",
             })
             continue
         fetches.append((credential_id, name, asyncio.create_task(

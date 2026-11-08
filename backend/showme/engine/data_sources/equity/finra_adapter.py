@@ -203,7 +203,7 @@ class FINRAAdapter(BaseDataSource):
             raise
         except httpx.HTTPError as e:
             self._cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_S
-            raise DataSourceError(f"finra: {e}")
+            raise DataSourceError(f"finra: {str(e) or type(e).__name__}")
         frame = pd.DataFrame(newest_weeks(raw, weeks))
         self._cache[cache_key] = (time.monotonic(), frame)
         self._cooldown_until = 0.0

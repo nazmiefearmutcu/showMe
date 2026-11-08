@@ -135,7 +135,7 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "whisper_audio"
             except Exception as exc:  # noqa: BLE001
-                transcribe_errors.append(f"transcribe_url: {exc}")
+                transcribe_errors.append(f"transcribe_url: {str(exc) or type(exc).__name__}")
 
         if not transcript and params.get("audio_path"):
             try:
@@ -152,7 +152,7 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "whisper_audio"
             except Exception as exc:  # noqa: BLE001
-                transcribe_errors.append(f"transcribe: {exc}")
+                transcribe_errors.append(f"transcribe: {str(exc) or type(exc).__name__}")
 
         # 2) keyless SEC 8-K Exhibit 99.1 fallback when nothing else produced text
         #    and no audio path was requested (audio requests stay on their own
@@ -163,7 +163,7 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "sec_8k_ex99"
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"sec: {exc}")
+                warnings.append(f"sec: {str(exc) or type(exc).__name__}")
 
         # ---- honest "no transcript" envelope --------------------------------
         if not transcript:

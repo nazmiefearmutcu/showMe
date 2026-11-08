@@ -291,7 +291,7 @@ def analyze_query(
             sample=sample,
             source=source,
             engine=engine,
-            reason=f"Veryfinder import/config failed from {root}: {exc}",
+            reason=f"Veryfinder import/config failed from {root}: {str(exc) or type(exc).__name__}",
         )
     resolved_source = resolve_source(source, config)
     fixture_path = str(default_fixture_path(root)) if resolved_source == "fixture" else ""

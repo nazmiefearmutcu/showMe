@@ -90,7 +90,7 @@ class ECBAdapter(BaseDataSource):
             from io import StringIO
             df = pd.read_csv(StringIO(r.text))
         except Exception as e:
-            raise DataSourceError(f"ECB CSV parse failed: {e}")
+            raise DataSourceError(f"ECB CSV parse failed: {str(e) or type(e).__name__}")
         if "TIME_PERIOD" in df.columns and "OBS_VALUE" in df.columns:
             df = df.rename(columns={"TIME_PERIOD": "date", "OBS_VALUE": "value"})
             df["date"] = pd.to_datetime(df["date"])

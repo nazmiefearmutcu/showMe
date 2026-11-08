@@ -66,7 +66,7 @@ def _assert_public_url(url: str) -> str:
         infos = socket.getaddrinfo(host, parts.port or (443 if scheme == "https" else 80),
                                    proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
-        raise UnsafeURLError(f"cannot resolve host {host!r}: {exc}") from exc
+        raise UnsafeURLError(f"cannot resolve host {host!r}: {str(exc) or type(exc).__name__}") from exc
     if not infos:
         raise UnsafeURLError(f"host {host!r} did not resolve")
 
@@ -187,7 +187,7 @@ async def transcribe(audio_path: str | Path,
         p = _resolve_contained_audio_path(audio_path)
     except ValueError as exc:
         LOG.warning("transcribe: rejected audio_path %r: %s", audio_path, exc)
-        return {"error": f"audio_path rejected: {exc}"}
+        return {"error": f"audio_path rejected: {str(exc) or type(exc).__name__}"}
     if not p.exists():
         return {"error": f"file not found: {p}"}
     audio = p.read_bytes()
@@ -289,7 +289,7 @@ async def transcribe(audio_path: str | Path,
             return {"text": text, "model": "openai:whisper-1",
                     "language": language}
         except Exception as e:
-            return {"error": f"openai whisper: {e}"}
+            return {"error": f"openai whisper: {str(e) or type(e).__name__}"}
 
     # DATA POLICY: no placeholder text is returned as a transcript. Callers
     # (TRAN/TRQA/TSAR) read "text", so it stays empty and the reason is explicit.
@@ -329,9 +329,9 @@ async def transcribe_url(url: str, *, language: str | None = None,
                 raise UnsafeURLError("too many redirects")
     except UnsafeURLError as exc:
         LOG.warning("transcribe_url: redirect rejected for %r: %s", url, exc)
-        return {"error": f"url rejected: {exc}"}
+        return {"error": f"url rejected: {str(exc) or type(exc).__name__}"}
     except Exception as e:
-        return {"error": f"download: {e}"}
+        return {"error": f"download: {str(e) or type(e).__name__}"}
     suffix = url.rsplit(".", 1)[-1].lower()
     if suffix not in ("mp3", "m4a", "wav", "ogg", "flac"):
         suffix = "mp3"

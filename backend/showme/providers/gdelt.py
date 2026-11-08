@@ -43,14 +43,14 @@ class GdeltAdapter(ProviderAdapter):
             resp.raise_for_status()
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"gdelt request failed: {exc}") from exc
+            raise AdapterError(f"gdelt request failed: {str(exc) or type(exc).__name__}") from exc
         self._record_success(int((time.perf_counter() - t0) * 1000))
         if params.get("format") == "json":
             try:
                 return resp.json()
             except Exception as exc:
                 self._record_failure(exc)
-                raise AdapterError(f"gdelt returned invalid JSON: {exc}") from exc
+                raise AdapterError(f"gdelt returned invalid JSON: {str(exc) or type(exc).__name__}") from exc
         return resp.text
 
     async def doc_search(

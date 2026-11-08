@@ -51,7 +51,7 @@ class COUNFunction(BaseFunction):
                 try:
                     r = await ECSTFunction(self.deps).execute(series_id=sid, timeout=timeout)
                 except Exception as exc:
-                    provider_errors.append(f"ecst.{sid}: {exc}")
+                    provider_errors.append(f"ecst.{sid}: {str(exc) or type(exc).__name__}")
                     indicator_rows.extend(_unavailable_series_row(spec, str(exc)) for spec in specs)
                     continue
                 for spec in specs:
@@ -260,7 +260,7 @@ async def _fetch_policy(deps: Any, country: str, timeout: Any) -> tuple[dict[str
     try:
         btmm = await BTMMFunction(deps).execute(country=country, timeout=timeout)
     except Exception as exc:
-        return None, f"btmm: {exc}"
+        return None, f"btmm: {str(exc) or type(exc).__name__}"
     rows = btmm.data.get("rows") if isinstance(btmm.data, dict) else None
     candidates = [
         row

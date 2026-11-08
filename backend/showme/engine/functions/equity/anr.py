@@ -460,7 +460,7 @@ class ANRFunction(BaseFunction):
                 state["target"] = await self.deps.finnhub.price_target(instrument.symbol)
                 state["sources"].append("finnhub")
         except Exception as e:
-            state["warnings"].append(f"finnhub: {e}")
+            state["warnings"].append(f"finnhub: {str(e) or type(e).__name__}")
 
     async def _fetch_yfinance(
         self, instrument: Instrument, params: dict[str, Any], state: dict[str, Any]
@@ -498,7 +498,7 @@ class ANRFunction(BaseFunction):
             if (state["spot"] is not None or yf_recs or yf_target) and "yfinance" not in state["sources"]:
                 state["sources"].append("yfinance")
         except Exception as e:
-            state["warnings"].append(f"yfinance: {e}")
+            state["warnings"].append(f"yfinance: {str(e) or type(e).__name__}")
 
     async def _fetch_yfinance_retry(
         self, instrument: Instrument, params: dict[str, Any], state: dict[str, Any]
@@ -533,7 +533,7 @@ class ANRFunction(BaseFunction):
                     or retry_raw.get("previousClose")
                 )
         except Exception as e:
-            state["warnings"].append(f"yfinance retry: {e}")
+            state["warnings"].append(f"yfinance retry: {str(e) or type(e).__name__}")
 
     def _fill_target_fallback(self, state: dict[str, Any]) -> None:
         """Without a provider price target every target statistic stays empty.

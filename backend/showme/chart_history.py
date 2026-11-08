@@ -415,7 +415,7 @@ async def fetch_binance_history(
                         },
                     )
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"{source}: {exc}")
+                warnings.append(f"{source}: {str(exc) or type(exc).__name__}")
     raise RuntimeError("; ".join(warnings) or f"no Binance history for {provider_symbol}")
 
 

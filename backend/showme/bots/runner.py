@@ -271,7 +271,7 @@ def _resolve_quantity(spec: Any, df: Any) -> float:
         price = float(df.iloc[-1]["close"])
     except Exception as exc:  # noqa: BLE001
         raise BotRunnerError(
-            f"cannot resolve quantity: last-close lookup failed ({exc})",
+            f"cannot resolve quantity: last-close lookup failed ({str(exc) or type(exc).__name__})",
         ) from exc
     try:
         return resolve_quantity(
@@ -282,7 +282,7 @@ def _resolve_quantity(spec: Any, df: Any) -> float:
             stop_loss_pct=spec.position.stop_loss_pct,
         )
     except ValueError as exc:
-        raise BotRunnerError(f"sizing rejected: {exc}") from exc
+        raise BotRunnerError(f"sizing rejected: {str(exc) or type(exc).__name__}") from exc
 
 
 async def _resolve_quantity_async(
@@ -314,7 +314,7 @@ async def _resolve_quantity_async(
         price = float(df.iloc[-1]["close"])
     except Exception as exc:  # noqa: BLE001
         raise BotRunnerError(
-            f"cannot resolve quantity: last-close lookup failed ({exc})",
+            f"cannot resolve quantity: last-close lookup failed ({str(exc) or type(exc).__name__})",
         ) from exc
     if sizing_kind in ("risk_pct", "risk_per_trade"):
         equity = (
@@ -336,7 +336,7 @@ async def _resolve_quantity_async(
     except ValueError as exc:
         # Map sizing validation errors to BotRunnerError so the tick
         # logger reports a clear "skipped" entry instead of a 500.
-        raise BotRunnerError(f"sizing rejected: {exc}") from exc
+        raise BotRunnerError(f"sizing rejected: {str(exc) or type(exc).__name__}") from exc
 
 
 def _has_trade_perm(credential_id: str) -> bool:
@@ -569,7 +569,7 @@ class BotRunner:
                 LOG.warning("bot %s: broker %s missing: %s", bot_id, broker_name, exc)
                 entry = SignalEntry(bar_index=-1, bar_time="", kind="entry",
                                    price=0.0, action="skipped",
-                                   error=f"broker unavailable: {exc}")
+                                   error=f"broker unavailable: {str(exc) or type(exc).__name__}")
                 store.save(rec.append_signal(entry))
                 return entry
 
@@ -581,7 +581,7 @@ class BotRunner:
                 LOG.warning("bot %s: strategy %s missing", bot_id, rec.strategy_id)
                 entry = SignalEntry(bar_index=-1, bar_time="", kind="entry",
                                    price=0.0, action="skipped",
-                                   error=f"strategy unavailable: {exc}")
+                                   error=f"strategy unavailable: {str(exc) or type(exc).__name__}")
                 store.save(rec.append_signal(entry))
                 return entry
 
@@ -600,7 +600,7 @@ class BotRunner:
                 entry = SignalEntry(
                     bar_index=-1, bar_time="", kind="entry",
                     price=0.0, action="skipped",
-                    error=f"strategy validation failed: {exc}",
+                    error=f"strategy validation failed: {str(exc) or type(exc).__name__}",
                 )
                 try:
                     fresh = store.get(bot_id)
@@ -1019,7 +1019,7 @@ class BotRunner:
                 action = "placed"
         except Exception as exc:  # noqa: BLE001
             action = "skipped"
-            error = f"submit failed: {exc}"
+            error = f"submit failed: {str(exc) or type(exc).__name__}"
         return action, order_id, error, filled_qty, avg_fill_price
 
     # ---- KAOS multibot delegate (2026-09-09 campaign) -------------------
@@ -1093,13 +1093,13 @@ class BotRunner:
             LOG.warning("bot %s: strategy %s missing", bot_id, rec.strategy_id)
             entry = SignalEntry(bar_index=-1, bar_time="", kind="entry",
                                 price=0.0, action="skipped",
-                                error=f"strategy unavailable: {exc}")
+                                error=f"strategy unavailable: {str(exc) or type(exc).__name__}")
             store.save(rec.append_signal(entry))
             return entry
         except ValueError as exc:
             entry = SignalEntry(bar_index=-1, bar_time="", kind="entry",
                                 price=0.0, action="skipped",
-                                error=f"strategy unavailable: {exc}")
+                                error=f"strategy unavailable: {str(exc) or type(exc).__name__}")
             store.save(rec.append_signal(entry))
             return entry
 
@@ -1520,7 +1520,7 @@ class BotRunner:
                     # ``skipped`` entry with a clear reason — better than
                     # silently falling through to an exposure-flip below.
                     raise BotRunnerError(
-                        f"close_position({rec.symbol}) failed: {exc}",
+                        f"close_position({rec.symbol}) failed: {str(exc) or type(exc).__name__}",
                     ) from exc
             # Fallback: brokers without close_position get the legacy
             # opposite-side market order. C-RUNTIME-4 partial-fix: log a

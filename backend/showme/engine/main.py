@@ -68,7 +68,7 @@ def main(config_path: str = "config/default.yaml") -> None:
         bot.initialize()
         bot.run()
     except Exception as e:
-        logger.critical(f"Fatal error: {e}", exc_info=True)
+        logger.critical(f"Fatal error: {str(e) or type(e).__name__}", exc_info=True)
         sys.exit(1)
     finally:
         # Remove PID file LAST — after bot._shutdown() has saved state.

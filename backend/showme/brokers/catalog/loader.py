@@ -120,7 +120,7 @@ def load_catalog(path: str | Path) -> Catalog:
     try:
         raw_list = yaml.safe_load(p.read_text(encoding="utf-8")) or []
     except yaml.YAMLError as exc:
-        raise CatalogError(f"catalog YAML parse error: {exc}") from exc
+        raise CatalogError(f"catalog YAML parse error: {str(exc) or type(exc).__name__}") from exc
     if not isinstance(raw_list, list):
         raise CatalogError(f"catalog must be a YAML list of entries, got {type(raw_list).__name__}")
     return Catalog(entries=tuple(_coerce_entry(r) for r in raw_list))

@@ -73,6 +73,6 @@ class ConfigWatcher:
                 self._last_mtime = current_mtime
                 return True, self.config
         except Exception as e:
-            logger.error(f"Error checking config: {e}")
+            logger.error(f"Error checking config: {str(e) or type(e).__name__}")
 
         return False, self.config

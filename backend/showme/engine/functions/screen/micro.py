@@ -133,12 +133,12 @@ class MICROFunction(BaseFunction):
                     sym,
                     data_mode="provider_unavailable",
                     status="provider_unavailable",
-                    reason=f"binance depth request failed: {exc}",
+                    reason=f"binance depth request failed: {str(exc) or type(exc).__name__}",
                     next_action="Retry with a liquid Binance spot pair such as BTCUSDT.",
                     as_of=request_started.isoformat(),
                 ),
                 sources=["binance"],
-                warnings=[f"binance depth request failed: {exc}"],
+                warnings=[f"binance depth request failed: {str(exc) or type(exc).__name__}"],
             )
 
         if isinstance(depth, Exception) or getattr(depth, "status_code", None) != 200:

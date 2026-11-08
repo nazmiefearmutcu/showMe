@@ -101,7 +101,7 @@ class HDSFunction(BaseFunction):
                     yahoo = {}
                 sources.append("yfinance")
         except Exception as e:
-            warnings.append(f"yfinance: {e}")
+            warnings.append(f"yfinance: {str(e) or type(e).__name__}")
         # Then enrich with the SEC 13F aggregate for the issuer (DuckDB-cached).
         # 13F rows carry the issuer name, not the ticker, so the ticker is first
         # resolved to its SEC filer name and matched on the normalized name.
@@ -124,7 +124,7 @@ class HDSFunction(BaseFunction):
                     sec_top = top.to_dict(orient="records")
                     sources.append("sec_13f")
             except Exception as e:
-                warnings.append(f"sec_13f: {e}")
+                warnings.append(f"sec_13f: {str(e) or type(e).__name__}")
         all_rows = _holder_rows(instrument.symbol, sec_top, yahoo)
         rows = _filter_holder_type(all_rows, holder_type)
         summary = _major_summary(yahoo.get("major"))

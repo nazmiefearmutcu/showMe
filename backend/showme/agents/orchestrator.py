@@ -299,7 +299,7 @@ async def _fanout(plan: Plan, deps: Any) -> dict[str, Any]:
             branch_warnings.append(f"{name}: timed out after 8.0s")
             branches[name] = {"kind": "error", "warnings": ["timed out after 8.0s"]}
         except Exception as exc:  # noqa: BLE001
-            branch_warnings.append(f"{name}: {exc}")
+            branch_warnings.append(f"{name}: {str(exc) or type(exc).__name__}")
             branches[name] = {"kind": "error", "warnings": [str(exc)]}
 
     await asyncio.gather(

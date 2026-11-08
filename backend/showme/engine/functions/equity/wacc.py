@@ -164,7 +164,7 @@ class WACCFunction(BaseFunction):
                         )
                         country = str(getattr(rd, "country", None) or "").strip() or None
                 except Exception as e:
-                    warnings.append(f"issuer country lookup failed: {e}")
+                    warnings.append(f"issuer country lookup failed: {str(e) or type(e).__name__}")
                 if country is None:
                     warnings.append(
                         "issuer country unknown: the Damodaran ERP is set per country, so no "
@@ -203,7 +203,7 @@ class WACCFunction(BaseFunction):
                                     f"for {country} (erp_source {erp_source})"
                                 )
                     except Exception as e:
-                        warnings.append(f"damodaran: {e}")
+                        warnings.append(f"damodaran: {str(e) or type(e).__name__}")
                         erp = None
             if erp is None:
                 # WACC#3-RQ: no hard-coded premium is substituted. Without a
@@ -244,7 +244,7 @@ class WACCFunction(BaseFunction):
                     rf_source = "fred_dgs10"
                     sources.append("fred")
             except Exception as e:
-                warnings.append(f"fred: {e}")
+                warnings.append(f"fred: {str(e) or type(e).__name__}")
         # Beta — Bug #17: never silently fall back to 1.0 without labelling.
         #
         # wc1-g34 T10: a beta that cannot be resolved is None, not 1.0. A
@@ -321,7 +321,7 @@ class WACCFunction(BaseFunction):
                         "(not enough price history); WACC cannot be computed without a beta"
                     )
             except Exception as e:
-                warnings.append(f"beta: {e}; WACC cannot be computed without a live beta")
+                warnings.append(f"beta: {str(e) or type(e).__name__}; WACC cannot be computed without a live beta")
         # Cost of debt — audit Q3 #17:
         # 1) Prefer issuer-specific implied rate: interest_expense / total_debt
         #    when both come from yfinance fundamentals.
@@ -348,7 +348,7 @@ class WACCFunction(BaseFunction):
                         rd = float(implied)
                         rd_source = "issuer_implied"
             except Exception as e:
-                warnings.append(f"yfinance implied rd: {e}")
+                warnings.append(f"yfinance implied rd: {str(e) or type(e).__name__}")
         if rd is None:
             # Keyless FRED CSV fallback (S2 c#3): attempt without a key too.
             # WACC#1: BAMLC0A4CBBBEY is the ICE BofA BBB corporate YIELD. The
@@ -366,7 +366,7 @@ class WACCFunction(BaseFunction):
                     rd = float(df["value"].iloc[-1]) / 100.0
                     rd_source = "fred_bbb_yield"
             except Exception as e:
-                warnings.append(f"fred BBB yield: {e}")
+                warnings.append(f"fred BBB yield: {str(e) or type(e).__name__}")
         if rd is None:
             # Keyless FRED CSV fallback (S2 c#3): attempt without a key too.
             try:
@@ -381,7 +381,7 @@ class WACCFunction(BaseFunction):
                     rd = float(df["value"].iloc[-1]) / 100.0
                     rd_source = "fred_aaa"
             except Exception as e:
-                warnings.append(f"fred AAA: {e}")
+                warnings.append(f"fred AAA: {str(e) or type(e).__name__}")
         # Tax rate / E/V/D ratios — best-effort from yfinance. The tax rate is
         # resolved after this block, once the issuer's own figures are read.
         issuer_tax: float | None = None
@@ -448,7 +448,7 @@ class WACCFunction(BaseFunction):
                     capital_data_state = "sector_default"
                 sources.append("yfinance")
         except Exception as e:
-            warnings.append(f"yfinance ratios: {e}")
+            warnings.append(f"yfinance ratios: {str(e) or type(e).__name__}")
         # WACC#4: the issuer's effective tax comes from its annual income statement
         # (income tax expense over pre-tax income), the FUNDAMENTALS feed. The
         # REFDATA info dict carries no statement lines.
@@ -467,7 +467,7 @@ class WACCFunction(BaseFunction):
                 if found is not None:
                     issuer_tax, tax_period = found
         except Exception as e:
-            warnings.append(f"yfinance income statement: {e}")
+            warnings.append(f"yfinance income statement: {str(e) or type(e).__name__}")
         # WACC#4: the tax rate is labelled with where it came from. A caller
         # value wins, then the issuer's own effective rate, then the 21% US
         # statutory rate for a US issuer (flagged as a default). Any other issuer

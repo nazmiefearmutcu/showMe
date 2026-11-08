@@ -76,7 +76,7 @@ class CACTFunction(BaseFunction):
                                 except Exception:
                                     continue
         except Exception as e:
-            warnings.append(f"sec_edgar: {e}")
+            warnings.append(f"sec_edgar: {str(e) or type(e).__name__}")
         yfin = {}
         try:
             if self.deps.yfinance:
