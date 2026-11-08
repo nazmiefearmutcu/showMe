@@ -575,13 +575,14 @@ class OSAFunction(BaseFunction):
                         iv_source = f"solved_{iv_res['method']}"
                 except Exception:
                     pass
-            if vol is None or float(vol) <= 0:
+            vol_value = _osa_finite_positive(vol)
+            if vol_value is None:
                 return _osa_needs_input(
-                    f"Leg {idx} has no implied vol (vol) and its market_price could not be "
-                    "solved for one.",
+                    f"Leg {idx} has no valid implied vol (vol) and its market_price could not "
+                    "be solved for one.",
                     instrument,
                 )
-            vol = float(vol)
+            vol = vol_value
             premium = _bs_price(S, strike, expiry, r, vol, q, opt_type == "CALL")["price"]
             net_debit += qty * premium
             initial_premiums.append({
