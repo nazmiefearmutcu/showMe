@@ -365,13 +365,30 @@ function fmtTime(v: string | null | undefined): string {
 function fmtDetails(details: Record<string, unknown> | null | undefined): string {
   if (!details) return formatMissing;
   const parts = Object.entries(details)
-    .filter(([, v]) => v != null && v !== "")
+    .map(([k, v]) => [k, scalarDetail(v)] as const)
+    .filter((entry): entry is readonly [string, string] => entry[1] !== null)
     .slice(0, 3)
-    .map(
-      ([k, v]) =>
-        `${k.replace(/_/g, " ")} ${typeof v === "number" ? v.toLocaleString("en-US", { maximumFractionDigits: 4 }) : String(v)}`,
-    );
+    .map(([k, text]) => `${k.replace(/_/g, " ")} ${text}`);
   return parts.join(" · ") || formatMissing;
+}
+
+/** A printable text for one detail value. Objects are never stringified ("[object Object]"). */
+function scalarDetail(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  if (typeof v === "number") return v.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  if (typeof v === "string" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) {
+    // e.g. 8-K items: [{code, label}] -> the codes; other arrays of scalars are joined.
+    const texts = v
+      .map((item) => {
+        if (item && typeof item === "object" && "code" in item)
+          return String((item as { code: unknown }).code);
+        return typeof item === "string" || typeof item === "number" ? String(item) : null;
+      })
+      .filter((t): t is string => t !== null && t !== "");
+    return texts.length > 0 ? texts.join(", ") : null;
+  }
+  return null;
 }
 
 const kpiGridStyle: CSSProperties = {

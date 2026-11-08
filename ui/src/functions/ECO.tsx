@@ -64,6 +64,14 @@ interface EconRow {
   is_central_bank?: boolean;
 }
 
+/** Awareness ProviderRef: live holiday rows carry this object as `source`. */
+interface ProviderRef {
+  provider?: string | null;
+  url?: string | null;
+  fetched_at?: string | null;
+  basis?: string | null;
+}
+
 interface HolidayRow {
   date?: string | null;
   country?: string | null;
@@ -71,7 +79,19 @@ interface HolidayRow {
   name?: string | null;
   kind?: string | null;
   early_close_time?: string | null;
-  source?: string | null;
+  /** Provider name (string) from the function layer; a ProviderRef object is accepted too. */
+  source?: string | ProviderRef | null;
+}
+
+/** Provider name for a holiday's source, never the object itself (a React child crash). */
+function holidayProviderLabel(
+  source: string | ProviderRef | null | undefined,
+): string | null {
+  if (typeof source === "string") return source.trim() || null;
+  if (source && typeof source === "object" && typeof source.provider === "string") {
+    return source.provider.trim() || null;
+  }
+  return null;
 }
 
 interface EcoPayload {
@@ -334,8 +354,11 @@ export function ECOPane({ code }: FunctionPaneProps) {
                   <span className="aw-cal__holiday-text" role="cell">
                     <span aria-hidden="true">📅 </span>
                     {holidayText(h)}
-                    {h.source ? (
-                      <span className="aw-cal__holiday-src"> · {h.source}</span>
+                    {holidayProviderLabel(h.source) ? (
+                      <span className="aw-cal__holiday-src">
+                        {" "}
+                        · {holidayProviderLabel(h.source)}
+                      </span>
                     ) : null}
                   </span>
                 </div>

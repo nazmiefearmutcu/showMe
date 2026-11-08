@@ -2,7 +2,7 @@
 
 Merges dividends and splits (Awareness corporate calendar, plus the live Yahoo
 event series as a supplement) with material 8-K filings (Awareness filings).
-Duplicates across providers are removed on (action type, date, value).
+Duplicates across providers are removed (dividends and splits on action type, date, value; 8-Ks on accession).
 """
 
 from __future__ import annotations
@@ -29,8 +29,10 @@ from showme.engine.functions.equity._common import FIELD_DICTIONARIES, series_ro
 _FILINGS_MAX_DAYS = 90
 _METHODOLOGY = (
     "CACT merges dividends and splits from the Awareness corporate calendar (Yahoo event series as a "
-    "supplement) with 8-K filings from the Awareness SEC index. Rows carry their source; duplicates across "
-    "providers are dropped on (action type, date, value). Dividend and split values are as published."
+    "supplement) with 8-K filings from the Awareness SEC index (the most recent 90 days only). Rows carry "
+    "their source. Dividends and splits are de-duplicated across providers on (action type, date, value); "
+    "8-K filings are de-duplicated by accession, so distinct filings on one date all stay. Dividend and "
+    "split values are as published."
 )
 
 
@@ -108,14 +110,27 @@ def _events_8k(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _dedupe_key(row: dict[str, Any], index: int) -> tuple[Any, ...]:
+    """Dividends and splits collapse across providers on (type, date, value).
+
+    8-K filings never collapse on date alone: two distinct filings on one date carry different
+    accessions (and items), so they are keyed by accession (or document URL), falling back to the row
+    position when neither is present.
+    """
+    if row.get("action_type") == "8-K":
+        identity = row.get("accession") or row.get("url")
+        return ("8-K", identity) if identity else ("8-K", "row", index)
+    value = row.get("value")
+    return (row.get("action_type"), row.get("event_date"),
+            round(value, 4) if isinstance(value, float) else value)
+
+
 def _dedupe(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     seen: set[tuple[Any, ...]] = set()
     out: list[dict[str, Any]] = []
     dropped = 0
-    for row in rows:
-        value = row.get("value")
-        key = (row.get("action_type"), row.get("event_date"),
-               round(value, 4) if isinstance(value, float) else value)
+    for index, row in enumerate(rows):
+        key = _dedupe_key(row, index)
         if key in seen:
             dropped += 1
             continue
@@ -165,6 +180,8 @@ class CACTFunction(BaseFunction):
                                       extra={"symbol": symbol})
 
         warnings: list[str] = []
+        if days_back > _FILINGS_MAX_DAYS:
+            warnings.append(f"8-K filings cover the most recent {_FILINGS_MAX_DAYS} days only.")
         if corporate_error:
             warnings.append(f"corporate: {corporate_error}")
         if filings_error:

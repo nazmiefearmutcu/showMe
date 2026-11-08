@@ -55,6 +55,33 @@ describe("EVTSPane", () => {
     expect(screen.queryByRole("table")).toBeNull();
   });
 
+  it("renders 8-K item lists as codes, never as [object Object] (F2 m2)", () => {
+    const filing = {
+      date: "2026-11-06",
+      datetime_utc: "2026-11-06T22:30:10Z",
+      type: "filing",
+      symbol: "NVDA",
+      company: "NVIDIA",
+      event: "8-K filing",
+      status: "filed",
+      details: {
+        form: "8-K",
+        items: [
+          { code: "1.01", label: "Entry into a Material Definitive Agreement" },
+          { code: "9.01", label: "Financial Statements and Exhibits" },
+        ],
+      },
+      sources: [],
+    };
+    setMockFn({
+      state: "ok",
+      data: { data: { status: "ok", rows: [filing], upcoming: [], recent: [filing] } },
+    });
+    const { container } = render(<EVTSPane code="EVTS" symbol="NVDA" />);
+    expect(container.textContent).not.toContain("[object Object]");
+    expect(container.textContent).toContain("1.01, 9.01");
+  });
+
   it("says so when the window holds no events and invents none", () => {
     setMockFn({ state: "ok", data: { data: { status: "empty", rows: [] } } });
     render(<EVTSPane code="EVTS" symbol="NVDA" />);

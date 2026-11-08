@@ -223,8 +223,27 @@ def unavailable_result(
     )
 
 
+def provider_name(source: Any) -> str | None:
+    """Provider label from a live ProviderRef ``{provider, url, fetched_at, basis}`` or a plain string.
+
+    Awareness returns ``source`` as an object on every holiday row. The UI renders this value as text,
+    so the function layer always hands out the provider name, never the object.
+    """
+    if isinstance(source, dict):
+        text = str(source.get("provider") or "").strip()
+        return text or None
+    if source is None:
+        return None
+    text = str(source).strip()
+    return text or None
+
+
 def holiday_row(item: dict[str, Any]) -> dict[str, Any]:
-    """Awareness holiday record -> the HolidayRow shape of the payload contract."""
+    """Awareness holiday record -> the HolidayRow shape of the payload contract.
+
+    ``source`` is the provider name (string). The full ProviderRef stays in ``source_ref``.
+    """
+    raw_source = item.get("source")
     return {
         "date": item.get("date"),
         "country": item.get("country"),
@@ -233,7 +252,8 @@ def holiday_row(item: dict[str, Any]) -> dict[str, Any]:
         "local_name": item.get("local_name"),
         "kind": item.get("kind"),
         "early_close_time": item.get("early_close_time"),
-        "source": item.get("source"),
+        "source": provider_name(raw_source),
+        "source_ref": dict(raw_source) if isinstance(raw_source, dict) else None,
     }
 
 

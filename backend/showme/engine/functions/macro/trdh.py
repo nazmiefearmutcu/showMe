@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
@@ -45,7 +45,8 @@ EXCHANGE_NAMES: dict[str, str] = {
 _METHODOLOGY = (
     "TRDH reads per-exchange sessions from the Awareness exchange calendar. is_open_now is true only inside "
     "a regular session and outside the lunch break. next_open_utc and next_close_utc are the next future "
-    "session boundaries in UTC. today is the session whose exchange-local date is today (null on closed "
+    "boundaries in UTC, lunch breaks included: during a break next_open_utc is the break end, and before a "
+    "break next_close_utc is the break start. today is the session whose exchange-local date is today (null on closed "
     "days). closures are holidays and early closes from the same calendar. Early closes carry "
     "early_close=true and their local close time."
 )
@@ -80,6 +81,13 @@ def _session_row(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _next_boundary(session: dict[str, Any], primary: str, secondary: str, now: datetime) -> datetime | None:
+    """Earliest future instant among a session's two boundary keys (e.g. close and lunch break start)."""
+    candidates = [_parse_utc(session.get(key)) for key in (primary, secondary)]
+    future = [t for t in candidates if t is not None and t > now]
+    return min(future) if future else None
+
+
 def _is_open(session: dict[str, Any], now: datetime) -> bool:
     open_at, close_at = _parse_utc(session.get("open_utc")), _parse_utc(session.get("close_utc"))
     if open_at is None or close_at is None or not (open_at <= now < close_at):
@@ -92,11 +100,18 @@ def _exchange_block(mic: str, payload: dict[str, Any], closures: list[dict[str, 
     tz_name = str(payload.get("timezone") or "UTC")
     sessions = [_session_row(item) for item in (payload.get("sessions") or []) if isinstance(item, dict)]
     sessions.sort(key=lambda row: str(row.get("open_utc") or ""))
-    local_today = now.astimezone(ZoneInfo(tz_name)).date().isoformat()
+    try:
+        local_zone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        local_zone = UTC
+    local_today = now.astimezone(local_zone).date().isoformat()
     today = next((row for row in sessions if row.get("date") == local_today), None)
     is_open = any(_is_open(row, now) for row in sessions)
-    next_opens = sorted(t for t in (_parse_utc(row["open_utc"]) for row in sessions) if t and t > now)
-    next_closes = sorted(t for t in (_parse_utc(row["close_utc"]) for row in sessions) if t and t > now)
+    # A lunch break is a close (break_start) followed by an open (break_end), so the next boundaries
+    # must include them: during a break the next open is the break end, before a break the next close
+    # is the break start.
+    next_opens = sorted(t for t in (_next_boundary(row, "open_utc", "break_end_utc", now) for row in sessions) if t)
+    next_closes = sorted(t for t in (_next_boundary(row, "close_utc", "break_start_utc", now) for row in sessions) if t)
     return {
         "mic": mic,
         "name": EXCHANGE_NAMES.get(mic, mic),
@@ -186,8 +201,8 @@ class TRDHFunction(BaseFunction):
                 "methodology": _METHODOLOGY,
                 "field_dictionary": {
                     "is_open_now": "True inside a regular session and outside the lunch break.",
-                    "next_open_utc": "Next future session open, UTC.",
-                    "next_close_utc": "Next future session close, UTC.",
+                    "next_open_utc": "Next future open, UTC: the session open, or the lunch-break end while on break.",
+                    "next_close_utc": "Next future close, UTC: the session close, or the lunch-break start before a break.",
                     "early_close": "True when the session closes before the regular time.",
                 },
                 "reason": None if blocks else "No supported exchanges returned sessions.",

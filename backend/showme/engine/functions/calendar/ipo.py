@@ -31,8 +31,9 @@ _STATUS_TO_SECTION = {
 }
 
 
-def _section_for_ipo(item: dict[str, Any]) -> str:
-    return _STATUS_TO_SECTION.get(str(item.get("status") or "").strip().lower(), "upcoming")
+def _section_for_ipo(item: dict[str, Any]) -> str | None:
+    """Known statuses only: an unrecognised status (postponed, cancelled, ...) is not guessed as upcoming."""
+    return _STATUS_TO_SECTION.get(str(item.get("status") or "").strip().lower())
 
 
 def _section_for_filing(item: dict[str, Any]) -> str | None:
@@ -98,10 +99,16 @@ class IPOFunction(BaseFunction):
             if error is not None:
                 warnings.append(f"{label}: {error}")
         responses = [resp for resp in (ipo_resp, filing_resp) if resp is not None]
+        unknown_statuses: set[str] = set()
         for item in (ipo_resp.data if ipo_resp is not None else []) or []:
             if isinstance(item, dict):
                 section = _section_for_ipo(item)
+                if section is None:
+                    unknown_statuses.add(str(item.get("status") or "").strip() or "(none)")
+                    continue
                 sections[section].append(_row(item, section))
+        if unknown_statuses:
+            warnings.append(f"IPO statuses not recognised, left out: {', '.join(sorted(unknown_statuses))}")
         for item in (filing_resp.data if filing_resp is not None else []) or []:
             if isinstance(item, dict):
                 section = _section_for_filing(item)
