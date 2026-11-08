@@ -10,6 +10,8 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pandas as pd
+
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
@@ -17,6 +19,9 @@ from showme.engine.services.backtest_framework import Backtest, STRATEGY_REGISTR
 
 # Wall-clock budget for one matrix run (fetch + backtests).
 LIVE_TIMEOUT_S = 9.0
+
+# BMTX#6: fraction of the most recent bars scored as the out-of-sample holdout.
+OOS_TEST_FRACTION = 0.3
 
 
 @FunctionRegistry.register
@@ -123,7 +128,10 @@ class BMTXFunction(BaseFunction):
             )
         cells = []
         strategy_errors: dict[str, list[str]] = {}
+        oos_windows: dict[str, dict[str, Any]] = {}
         for sym, df in bars_dict.items():
+            split = _oos_split(len(df))
+            oos_windows[sym] = _oos_window(df, split)
             for strat in strategies:
                 fn = STRATEGY_REGISTRY.get(strat)
                 if fn is None:
@@ -131,6 +139,10 @@ class BMTXFunction(BaseFunction):
                 try:
                     bt = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps)
                     r = bt.run()
+                    # BMTX#6: holdout score on the final slice only. The strategies
+                    # use fixed default parameters, so nothing is fitted on it.
+                    holdout = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps,
+                                       eval_start=split).run()
                     cells.append({
                         "label": f"{sym} {strat}",
                         "symbol": sym, "strategy": strat,
@@ -139,6 +151,9 @@ class BMTXFunction(BaseFunction):
                         "max_drawdown": r.metrics["max_drawdown"],
                         "trades": r.metrics["trades"],
                         "final_equity": r.final_equity,
+                        "oos_sharpe": holdout.metrics["sharpe"],
+                        "oos_total_return": holdout.metrics["total_return"],
+                        "oos_max_drawdown": holdout.metrics["max_drawdown"],
                     })
                 except Exception as exc:  # BMTX-R1: keep the reason, do not drop silently
                     strategy_errors.setdefault(sym, []).append(
@@ -159,6 +174,7 @@ class BMTXFunction(BaseFunction):
                     if reasons else "no registered strategy produced a run"
                 )
                 del bars_dict[sym]
+                oos_windows.pop(sym, None)
         if not bars_dict:
             return _unavailable(
                 instrument=instrument,
@@ -184,6 +200,7 @@ class BMTXFunction(BaseFunction):
                 "sharpe": cell["sharpe"],
                 "total_return": cell["total_return"],
                 "max_drawdown": cell["max_drawdown"],
+                "oos_sharpe": cell["oos_sharpe"],
             }
             for cell in cells
         ]
@@ -198,6 +215,8 @@ class BMTXFunction(BaseFunction):
                 "cells": cells,
                 "surface": surface,
                 "best_per_symbol": best_per_symbol,
+                "rank_basis": "in_sample_sharpe",
+                "oos_windows": oos_windows,
                 "top_10_by_sharpe": cells[:10],
                 "summary": {
                     "symbols": len(bars_dict),
@@ -209,16 +228,22 @@ class BMTXFunction(BaseFunction):
                     "Runs each selected strategy on each symbol's daily OHLCV history "
                     f"from initial equity {initial_equity:,.0f} with commission "
                     f"{commission_bps:g} bps plus slippage {slippage_bps:g} bps per unit of turnover, "
-                    "then ranks cells by Sharpe and total return. "
-                    "IN-SAMPLE — each cell is scored on the same history it is ranked "
-                    "over, so the top cell is favoured by the comparison itself. Use "
-                    "BTFW to evaluate a chosen strategy/symbol pair out-of-sample."
+                    "then ranks cells by in-sample Sharpe and total return. "
+                    "IN-SAMPLE ranking — each cell is ranked on the history it is scored on, "
+                    "so the top cell is favoured by the comparison itself. The oos_* fields "
+                    "score only the final holdout slice (oos_windows); the strategies use fixed "
+                    "default parameters, so nothing is fitted on that slice. Use BTFW for a "
+                    "walk-forward estimate of a chosen strategy/symbol pair."
                 ),
                 "field_dictionary": {
                     "sharpe": "Annualized return/risk score from the backtest equity curve.",
                     "total_return": "Final equity divided by initial equity minus one.",
                     "max_drawdown": "Worst peak-to-trough equity decline during the test.",
                     "trades": "Number of trade events created by the strategy.",
+                    "oos_sharpe": "Sharpe on the final holdout slice only (oos_windows); not used for ranking.",
+                    "oos_total_return": "Holdout total return on the final slice only, after costs.",
+                    "oos_max_drawdown": "Worst peak-to-trough equity decline on the holdout slice only.",
+                    "rank_basis": "Column the cells are sorted by. In-sample Sharpe, not out-of-sample.",
                     "surface": "Strategy-by-symbol grid used by the heatmap.",
                 },
             },
@@ -304,6 +329,31 @@ def _cost_inputs(params: dict[str, Any]) -> tuple[float, float, float, float]:
         commission_bps = float(params.get("fee_bps", 5.0))
     slippage_bps = float(params["slippage_bps"]) if params.get("slippage_bps") is not None else 2.0
     return initial_equity, commission_bps, slippage_bps, commission_bps + slippage_bps
+
+
+def _oos_split(n_bars: int) -> int:
+    """BMTX#6: index where the final out-of-sample holdout starts."""
+    test_bars = max(1, int(n_bars * OOS_TEST_FRACTION))
+    return max(0, n_bars - test_bars)
+
+
+def _oos_window(df: pd.DataFrame, split: int) -> dict[str, Any]:
+    def _day(ts: Any) -> str:
+        try:
+            return pd.Timestamp(ts).date().isoformat()
+        except Exception:  # noqa: BLE001 - non-datetime index keeps its raw label
+            return str(ts)
+
+    n = len(df)
+    return {
+        "train_bars": split,
+        "test_bars": n - split,
+        "test_fraction": OOS_TEST_FRACTION,
+        "train_start": _day(df.index[0]),
+        "train_end": _day(df.index[split - 1]) if split > 0 else None,
+        "test_start": _day(df.index[split]),
+        "test_end": _day(df.index[-1]),
+    }
 
 
 def _live_requested(params: dict[str, Any]) -> bool:
