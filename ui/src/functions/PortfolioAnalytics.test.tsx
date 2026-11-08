@@ -304,6 +304,22 @@ describe("PORTX parameter wiring (F3)", () => {
     expect(mockArgs.current?.params?.targets).toEqual({ SPY: 0.6, QQQ: 0 });
   });
 
+  it("shows the REBA provider-unavailable state, not an empty order table (REBA#3)", () => {
+    // The backend withholds the live preview when a held position has no
+    // quote, instead of valuing it at average cost. The pane must say why.
+    mockOk({
+      status: "provider_unavailable",
+      rows: [],
+      orders: [],
+      reason:
+        "No live quote for held position(s) AAPL. Weights need live marks for every holding, so no orders were computed.",
+      next_actions: ["Retry when the quote provider is reachable."],
+    });
+    render(<PortfolioAnalyticsPane code="REBA" symbol="" />);
+    expect(screen.getByText("Provider Unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/No live quote for held position\(s\) AAPL/)).toBeInTheDocument();
+  });
+
   it("wires the MLSIG LIVE toggle to live_ml", () => {
     mockOk({
       status: "reference",
