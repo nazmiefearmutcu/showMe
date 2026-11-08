@@ -1701,9 +1701,10 @@ class WETRFunction(BaseFunction):
                 },
             },
             sources=[provider_name],
-            # WETR#5: these are provider forecasts (Open-Meteo is a keyless model
-            # forecast), not official data; the pane names the provider.
-            metadata={"live": True, "data_mode": "live"},
+            # WETR#5: the keyless Open-Meteo forecast is labelled by its provider
+            # (live_open_meteo, as live_yfinance labels a keyless feed), never as
+            # live_official; "live" alone is not a canonical data_mode value.
+            metadata={"live": True, "data_mode": live_mode},
         )
 
     def _live_weather_provider(self) -> tuple[Any, str]:

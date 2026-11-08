@@ -282,7 +282,9 @@ def test_wetr5_open_meteo_live_rows_do_not_claim_live_official() -> None:
     result = asyncio.run(WETRFunction(FunctionDeps(open_meteo=_Fake())).execute())
     assert result.data["status"] == "ok"
     assert result.metadata.get("data_mode") != "live_official"
-    assert result.metadata.get("data_mode") == "live"
+    # WETR#5: the label names the keyless provider, as live_yfinance does for
+    # its keyless feed; "live" alone is not a canonical data_mode value.
+    assert result.metadata.get("data_mode") == "live_open_meteo"
 
 
 # ─────────────────────────────────────────────────────────────────────────
