@@ -300,3 +300,25 @@ describe("TRAN pane — speaker filter", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("TRAN pane — document type labelling", () => {
+  it("labels the SEC 8-K default path as an earnings release, not a call transcript", () => {
+    const payload = okPayload();
+    payload.data.document_type = "earnings_press_release";
+    payload.data.utterances = [
+      {
+        section: "document",
+        speaker: null as unknown as string,
+        role: "",
+        utterance: "CUPERTINO, California, Apple today announced financial results.",
+        timestamp_seconds: null,
+      },
+    ] as typeof payload.data.utterances;
+    setMockFn({ state: "ok", data: payload });
+    render(<TRANPane code="TRAN" symbol="AAPL" />);
+    expect(screen.getByText(/Earnings Release — AAPL/)).toBeInTheDocument();
+    expect(screen.queryByText(/Earnings Call Transcript/)).toBeNull();
+    // A release row without a speaker is shown as Unknown, never a named speaker.
+    expect(screen.getByText("Unknown")).toBeInTheDocument();
+  });
+});

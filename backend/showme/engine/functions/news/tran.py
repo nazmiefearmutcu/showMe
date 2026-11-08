@@ -7,9 +7,10 @@ fetches REAL, keyless data — there is no synthetic happy-path:
      speaker-attributed utterances (the highest-fidelity source we can get
      without a paid provider).
   2. SEC EDGAR (keyless) — resolve ticker -> CIK, find the most recent 8-K
-     earnings filing and pull its earnings press release Exhibit 99.x text,
-     then segment it into prepared-remarks utterances. This is the official,
-     public, primary disclosure for the quarter and needs no API key.
+     earnings filing and pull its earnings press release Exhibit 99.x text.
+     That text is an EARNINGS RELEASE, not a call transcript: it is returned
+     with ``document_type="earnings_press_release"``, unattributed (no speaker
+     headers exist in it) and never labelled as a call transcript.
   3. Local transcripts archive — if a transcript was previously ingested for
      the symbol it is served verbatim.
   4. Optional Whisper transcription for a supplied ``audio_url`` / ``audio_path``.
@@ -42,8 +43,12 @@ _METHODOLOGY = (
     "speaker-attributed utterances. Otherwise TRAN resolves the ticker to a CIK via "
     "SEC EDGAR's company-tickers map, locates the most recent 8-K earnings filing, "
     "and extracts the earnings press release exhibit (Exhibit 99.x) text — the "
-    "official quarterly disclosure — segmenting it into ordered utterances "
-    "{section, speaker, role, utterance, timestamp_seconds}. A previously ingested "
+    "official quarterly disclosure, NOT a call transcript (document_type="
+    "'earnings_press_release'). Its paragraphs are segmented into ordered rows "
+    "{section='document', speaker=null, role='', utterance, timestamp_seconds}: "
+    "no speaker is attributed because the release has no speaker headers. A "
+    "transcript is attributed only from explicit 'Name -- Role' / 'Name:' headers. "
+    "A previously ingested "
     "transcript in the local archive is served verbatim when present. For events with "
     "only an audio_url/audio_path, Whisper is attempted when configured; when Whisper "
     "is missing the pane reports data_mode='not_configured' and never fabricates text. "
@@ -55,12 +60,34 @@ _FIELD_DICT = {
     "status": "ok / empty / not_configured / provider_unavailable.",
     "event": "Earnings event metadata (quarter, event_date, form, accession, source_url).",
     "utterances[].position": "1-based order of the utterance within the document.",
-    "utterances[].section": "prepared_remarks / qa.",
-    "utterances[].speaker": "Speaker name (or section heading) captured from the source.",
-    "utterances[].role": "Role/title when detectable (CEO, CFO, Operator, Analyst).",
+    "document_type": "transcript (pasted, archived or audio) or earnings_press_release (SEC 8-K EX-99.x).",
+    "utterances[].section": "prepared_remarks / qa for transcripts; document for an earnings release.",
+    "utterances[].speaker": "Speaker name from an explicit source header; null when the source has none.",
+    "utterances[].role": "Role/title from that speaker's explicit header (CEO, CFO, Operator, Analyst); empty otherwise.",
     "utterances[].utterance": "Verbatim utterance / paragraph text.",
     "utterances[].timestamp_seconds": "Offset from event start when available (else null).",
     "data_mode": "live_official (SEC 8-K), user_supplied, cached_snapshot (archive), or not_configured.",
+}
+
+_RELEASE_WARNING = (
+    "Source is the company's 8-K earnings press release (Exhibit 99.x), not an "
+    "earnings call transcript: no speaker headers exist, so no speaker is attributed."
+)
+
+# Financial-statement and boilerplate words that look like "Name:" headers in a
+# press release table (e.g. "Operating expenses: ..."). A real speaker name never
+# contains them.
+_NON_NAME_TOKENS = {
+    "operating", "expense", "expenses", "asset", "assets", "liability",
+    "liabilities", "revenue", "revenues", "income", "note", "notes", "editors",
+    "total", "net", "gross", "cash", "current", "non-current", "other",
+    "research", "development", "selling", "general", "administrative", "stock",
+    "shareholders", "equity", "earnings", "financial", "statement", "statements",
+    "balance", "sheet", "products", "services", "segment", "segments", "quarter",
+    "fiscal", "year", "ended", "condensed", "consolidated", "margin", "tax",
+    "taxes", "dividends", "debt", "deferred", "retained", "common", "shares",
+    "per", "share", "data", "unaudited", "audited", "table", "summary",
+    "highlights", "safe", "harbor", "forward-looking",
 }
 
 _OK_STATUSES = {"ok", "empty"}
@@ -88,6 +115,7 @@ class TRANFunction(BaseFunction):
         utterances: list[dict[str, Any]] = []
         event: dict[str, Any] = {"symbol": symbol, "quarter": params.get("quarter") or None}
         data_mode = "not_configured"
+        document_type = "transcript"
 
         # 1) User-pasted transcript — highest fidelity, fully real.
         pasted = params.get("transcript_text") or params.get("transcript")
@@ -132,11 +160,13 @@ class TRANFunction(BaseFunction):
                     timeout=float(params.get("sec_timeout", 15) or 15),
                 )
                 if body:
-                    utterances = _parse_transcript_text(body)
+                    utterances = _parse_transcript_text(body, default_section="document")
                     if utterances:
                         data_mode = "live_official"
+                        document_type = "earnings_press_release"
                         sources.append("sec_edgar")
                         event.update(ev_meta)
+                        warnings.append(_RELEASE_WARNING)
             except asyncio.TimeoutError:
                 sec_error = "SEC EDGAR request timed out"
             except _SecLookupError as e:
@@ -253,6 +283,7 @@ class TRANFunction(BaseFunction):
                 "rows": rows,
                 "whisper": whisper_result,
                 "data_mode": data_mode,
+                "document_type": document_type,
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICT,
                 "cards": _cards(symbol, event, len(rows), len(speakers), data_mode),
@@ -263,6 +294,7 @@ class TRANFunction(BaseFunction):
                 "provider_errors": warnings,
                 "data_state": "ok",
                 "data_mode": data_mode,
+                "document_type": document_type,
                 "utterance_count": len(rows),
                 "speakers_count": len(speakers),
             },
@@ -446,7 +478,13 @@ _SPEAKER_RE = re.compile(
 )
 
 
-def _parse_transcript_text(raw: str) -> list[dict[str, Any]]:
+def _parse_transcript_text(raw: str, *, default_section: str = "prepared_remarks") -> list[dict[str, Any]]:
+    """Split text into utterances. Speaker and role come only from explicit headers.
+
+    Text before any header, or any text in a source with no headers at all, gets
+    ``speaker=None`` and ``role=""``: nobody is invented. ``default_section`` is
+    the section label used until a Q&A marker appears.
+    """
     text = _html_to_text(raw) if "<" in raw and ">" in raw else raw
     text = re.sub(r"\r\n?", "\n", text)
     blocks = [b.strip() for b in re.split(r"\n{2,}", text) if b.strip()]
@@ -454,8 +492,8 @@ def _parse_transcript_text(raw: str) -> list[dict[str, Any]]:
         # Single blob — split on sentence-ish lines so we still get rows.
         blocks = [ln.strip() for ln in text.split("\n") if ln.strip()]
     rows: list[dict[str, Any]] = []
-    section = "prepared_remarks"
-    current_speaker = "Management"
+    section = default_section
+    current_speaker: str | None = None
     current_role = ""
     for block in blocks:
         low = block.lower()
@@ -481,14 +519,14 @@ def _parse_transcript_text(raw: str) -> list[dict[str, Any]]:
                     "timestamp_seconds": None,
                 })
             continue
-        # Body block attributed to the active speaker.
+        # Body block: attributed only to a speaker whose header was seen.
         utterance = block.strip()
         if not utterance:
             continue
         rows.append({
             "section": section,
             "speaker": current_speaker,
-            "role": current_role or _role_for(utterance),
+            "role": current_role if current_speaker else "",
             "utterance": utterance[:4000],
             "timestamp_seconds": None,
         })
@@ -496,14 +534,18 @@ def _parse_transcript_text(raw: str) -> list[dict[str, Any]]:
 
 
 def _looks_like_name(head: str) -> bool:
+    """A speaker header is a person's name: 2+ capitalised tokens, no statement words."""
     parts = head.split()
     if not 1 <= len(parts) <= 6:
         return False
     if head.lower() in _ROLE_HINTS:
         return True
-    # Mostly capitalised tokens with no terminal punctuation.
+    if len(parts) < 2:
+        return False
+    if any(p.lower().strip(".,:;") in _NON_NAME_TOKENS for p in parts):
+        return False
     capish = sum(1 for p in parts if p[:1].isupper())
-    return capish >= max(1, len(parts) - 1)
+    return capish >= 2 and capish >= len(parts) - 1
 
 
 def _role_for(text: str) -> str:
@@ -523,7 +565,7 @@ def _coerce_archive_utterances(ev: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             rows.append({
                 "section": r.get("section") or "prepared_remarks",
-                "speaker": r.get("speaker") or "Management",
+                "speaker": r.get("speaker") or None,
                 "role": r.get("role") or "",
                 "utterance": str(r.get("utterance") or r.get("text") or "").strip(),
                 "timestamp_seconds": r.get("timestamp_seconds"),

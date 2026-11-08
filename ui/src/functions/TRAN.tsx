@@ -52,6 +52,8 @@ interface TranEvent {
 interface TRANData {
   symbol?: string;
   status?: string;
+  /** "transcript" or "earnings_press_release" (SEC 8-K EX-99.x, not a call). */
+  document_type?: string;
   reason?: string;
   next_actions?: string[] | string;
   event?: TranEvent;
@@ -61,6 +63,7 @@ interface TRANData {
 const SECTION_LABELS: Record<string, string> = {
   prepared_remarks: "Prepared Remarks",
   qa: "Q&A",
+  document: "Earnings Release",
 };
 
 const SPEAKER_KEY = "showme.tran.speaker";
@@ -217,6 +220,9 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
   const eventDate = payload?.event?.event_date ?? "";
   const sourceUrl = safeHttpUrl(payload?.event?.source_url);
   const isLive = state === "ok" && status === "ok";
+  // The SEC default path returns the 8-K earnings RELEASE, not a call transcript.
+  const isRelease = payload?.document_type === "earnings_press_release";
+  const docNoun = isRelease ? "Earnings Release" : "Earnings Call Transcript";
   const totalUtterances = utterances.length;
 
   const jumpTo = (key: string) => {
@@ -379,7 +385,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`Earnings Call Transcript — ${effectiveSymbol || ""}`}
+          title={`${docNoun} — ${effectiveSymbol || ""}`}
           subtitle={
             [
               effectiveSymbol || "—",
