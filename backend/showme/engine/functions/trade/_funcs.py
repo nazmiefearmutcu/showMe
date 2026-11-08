@@ -569,9 +569,10 @@ class FXGOFunction(EMSXFunction):
     }
 
     _BOARD_METHODOLOGY = (
-        "FXGO surfaces a live keyless FX dealing board: spot mid for each major/cross is pulled "
-        "from yfinance (EURUSD=X style tickers); a synthetic dealing spread (1 pip JPY-quoted, "
-        "0.0001 otherwise, scaled to liquidity) is applied around the mid to derive indicative "
+        "FXGO surfaces a keyless FX dealing board: spot mid for each major/cross is pulled "
+        "from yfinance (EURUSD=X style tickers); a fixed synthetic 1-pip dealing spread "
+        "(0.0001 quote units, or 0.01 for JPY-quoted pairs; not scaled to liquidity) is applied "
+        "around the mid to derive indicative "
         "bid/ask so the board reads like a venue ladder without any keyed broker feed. When a "
         "ticket (quantity/side/submit) is supplied, FXGO falls back to the EMSX two-mode "
         "safe-by-default trade-ticket contract (paper preview unless explicitly armed)."

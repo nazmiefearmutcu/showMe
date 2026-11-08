@@ -195,3 +195,15 @@ def test_fxgo_missing_quote_time_is_flagged_not_stamped(monkeypatch):
     assert data["rows"][0]["quote_time"] is None
     assert data["fetched_at"]
     assert any("quote time" in w.lower() for w in res.warnings)
+
+
+# --------------------------------------------------------------------------- #
+# FXGO#4 — the methodology must describe the spread the board actually uses
+# --------------------------------------------------------------------------- #
+def test_fxgo_methodology_does_not_claim_liquidity_scaled_spread(monkeypatch):
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    text = FXGOFunction._BOARD_METHODOLOGY.lower()
+    assert "scaled to liquidity" not in text
+    assert "not scaled to liquidity" in text
+    assert "fixed" in text
