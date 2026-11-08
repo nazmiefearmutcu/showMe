@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "engine"
@@ -181,3 +183,126 @@ def test_realized_pnl_ytd_is_zero_when_nothing_closed(tmp_path: Path) -> None:
     totals = _run(fn, _portfolio_override=book).data["totals"]
 
     assert totals["realized_pnl_ytd"] == 0.0
+
+
+# --- PORT#1 -----------------------------------------------------------------
+
+def test_show_zero_default_drops_zero_quantity_rows(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0), _eq("OLD", 0, 50.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+
+    default = _run(fn, _portfolio_override=book)
+    assert [r["symbol"] for r in default.data["positions"]] == ["AAPL"]
+
+    with_zero = _run(fn, _portfolio_override=book, show_zero="true")
+    assert [r["symbol"] for r in with_zero.data["positions"]] == ["AAPL", "OLD"]
+
+
+def test_accounts_filter_limits_the_book(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0, account="broker_a"),
+                 _eq("MSFT", 1, 100.0, account="broker_b"))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0),
+                                                          "MSFT": (110.0, 105.0)})))
+
+    only_a = _run(fn, _portfolio_override=book, accounts=["broker_a"])
+    assert [r["symbol"] for r in only_a.data["positions"]] == ["AAPL"]
+    assert only_a.data["totals"]["n_positions"] == 1
+
+    everything = _run(fn, _portfolio_override=book, accounts=["ALL"])
+    assert len(everything.data["positions"]) == 2
+
+
+def test_group_by_account_returns_grouped_totals(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0, account="broker_a"),
+                 _eq("MSFT", 2, 100.0, account="broker_b"))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (100.0, 99.0),
+                                                          "MSFT": (100.0, 99.0)})))
+
+    result = _run(fn, _portfolio_override=book, group_by="account")
+    groups = {g["key"]: g for g in result.data["groups"]}
+
+    assert groups["broker_a"]["market_value"] == 100.0
+    assert groups["broker_b"]["market_value"] == 200.0
+    assert groups["broker_b"]["weight_pct"] == 200.0 / 300.0 * 100
+
+
+def test_group_by_none_returns_no_groups(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (100.0, 99.0)})))
+
+    assert _run(fn, _portfolio_override=book, group_by="none").data["groups"] == []
+
+
+def test_group_by_sector_without_sector_data_is_flagged(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (100.0, 99.0)})))
+
+    result = _run(fn, _portfolio_override=book, group_by="sector")
+
+    assert [g["key"] for g in result.data["groups"]] == ["unclassified"]
+    assert any("sector" in w for w in result.warnings)
+
+
+def test_ccy_converts_non_base_positions_with_fx_rate(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("SAP", 10, 100.0, currency="EUR"))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"SAP": (120.0, 118.0),
+                                                          "EURUSD": (1.10, None)})))
+
+    result = _run(fn, _portfolio_override=book, ccy="USD")
+    row = result.data["positions"][0]
+
+    assert row["last"] == 120.0  # native price is kept
+    assert row["fx_rate"] == 1.10
+    assert row["market_value"] == pytest.approx(10 * 120.0 * 1.10)
+    assert result.data["totals"]["market_value"] == pytest.approx(1320.0)
+    assert result.data["ccy"] == "USD"
+    assert result.data["fx_rates"]["EUR"] == 1.10
+    assert "yfinance" in result.sources
+
+
+def test_ccy_without_fx_rate_excludes_position_and_warns(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("SAP", 10, 100.0, currency="EUR"))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"SAP": (120.0, 118.0)})))
+
+    result = _run(fn, _portfolio_override=book, ccy="USD")
+    row = result.data["positions"][0]
+
+    assert row["fx_rate"] is None
+    assert row["market_value"] is None
+    assert result.data["totals"]["market_value"] == 0.0
+    assert result.data["totals"]["n_unpriced"] == 1
+    assert result.data["fx_rates"] == {"EUR": None}
+    assert any("EURUSD" in w for w in result.warnings)
+
+
+def test_historical_as_of_is_reported_not_silently_live(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+
+    result = _run(fn, _portfolio_override=book, as_of="2020-01-02")
+
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["positions"] == []
+    assert "totals" not in result.data
+    assert result.data["next_actions"]
+
+
+def test_today_as_of_is_the_live_book(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    result = _run(fn, _portfolio_override=book, as_of=today)
+
+    assert "status" not in result.data
+    assert result.data["totals"]["market_value"] == 110.0
+
+
+def test_invalid_ccy_is_an_input_error(tmp_path: Path) -> None:
+    book = _book(tmp_path, _eq("AAPL", 1, 100.0))
+    fn = PORTFunction(deps=FunctionDeps(yfinance=_Quotes({"AAPL": (110.0, 105.0)})))
+
+    result = _run(fn, _portfolio_override=book, ccy="US")
+
+    assert result.data["status"] == "input_error"
+    assert result.data["positions"] == []
