@@ -85,21 +85,6 @@ def test_keyless_shim_native_and_latest_defaults_are_not_flagged(monkeypatch):
     assert result.warnings == []
 
 
-def test_keyed_adapter_is_not_flagged_for_frequency(monkeypatch):
-    class _Keyed:
-        api_key = "not-a-real-key"
-
-        async def series(self, sid, **kwargs):
-            return pd.DataFrame({"date": ["2026-09-01"], "value": [4.0]})
-
-        async def info(self, sid):
-            raise RuntimeError("no info")
-
-    result = _execute(monkeypatch, _Keyed(), series_id="DGS10", frequency="monthly")
-    assert "unhonoured_params" not in result.data
-    assert result.warnings == []
-
-
 def test_helper_reports_nothing_for_keyed_adapter():
     class _Keyed:
         pass
@@ -207,3 +192,81 @@ def test_out_of_range_day_window_is_input_error_without_provider_call(monkeypatc
         assert result.data["rows"] == []
         assert rng in result.data["reason"]
     assert spy.starts == [], "no provider call when the window is out of range"
+
+
+# ── ECST#3 (keyed path): the request sent to FRED must be a valid FRED request ──
+
+
+class _JsonResp:
+    def __init__(self, payload) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeFredHTTP:
+    """Records the FRED REST calls the keyed adapter would make (no network)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    async def get(self, path, params=None):
+        self.calls.append((path, dict(params or {})))
+        if path == "/series/observations":
+            return _JsonResp(
+                {"observations": [
+                    {"date": "2026-08-01", "value": "4.0"},
+                    {"date": "2026-09-01", "value": "4.1"},
+                ]}
+            )
+        return _JsonResp({"seriess": [{"title": "T", "units": "Percent", "frequency": "Daily"}]})
+
+    def observation_params(self) -> list[dict]:
+        return [p for path, p in self.calls if path == "/series/observations"]
+
+
+def _keyed_adapter(http: _FakeFredHTTP):
+    from showme.engine.data_sources.macro.fred_adapter import FREDAdapter
+
+    adapter = FREDAdapter()
+    adapter.api_key = "test-key-not-real"
+
+    async def _client():
+        return http
+
+    adapter._client_ = _client
+    return adapter
+
+
+def test_keyed_default_native_frequency_is_not_sent_to_fred(monkeypatch):
+    http = _FakeFredHTTP()
+    result = _execute(
+        monkeypatch, _keyed_adapter(http), series_id="DGS10", frequency="native", vintage="latest"
+    )
+    obs = http.observation_params()
+    assert obs, "keyed adapter was not called"
+    assert "frequency" not in obs[0], "'native' is not a FRED frequency code"
+    assert "vintage_dates" not in obs[0]
+    assert result.data["status"] == "ok"
+    assert "unhonoured_params" not in result.data
+
+
+def test_keyed_monthly_request_is_sent_as_fred_code_and_labelled_as_applied(monkeypatch):
+    http = _FakeFredHTTP()
+    result = _execute(monkeypatch, _keyed_adapter(http), series_id="DGS10", frequency="monthly")
+    assert http.observation_params()[0]["frequency"] == "m"
+    assert result.data["frequency"] == "monthly"
+    assert "unhonoured_params" not in result.data
+
+
+def test_keyed_unknown_frequency_is_input_error_without_provider_call(monkeypatch):
+    http = _FakeFredHTTP()
+    result = _execute(monkeypatch, _keyed_adapter(http), series_id="DGS10", frequency="fortnightly")
+    assert result.data["status"] == "input_error"
+    assert result.data["rows"] == []
+    assert "fortnightly" in result.data["reason"]
+    assert http.observation_params() == []

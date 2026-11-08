@@ -29,6 +29,33 @@ _SERIES_CATALOG: dict[str, dict[str, str]] = {
 
 _WINDOW_RE = re.compile(r"^\s*(\d+)\s*([DMY])\s*$", re.IGNORECASE)
 
+# The keyed FRED API takes aggregation codes, not labels. "native" means no
+# aggregation, so no frequency parameter is sent at all.
+_FRED_FREQUENCY_CODES: dict[str, str] = {
+    "daily": "d",
+    "weekly": "w",
+    "monthly": "m",
+    "quarterly": "q",
+    "annual": "a",
+}
+
+
+def _frequency_request(value: Any) -> tuple[str | None, str | None]:
+    """Return ``(requested_name, fred_code)``; ``(None, None)`` for native/empty.
+
+    Anything outside the seed's frequency options raises ``ValueError`` so the
+    caller reports an explicit input_error instead of sending it to a provider.
+    """
+    text = str(value or "").strip().lower()
+    if text in ("", "native"):
+        return None, None
+    if text in _FRED_FREQUENCY_CODES:
+        return text, _FRED_FREQUENCY_CODES[text]
+    raise ValueError(
+        f"unsupported frequency {value!r}: use native, daily, weekly, monthly, "
+        "quarterly or annual"
+    )
+
 
 def _window_start(date_range: str, today: datetime.date) -> str:
     """Start date (YYYY-MM-DD) for a ``<n>D|M|Y`` window ending today.
@@ -92,6 +119,16 @@ class ECSTFunction(BaseFunction):
                 start_date = _window_start(str(date_range), datetime.date.today())
             except ValueError as exc:
                 return _window_input_error(self.code, instrument, sid, str(exc))
+        try:
+            requested_frequency, fred_frequency = _frequency_request(params.get("frequency"))
+        except ValueError as exc:
+            return _window_input_error(
+                self.code,
+                instrument,
+                sid,
+                str(exc),
+                next_action="Use a frequency of native, daily, weekly, monthly, quarterly or annual.",
+            )
 
         # ECST#5: level (as published) or y/y % change. A y/y value needs the observation
         # one year earlier, so the fetch starts ~400 days before the window; the window
@@ -124,9 +161,6 @@ class ECSTFunction(BaseFunction):
         # ECST#5: frequency and vintage are FRED controls. Labels go to FRED as its codes
         # ("monthly" -> "m"); "native" and "latest" send nothing. Whether FRED applied them is
         # reported after the fetch, never assumed.
-        raw_frequency = str(params.get("frequency") or "native").strip().lower()
-        frequency_unknown = raw_frequency not in _FRED_FREQUENCY_CODES and raw_frequency != "native"
-        fred_frequency = None if frequency_unknown else _FRED_FREQUENCY_CODES.get(raw_frequency)
         raw_vintage = str(params.get("vintage") or "latest").strip()
         fred_vintage = None if raw_vintage.lower() == "latest" else raw_vintage
 
@@ -300,16 +334,16 @@ class ECSTFunction(BaseFunction):
         # CSV shim serves native-frequency latest-vintage data. Say so rather than imply it.
         keyless_fred = isinstance(fred, _KeylessFredCSV)
         applied_by_fred = main_available and source_mode == "fred" and not keyless_fred
-        frequency_applied = (not frequency_unknown) and (
-            fred_frequency is None or not main_available or applied_by_fred
-        )
+        frequency_applied = fred_frequency is None or not main_available or applied_by_fred
         vintage_applied = fred_vintage is None or not main_available or applied_by_fred
+        if requested_frequency and applied_by_fred:
+            # The keyed API aggregated the series to the requested frequency, so the
+            # response reports that frequency, not the native one.
+            frequency = requested_frequency
         request_warnings: list[str] = []
-        if frequency_unknown:
-            request_warnings.append(f"ECST: unknown frequency {raw_frequency!r}; native frequency served")
-        elif not frequency_applied:
+        if not frequency_applied:
             request_warnings.append(
-                f"ECST: frequency {raw_frequency} not applied: {_not_applied_reason(keyless_fred, source_mode)}"
+                f"ECST: frequency {requested_frequency} not applied: {_not_applied_reason(keyless_fred, source_mode)}"
             )
         if not vintage_applied:
             request_warnings.append(
@@ -387,7 +421,7 @@ class ECSTFunction(BaseFunction):
                 "source_mode": "Provider or fallback used for the row.",
             },
             "source_mode": source_mode,
-            "frequency_requested": raw_frequency,
+            "frequency_requested": str(params.get("frequency") or "native").strip().lower(),
             "frequency_applied": frequency_applied,
             "vintage_requested": raw_vintage,
             "vintage_applied": vintage_applied,
@@ -421,10 +455,6 @@ class ECSTFunction(BaseFunction):
 
 
 _TRANSFORMS = frozenset({"level", "yoy"})
-# FRED's frequency codes for the pane's frequency labels ("native" sends no frequency).
-_FRED_FREQUENCY_CODES: dict[str, str] = {
-    "daily": "d", "weekly": "w", "monthly": "m", "quarterly": "q", "annual": "a",
-}
 
 
 def _not_applied_reason(keyless: bool, source_mode: str | None) -> str:
@@ -482,7 +512,11 @@ def _series_meta(series_id: str) -> dict[str, str]:
 
 
 def _window_input_error(
-    code: str, instrument: Instrument | None, sid: str, reason: str
+    code: str,
+    instrument: Instrument | None,
+    sid: str,
+    reason: str,
+    next_action: str = "Use a date range such as 1Y, 3Y, 5Y, 10Y, 20Y or MAX.",
 ) -> FunctionResult:
     """Explicit input_error envelope: no provider call, no rows, no guessed window."""
     return FunctionResult(
@@ -497,7 +531,7 @@ def _window_input_error(
             "history": [],
             "cards": [{"label": "Series", "value": sid}],
             "reason": reason,
-            "next_actions": ["Use a date range such as 1Y, 3Y, 5Y, 10Y, 20Y or MAX."],
+            "next_actions": [next_action],
             "source_mode": "input_error",
         },
         sources=[],
