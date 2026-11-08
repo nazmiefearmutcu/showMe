@@ -94,9 +94,20 @@ class TAUCFunction(BaseFunction):
                 },
             )
         items = _filter_security_type(items, security_filter)
+        payload = _auction_payload(action, horizon, items, "treasurydirect", security_filter)
+        if not items:
+            # The live feed answered but no row falls in the window: say so
+            # explicitly instead of returning a bare ok with zero rows.
+            window = "look-back" if action == "recent" else "upcoming"
+            payload["status"] = "empty"
+            payload["reason"] = (
+                f"TreasuryDirect returned no {action} auction rows in the {horizon}-day "
+                f"{window} window (feed answered; rows with no usable auction date are excluded)."
+            )
+            payload["next_actions"] = ["Retry later, or widen the horizon."]
         return FunctionResult(
             code=self.code, instrument=None,
-            data=_auction_payload(action, horizon, items, "treasurydirect", security_filter),
+            data=payload,
             sources=["treasurydirect"],
             metadata={"live": True, "data_mode": "live_official"},
         )
