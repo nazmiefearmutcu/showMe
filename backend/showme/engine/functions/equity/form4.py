@@ -98,13 +98,18 @@ class FORM4Function(BaseFunction):
             d = (r.get("filingDate") or "")[:7]   # YYYY-MM
             if d:
                 by_month[d] = by_month.get(d, 0) + 1
-        parsed_rows = yfin_rows or _filing_rows(sym, rows)
+        # FORM4#6: the yfinance rows are the returned table, so the same window and
+        # transaction-type filters apply to them (they were returned unfiltered).
+        have_yfin = bool(yfin_rows)
+        if have_yfin:
+            yfin_rows = _filter_rows(yfin_rows, months=months, transaction_types=transaction_types)
+        parsed_rows = yfin_rows if have_yfin else _filing_rows(sym, rows)
         summary = _form4_summary_rows(parsed_rows)
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok" if parsed_rows else "provider_unavailable",
-                "data_mode": "live_official" if parsed_rows and not yfin_rows else "delayed_reference" if parsed_rows else "provider_unavailable",
+                "status": "ok" if parsed_rows else ("empty" if have_yfin else "provider_unavailable"),
+                "data_mode": "live_official" if parsed_rows and not have_yfin else "delayed_reference" if have_yfin else "provider_unavailable",
                 "symbol": sym,
                 "n": len(parsed_rows),
                 "rows": parsed_rows,

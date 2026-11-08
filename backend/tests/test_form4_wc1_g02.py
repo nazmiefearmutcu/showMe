@@ -17,6 +17,14 @@ from showme.engine.functions.equity import form4 as form4_mod
 from showme.engine.functions.equity.form4 import FORM4Function
 
 
+class _YF:
+    def __init__(self, frame: pd.DataFrame) -> None:
+        self._frame = frame
+
+    async def fetch(self, _request: Any) -> dict[str, Any]:
+        return {"insider_transactions": self._frame}
+
+
 # ─── FORM4#3: SEC transaction codes must map to the right direction ──────
 
 
@@ -87,3 +95,59 @@ def test_form4_5_fallback_index_url_is_on_www_sec_gov() -> None:
     adapter = _adapter_with_filings([{"accession": "", "primaryDocument": "", "form": "4"}])
     rows = asyncio.run(adapter.form4_filings("AAPL", limit=5))
     assert rows[0]["url"].startswith("https://www.sec.gov/cgi-bin/browse-edgar")
+
+
+# ─── FORM4#6: months / transaction_types apply to the yfinance rows too ───
+
+
+class _SEC:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    async def form4_filings(self, _ticker: str, *, limit: int = 40) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._rows][:limit]
+
+
+def _yf_frame_relative() -> pd.DataFrame:
+    """Two recent sales and one 400-day-old sale, dated relative to today."""
+    now = datetime.now(timezone.utc)
+    return pd.DataFrame(
+        {
+            "Shares": [1000, 2000, 3000],
+            "Value": [100000.0, 200000.0, 300000.0],
+            "URL": [None, None, None],
+            "Text": ["Sale at price 100.00 per share."] * 3,
+            "Insider": ["A", "B", "C"],
+            "Position": ["Officer", "Officer", "Officer"],
+            "Transaction": [None, None, None],
+            "Start Date": pd.to_datetime([
+                (now - timedelta(days=2)).date(),
+                (now - timedelta(days=5)).date(),
+                (now - timedelta(days=400)).date(),
+            ]),
+            "Ownership": ["D", "D", "D"],
+        }
+    )
+
+
+def _execute_yf_and_sec(frame: pd.DataFrame, **params: Any) -> Any:
+    deps = FunctionDeps()
+    deps.yfinance = _YF(frame)
+    deps.sec_edgar = _SEC([])
+    fn = FORM4Function(deps)
+    return asyncio.run(fn.execute(
+        instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY), **params,
+    ))
+
+
+def test_form4_6_months_window_filters_yfinance_rows() -> None:
+    res = _execute_yf_and_sec(_yf_frame_relative(), months=1)
+    assert len(res.data["rows"]) == 2
+    assert res.data["n"] == 2
+    assert res.data["net_shares"] == pytest.approx(-3000.0)
+
+
+def test_form4_6_transaction_types_filter_yfinance_rows() -> None:
+    res = _execute_yf_and_sec(_yf_frame_relative(), months=24, transaction_types=["buy"])
+    assert res.data["rows"] == []
+    assert res.data["status"] == "empty"
