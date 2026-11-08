@@ -15,6 +15,29 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+# FRED constant-maturity Treasury series by tenor (years). A live rate is read
+# from the series whose maturity matches the option's time to expiry (OVME#2).
+_CMT_SERIES: tuple[tuple[float, str], ...] = (
+    (1 / 12, "DGS1MO"),
+    (0.25, "DGS3MO"),
+    (0.5, "DGS6MO"),
+    (1.0, "DGS1"),
+    (2.0, "DGS2"),
+    (3.0, "DGS3"),
+    (5.0, "DGS5"),
+    (7.0, "DGS7"),
+    (10.0, "DGS10"),
+    (20.0, "DGS20"),
+    (30.0, "DGS30"),
+)
+
+
+def _cmt_series_for(T: float) -> tuple[str, float]:
+    """(FRED series id, tenor in years) of the Treasury maturity nearest to T."""
+    tenor, series = min(_CMT_SERIES, key=lambda item: abs(item[0] - T))
+    return series, tenor
+
+
 def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is_call: bool) -> dict[str, float]:
     """Black-Scholes-Merton with continuous dividend yield q.
 
@@ -106,16 +129,21 @@ class OVMEFunction(BaseFunction):
         T = float(params.get("years_to_expiry", 0.25))
         sigma = float(params.get("vol", 0.25))
         # D03-2026-05-24 (H11): r used to be hardcoded 0.045; optional FRED
-        # hook lets callers pass `live_rate=true` to pull DGS1 instead.
+        # hook lets callers pass `live_rate=true` to pull the Treasury yield
+        # matching the option's maturity (OVME#2). A rate that was not supplied
+        # and not read live is the 0.045 default, and is labelled as such.
         r = float(params.get("rate", 0.045))
+        rate_source = "input" if params.get("rate") not in (None, "") else "default_0.045"
         q = float(params.get("div_yield", 0.0))
         sources_list = ["black_scholes_formula"]
         if _truthy(params.get("live_rate")) and getattr(self.deps, "fred", None) is not None:
+            series_id, _tenor = _cmt_series_for(T)
             try:
-                df = await self.deps.fred.series("DGS1", frequency="d")
+                df = await self.deps.fred.series(series_id, frequency="d")
                 live_r = float(df["value"].iloc[-1]) / 100 if not df.empty else None
                 if live_r is not None and math.isfinite(live_r):
                     r = live_r
+                    rate_source = f"fred_{series_id}"
                     if "fred" not in sources_list:
                         sources_list.append("fred")
             except Exception:
@@ -163,6 +191,17 @@ class OVMEFunction(BaseFunction):
             {"metric": "d2", "value": result.get("d2"), "unit": "standard deviations"},
         ]
         if model == "heston" and not input_error:
+            # OVME#2: the Heston parameters are echoed with the price. They are
+            # fixed defaults, not calibrated to market quotes.
+            result["heston_params"] = {
+                "kappa": float(params.get("kappa", 2.0)),
+                "theta": float(params.get("theta", sigma * sigma)),
+                "sigma": float(params.get("hsigma", 0.4)),
+                "rho": float(params.get("rho", -0.6)),
+                "v0": float(params.get("v0", sigma * sigma)),
+                "calibrated": False,
+                "source": "fixed illustrative parameters, not calibrated to market quotes",
+            }
             try:
                 from showme.engine.functions.derivative.heston import HestonParams, heston_mc
                 hp = HestonParams(
@@ -189,6 +228,7 @@ class OVMEFunction(BaseFunction):
             "years_to_expiry": T,
             "vol": sigma,
             "rate": r,
+            "rate_source": rate_source,
             "div_yield": q,
             "type": opt_type,
             "model": model,
@@ -222,6 +262,6 @@ class OVMEFunction(BaseFunction):
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=payload,
-            sources=["black_scholes_formula" if model != "heston" else "black_scholes_formula", "heston_formula"] if model == "heston" else ["black_scholes_formula"],
+            sources=sources_list + (["heston_formula"] if model == "heston" else []),
             warnings=warnings_list,
         )
