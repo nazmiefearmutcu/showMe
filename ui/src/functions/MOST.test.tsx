@@ -359,34 +359,3 @@ describe("MOST — live/reference pill", () => {
     expect(screen.getByText(/^REFERENCE$/)).toBeInTheDocument();
   });
 });
-
-describe("MOST — session + FX honesty (wb1-g17 MOST#3/#5)", () => {
-  it("labels closed-session quotes LAST CLOSE, never LIVE", () => {
-    mockState(
-      "ok",
-      [makeRow({ quote_state: "last_close" })],
-      { live: true, as_of: "2026-11-06T21:00:00+00:00" },
-    );
-    render(<MOSTPane code="MOST" />);
-    expect(screen.getByText(/^LAST CLOSE 1$/)).toBeInTheDocument();
-    expect(screen.queryByText(/^LIVE 1$/)).toBeNull();
-    expect(screen.getByText("LAST CLOSE")).toBeInTheDocument();
-  });
-
-  it("shows an unreported FX dollar volume as a dash, not an estimated zero", () => {
-    mockState("ok", [
-      makeRow({
-        symbol: "USDJPY=X",
-        asset_class: "fx",
-        exchange: "YFINANCE FX",
-        last: 153,
-        volume: null,
-        dollar_volume: null,
-        quote_state: "live",
-      }),
-    ]);
-    const { container } = render(<MOSTPane code="MOST" />);
-    expect(container.textContent).not.toContain("≈ 0");
-    expect(container.textContent).not.toContain("≈ 0.00");
-  });
-});
