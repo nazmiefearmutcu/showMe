@@ -89,8 +89,9 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
   const rows = useMemo(() => normalizeHeatmapRows(data?.data), [data]);
   const payloadStatus = payloadStatusLabel(data?.data, data?.metadata);
   // The user-requested change window (the WINDOW selector for SECT; MAP is
-  // always a 1D change: last price vs the prior-session close).`requestedPeriod` is what the user asked for; the backend
-  // tells us what it actually DELIVERED via `change_pct_period` (e.g. "1D" in
+  // always a 1D change: last price vs the prior-session close). `requestedPeriod`
+  // is what the user asked for; the backend tells us what it actually DELIVERED
+  // via `change_pct_period` (e.g. "1D" in
   // live mode regardless of the request). We label every change value with the
   // DELIVERED period so an MTD request can't masquerade as MTD data.
   const requestedPeriod = isSector ? period : "1D";
