@@ -182,6 +182,18 @@ def _major_summary(frame: Any) -> dict[str, Any]:
     return out
 
 
+def _fraction_of_outstanding(value: Any) -> float | None:
+    """yfinance ``pctHeld`` is a fraction of shares outstanding (0.08 = 8%).
+
+    Only values inside [0, 1] are kept; anything else is reported as missing
+    rather than rescaled.
+    """
+    out = finite(value)
+    if out is None or out < 0 or out > 1:
+        return None
+    return out
+
+
 def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, Any]) -> list[dict[str, Any]]:
     if sec_top:
         rows = []
@@ -210,7 +222,9 @@ def _holder_rows(symbol: str, sec_top: list[dict[str, Any]], yahoo: dict[str, An
                 "holder": item.get("Holder") or item.get("holder") or item.get("index") or holder_type,
                 "holder_type": holder_type,
                 "shares": finite(item.get("Shares") or item.get("shares")),
-                "pct_outstanding": finite(item.get("% Out") or item.get("pct_outstanding")),
+                "pct_outstanding": _fraction_of_outstanding(
+                    item.get("pctHeld", item.get("% Out", item.get("pct_outstanding")))
+                ),
                 "market_value": finite(item.get("Value") or item.get("value")),
                 "date_reported": item.get("Date Reported") or item.get("date_reported"),
                 "source_mode": "yfinance_holders",
