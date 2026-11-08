@@ -1,6 +1,6 @@
 """Bonus fonksiyonlar — Plan §26.2 'Spec'te olmayan' davetine cevap.
 
-LITM — Litigation Monitor (SEC EDGAR 8-K Item 1.03 / 1.04 + 10-Q legal proceedings)
+LITM — Litigation Monitor (SEC EDGAR 8-K items 1.03 / 1.04 litigation; 3.03 / 5.02 / 5.03 governance, labelled apart)
 MOSS — Most Volatile (annualized vol ranking)
 CHGS — Chart Studies preset (TECH'in hızlı çağrı sürümü)
 APPL — Applicable Industry/Sector codes (GICS lookup)
@@ -25,7 +25,7 @@ class LITMFunction(BaseFunction):
     name = "Litigation Monitor"
     asset_classes = (AssetClass.EQUITY,)
     category = "equity"
-    description = "Recent 8-K Item 1.03/1.04/3.03 filings — bankruptcy, mine safety, security holder rights."
+    description = "Recent 8-K items 1.03/1.04 (bankruptcy, mine safety) within the lookback; 3.03/5.02/5.03 governance items are labelled apart."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
@@ -62,18 +62,25 @@ class LITMFunction(BaseFunction):
             and "form" in frame.columns and "items" in frame.columns
         )
         scanned = _scan_8k_candidates(events, frame if frame_has_items else None, scan_limit)
+        # LITM#2: the lookback input bounds the scan. Undated rows are kept.
+        months = _lookback_months(params.get("months"))
+        window_from = (datetime.now(timezone.utc).date() - timedelta(days=round(months * 30.44))).isoformat()
+        scanned = [e for e in scanned if _on_or_after(e.get("filing_date"), window_from)]
         classifiable = frame_has_items or any(e.get("item_codes") or e.get("code") for e in events)
         keep = _LITM_KEEP_ITEMS
         litm = []
         for e in scanned:
             matched = [c for c in e["item_codes"] if c in keep]
             if matched:
-                litm.append({**e, "code": ",".join(matched), "matched_codes": matched})
+                # LITM#3: legal-proceeding items and governance items are labelled apart.
+                category = "litigation" if any(c in _LITM_LITIGATION_ITEMS for c in matched) else "governance"
+                litm.append({**e, "code": ",".join(matched), "matched_codes": matched, "category": category})
         dates = sorted(str(e["filing_date"]) for e in scanned if e.get("filing_date"))
         scan_window = {"from": dates[0], "to": dates[-1]} if dates else None
         rows = [{
             "symbol": instrument.symbol,
-            "event_type": "litigation_or_governance_item",
+            "event_type": f"{e['category']}_item",
+            "category": e["category"],
             "item_code": e.get("code"),
             "filing_date": e.get("filing_date") or e.get("report_date"),
             "severity": "review",
@@ -131,14 +138,19 @@ class LITMFunction(BaseFunction):
             "rows": rows,
             "litigation_filings": litm,
             "kept_item_codes": sorted(keep),
+            "litigation_codes": sorted(_LITM_LITIGATION_ITEMS),
+            "governance_codes": sorted(_LITM_GOVERNANCE_ITEMS),
+            "lookback_months": months,
+            "window_from": window_from,
             "all_8k_events": len(scanned),
             "scanned_8k": len(scanned),
             "scan_window": scan_window,
             "item_codes_available": bool(frame_has_items),
-            "methodology": "LITM reads the 8-K item codes of every 8-K row in the SEC EDGAR filing feed and keeps items 1.03, 1.04, 3.03, 5.02, and 5.03. An empty result is reported only after the full scan (scanned_8k rows); without item codes the status is provider_unavailable.",
+            "methodology": "LITM reads the 8-K item codes of every 8-K row in the SEC EDGAR filing feed dated within the lookback (months, default 24) and keeps items 1.03 and 1.04 (category litigation) and 3.03, 5.02 and 5.03 (category governance, not legal proceedings). An empty result is reported only after the full scan (scanned_8k rows); without item codes the status is provider_unavailable.",
             "field_dictionary": {
                 "item_code": "SEC 8-K item code(s) matched by the filter.",
-                "event_type": "Normalized litigation/governance category.",
+                "category": "litigation (items 1.03, 1.04) or governance (items 3.03, 5.02, 5.03).",
+                "event_type": "litigation_item or governance_item, per the category.",
                 "severity": "ShowMe review flag, not legal advice.",
                 "source_mode": "SEC evidence state for the row.",
                 "scanned_8k": "Number of 8-K filing rows examined.",
@@ -157,6 +169,32 @@ _LITM_SCAN_LIMIT = 1000
 # Narrow filter: only these 8-K item codes count as litigation/governance events.
 keep = {"1.03", "1.04", "3.03", "5.02", "5.03"}
 _LITM_KEEP_ITEMS = frozenset(keep)
+# LITM#3: 1.03 (bankruptcy/receivership) and 1.04 (mine safety) are legal-proceeding
+# items; 3.03, 5.02 and 5.03 are security-holder-rights and officer/charter changes.
+_LITM_LITIGATION_ITEMS = frozenset({"1.03", "1.04"})
+_LITM_GOVERNANCE_ITEMS = frozenset({"3.03", "5.02", "5.03"})
+_LITM_LOOKBACK_DEFAULT = 24
+_LITM_LOOKBACK_RANGE = (3, 60)
+
+
+def _lookback_months(value: Any) -> int:
+    """LITM#2: the seed's months input (3-60, default 24), clamped to that range."""
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        parsed = _LITM_LOOKBACK_DEFAULT
+    return max(_LITM_LOOKBACK_RANGE[0], min(_LITM_LOOKBACK_RANGE[1], parsed))
+
+
+def _on_or_after(value: Any, cutoff_iso: str) -> bool:
+    """True when a filing is dated on or after the lookback start. A row without a
+    parseable date is kept rather than silently dropped from the scan."""
+    text = str(value or "")[:10]
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return True
+    return text >= cutoff_iso
 
 
 def _split_item_codes(raw: Any) -> list[str]:

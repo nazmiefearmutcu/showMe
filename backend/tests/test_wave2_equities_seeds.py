@@ -330,11 +330,13 @@ def test_fts_query_input_is_required() -> None:
     assert query_inputs[0].required is True, "FTS query input must be required"
 
 
-def test_litm_includes_severity_filter() -> None:
+def test_litm_does_not_advertise_a_severity_filter() -> None:
+    # LITM#2: no severity heuristic exists behind the old filter, so the seed
+    # must not offer one; the severity column is a fixed review flag.
     litm = REGISTRY.get("LITM")
     sev_inputs = [i for i in litm.inputs if i.name == "severity"]
-    assert sev_inputs, "LITM must expose a severity filter"
-    assert sev_inputs[0].options, "LITM severity options must be enumerated"
+    assert not sev_inputs, "LITM must not expose a severity filter without a heuristic"
+    assert [i.name for i in litm.inputs if i.name == "months"], "LITM must expose the months lookback"
 
 
 def test_splc_methodology_warns_approximate() -> None:
