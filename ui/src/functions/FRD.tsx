@@ -48,6 +48,7 @@ interface FRDRow {
   spot?: number;
   forward?: number;
   forward_points?: number;
+  forward_points_pips?: number;
   base_rate?: number;
   quote_rate?: number;
   source_mode?: string;
@@ -61,6 +62,9 @@ interface FRDData {
   F?: number;
   r_base?: number;
   r_quote?: number;
+  status?: string;
+  reason?: string;
+  rate_sources?: { base?: string; quote?: string };
   rows?: FRDRow[];
   methodology?: string;
 }
@@ -87,6 +91,31 @@ function normalizePair(raw: string | undefined): PairId | null {
   return null;
 }
 
+/** Short provenance tag for one policy-rate leg (FRD#1). */
+function rateTag(source: string | undefined): string | null {
+  if (!source) return null;
+  if (source.startsWith("fred:")) return source.slice(5);
+  if (source === "reference_policy_rate_constant") return "REF 2024-06";
+  if (source === "caller_input") return "INPUT";
+  return "N/A";
+}
+
+/** Rate-diff caption: names each leg's source, or the legacy label when absent. */
+function rateCaption(payload: FRDData | undefined): string {
+  const base = payload?.base ?? "—";
+  const quote = payload?.quote ?? "—";
+  const baseTag = rateTag(payload?.rate_sources?.base);
+  const quoteTag = rateTag(payload?.rate_sources?.quote);
+  if (baseTag == null && quoteTag == null) return `${quote} vs ${base} RATES`;
+  return `${base} ${baseTag ?? "—"} · ${quote} ${quoteTag ?? "—"}`;
+}
+
+/** Pips to two decimals, signed; "—" when the backend did not send a value. */
+function fmtPips(v: number | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `${v >= 0 ? "+" : ""}${v.toFixed(2)}`;
+}
+
 const CURVE_W = 320;
 const CURVE_H = 88;
 
@@ -109,6 +138,10 @@ export function FRDPane({ code, symbol }: FunctionPaneProps) {
   const rows = useMemo(() => payload?.rows ?? [], [payload]);
   const spot = payload?.S;
   const isLive = rows[0]?.source_mode === "live_yfinance_quote";
+  const rBase = payload?.r_base;
+  const rQuote = payload?.r_quote;
+  // A missing rate gives no differential (shown as an em dash), never 0.
+  const rateDiff = rBase != null && rQuote != null ? rQuote - rBase : null;
 
   const stats = useMemo(() => deriveStats(rows, payload), [rows, payload]);
 
@@ -209,6 +242,22 @@ export function FRDPane({ code, symbol }: FunctionPaneProps) {
         ),
       },
       {
+        key: "forward_points_pips",
+        header: "F − S (pips)",
+        numeric: true,
+        width: 116,
+        render: (r) => (
+          <span
+            style={{
+              ...monoPrimaryStyle,
+              color: pointColor(r.forward_points),
+            }}
+          >
+            {fmtPips(r.forward_points_pips)}
+          </span>
+        ),
+      },
+      {
         key: "carry",
         header: "Ann. carry %",
         numeric: true,
@@ -271,6 +320,20 @@ export function FRDPane({ code, symbol }: FunctionPaneProps) {
           </button>
         }
       />
+    ) : rows.length === 0 && payload?.status === "provider_unavailable" ? (
+      <div className="u-grid-gap-14">
+        {warningBanner}
+        <Empty
+          title="Forward not computed"
+          body={payload?.reason ?? "A policy rate is unavailable for this pair."}
+          icon="∅"
+          action={
+            <button onClick={refetch} className="btn">
+              Retry
+            </button>
+          }
+        />
+      </div>
     ) : rows.length === 0 ? (
       <div className="u-grid-gap-14">
         {warningBanner}
@@ -303,12 +366,10 @@ export function FRDPane({ code, symbol }: FunctionPaneProps) {
           />
           <StatCard
             label="Rate diff"
-            value={`${fmtSigned((payload?.r_quote ?? 0) - (payload?.r_base ?? 0), 3)}%`}
-            caption={`${payload?.quote ?? "—"} vs ${payload?.base ?? "—"} RATES`}
+            value={rateDiff == null ? "—" : `${fmtSigned(rateDiff, 3)}%`}
+            caption={rateCaption(payload)}
             tone={
-              (payload?.r_quote ?? 0) >= (payload?.r_base ?? 0)
-                ? "positive"
-                : "negative"
+              rateDiff == null ? "neutral" : rateDiff >= 0 ? "positive" : "negative"
             }
           />
           <StatCard
