@@ -23,9 +23,10 @@ def _run(coro):
 
 
 def _book():
+    # A perpetual is held as asset_class CRYPTO (MGN#2-RQ), the real representation.
     return [
         {"symbol": "BTC-USD", "asset_class": "CRYPTO", "quantity": 0.5, "avg_cost": 95000, "last": 95000},
-        {"symbol": "BTC-PERP", "asset_class": "DERIVATIVE", "quantity": 0.1, "avg_cost": 95000, "last": 95000},
+        {"symbol": "BTC-PERP", "asset_class": "CRYPTO", "quantity": 0.1, "avg_cost": 95000, "last": 95000},
     ]
 
 
@@ -43,7 +44,7 @@ def test_spot_btc_with_btc_perp_is_margined_at_crypto_spot_rate_default_account(
     book = [
         PortfolioPosition(instrument=Instrument(symbol="BTC-USD", asset_class=AssetClass.CRYPTO),
                           quantity=0.5, avg_cost=95000),
-        PortfolioPosition(instrument=Instrument(symbol="BTC-PERP", asset_class=AssetClass.DERIVATIVE),
+        PortfolioPosition(instrument=Instrument(symbol="BTC-PERP", asset_class=AssetClass.CRYPTO),
                           quantity=0.1, avg_cost=95000),
     ]
 

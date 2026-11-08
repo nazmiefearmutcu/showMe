@@ -145,11 +145,13 @@ def _position_rule(
 
     ``explicit`` is False when the account type was inferred from the book (MGN#2
     residual): an inferred crypto_futures account must not reprice spot CRYPTO lines.
-    In such an inferred account a non-perpetual DERIVATIVE (ES, options) takes the
-    futures rule; a crypto perpetual keeps the crypto_futures rate.
+    A non-perpetual DERIVATIVE (ES, options) takes the futures per-contract rule in any
+    crypto_futures account, inferred or stored (MGN#2-RQ residual: an account stored before
+    the inferred flag existed must not price ES at the 10% crypto rate). A crypto perpetual
+    keeps the crypto_futures rate.
     """
     cls = str(asset_class or "").upper()
-    if (cls == "DERIVATIVE" and margin_type == "crypto_futures" and not explicit
+    if (cls == "DERIVATIVE" and margin_type == "crypto_futures"
             and not _is_crypto_perpetual(symbol, contract_type)):
         return dict(DEFAULT_RULES["futures"])
     # MGN#2-RQ: a crypto perpetual held as CRYPTO keeps the crypto_futures rate; only the
