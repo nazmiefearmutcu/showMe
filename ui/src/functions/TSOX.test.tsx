@@ -158,6 +158,7 @@ describe("TSOX pane — honest preview state", () => {
   it("renders an input_error as an input error, not a valid preview", async () => {
     runFunctionMock.mockResolvedValue(inputErrorPayload());
     render(<TSOXPane code="TSOX" symbol="ZN=F" />);
+    fillValidTicket();
     fireEvent.click(screen.getByRole("button", { name: /Preview ticket/i }));
     await waitFor(() => expect(runFunctionMock).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Input error")).toBeInTheDocument();
@@ -171,6 +172,7 @@ describe("TSOX pane — honest preview state", () => {
   it("labels bond analytics the backend reports as not computed", async () => {
     runFunctionMock.mockResolvedValue(previewPayload());
     render(<TSOXPane code="TSOX" symbol="ZN=F" />);
+    fillValidTicket();
     fireEvent.click(screen.getByRole("button", { name: /Preview ticket/i }));
     expect(await screen.findByText("Bond analytics not computed")).toBeInTheDocument();
     expect(
@@ -179,3 +181,10 @@ describe("TSOX pane — honest preview state", () => {
     expect(screen.getByLabelText("Ticket KPIs")).toBeInTheDocument();
   });
 });
+
+// The ticket starts blank (no placeholder quantity or price), so Preview needs
+// both entered before the honest-state payload can be requested.
+function fillValidTicket() {
+  fireEvent.change(screen.getByLabelText("Quantity (contracts)"), { target: { value: "1" } });
+  fireEvent.change(screen.getByLabelText("Limit price"), { target: { value: "100.0625" } });
+}
