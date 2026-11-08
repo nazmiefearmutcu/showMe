@@ -151,6 +151,9 @@ class MGNFunction(BaseFunction):
             why = "no live quote" if refresh else "refresh_prices=false"
             warnings.append(f"Marked at average cost ({why}): {', '.join(at_cost)}.")
         sources = ["portfolio_state", "margin_engine"] + (["yfinance"] if prices else [])
+        # MGN#1: a book with any position marked at average cost is partial-live, not live.
+        # `degraded` makes the pane show a data-quality badge; `live` is deliberately not
+        # set to false (that reads as a model in the pane).
         return FunctionResult(code=self.code, instrument=None,
                               data={**result,
                                     "rows": [_account_row(account) for account in accounts],
@@ -158,7 +161,10 @@ class MGNFunction(BaseFunction):
                                     "methodology": _methodology(),
                                     "field_dictionary": _field_dictionary()},
                               sources=sources,
-                              warnings=warnings)
+                              warnings=warnings,
+                              metadata={"positions_source": "portfolio",
+                                        "marked_at_cost": at_cost,
+                                        "degraded": bool(at_cost)})
 
     async def _quote_many(self, symbols: list[str]) -> dict[str, float]:
         """Live last prices; symbols without a positive quote are left out."""

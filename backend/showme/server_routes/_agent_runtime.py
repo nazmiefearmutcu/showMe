@@ -431,8 +431,6 @@ def _agent_function_params(entry: FunctionIndexEntry, candidate: dict[str, str])
         params.update({"horizon": 1, "days": 365})
     elif code == "BTUNE":
         params.update({"strategy": "sma_crossover", "days": 120})
-    elif code == "MGN":
-        params["refresh_prices"] = False
     elif code == "DCFS":
         params.update({"wacc_range": [0.07, 0.09, 0.11], "g_range": [0.02, 0.03]})
     elif code == "DCF":
