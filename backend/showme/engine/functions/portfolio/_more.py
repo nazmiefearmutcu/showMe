@@ -665,25 +665,44 @@ class MARSFunction(BaseFunction):
         symbols = params.get("symbols") or []
         if isinstance(symbols, str):
             symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+        requested_symbols = [str(s).strip().upper() for s in symbols if str(s).strip()]
         if not symbols:
             symbol = params.get("symbol") or (instrument.symbol if instrument else None)
-            symbols = [symbol] if symbol else ["BTCUSDT", "AAPL", "EURUSD", "GC=F"]
+            symbols = [symbol] if symbol else list(_MARS_DEFAULT_UNIVERSE)
+        # Holdings weights (SYMBOL:WEIGHT). When supplied they define the universe.
+        try:
+            holdings = _parse_mars_weights(params.get("weights"))
+        except ValueError as exc:
+            return _mars_input_error(self.code, instrument, str(exc))
+        notes: list[str] = []
+        if holdings is not None:
+            symbols = list(holdings)
+            if requested_symbols and set(requested_symbols) != set(holdings):
+                notes.append(
+                    "The supplied symbols were ignored: the weights define the universe ("
+                    + ", ".join(holdings) + ")."
+                )
+        universe = list(dict.fromkeys(str(s) for s in symbols))
+        notes.extend(_mars_weighting_notes(holdings, universe))
+        weighting = "user_weights" if holdings is not None else "equal_weight_default"
 
         if not live:
             from showme.engine.functions.portfolio.rpar import _template_returns
             factors = _template_returns(list(proxies.keys()), days)
-            port_ret = _template_returns([str(s) for s in symbols], days)
-            weights = np.ones(port_ret.shape[1]) / max(port_ret.shape[1], 1)
-            port_series = (port_ret * weights).sum(axis=1)
+            port_ret = _template_returns(universe, days)
+            leg_weights = _mars_leg_weights(port_ret.columns, holdings)
+            port_series = (port_ret * leg_weights).sum(axis=1)
             return _mars_result(
                 code=self.code,
                 instrument=instrument,
                 factors=factors,
                 port_series=port_series,
                 sources=["multi_asset_risk_model"],
-                metadata={"live": False, "data_mode": "modeled"},
+                metadata={"live": False, "data_mode": "modeled", "weighting": weighting},
                 factors_are_template=True,
                 portfolio_is_template=True,
+                warnings=notes,
+                leg_weights=_leg_weight_map(port_ret.columns, leg_weights),
             )
 
         async def _ret(sym):
@@ -722,7 +741,7 @@ class MARSFunction(BaseFunction):
         rs, rets = await asyncio.gather(proxy_fetch, symbol_fetch)
         # Audit Q3 #7: pairwise covariance for factor regression universe.
         factors = align_return_series(zip(proxies.keys(), rs), policy="pairwise")
-        warnings: list[str] = []
+        warnings: list[str] = list(notes)
         # R2 M-6: ``align_return_series(policy="pairwise")`` silently drops
         # empty proxy series, so when only SOME of the six ETF factors
         # answer, the regression used to run on the survivors while wearing
@@ -783,8 +802,9 @@ class MARSFunction(BaseFunction):
                     + f"{len(requested_legs)} requested legs that loaded ("
                     + ", ".join(loaded_legs) + ") only."
                 )
-        weights = np.ones(port_ret.shape[1]) / max(port_ret.shape[1], 1)
-        port_series = (port_ret * weights).sum(axis=1)
+        leg_weights = _mars_leg_weights(port_ret.columns, holdings)
+        port_series = (port_ret * leg_weights).sum(axis=1)
+        metadata["weighting"] = weighting
         return _mars_result(
             code=self.code,
             instrument=instrument,
@@ -795,10 +815,114 @@ class MARSFunction(BaseFunction):
             metadata=metadata,
             factors_are_template=factors_template,
             portfolio_is_template=portfolio_template,
+            leg_weights=_leg_weight_map(port_ret.columns, leg_weights),
         )
 
 
 _MARS_FETCH_BUDGET_SECONDS = 8.0
+# Default universe when neither symbols nor weights are supplied. It matches the
+# pane default and only Yahoo-served tickers, so the default is not a silent
+# substitute for real holdings (the equal-weight default is disclosed).
+_MARS_DEFAULT_UNIVERSE = ("SPY", "TLT", "GLD")
+
+
+def _parse_mars_weights(raw: Any) -> dict[str, float] | None:
+    """Holdings weights as ``SPY:0.6,TLT:0.4``, a mapping, or None when absent.
+
+    Negative weights are short positions. Raises ValueError on malformed input,
+    duplicate symbols or non-finite numbers, so the caller can return an explicit
+    input_error instead of silently re-weighting the book.
+    """
+    if raw is None or raw == "" or raw == [] or raw == {}:
+        return None
+    if isinstance(raw, str):
+        pairs: list[tuple[Any, Any]] = []
+        for item in (part.strip() for part in raw.split(",")):
+            if not item:
+                continue
+            if ":" not in item:
+                raise ValueError(f"weight entry {item!r} must be SYMBOL:WEIGHT, e.g. SPY:0.6")
+            symbol, value = item.rsplit(":", 1)
+            pairs.append((symbol, value))
+    elif isinstance(raw, dict):
+        pairs = list(raw.items())
+    else:
+        raise ValueError("weights must be a SYMBOL:WEIGHT list or a mapping of symbol to weight")
+    out: dict[str, float] = {}
+    for symbol_raw, value in pairs:
+        symbol = str(symbol_raw).strip().upper()
+        if not symbol:
+            raise ValueError("a weight entry has an empty symbol")
+        if symbol in out:
+            raise ValueError(f"duplicate weight for {symbol}")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"weight for {symbol} is not a number: {value!r}") from None
+        if not np.isfinite(number):
+            raise ValueError(f"weight for {symbol} must be finite, got {value!r}")
+        out[symbol] = number
+    if not out:
+        return None
+    return out
+
+
+def _mars_leg_weights(columns: Any, holdings: dict[str, float] | None) -> np.ndarray:
+    """Weight vector aligned to the return columns (equal weight when no holdings)."""
+    names = [str(c) for c in columns]
+    if holdings is None:
+        return np.ones(len(names)) / max(len(names), 1)
+    return np.array([float(holdings.get(name, 0.0)) for name in names], dtype=float)
+
+
+def _leg_weight_map(columns: Any, weights: np.ndarray) -> dict[str, float]:
+    return {str(c): float(w) for c, w in zip(columns, weights)}
+
+
+def _mars_weighting_notes(holdings: dict[str, float] | None, universe: list[str]) -> list[str]:
+    if holdings is None:
+        return [
+            "No holdings weights were supplied; the portfolio is an equal-weight basket of "
+            + ", ".join(universe)
+            + ", not your actual positions. Pass weights such as SPY:0.6,TLT:0.4 to analyse holdings."
+        ]
+    total = sum(holdings.values())
+    if abs(total - 1.0) > 1e-6:
+        return [
+            f"Weights sum to {total:.4f}; the portfolio return is the weighted sum of the legs, "
+            "so any remainder earns no return."
+        ]
+    return []
+
+
+def _mars_input_error(code: str, instrument: Instrument | None, reason: str) -> FunctionResult:
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": reason,
+            "alpha_daily": None,
+            "alpha_annualized": None,
+            "factor_loadings": {},
+            "rows": [],
+            "r_squared": None,
+            "regression_state": "not_estimated_input",
+            "factor_vif": {},
+            "max_vif": None,
+            "collinearity_state": "not_estimated",
+            "annualized_volatility": None,
+            "var_95_daily": None,
+            "var_95_daily_loss": None,
+            "etl_95_daily": None,
+            "etl_95_daily_loss": None,
+            "samples": None,
+            "leg_weights": {},
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"live": False},
+    )
 
 
 def _mars_fetch_budget(params: dict[str, Any]) -> float:
@@ -834,6 +958,7 @@ def _mars_result(
     metadata: dict[str, Any] | None = None,
     factors_are_template: bool = False,
     portfolio_is_template: bool = False,
+    leg_weights: dict[str, float] | None = None,
 ) -> FunctionResult:
     factors = _tz_naive_frame(factors)
     port_series = _tz_naive_series(port_series)
@@ -946,6 +1071,8 @@ def _mars_result(
             "factor_vif": vifs,
             "max_vif": max_vif,
             "collinearity_state": collinearity_state,
+            # Weights actually applied to each return leg (equal weight when no holdings).
+            "leg_weights": dict(leg_weights or {}),
             # Basis of the volatility and VaR figures: the portfolio series actually used.
             "risk_basis": "template_series" if portfolio_is_template else "live_series",
             "annualized_volatility": ann_vol,

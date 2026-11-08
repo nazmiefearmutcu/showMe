@@ -134,6 +134,7 @@ const LOADING_COLUMNS: DataGridColumn<Row>[] = [
 
 export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
   const [symbolsInput, setSymbolsInput] = useState("SPY,TLT,GLD");
+  const [weightsInput, setWeightsInput] = useState("");
   const [reference, setReference] = useState(false);
 
   const symbols = useMemo(
@@ -144,9 +145,11 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
         .filter(Boolean),
     [symbolsInput],
   );
+  // Holdings weights (SYMBOL:WEIGHT). The backend uses them as the universe when
+  // present; otherwise the universe is an equal-weight basket, which it discloses.
   const params = useMemo(
-    () => ({ symbols: symbols.join(","), reference }),
-    [symbols, reference],
+    () => ({ symbols: symbols.join(","), weights: weightsInput.trim(), reference }),
+    [symbols, weightsInput, reference],
   );
   const { state, data, error, refetch } = useFunction<MarsPayload>({ code, params });
   const payload = data?.data;
@@ -297,6 +300,16 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
                   id={`mars-${code}-universe`}
                   value={symbolsInput}
                   onChange={(event) => setSymbolsInput(event.target.value.toUpperCase())}
+                  spellCheck={false}
+                />
+              </label>
+              <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={`mars-${code}-weights`}>
+                <span>Holdings weights</span>
+                <input
+                  id={`mars-${code}-weights`}
+                  value={weightsInput}
+                  onChange={(event) => setWeightsInput(event.target.value.toUpperCase())}
+                  placeholder="SPY:0.6,TLT:0.4"
                   spellCheck={false}
                 />
               </label>

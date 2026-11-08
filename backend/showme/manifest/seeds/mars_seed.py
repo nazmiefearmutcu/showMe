@@ -57,8 +57,19 @@ def mars() -> FunctionManifest:
                 control=ControlKind.TEXT,
                 required=False,
                 description=(
-                    "Comma-separated tickers whose equal-weight return series is "
-                    "regressed. Defaults to the handler universe when empty."
+                    "Comma-separated tickers. Used only when no weights are given, "
+                    "as an equal-weight basket (disclosed). Defaults to SPY, TLT, GLD."
+                ),
+            ),
+            InputSpec(
+                name="weights",
+                label="Holdings weights",
+                control=ControlKind.TEXT,
+                required=False,
+                description=(
+                    "SYMBOL:WEIGHT pairs, e.g. SPY:0.6,TLT:0.4. When given they define "
+                    "the universe; negative weights are shorts; weights not summing to 1 "
+                    "are disclosed."
                 ),
             ),
             InputSpec(
@@ -140,13 +151,17 @@ def mars() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "MARS regresses the daily return series of the universe on six ETF "
-            "total-return proxies by ordinary least squares with an intercept: "
+            "MARS regresses the daily return series of the portfolio on six ETF "
+            "total-return proxies by ordinary least squares with an intercept. The "
+            "portfolio is the weighted sum of the legs: the supplied holdings weights, "
+            "or an equal-weight basket that is disclosed as such. The proxies are "
             "MKT=SPY, SMB=IWM, HML=VLUE, MOM=MTUM, QMJ=QUAL, BAB=USMV. These are "
             "long-only ETFs, not Fama-French long-short premia, and they are highly "
-            "correlated, so individual betas are not separable exposures. Alpha is "
+            "correlated, so individual betas are not separable exposures; the output "
+            "reports VIF per proxy and warns when they are collinear. Alpha is "
             "annualized as 252 x daily alpha. VaR and ETL are reported as positive "
-            "daily losses. reference=true serves the labelled template series."
+            "daily losses. reference=true serves the labelled template series, for "
+            "which regression statistics are withheld."
         ),
         formula_dict={
             "OLS": Formula(

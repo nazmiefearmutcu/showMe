@@ -8,7 +8,13 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockReturn: { current: unknown } = { current: null };
-vi.mock("@/lib/useFunction", () => ({ useFunction: () => mockReturn.current }));
+const mockCalls: { current: Array<{ params?: Record<string, unknown> }> } = { current: [] };
+vi.mock("@/lib/useFunction", () => ({
+  useFunction: (args: { params?: Record<string, unknown> }) => {
+    mockCalls.current.push(args);
+    return mockReturn.current;
+  },
+}));
 vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
 import { MultiAssetRiskPane, deriveFactorWaterfall } from "./MultiAssetRisk";
@@ -203,5 +209,19 @@ describe("MARS template regression state", () => {
     ).toBeInTheDocument();
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
     expect(screen.getByTestId("portx-warning-strip")).toHaveTextContent("not estimated");
+  });
+});
+
+describe("MARS holdings weights input", () => {
+  it("sends the holdings weights to the backend and clears them when empty", () => {
+    ok(LIVE_PAYLOAD);
+    render(<MultiAssetRiskPane code="MARS" />);
+    const lastParams = () =>
+      mockCalls.current[mockCalls.current.length - 1]?.params as { weights?: string } | undefined;
+    expect(lastParams()?.weights).toBe("");
+    fireEvent.change(screen.getByLabelText("Holdings weights"), {
+      target: { value: "spy:0.6,tlt:0.4" },
+    });
+    expect(lastParams()?.weights).toBe("SPY:0.6,TLT:0.4");
   });
 });

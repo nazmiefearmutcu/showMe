@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 import pandas as pd
 
 _HERE = Path(__file__).resolve()
@@ -277,3 +278,73 @@ def test_mars_independent_proxies_carry_no_collinearity_warning():
     ))
     assert result.data["max_vif"] is not None and result.data["max_vif"] < 10
     assert not any("collinear" in w.lower() for w in result.warnings), result.warnings
+
+
+# ────────────────────────────────────────────────────────────────────────
+# MARS#1: the portfolio is always an equal-weight average of the symbols and
+# holdings are never used. Explicit weights must drive the portfolio; the
+# equal-weight default must be disclosed; malformed weights must be an
+# explicit input_error rather than a silent default.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def _two_legs_yf() -> _KeyedYfinance:
+    return _KeyedYfinance(ok_symbols={"AAPL", "MSFT", "SPY", "IWM", "VLUE", "MTUM", "QUAL", "USMV"})
+
+
+def test_mars_explicit_weights_drive_the_portfolio():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    fn = MARSFunction(FunctionDeps(yfinance=_two_legs_yf()))
+    single = _run(fn.execute(instrument=EQ, symbols=["AAPL"], live=True))
+    weighted = _run(MARSFunction(FunctionDeps(yfinance=_two_legs_yf())).execute(
+        instrument=EQ, weights="AAPL:1", live=True,
+    ))
+    # A 100% AAPL holding is the same portfolio as an AAPL-only universe.
+    assert weighted.data["factor_loadings"] == single.data["factor_loadings"]
+    assert weighted.metadata.get("weighting") == "user_weights"
+
+
+def test_mars_weights_change_the_result_versus_other_weights():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    a = _run(MARSFunction(FunctionDeps(yfinance=_two_legs_yf())).execute(
+        instrument=EQ, weights="AAPL:0.5,MSFT:0.5", live=True,
+    ))
+    b = _run(MARSFunction(FunctionDeps(yfinance=_two_legs_yf())).execute(
+        instrument=EQ, weights="AAPL:0.9,MSFT:0.1", live=True,
+    ))
+    assert a.data["factor_loadings"] != b.data["factor_loadings"]
+
+
+def test_mars_equal_weight_default_is_disclosed():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    result = _run(MARSFunction(FunctionDeps(yfinance=_two_legs_yf())).execute(
+        instrument=EQ, symbols=["AAPL", "MSFT"], live=True,
+    ))
+    assert result.metadata.get("weighting") == "equal_weight_default"
+    assert any("equal-weight" in w for w in result.warnings), result.warnings
+
+
+def test_mars_weights_not_summing_to_one_are_disclosed():
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    result = _run(MARSFunction(FunctionDeps(yfinance=_two_legs_yf())).execute(
+        instrument=EQ, weights="AAPL:0.5,MSFT:0.3", live=True,
+    ))
+    assert any("sum" in w.lower() and "0.8" in w for w in result.warnings), result.warnings
+
+
+@pytest.mark.parametrize("bad", ["AAPL", "AAPL:abc", "AAPL:nan", "AAPL:0.5,AAPL:0.5", ":0.5"])
+def test_mars_malformed_weights_are_an_input_error_without_fetching(bad):
+    from showme.engine.functions.portfolio._more import MARSFunction
+
+    yf = _two_legs_yf()
+    result = _run(MARSFunction(FunctionDeps(yfinance=yf)).execute(
+        instrument=EQ, weights=bad, live=True,
+    ))
+    assert result.data["status"] == "input_error"
+    assert result.data["reason"]
+    assert yf.asked == [], "malformed weights must not trigger any live fetch"
+    assert result.metadata.get("live") is False
