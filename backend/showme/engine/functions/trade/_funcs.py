@@ -420,10 +420,31 @@ class AIMFunction(BaseFunction):
             warnings.append(f"order history unavailable: {exc}")
         # A history row that a live adapter already lists is the same order:
         # keep the live row only, so it is neither duplicated nor double counted.
-        history_rows = [
-            r for r in history_rows
-            if (str(r.get("broker")), str(r.get("order_id"))) not in live_keys
-        ]
+        # AIM#3-RQ: one order can be stored under an adapter's .name AND its config
+        # key. Map every stored name to the config key, then drop history rows
+        # for an order already listed live and keep one row per (broker, order_id)
+        # (list_orders is newest-first, so the first row wins).
+        alias_to_key: dict[str, str] = {}
+        for key in self._BROKERS:
+            for ident in self._broker_identities(key, getattr(self.deps, key, None)):
+                alias_to_key.setdefault(ident, key)
+
+        def _canon_broker(value: Any) -> str:
+            text = str(value)
+            return alias_to_key.get(text, text)
+
+        seen_history: set[tuple[str, str]] = set()
+        unique_history: list[dict[str, Any]] = []
+        for r in history_rows:
+            if r.get("order_id") is None:
+                unique_history.append(r)
+                continue
+            key_pair = (_canon_broker(r.get("broker")), str(r.get("order_id")))
+            if key_pair in live_keys or key_pair in seen_history:
+                continue
+            seen_history.add(key_pair)
+            unique_history.append(r)
+        history_rows = unique_history
         # The history store is written once at placement and never updated on
         # fills or closes, so no history row can prove a working order: it is
         # shown for the audit trail but never counted as open.
