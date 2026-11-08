@@ -124,3 +124,29 @@ async def test_csrc_live_rows_and_payload_carry_provider_quote_time(monkeypatch)
     for row in live_rows:
         assert row.get("quote_time") == quote_time.isoformat(), row["symbol"]
     assert result.data["as_of"] == quote_time.isoformat()
+
+
+def test_csrc_reference_universe_carries_no_hardcoded_volume() -> None:
+    """wb1-g17 / CSRC#5: volume is provider-sourced only; no constant volume is served as data."""
+    from showme.engine.functions.screen._funcs import _commodity_reference_rows
+
+    curated = [row["symbol"] for row in _commodity_reference_rows() if row.get("volume") is not None]
+    assert curated == [], f"curated volume constants are not provider data: {curated}"
+
+
+async def test_csrc_reference_payload_volume_is_null_not_a_constant() -> None:
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.screen._funcs import CSRCFunction
+
+    result = await CSRCFunction(deps=FunctionDeps()).execute(reference=True, query='sector = "Metals"', limit=50)
+    rows = result.data["rows"]
+    assert rows
+    assert all(row.get("volume") is None for row in rows), [row["symbol"] for row in rows if row.get("volume") is not None]
+
+
+def test_csrc_manifest_volume_field_is_provider_sourced_and_says_null_when_unquoted() -> None:
+    manifest = REGISTRY.get("CSRC")
+    volume = manifest.field_dict["rows[].volume"]
+    assert volume.source == "yfinance"
+    assert "curated" not in volume.description.lower()
+    assert "null" in volume.description.lower()

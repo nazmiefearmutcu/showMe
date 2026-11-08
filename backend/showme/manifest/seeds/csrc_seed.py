@@ -132,10 +132,11 @@ def csrc() -> FunctionManifest:
             "market, grouped into Energy, Metals, Grains, Softs and Livestock) with the sector and "
             "query predicates. With live quotes enabled each contract is requested from yfinance "
             "using its =F ticker, under a bounded per-symbol timeout. Contracts without a usable "
-            "quote keep their reference fields and carry quote_state=reference. volume and "
-            "open_interest are curated reference values only for the legacy contracts; the quote "
-            "provider does not publish open interest, and contracts without a curated value carry "
-            "null rather than zero. Matches are sorted by volume by default."
+            "quote keep their reference fields and carry quote_state=reference. volume is the quote "
+            "provider's session volume and is null when no quote carries one. open_interest is a "
+            "curated reference value for the legacy contracts only; the quote provider does not "
+            "publish open interest, and contracts without a curated value carry null rather than "
+            "zero. Matches are sorted by volume by default."
         ),
         field_dict={
             "rows[].symbol": FieldDef(description="Yahoo front-month futures ticker (e.g. CL=F).", source="universe"),
@@ -144,7 +145,7 @@ def csrc() -> FunctionManifest:
             "rows[].contract_unit": FieldDef(description="Contract size and unit.", source="curated"),
             "rows[].last": FieldDef(unit="quote_ccy", description="Latest futures price from the quote provider.", source="yfinance"),
             "rows[].change_pct": FieldDef(unit="%", description="Percent move versus the previous close when a live quote exists.", source="yfinance"),
-            "rows[].volume": FieldDef(unit="contracts", description="Volume from the quote provider, or curated reference value for legacy contracts.", source="yfinance"),
+            "rows[].volume": FieldDef(unit="contracts", description="Session volume from the quote provider; null when the provider did not return one.", source="yfinance"),
             "rows[].open_interest": FieldDef(unit="contracts", description="Curated reference open interest; null when not curated.", source="curated"),
         },
         provenance=ProvenanceSpec(

@@ -1325,33 +1325,35 @@ def _commodity_reference_rows() -> list[dict[str, Any]]:
     but to the 2-Year Eris Swap Futures contract, NOT lithium; the lithium
     hydroxide contract is ``LTH=F`` and is included below).
 
-    ``volume``/``open_interest`` on newly added rows are deliberately null:
-    the quote provider never publishes them and ShowMe will not fabricate
-    reference numbers for contracts the curated table never carried. The
-    legacy rows keep their curated reference values (flagged per row by
+    No row carries a volume: volume is session data from the quote provider
+    only (wb1-g17 / CSRC#5), so a contract the provider does not answer serves
+    null rather than a hard-coded constant. ``open_interest`` on newly added rows is
+    deliberately null: the quote provider never publishes it and ShowMe will not
+    fabricate reference numbers for contracts the curated table never carried. The
+    legacy rows keep their curated open_interest (flagged per row by
     ``open_interest_state="reference"`` after a live merge).
     """
     return [
         # Energy
-        {"symbol": "CL=F", "name": "WTI Crude Oil", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "1,000 barrels", "volume": 290_000, "open_interest": 310_000, "curve": "front_month"},
-        {"symbol": "BZ=F", "name": "Brent Crude Oil", "sector": "Energy", "exchange": "ICE", "contract_unit": "1,000 barrels", "volume": 180_000, "open_interest": 225_000, "curve": "front_month"},
-        {"symbol": "NG=F", "name": "Natural Gas", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "10,000 MMBtu", "volume": 160_000, "open_interest": 420_000, "curve": "front_month"},
+        {"symbol": "CL=F", "name": "WTI Crude Oil", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "1,000 barrels", "open_interest": 310_000, "curve": "front_month"},
+        {"symbol": "BZ=F", "name": "Brent Crude Oil", "sector": "Energy", "exchange": "ICE", "contract_unit": "1,000 barrels", "open_interest": 225_000, "curve": "front_month"},
+        {"symbol": "NG=F", "name": "Natural Gas", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "10,000 MMBtu", "open_interest": 420_000, "curve": "front_month"},
         {"symbol": "RB=F", "name": "RBOB Gasoline", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "42,000 gallons", "curve": "front_month"},
         {"symbol": "HO=F", "name": "NY Harbor ULSD (Heating Oil)", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "42,000 gallons", "curve": "front_month"},
         # Metals
-        {"symbol": "GC=F", "name": "Gold", "sector": "Metals", "exchange": "COMEX", "contract_unit": "100 troy ounces", "volume": 145_000, "open_interest": 480_000, "curve": "front_month"},
-        {"symbol": "SI=F", "name": "Silver", "sector": "Metals", "exchange": "COMEX", "contract_unit": "5,000 troy ounces", "volume": 75_000, "open_interest": 150_000, "curve": "front_month"},
-        {"symbol": "HG=F", "name": "Copper", "sector": "Metals", "exchange": "COMEX", "contract_unit": "25,000 pounds", "volume": 62_000, "open_interest": 95_000, "curve": "front_month"},
+        {"symbol": "GC=F", "name": "Gold", "sector": "Metals", "exchange": "COMEX", "contract_unit": "100 troy ounces", "open_interest": 480_000, "curve": "front_month"},
+        {"symbol": "SI=F", "name": "Silver", "sector": "Metals", "exchange": "COMEX", "contract_unit": "5,000 troy ounces", "open_interest": 150_000, "curve": "front_month"},
+        {"symbol": "HG=F", "name": "Copper", "sector": "Metals", "exchange": "COMEX", "contract_unit": "25,000 pounds", "open_interest": 95_000, "curve": "front_month"},
         {"symbol": "PL=F", "name": "Platinum", "sector": "Metals", "exchange": "NYMEX", "contract_unit": "50 troy ounces", "curve": "front_month"},
         {"symbol": "PA=F", "name": "Palladium", "sector": "Metals", "exchange": "NYMEX", "contract_unit": "100 troy ounces", "curve": "front_month"},
         {"symbol": "ALI=F", "name": "Aluminum", "sector": "Metals", "exchange": "COMEX", "contract_unit": "25 metric tons", "curve": "front_month"},
         {"symbol": "LTH=F", "name": "Lithium Hydroxide (CIF CJK)", "sector": "Metals", "exchange": "COMEX", "contract_unit": "1 metric ton", "curve": "front_month"},
         {"symbol": "UX=F", "name": "Uranium U3O8", "sector": "Metals", "exchange": "COMEX", "contract_unit": "250 lbs U3O8", "curve": "front_month"},
         # Grains
-        {"symbol": "ZC=F", "name": "Corn", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "volume": 205_000, "open_interest": 620_000, "curve": "front_month"},
-        {"symbol": "ZW=F", "name": "Chicago SRW Wheat", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "volume": 92_000, "open_interest": 220_000, "curve": "front_month"},
+        {"symbol": "ZC=F", "name": "Corn", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "open_interest": 620_000, "curve": "front_month"},
+        {"symbol": "ZW=F", "name": "Chicago SRW Wheat", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "open_interest": 220_000, "curve": "front_month"},
         {"symbol": "KE=F", "name": "KC HRW Wheat", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "curve": "front_month"},
-        {"symbol": "ZS=F", "name": "Soybeans", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "volume": 125_000, "open_interest": 360_000, "curve": "front_month"},
+        {"symbol": "ZS=F", "name": "Soybeans", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "open_interest": 360_000, "curve": "front_month"},
         {"symbol": "ZM=F", "name": "Soybean Meal", "sector": "Grains", "exchange": "CBOT", "contract_unit": "100 short tons", "curve": "front_month"},
         {"symbol": "ZL=F", "name": "Soybean Oil", "sector": "Grains", "exchange": "CBOT", "contract_unit": "60,000 pounds", "curve": "front_month"},
         {"symbol": "ZO=F", "name": "Oats", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "curve": "front_month"},
