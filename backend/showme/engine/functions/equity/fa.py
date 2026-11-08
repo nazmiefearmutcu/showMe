@@ -153,18 +153,24 @@ class FAFunction(BaseFunction):
 SUPPORTED_PERIODS = ("annual", "quarterly")
 
 
-def _latest_sec_filed_date(data: dict[str, Any]) -> str | None:
-    """Latest SEC ``filed`` date across the statement facts used (never invented).
+def _sec_filed_date_for_period_end(data: dict[str, Any], period_end: str | None) -> str | None:
+    """SEC ``filed`` date of the facts at ``period_end`` (never invented).
 
     The adapter attaches ``attrs["filed_by_end"]`` (period end -> filed date) to
-    each series. Returns ``None`` when no series carries that metadata.
+    each series. Only the statement period shown is considered, so a later
+    amendment to an older period does not become this period's filing date.
+    Returns ``None`` when no series carries that date for ``period_end``.
     """
+    if not period_end:
+        return None
     filed: list[str] = []
     for value in data.values():
         attrs = getattr(value, "attrs", None)
         by_end = attrs.get("filed_by_end") if isinstance(attrs, dict) else None
         if isinstance(by_end, dict):
-            filed.extend(str(day)[:10] for day in by_end.values() if day)
+            day = by_end.get(period_end)
+            if day:
+                filed.append(str(day)[:10])
     return max(filed) if filed else None
 
 
@@ -217,8 +223,8 @@ def _normalise_fa_payload(
         balance_rows = _rows_from_canonical(sec_data, "balance")
         cash_rows = _rows_from_canonical(sec_data, "cash_flow")
         period_end = _latest_filing_date(sec_data)
-        # The SEC ``filed`` date of the newest fact used; period end is the data date.
-        filing_date = _latest_sec_filed_date(sec_data)
+        # The SEC ``filed`` date of the facts at the period end shown; period end is the data date.
+        filing_date = _sec_filed_date_for_period_end(sec_data, period_end)
     else:
         yfin_data = yfin_data or {}
         canonical = _latest_yfinance_values(yfin_data)
@@ -278,7 +284,7 @@ def _normalise_fa_payload(
             "current_ratio": "current_assets / current_liabilities.",
             "free_cash_flow": "cash from operations minus capital expenditure when available.",
             "period_end": "Latest statement period end date (the data date).",
-            "filing_date": "Latest SEC filed date of the facts used; null when not supplied by the source.",
+            "filing_date": "SEC filed date of the facts at period_end; null when not supplied by the source.",
             "retrieved_at": "Time this payload was built (retrieval time, not data date).",
         },
     }

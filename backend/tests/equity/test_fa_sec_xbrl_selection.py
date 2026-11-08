@@ -33,7 +33,11 @@ if str(ENGINE) not in sys.path:
 from showme.engine.core.base_function import FunctionDeps  # noqa: E402
 from showme.engine.core.instrument import AssetClass, Instrument  # noqa: E402
 from showme.engine.data_sources.equity.sec_edgar_adapter import SECEdgarAdapter  # noqa: E402
-from showme.engine.functions.equity.fa import FAFunction, _compute_ratios  # noqa: E402
+from showme.engine.functions.equity.fa import (  # noqa: E402
+    FAFunction,
+    _compute_ratios,
+    _normalise_fa_payload,
+)
 
 
 def _fact(
@@ -233,3 +237,23 @@ def test_standard_fundamentals_without_period_keeps_legacy_unfiltered_output() -
     revenue = series["revenue"]
     assert pd.Timestamp("2026-03-28") in revenue.index
     assert pd.Timestamp("2026-06-27") in revenue.index
+
+
+def test_filing_date_is_filed_date_of_period_end_not_a_later_older_period_amendment() -> None:
+    # FA#5: a 10-K/A for the prior year filed later must not become the
+    # filing_date shown next to the newest period_end. filing_date is the SEC
+    # filed date of the period_end statement, nothing else.
+    revenue = pd.Series(
+        [416_161.0, 478_834.0],
+        index=pd.to_datetime(["2025-09-27", "2026-09-26"]),
+        dtype=float,
+    )
+    revenue.attrs["filed_by_end"] = {
+        "2025-09-27": "2026-12-15",
+        "2026-09-26": "2026-11-03",
+    }
+    payload = _normalise_fa_payload(
+        "AAPL", "annual", "sec_edgar", sec_data={"revenue": revenue}
+    )
+    assert payload["period_end"] == "2026-09-26"
+    assert payload["filing_date"] == "2026-11-03"
