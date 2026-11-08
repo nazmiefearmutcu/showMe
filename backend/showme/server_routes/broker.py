@@ -26,6 +26,13 @@ def _expected_confirmation_token(broker_name: str | None) -> str:
     Returns ``""`` if the broker can't be resolved or the credential
     has been removed; the route then rejects with 400 so the caller
     cannot submit an ambiguous order.
+
+    SEC-5: this value is non-secret metadata (the credential index and
+    account labels are returned to the UI), so echoing it is a TYPO
+    GUARD against mis-targeted or fat-fingered live actions. It is NOT
+    an authorization control: any client able to read the labels can
+    echo them. Real authorization for live actions needs a per-request
+    token issued by the app, which this check does not provide.
     """
     if not broker_name:
         # ``None`` → caller wants the env default. Resolve through
@@ -61,7 +68,11 @@ def _provided_confirmation(body: dict[str, Any]) -> str:
 
 def _require_typed_confirmation(broker: Any, provided: str) -> None:
     """Reject a live-capable broker action unless the client echoed the
-    account label. Shared by order submit and position close (SEC-4)."""
+    account label. Shared by order submit and position close (SEC-4).
+
+    This is a typo guard, not authorization (see SEC-5 on
+    ``_expected_confirmation_token``); the sidecar auth token is the only
+    access control on these routes."""
     expected = _expected_confirmation_token(broker.name)
     if not expected:
         raise HTTPException(
