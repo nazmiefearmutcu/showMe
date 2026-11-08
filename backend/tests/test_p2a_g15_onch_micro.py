@@ -257,3 +257,38 @@ def test_onch_payload_carries_as_of_request_time(monkeypatch: Any) -> None:
     if as_of.tzinfo is None:
         as_of = as_of.replace(tzinfo=timezone.utc)
     assert before <= as_of <= after
+
+
+# --------------------------------------------------------------------------
+# ONCH#3 — the manifest seed must describe the shipped keyless BTC vitals
+# --------------------------------------------------------------------------
+
+
+def test_onch_seed_describes_the_shipped_bitcoin_vitals_contract() -> None:
+    from showme.engine.functions.misc.onch import ONCHFunction
+    from showme.manifest.seeds.onch_seed import onch
+
+    # Same identity as the handler it documents.
+    assert onch.code == ONCHFunction.code == "ONCH"
+    assert onch.name == ONCHFunction.name
+
+    # Inputs: only the BTC chain the handler serves; no Ethereum / key-gated metrics.
+    assert [i.name for i in onch.inputs] == ["chain"]
+    assert onch.inputs[0].options == ["BTC"]
+
+    # Keyless providers only, and no key-gated provider named anywhere.
+    assert set(onch.provider_chain.fallbacks) == {"mempool", "coingecko", "defillama", "blockscout"}
+    text = (onch.methodology + " " + onch.intent).lower()
+    for gated in ("etherscan", "glassnode", "dune", "active address"):
+        assert gated not in text, gated
+
+    # Table columns are the row keys the handler really emits.
+    emitted_row_keys = {"metric", "value", "unit", "source", "context"}
+    assert {c.key for c in onch.table_schema.columns} <= emitted_row_keys
+
+    # The handler has no cache, so the policy must not claim a 300 s cache.
+    assert onch.caching.ttl_seconds == 0
+
+    # The seed must not promise a time-series contract the handler never produces.
+    assert not any("time_utc" in k for k in onch.field_dict)
+    assert onch.output_contract.series is True
