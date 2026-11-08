@@ -80,6 +80,27 @@ class FXHFunction(BaseFunction):
                 e for e in exposures
                 if e.get("spot_rate") and e["currency"].upper() not in {c.upper() for c in spot_failed}
             ]
+        if not exposures and source_mode == "portfolio_state":
+            # Portfolio mode found no non-home-currency positions: there is
+            # nothing to hedge, which is not a spot-provider problem.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "empty",
+                    "reason": (
+                        f"No non-home-currency positions in the portfolio to hedge "
+                        f"(home currency {home}). Add a foreign-currency position or "
+                        "pass explicit exposures."
+                    ),
+                    "rows": [],
+                    "source_mode": "portfolio_state",
+                    "home_currency": home,
+                    "methodology": "FXH hedges only positions whose currency differs from the home currency.",
+                },
+                sources=[source_mode],
+                warnings=warnings,
+            )
         if not exposures:
             return FunctionResult(
                 code=self.code,
