@@ -338,6 +338,60 @@ def _max_drawdown(daily_returns: list[float]) -> float | None:
     return float((index / running_peak - 1.0).min())
 
 
+def _split_factors(split_ratios: pd.Series) -> np.ndarray:
+    """Cumulative split factor S_t: the product of split ratios on bars <= t.
+
+    A bar with no split holds 0 or NaN and counts as 1; 4:1 is 4.0, 1:10 is 0.1.
+    Adjusted price = raw close * S_t, so a split leaves the adjusted series
+    continuous and is never read as a loss (TRA#2).
+    """
+    ratios = pd.to_numeric(split_ratios, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    return np.cumprod(np.where(ratios > 0, ratios, 1.0))
+
+
+def _unconfirmed_split_dates(close: pd.Series) -> list[Any]:
+    """Bars whose one-day raw move matches a whole-number split ratio.
+
+    Used only when the source reported no split events: it names the candidate
+    so the user can verify it. Moves under 1.8x are never candidates.
+    """
+    raw = close.to_numpy(dtype=float)
+    found: list[Any] = []
+    for i in range(1, len(raw)):
+        prev, cur = raw[i - 1], raw[i]
+        if not (prev > 0 and cur > 0):
+            continue
+        move = max(prev, cur) / min(prev, cur)
+        if move < 1.8:
+            continue
+        nearest = round(move)
+        if nearest >= 2 and abs(move - nearest) / nearest <= 0.02:
+            found.append(close.index[i])
+    return found
+
+
+def _as_percent(value: float | None) -> float | None:
+    """A fraction as a percent, or None when the fraction is missing or not finite."""
+    if value is None:
+        return None
+    number = float(value)
+    return number * 100.0 if np.isfinite(number) else None
+
+
+def _safe_irr(cashflows: list[tuple[datetime, float]]) -> float | None:
+    """_irr that returns None instead of raising or returning a non-real rate (TRA#2)."""
+    try:
+        rate = _irr(cashflows)
+        if rate is None:
+            return None
+        value = float(rate)
+    except (OverflowError, ZeroDivisionError, ValueError, TypeError):
+        return None
+    if not np.isfinite(value) or value <= -1.0:
+        return None
+    return value
+
+
 def _irr(cashflows: list[tuple[datetime, float]],
          guess: float = 0.05, max_iter: int = 100, tol: float = 1e-6) -> float | None:
     """XIRR — Newton-Raphson on (date, amount) pairs."""
@@ -429,24 +483,51 @@ class TRAFunction(BaseFunction):
             )
         div_count = int((divs > 0).sum()) if dividends_known else None
         div_total = float(divs.sum()) if dividends_known else None
-        price_ret = float(close.iloc[-1] / close.iloc[0] - 1)
+        # TRA#2/#3: splits are removed before any return is measured. A source
+        # that reports split events gives an adjusted series; one that does not
+        # is labelled, and a one-day move that looks like a split is named.
+        splits_known = "splits" in df.columns
+        if splits_known:
+            split_factor = _split_factors(df["splits"])
+            splits_count: int | None = int(
+                (pd.to_numeric(df["splits"], errors="coerce").fillna(0.0) > 0).sum()
+            )
+        else:
+            split_factor = np.ones(len(close), dtype=float)
+            splits_count = None
+            warnings.append(
+                "Split events are unavailable from this data source; a split inside the "
+                "window would read as a price move and is not adjusted."
+            )
+            for bar in _unconfirmed_split_dates(close):
+                warnings.append(
+                    f"TRA: the one-day price move on {bar.strftime('%Y-%m-%d')} matches a stock "
+                    "split ratio, but the source reported no split event. Verify it before "
+                    "reading total return or drawdown."
+                )
+        adj_close = pd.Series(close.to_numpy(dtype=float) * split_factor, index=close.index)
+        adj_divs = (
+            pd.Series(divs.to_numpy(dtype=float) * split_factor, index=divs.index)
+            if dividends_known else divs
+        )
+        price_ret = float(adj_close.iloc[-1] / adj_close.iloc[0] - 1)
         # TRA#2: TWR is a total return: each day compounds (close + dividend) over
         # the prior close, so dividends are reinvested at the ex-date close. With
         # no dividend series the figure is price-only and the basis says so.
         total_basis = (
             "dividends_reinvested" if dividends_known else "price_only_dividends_unavailable"
         )
-        daily_returns = _total_daily_returns(close, divs if dividends_known else None)
+        daily_returns = _total_daily_returns(adj_close, adj_divs if dividends_known else None)
         twr = _twr(daily_returns)
         # TRA#3: drawdown on the full daily total-return index, not on sampled points.
         max_dd = _max_drawdown(daily_returns)
         # MWR / IRR — buy 1 share at start, dividends as positive cashflows, sell at end
-        cashflows = [(close.index[0].to_pydatetime(), -float(close.iloc[0]))]
-        for d, amt in zip(divs.index, divs.values):
+        cashflows = [(adj_close.index[0].to_pydatetime(), -float(adj_close.iloc[0]))]
+        for d, amt in zip(adj_divs.index, adj_divs.values):
             if amt and amt > 0:
                 cashflows.append((d.to_pydatetime(), float(amt)))
-        cashflows.append((close.index[-1].to_pydatetime(), float(close.iloc[-1])))
-        irr = _irr(cashflows)
+        cashflows.append((adj_close.index[-1].to_pydatetime(), float(adj_close.iloc[-1])))
+        irr = _safe_irr(cashflows)
         # Audit Q3 #6: CAGR exponent must use the ACTUAL elapsed years
         # between first and last observation, not the requested window. When
         # yfinance returns 2y of history because the ticker is younger than
@@ -461,61 +542,86 @@ class TRAFunction(BaseFunction):
         growth_factor = 1.0 + twr
         cagr = (
             growth_factor ** (1 / actual_years) - 1
-            if actual_years > 0 and close.iloc[0] > 0 and growth_factor > 0
+            if actual_years > 0 and adj_close.iloc[0] > 0 and growth_factor > 0
             else None
         )
         # Chart points: every Nth bar, always including the last observation so
         # the growth readout and the "last" date agree.
         step = max(1, len(close) // 250)
         sample_positions = sorted(set(range(0, len(close), step)) | {len(close) - 1})
+        base_adj = float(adj_close.iloc[0])
+        cagr_out = float(cagr) if cagr is not None else None
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
                 "price_return_total": price_ret,
                 "twr_total": twr,
                 "irr_annualized": irr,
-                "cagr": float(cagr) if cagr is not None else None,
+                "cagr": cagr_out,
                 "dividends_count": div_count,
                 "dividends_total": div_total,
                 "n_observations": int(len(close)),
                 "first_date": close.index[0].strftime("%Y-%m-%d"),
                 "last_date":  close.index[-1].strftime("%Y-%m-%d"),
+                "split_adjusted": splits_known,
+                "splits_count": splits_count,
                 "series": [
                     {
                         "date": idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10],
-                        "close": float(value),
-                        "growth_of_1": float(value / close.iloc[0]) if close.iloc[0] else None,
+                        "close": float(close.iloc[pos]),
+                        "split_adjusted_close": float(adj_close.iloc[pos]),
+                        "growth_of_1": float(adj_close.iloc[pos] / base_adj) if base_adj else None,
                     }
-                    for idx, value in close.iloc[sample_positions].items()
+                    for pos in sample_positions
+                    for idx in [close.index[pos]]
                 ],
                 "summary": {
                     "symbol": instrument.symbol,
                     "price_return_total": price_ret,
                     "twr_total": twr,
                     "irr_annualized": irr,
-                    "cagr": float(cagr) if cagr is not None else None,
+                    "cagr": cagr_out,
                     "max_drawdown": max_dd,
                     "total_return_basis": total_basis,
                     "dividends_total": div_total,
+                    "split_adjusted": splits_known,
                 },
                 "total_return_basis": total_basis,
                 "max_drawdown": max_dd,
+                # TRA#4: card slots read top-level scalars; "_pct" keys hold the
+                # same figures as percent (132.99 means 132.99%).
+                "twr_total_pct": _as_percent(twr),
+                "irr_annualized_pct": _as_percent(irr),
+                "cagr_pct": _as_percent(cagr_out),
+                "price_return_total_pct": _as_percent(price_ret),
+                "max_drawdown_pct": _as_percent(max_dd),
                 "methodology": (
-                    "Compute price return from first and last closes (raw, not dividend-adjusted). "
-                    "Compound daily total returns (close plus dividend, over the prior close) for "
+                    "Compute price return from the first and last split-adjusted closes (dividends "
+                    "excluded). Splits are adjusted by multiplying each close by the cumulative split "
+                    "ratio up to that bar, so a split is not read as a loss. Compound daily total returns "
+                    "(split-adjusted close plus split-adjusted dividend, over the prior close) for "
                     "time-weighted return, with dividends reinvested at their ex-date close. Estimate "
                     "IRR from buy, dividend, and sale cash flows. Max drawdown is measured on the full "
                     "daily total-return index. Without a dividend series, TWR and CAGR are price-only "
-                    "and total_return_basis says so."
+                    "and total_return_basis says so. Without split events, split_adjusted is false and "
+                    "the warnings say so."
                 ),
                 "field_dictionary": {
-                    "price_return_total": "Last close divided by first close minus one; excludes dividends.",
+                    "split_adjusted": "True when the source reported split events and closes were adjusted for them; false when no split events were available.",
+                    "splits_count": "Number of split events inside the window; null when the source reported none.",
+                    "split_adjusted_close": "Close multiplied by the cumulative split ratio; continuous across splits.",
+                    "price_return_total": "Last split-adjusted close divided by first split-adjusted close minus one; excludes dividends.",
                     "twr_total": "Time-weighted total return from daily returns with dividends reinvested; price-only when total_return_basis says so.",
                     "irr_annualized": "Money-weighted annualized return from cash flows.",
                     "cagr": "Annualized growth of the same basis as twr_total over the observed span.",
                     "max_drawdown": "Most negative peak-to-trough move of the daily total-return index (<= 0).",
                     "total_return_basis": "dividends_reinvested when a dividend series was available, else price_only_dividends_unavailable.",
-                    "growth_of_1": "Value of one invested dollar over the selected period (price basis, sampled points).",
+                    "growth_of_1": "Value of one invested dollar over the selected period (split-adjusted price basis, no dividends, sampled points).",
+                    "twr_total_pct": "twr_total as a percent (card value).",
+                    "irr_annualized_pct": "irr_annualized as a percent (card value).",
+                    "cagr_pct": "cagr as a percent (card value).",
+                    "price_return_total_pct": "price_return_total as a percent (card value).",
+                    "max_drawdown_pct": "max_drawdown as a percent (card value).",
                 },
             },
             sources=sources,

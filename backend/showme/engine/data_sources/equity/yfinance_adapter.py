@@ -117,6 +117,41 @@ def _chart_market_time(value: Any) -> datetime | None:
     except (OverflowError, OSError, ValueError):
         return None
 
+def _splits_on_bars(index: pd.DatetimeIndex, events: Any) -> pd.Series:
+    """Place chart split events as a per-bar ratio (4:1 -> 4.0, 1:10 -> 0.1).
+
+    Same bar rule as the dividends. Bars with no split hold 0.0, matching the
+    ``splits`` column the yfinance ticker path returns. TRA uses the ratio to
+    split-adjust closes, so a split is not read as a price drop (TRA#2).
+    """
+    out = pd.Series(0.0, index=index, dtype=float)
+    if len(index) == 0 or not isinstance(events, dict):
+        return out
+    splits = events.get("splits")
+    if not isinstance(splits, dict):
+        return out
+    bar_dates = index.normalize()
+    for raw in splits.values():
+        if not isinstance(raw, dict):
+            continue
+        numerator = _to_float(raw.get("numerator"))
+        denominator = _to_float(raw.get("denominator"))
+        if (numerator is None or denominator is None) and isinstance(raw.get("splitRatio"), str):
+            parts = raw["splitRatio"].split(":")
+            if len(parts) == 2:
+                numerator, denominator = _to_float(parts[0]), _to_float(parts[1])
+        stamp = _to_float(raw.get("date"))
+        if numerator is None or denominator is None or stamp is None:
+            continue
+        if numerator <= 0 or denominator <= 0:
+            continue
+        event_date = pd.Timestamp(int(stamp), unit="s", tz="UTC").normalize()
+        pos = int(bar_dates.searchsorted(event_date, side="left"))
+        if pos < len(index):
+            ratio = numerator / denominator
+            out.iloc[pos] = ratio if out.iloc[pos] == 0.0 else out.iloc[pos] * ratio
+    return out
+
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -525,6 +560,9 @@ class YFinanceAdapter(BaseDataSource):
         # ``events.dividends`` map (unix ts -> {amount, date}); keep it as a
         # dividends column so callers do not read a missing series as zero.
         frame["dividends"] = _dividends_on_bars(frame.index, result.get("events"))
+        # Split events are kept as a per-bar ratio, like the ticker path's
+        # "splits" column, so TRA can split-adjust prices (TRA#2).
+        frame["splits"] = _splits_on_bars(frame.index, result.get("events"))
         return frame
 
     async def _fetch_refdata(self, req: DataRequest) -> ReferenceData:
