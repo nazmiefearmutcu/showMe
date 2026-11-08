@@ -472,3 +472,17 @@ def test_wacc6_missing_input_is_provider_unavailable_state(monkeypatch) -> None:
     res = _run(_live_deps(fred={"BAMLC0A4CBBBEY": 5.93}))
     assert res.data["status"] == "provider_unavailable"
     assert res.data["data_state"] == "provider_unavailable"
+
+
+# ---- Seed: no constant ERP pre-filled as a user choice ---------------------
+
+
+def test_wacc_seed_does_not_prefill_a_five_percent_erp() -> None:
+    """A generic form would submit a seed default as user_input; the ERP must come from Damodaran unless the user sets it."""
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    wacc = REGISTRY.get("WACC")
+    erp_input = next(i for i in wacc.inputs if i.name == "market_premium")
+    assert "market_premium" not in (wacc.defaults or {})
+    assert erp_input.required is False
