@@ -101,6 +101,10 @@ class PORTFunction(BaseFunction):
     code = "PORT"
     name = "Portfolio Analytics"
     category = "portfolio"
+    description = (
+        "Local portfolio book: positions, cost basis, unrealized P&L, cash and "
+        "weights, with live quote marks when a quote source answers."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         portfolio: PortfolioState = params.get("_portfolio_override") or PortfolioState()
@@ -190,6 +194,7 @@ class PORTFunction(BaseFunction):
             unrl = (last - pos.avg_cost) * pos.quantity
             rows.append({
                 "symbol": sym, "asset_class": pos.instrument.asset_class.value,
+                "currency": pos.currency,
                 "quantity": pos.quantity, "avg_cost": pos.avg_cost,
                 "last": last, "market_value": mv,
                 "unrealized_pnl": unrl,
