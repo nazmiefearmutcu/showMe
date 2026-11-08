@@ -100,6 +100,21 @@ function normalizePair(raw: string | undefined): PairId | null {
 const CURVE_W = 320;
 const CURVE_H = 88;
 
+
+/** Spot pill label and tone; only a fresh (or non-yfinance live) spot reads as live. */
+function spotStatusPill(
+  status: string | null | undefined,
+  isLive: boolean,
+  isManual: boolean,
+): { label: string; tone: "positive" | "warn" } {
+  if (status === "stale") return { label: "stale spot", tone: "warn" };
+  if (status === "off_session") return { label: "off-session print", tone: "warn" };
+  if (status === "quote_time_unavailable") return { label: "spot time unknown", tone: "warn" };
+  if (isLive) return { label: "live spot", tone: "positive" };
+  if (isManual) return { label: "manual spot", tone: "warn" };
+  return { label: "reference spot", tone: "warn" };
+}
+
 export function FXFCPane({ code, symbol }: FunctionPaneProps) {
   const [pair, setPair] = usePersistentOption<PairId>(
     "showme.fxfc.pair",
@@ -129,8 +144,9 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
   const isLive = typeof sourceMode === "string" && sourceMode.startsWith("live_");
   // Quote-time check from the backend: a yfinance quote older than the
   // threshold is labelled stale, never live.
-  const isStaleSpot = payload?.spot_quote_status === "stale";
   const isManual = sourceMode === "manual_input";
+  // FXFC#4 follow-up: a yfinance spot that is not fresh is never called "live".
+  const spotPill = spotStatusPill(payload?.spot_quote_status, isLive, isManual);
   const spot = payload?.spot;
 
   const stats = useMemo(() => deriveStats(rows), [rows]);
@@ -361,17 +377,8 @@ export function FXFCPane({ code, symbol }: FunctionPaneProps) {
           subtitle={`${rows.length} horizons · CIP carry path`}
           trailing={
             <FunctionControlGroup>
-              <Pill
-                tone={isStaleSpot ? "warn" : isLive ? "positive" : "warn"}
-                variant="soft"
-              >
-                {isStaleSpot
-                  ? "stale spot"
-                  : isLive
-                    ? "live spot"
-                    : isManual
-                      ? "manual spot"
-                      : "reference spot"}
+              <Pill tone={spotPill.tone} variant="soft">
+                {spotPill.label}
               </Pill>
               <SegmentedControl
                 label="PAIR"
