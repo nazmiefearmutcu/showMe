@@ -497,10 +497,22 @@ class EQSFunction(BaseFunction):
         ]
         if not pending:
             return
+        # EQS#2 follow-up: the slice can only finish about 5 + rate * slice
+        # seconds of calls (shared bucket, default 2/s with burst 5, 3s cap),
+        # so most of a 24-symbol window is cancelled. The window is therefore
+        # picked least-recently-attempted first, and a cancelled symbol keeps
+        # its place at the front of the queue. Rotating a fixed index over a
+        # shrinking list skipped the cancelled symbols until the index wrapped.
         global _EQS_REFDATA_CURSOR
-        start = _EQS_REFDATA_CURSOR % len(pending)
-        window = pending[start:start + budget]
-        _EQS_REFDATA_CURSOR = (start + budget) % max(1, len(pending))
+        count = len(pending)
+        cursor = _EQS_REFDATA_CURSOR % count
+        tie_rank = {symbol: (index - cursor) % count for index, symbol in enumerate(pending)}
+        ordered = sorted(
+            pending,
+            key=lambda s: (_EQS_REFDATA_ATTEMPTED.get(s, float("-inf")), tie_rank[s]),
+        )
+        window = ordered[:budget]
+        _EQS_REFDATA_CURSOR = (cursor + len(window)) % count
         per_timeout = max(1.0, min(_param_float(params, "refdata_timeout", 2.0), 3.0))
         slice_timeout = max(1.0, min(_param_float(params, "refdata_screen_timeout", 3.0), 5.0))
         semaphore = asyncio.Semaphore(6)
@@ -521,13 +533,17 @@ class EQSFunction(BaseFunction):
                     extra={"timeout": per_timeout},
                 ))
 
-        tasks = [asyncio.create_task(_one(symbol)) for symbol in window]
-        done, pending_tasks = await asyncio.wait(tasks, timeout=slice_timeout)
+        task_symbol = {asyncio.create_task(_one(symbol)): symbol for symbol in window}
+        done, pending_tasks = await asyncio.wait(list(task_symbol), timeout=slice_timeout)
         for task in pending_tasks:
             task.cancel()
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
+        now = time.monotonic()
         for task in done:
+            # A symbol whose call finished (even if it failed) has been attempted;
+            # a cancelled one has not, so it stays first in line for the next scan.
+            _EQS_REFDATA_ATTEMPTED[task_symbol[task]] = now
             try:
                 symbol, refdata = task.result()
             except Exception:  # noqa: BLE001
@@ -544,6 +560,8 @@ _EQS_REFDATA_CACHE_TTL_S = 6 * 3600.0
 _EQS_BATCH_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _EQS_REFDATA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _EQS_REFDATA_CURSOR = 0
+# Last monotonic time a REFDATA call for the symbol finished (EQS#2 follow-up).
+_EQS_REFDATA_ATTEMPTED: dict[str, float] = {}
 _SECURITY_MASTER_INDEX: dict[str, dict[str, Any]] | None = None
 
 
