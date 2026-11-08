@@ -91,13 +91,13 @@ def test_every_declared_frequency_label_has_a_fred_code():
         assert fred.calls[0]["frequency"] == code, (label, fred.calls)
 
 
-def test_unknown_frequency_is_reported_and_native_served():
+def test_unknown_frequency_is_input_error_without_provider_call():
+    # An unknown frequency is refused explicitly: no provider call, no native rows
+    # passed off as the requested frequency.
     fred = _KeyedFake(_monthly_frame())
     res = _run(fred, series_id="CPIAUCSL", date_range="1Y", frequency="hourly")
-    assert fred.calls[0]["frequency"] is None, fred.calls
-    assert res.data["rows"], "native rows still served"
-    assert any("hourly" in w for w in res.warnings), res.warnings
-    assert res.data["frequency_applied"] is False
+    assert fred.calls == [], fred.calls
+    assert res.data["status"] == "input_error"
 
 
 def test_keyed_provider_reports_frequency_applied():

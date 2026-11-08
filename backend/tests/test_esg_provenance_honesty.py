@@ -169,7 +169,7 @@ def test_manifest_data_mode_description_lists_live_official():
 
     description = esg_manifest.field_dict["data_mode"].description
     assert "live_official" in description, description
-    assert "delayed_reference" not in description, description
+    assert "delayed_reference" in description, description
 
 
 # ---- ESG#2: the manifest methodology describes the real provenance paths ------
@@ -243,10 +243,10 @@ def test_yahoo_snapshot_drives_rows_without_proxy(monkeypatch):
     data = result.data
     assert calls == []
     assert data["status"] == "ok"
-    assert data["data_mode"] == "cached_snapshot"
+    assert data["data_mode"] == "delayed_reference"
     assert data["totalEsg"] == 16.84
     assert result.sources == ["yfinance"]
-    assert {r["source_mode"] for r in data["rows"]} == {"yahoo_sustainability_snapshot"}
+    assert {r["source_mode"] for r in data["rows"]} == {"delayed_reference"}
 
 
 def test_empty_yahoo_frame_is_reported_as_unavailable_before_proxy(monkeypatch):

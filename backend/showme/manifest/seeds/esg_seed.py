@@ -122,7 +122,7 @@ def esg() -> FunctionManifest:
         field_dict={
             "symbol": FieldDef(description="Equity or ETF ticker.", source="instrument"),
             "rows": FieldDef(description="Per-pillar rows with scale + source_mode (vendor-risk scale or filing-mention proxy).", source="provider"),
-            "totalEsg": FieldDef(description="Yahoo/Sustainalytics total ESG risk score, or the proxy total mention count when source_mode=sec_text_proxy.", source="provider"),
+            "totalEsg": FieldDef(description="Yahoo/Sustainalytics total ESG risk score (yfinance path, source_mode=delayed_reference), or on the SEC proxy path (source_mode=sec_text_proxy) the count of unique 10-K filings matching any E/S/G term, not a risk score.", source="provider"),
             "environmentScore": FieldDef(description="E pillar score (vendor score, or proxy mention count).", source="provider"),
             "socialScore": FieldDef(description="S pillar score (vendor score, or proxy mention count).", source="provider"),
             "governanceScore": FieldDef(description="G pillar score (vendor score, or proxy mention count).", source="provider"),

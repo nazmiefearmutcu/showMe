@@ -69,11 +69,12 @@ def test_omon_without_spot_does_not_compute_moneyness_or_delta_around_100(monkey
 
     result = asyncio.run(fn.execute(instrument=_instrument()))
     data = result.data
+    # No spot from any signal: an explicit provider_unavailable state with no rows,
+    # so nothing is priced around a placeholder anchor (OMON honest-spot contract).
+    assert data["status"] == "provider_unavailable"
     assert data["spot"] is None
-    assert data["rows"][0]["moneyness"] is None
-    assert data["rows"][0]["call_delta"] is None
-    assert result.metadata["live"] is False
-    assert result.metadata["data_mode"] == "spot_unavailable"
+    assert data["spot_source"] == "unavailable"
+    assert data["rows"] == []
     assert any("spot" in w.lower() for w in result.warnings)
 
 

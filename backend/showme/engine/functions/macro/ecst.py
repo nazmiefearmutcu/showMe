@@ -314,14 +314,6 @@ class ECSTFunction(BaseFunction):
             df = merged.sort_index()
             df = df[df["value"].notna()]
 
-        # The keyed API aggregated the series to the requested frequency, so the
-        # response and every row report that frequency, not the native one.
-        frequency_applied = bool(
-            requested_frequency
-            and source_mode == "fred"
-            and not isinstance(fred, _KeylessFredCSV)
-        )
-
         # Normalize and construct response metadata
         keyless_fred = isinstance(fred, _KeylessFredCSV)
         applied_by_fred = main_available and source_mode == "fred" and not keyless_fred
