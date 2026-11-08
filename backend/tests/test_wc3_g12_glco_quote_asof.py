@@ -71,8 +71,8 @@ def test_quote_without_exchange_time_is_missing_not_served_as_current(monkeypatc
     assert all(row["as_of"] == FRIDAY_SETTLE.isoformat() for row in data["rows"])
 
 
-def test_contract_snapshot_labels_a_fetch_time_stamp_for_callers(monkeypatch) -> None:
-    """The shared helper labels a fetch-time stamp so no caller can mistake it."""
+def test_shared_contract_snapshot_output_is_unchanged_for_other_callers(monkeypatch) -> None:
+    """GLCO owns its exchange-time rule; the shared helper BOIL/BGAS/CPF use keeps its base output."""
     from showme.engine.functions.commodity import _funcs as mod
 
     monkeypatch.setattr(mod, "_yahoo_chart_ohlcv", _no_history)
@@ -80,5 +80,5 @@ def test_contract_snapshot_labels_a_fetch_time_stamp_for_callers(monkeypatch) ->
         _Quotes({"CL=F": None}), "CL=F", days=30, timeout=2.0, include_history=False,
     ))
     assert row is not None
-    assert row["as_of_source"] == "fetch_time"
+    assert "as_of_source" not in row, sorted(row)
     assert errors == []

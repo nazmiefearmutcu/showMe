@@ -502,7 +502,6 @@ async def _contract_snapshot(
     volume = _finite(getattr(quote, "volume_24h", None))
     source = getattr(quote, "source", None) or "yfinance"
     as_of = getattr(getattr(quote, "timestamp", None), "isoformat", lambda: None)()
-    as_of_source = "quote_exchange_time" if as_of else None
 
     if last is None and history:
         last = _finite(history[-1].get("close"))
@@ -513,15 +512,9 @@ async def _contract_snapshot(
         volume = _finite(history[-1].get("volume"))
         source = "yfinance_chart"
         as_of = history[-1].get("date")
-        as_of_source = "daily_bar_date"
 
     if last is None:
         return None, history, errors
-    if not as_of:
-        # No exchange time came with the price. The row is labelled as a fetch
-        # time so callers can refuse it; GLCO does (see its ``_one``).
-        as_of = datetime.now(timezone.utc).isoformat()
-        as_of_source = "fetch_time"
 
     change = last - prev if prev not in (None, 0) else None
     change_pct = (last / prev - 1) * 100 if prev not in (None, 0) else None
@@ -542,9 +535,26 @@ async def _contract_snapshot(
         "volume": volume,
         "source": source,
         "source_mode": "live_yfinance",
-        "as_of": as_of,
-        "as_of_source": as_of_source,
+        "as_of": as_of or datetime.now(timezone.utc).isoformat(),
     }, history, errors
+
+
+class _QuoteStampProbe:
+    """GLCO#2: passes a yfinance-shaped provider through and records, per symbol,
+    whether the quote carried an exchange time. The shared snapshot helper falls
+    back to the fetch time when it does not; GLCO uses this record to refuse
+    that row. The helper itself is left unchanged for BOIL/BGAS/CPF."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.stamped: dict[str, bool] = {}
+
+    async def fetch(self, request: Any) -> Any:
+        quote = await self._inner.fetch(request)
+        symbol = str(getattr(getattr(request, "instrument", None), "symbol", "") or "")
+        stamp = getattr(getattr(quote, "timestamp", None), "isoformat", lambda: None)()
+        self.stamped[symbol] = bool(stamp)
+        return quote
 
 
 def _filter_sector(rows: list[dict[str, Any]], sector: Any) -> list[dict[str, Any]]:
@@ -1672,18 +1682,21 @@ class GLCOFunction(BaseFunction):
             symbol_errors: dict[str, list[str]] = {}
 
             async def _one(sym: str) -> dict[str, Any] | None:
+                probe = _QuoteStampProbe(self.deps.yfinance)
                 row, _history, errors = await _contract_snapshot(
-                    self.deps.yfinance,
+                    probe,
                     sym,
                     days=30,
                     timeout=quote_timeout,
                     include_history=False,
                 )
-                if row and row.get("as_of_source") == "fetch_time":
+                if row and not probe.stamped.get(sym):
                     # GLCO#2: a price with no exchange time is never served as
                     # current (a Friday close read on a Sunday looked live).
                     errors = [*errors, f"{sym} quote: no exchange time on the quote; price not served"]
                     row = None
+                if row:
+                    row["as_of_source"] = "quote_exchange_time"
                 provider_errors.extend(errors)
                 symbol_errors[sym] = list(errors)
                 return row
