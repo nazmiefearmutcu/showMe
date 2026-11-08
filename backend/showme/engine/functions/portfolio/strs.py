@@ -75,15 +75,27 @@ class STRSFunction(BaseFunction):
         if include_sectors and self.deps.yfinance:
             await self._sectors(symbols, sector_lookup, timeout=min(quote_timeout, 2.0))
         positions_payload: list[dict[str, Any]] = []
+        # STRS#6: state which basis each position was valued on. A live-mode position
+        # with no quote falls back to average cost and is flagged, never silent.
+        price_basis: dict[str, str] = {}
         for p in portfolio.positions:
-            px = prices.get(p.instrument.symbol) or p.avg_cost
+            sym = p.instrument.symbol
+            if not refresh_prices:
+                price_basis[sym] = "portfolio_state_cost"
+            elif prices.get(sym):
+                price_basis[sym] = "live_quote"
+            else:
+                price_basis[sym] = "avg_cost_fallback"
+            px = prices.get(sym) or p.avg_cost
             mv = p.quantity * px
             positions_payload.append({
-                "symbol": p.instrument.symbol,
+                "symbol": sym,
                 "asset_class": p.instrument.asset_class.value,
                 "market_value": mv,
-                "sector": sector_lookup.get(p.instrument.symbol),
+                "sector": sector_lookup.get(sym),
             })
+        price_source = _price_source(price_basis, refresh_prices)
+        price_warnings = _price_warnings(price_basis, refresh_prices)
         # The manifest's `scenario_magnitudes` input is the scale factor; `scale` is kept
         # as the older spelling.
         scale_raw = params.get("scale")
@@ -129,7 +141,8 @@ class STRSFunction(BaseFunction):
                 measured_by_key=measured_by_key,
             )
             compare_warnings = _unique_warnings(
-                [unknown_warnings, *(row.get("warnings", []) for row in data)],
+                [price_warnings, unknown_warnings,
+                 *(row.get("warnings", []) for row in data)],
             )
             return FunctionResult(code=self.code, instrument=None,
                                   warnings=compare_warnings,
@@ -139,7 +152,7 @@ class STRSFunction(BaseFunction):
                                             "scenarios": len(data),
                                             "positions": len(positions_payload),
                                             "worst_total_pnl": data[0]["total_pnl"] if data else 0,
-                                            "price_source": "live_quote" if refresh_prices else "portfolio_state_cost",
+                                            "price_source": price_source,
                                             "unpriced_positions": max(
                                                 (row["unpriced_positions"] for row in data), default=0,
                                             ),
@@ -157,8 +170,9 @@ class STRSFunction(BaseFunction):
                 symbol_shocks=params.get("symbol_shocks") or {},
             )
             data = stress.apply_scenario(positions_payload, sc, sector_lookup=sector_lookup, scale=scale)
+            _stamp_price_basis(data, price_basis, price_source)
             return FunctionResult(code=self.code, instrument=None,
-                                  warnings=list(data.get("warnings", [])),
+                                  warnings=_unique_warnings([price_warnings, data.get("warnings", [])]),
                                   data={**data, "rows": data.get("positions", []),
                                         "methodology": _methodology(),
                                         "field_dictionary": _field_dictionary()},
@@ -189,8 +203,9 @@ class STRSFunction(BaseFunction):
             positions_payload, sc, sector_lookup=sector_lookup, scale=scale,
             measured=measured_by_key.get(key) if key in stress.MEASURED_WINDOWS else None,
         )
+        _stamp_price_basis(data, price_basis, price_source)
         return FunctionResult(code=self.code, instrument=None,
-                              warnings=list(data.get("warnings", [])),
+                              warnings=_unique_warnings([price_warnings, data.get("warnings", [])]),
                               data={**data, "rows": data.get("positions", []),
                                     "methodology": _methodology(),
                                     "field_dictionary": _field_dictionary()},
@@ -289,6 +304,37 @@ def _as_date(value: Any) -> Any:
     return day() if callable(day) else value
 
 
+def _price_source(basis: dict[str, str], refresh_prices: bool) -> str:
+    """live_quote when every position was quoted, mixed when some fell back, else cost."""
+    if not refresh_prices or not basis:
+        return "portfolio_state_cost"
+    values = set(basis.values())
+    if values == {"live_quote"}:
+        return "live_quote"
+    if "live_quote" in values:
+        return "mixed"
+    return "portfolio_state_cost"
+
+
+def _price_warnings(basis: dict[str, str], refresh_prices: bool) -> list[str]:
+    if not basis:
+        return []
+    if not refresh_prices:
+        return ["positions valued at average cost (no live refresh); "
+                "pass refresh_prices=true for live marks"]
+    return [
+        f"{sym}: live quote unavailable; valued at average cost (not a live mark)"
+        for sym, value in basis.items() if value == "avg_cost_fallback"
+    ]
+
+
+def _stamp_price_basis(data: dict[str, Any], basis: dict[str, str], price_source: str) -> None:
+    """Record the valuation basis on the response and on each stressed position."""
+    data["price_source"] = price_source
+    for row in data.get("positions", []):
+        row["price_basis"] = basis.get(row.get("symbol"), "portfolio_state_cost")
+
+
 def _unique_warnings(groups: Any) -> list[str]:
     seen: list[str] = []
     for group in groups:
@@ -335,4 +381,6 @@ def _field_dictionary() -> dict[str, str]:
         "market_value_post": "Position market value after the shock.",
         "shock_source": "How the shock was set: hand_set, measured_window, or unavailable (not estimated).",
         "unpriced_positions": "Positions left unshocked because their measured window return was unavailable.",
+        "price_source": "Valuation basis: portfolio_state_cost (average cost), live_quote (all positions quoted), or mixed (some positions fell back to average cost).",
+        "price_basis": "Valuation basis of one position: portfolio_state_cost, live_quote, or avg_cost_fallback (live mode, no quote).",
     }
