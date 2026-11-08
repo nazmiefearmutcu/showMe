@@ -116,6 +116,7 @@ def test_srch_partial_coverage_keeps_unavailable_markers(monkeypatch) -> None:
         return {
             "last": 3.96,
             "source": "yahoo_chart",
+            "as_of": "2026-09-15T20:59:00+00:00",  # provider observation, same day as retrieval
             "fetched_at": "2026-09-15T21:00:00+00:00",
         }
 

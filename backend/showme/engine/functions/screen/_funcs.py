@@ -1241,15 +1241,22 @@ async def _yahoo_yield_values(
             return None
         if not math.isfinite(value):
             return None
-        fetched_at = str(snapshot.get("fetched_at") or "")
+        # ASOF-3: the date is the provider observation date (snapshot as_of), never the
+        # retrieval date. A quote observed on the retrieval date is intraday; an earlier
+        # observation (weekend, holiday, overnight) is the last close; with no observation
+        # time the cadence is unknown rather than guessed.
+        observed = str(snapshot.get("as_of") or "")[:10]
+        fetched_day = str(snapshot.get("fetched_at") or "")[:10]
         entry: dict[str, Any] = {
             "symbol": symbol,
             "value": value,
             "source": "yahoo_quote",
-            "cadence": "intraday",
         }
-        if fetched_at:
-            entry["as_of"] = fetched_at[:10]
+        if observed:
+            entry["as_of"] = observed
+            entry["cadence"] = "intraday" if observed == fetched_day else "last_close"
+        else:
+            entry["cadence"] = "unknown"
         return entry
 
     results = await asyncio.gather(
