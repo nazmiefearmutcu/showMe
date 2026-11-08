@@ -213,7 +213,10 @@ export function OMONPane({ code, symbol }: FunctionPaneProps) {
   }, [allRows, spot]);
 
   const status = payload?.status;
-  const isLive = state === "ok" && status === "ok";
+  // The backend reports `live: false` when the newest option trade is older
+  // than the live window (last session / delayed feed): never tone that as live.
+  const metaLive = data?.metadata?.live;
+  const isLive = state === "ok" && status === "ok" && metaLive !== false;
   const metaMode = data?.metadata?.data_mode;
   const dataMode =
     (typeof metaMode === "string" && metaMode) || (isLive ? "live chain" : status || state);
