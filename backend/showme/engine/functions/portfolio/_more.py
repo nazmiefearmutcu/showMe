@@ -635,7 +635,7 @@ class MARSFunction(BaseFunction):
     category = "portfolio"
     description = (
         "Factor-risk screen: regresses a multi-asset return series on six ETF "
-        "total-return proxies (SPY, IWM, VLUE, MTUM, QUAL, USMV) and reports "
+        "price-return proxies (SPY, IWM, VLUE, MTUM, QUAL, USMV) and reports "
         "factor betas, R-squared, volatility and 95% VaR / ETL."
     )
 
@@ -1111,16 +1111,17 @@ def _mars_result(
 
 
 def _factor_meaning(factor: str) -> str:
-    # Each label names the ETF whose total return is the regressor. These are
-    # long-only proxies, so a beta is sensitivity to that ETF, not a long-short
-    # size, value or momentum premium.
+    # Each label names the ETF whose price return is the regressor. The live
+    # series come from the dividend-unadjusted chart close, so these are price
+    # returns, not total returns. These are long-only proxies, so a beta is
+    # sensitivity to that ETF, not a long-short size, value or momentum premium.
     return {
-        "MKT": "Beta to SPY total return (broad US equity proxy).",
-        "SMB": "Beta to IWM total return (small-cap ETF proxy, not a long-short size premium).",
-        "HML": "Beta to VLUE total return (value ETF proxy, not a long-short value premium).",
-        "MOM": "Beta to MTUM total return (momentum ETF proxy).",
-        "QMJ": "Beta to QUAL total return (quality ETF proxy).",
-        "BAB": "Beta to USMV total return (low-volatility ETF proxy).",
+        "MKT": "Beta to SPY price return (broad US equity proxy).",
+        "SMB": "Beta to IWM price return (small-cap ETF proxy, not a long-short size premium).",
+        "HML": "Beta to VLUE price return (value ETF proxy, not a long-short value premium).",
+        "MOM": "Beta to MTUM price return (momentum ETF proxy).",
+        "QMJ": "Beta to QUAL price return (quality ETF proxy).",
+        "BAB": "Beta to USMV price return (low-volatility ETF proxy).",
     }.get(factor, "Portfolio factor sensitivity.")
 
 

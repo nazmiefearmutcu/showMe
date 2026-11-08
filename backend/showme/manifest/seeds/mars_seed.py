@@ -1,6 +1,6 @@
 """MARS — Multi-Asset Risk (ETF-proxy factor regression).
 
-Regresses a multi-asset daily return series on six ETF total-return proxies
+Regresses a multi-asset daily return series on six ETF price-return proxies
 and reports factor betas, R-squared, volatility and 95% VaR / ETL. Live
 ETF proxies by default; ``reference=true`` serves the labelled template
 series. Analysis only: no orders are generated, so there is no paper-mode
@@ -42,7 +42,7 @@ def mars() -> FunctionManifest:
         name="Multi-Asset Risk",
         category=Category.PORTFOLIO,
         intent=(
-            "Regress a multi-asset return series on six ETF total-return proxies "
+            "Regress a multi-asset return series on six ETF price-return proxies "
             "to estimate factor betas, R-squared, volatility and 95% VaR / ETL; "
             "live by default, labelled template only on request."
         ),
@@ -152,7 +152,9 @@ def mars() -> FunctionManifest:
         ),
         methodology=(
             "MARS regresses the daily return series of the portfolio on six ETF "
-            "total-return proxies by ordinary least squares with an intercept. The "
+            "price-return proxies by ordinary least squares with an intercept. Proxy "
+            "returns are price returns from unadjusted closes, so dividends are not "
+            "reinvested and ex-dividend drops are not added back. The "
             "portfolio is the weighted sum of the legs: the supplied holdings weights, "
             "or an equal-weight basket that is disclosed as such. The proxies are "
             "MKT=SPY, SMB=IWM, HML=VLUE, MOM=MTUM, QMJ=QUAL, BAB=USMV. These are "
@@ -192,8 +194,8 @@ def mars() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="mars_factor_proxies_are_etf_total_return",
-                description="The factor set is six ETF total-return proxies, not Fama-French premia.",
+                name="mars_factor_proxies_are_etf_price_return",
+                description="The factor set is six ETF price-return proxies, not Fama-French premia.",
                 inputs={},
                 assertions=["factor_proxies == ['SPY', 'IWM', 'VLUE', 'MTUM', 'QUAL', 'USMV']"],
             ),
