@@ -816,6 +816,59 @@ def _bgas_decorate_rows(rows: list[dict[str, Any]], *, as_of_day: Any) -> list[d
     return out
 
 
+_BGAS_PREV_TOLERANCE = 1e-4  # relative; a quote prev within 0.01% of the bar is the same print
+
+
+def _bgas_reconcile_prev(
+    row: dict[str, Any] | None,
+    history: list[dict[str, Any]],
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    """Cross-check the quote's previous close against the daily bars.
+
+    BGAS#1: the chart meta ``previousClose`` is not verified against the bars
+    fetched in the same call, so a stale prior close produced a false change.
+    The prior session's close is the bar before the quote's session; when the
+    quote disagrees with it, the change is taken from the bars and a warning
+    names both values. When the bars cannot place the quote's session, the
+    quote's own previous close is kept and no reconciliation is claimed.
+    """
+    if row is None or len(history) < 2:
+        return row
+    quote_day = str(row.get("as_of") or "")[:10]
+    dates = [str(h.get("date") or "")[:10] for h in history]
+    bar_prev: float | None = None
+    bar_day: str | None = None
+    if quote_day in dates:
+        idx = dates.index(quote_day)
+        if idx >= 1:
+            bar_prev = _finite(history[idx - 1].get("close"))
+            bar_day = dates[idx - 1]
+    elif quote_day and dates[-1] < quote_day:
+        # The quote's session has no bar yet: the last bar is the prior close.
+        bar_prev = _finite(history[-1].get("close"))
+        bar_day = dates[-1]
+    if bar_prev is None or bar_prev <= 0:
+        return row
+    quote_prev = _finite(row.get("prev"))
+    row = dict(row)
+    if quote_prev is not None and abs(quote_prev - bar_prev) <= _BGAS_PREV_TOLERANCE * abs(bar_prev):
+        row["prev_source"] = "quote"
+        return row
+    if quote_prev is not None:
+        warnings.append(
+            f"NG=F quote previousClose {quote_prev} disagrees with the daily bar close "
+            f"{bar_prev} for {bar_day}; the change is computed from the daily bars."
+        )
+    last = _finite(row.get("last"))
+    row["prev"] = bar_prev
+    row["prev_source"] = "daily_bars"
+    row["prev_as_of"] = bar_day
+    row["change"] = last - bar_prev if last is not None else None
+    row["change_pct"] = (last / bar_prev - 1) * 100 if last is not None else None
+    return row
+
+
 @FunctionRegistry.register
 class BGASFunction(BaseFunction):
     """BGAS — Henry Hub natural gas spot (NG=F front month, or EIA HENRYHUB)."""
@@ -943,6 +996,7 @@ class BGASFunction(BaseFunction):
                 include_history=True,
             )
             provider_errors.extend(snapshot_errors)
+            row = _bgas_reconcile_prev(row, history, provider_errors)
         if row:
             rows = _bgas_decorate_rows([row], as_of_day=as_of_day)
             data = {
