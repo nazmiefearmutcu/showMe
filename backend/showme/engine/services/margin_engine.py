@@ -338,7 +338,10 @@ def calc_all_accounts(
     prices: dict[str, float] | None = None,
     *,
     include_legacy: bool = False,
+    cash_overrides: dict[str, float] | None = None,
 ) -> dict[str, Any]:
+    """``cash_overrides`` maps account name -> cash for this calculation only (MGN#5). It is
+    never written to margin_config.json (MGN#6)."""
     portfolio = PortfolioState()
     if include_legacy:
         portfolio.import_legacy_crypto()
@@ -380,9 +383,13 @@ def calc_all_accounts(
     book_usd_cash = _as_float((portfolio.cash or {}).get("USD"))
     cash_sources: dict[str, str] = {}
     unallocated_cash_usd = 0.0
+    overrides = cash_overrides or {}
     for name in accts:
         entry = cfg_accts[name]
-        if not entry.get("inferred"):
+        if name in overrides:
+            entry["cash"] = float(overrides[name])
+            cash_sources[name] = "request"
+        elif not entry.get("inferred"):
             cash_sources[name] = "account_record"
         elif len(accts) == 1 and book_usd_cash:
             entry["cash"] = book_usd_cash

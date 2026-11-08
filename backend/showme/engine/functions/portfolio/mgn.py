@@ -144,15 +144,18 @@ class MGNFunction(BaseFunction):
         symbols = [p.instrument.symbol for p in portfolio.positions]
         prices = await self._quote_many(symbols) if refresh else {}
         at_cost = sorted({s for s in symbols if s not in prices})
+        cash_overrides, cash_warnings = _request_cash(params, sorted({p.account or "main" for p in portfolio.positions}))
         result = margin_engine.calc_all_accounts(
             prices=prices,
             include_legacy=bool(params.get("include_legacy") or params.get("legacy")),
+            cash_overrides=cash_overrides,
         )
         accounts = result.get("accounts", []) if isinstance(result, dict) else []
         warnings: list[str] = []
         if at_cost:
             why = "no live quote" if refresh else "refresh_prices=false"
             warnings.append(f"Marked at average cost ({why}): {', '.join(at_cost)}.")
+        warnings.extend(cash_warnings)
         cash_sources = result.get("cash_sources", {}) if isinstance(result, dict) else {}
         unallocated = float(result.get("unallocated_cash_usd", 0) or 0) if isinstance(result, dict) else 0.0
         warnings.extend(_cash_warnings(cash_sources, unallocated))
@@ -194,6 +197,29 @@ class MGNFunction(BaseFunction):
                 return sym, None
         results = await asyncio.gather(*(_q(s) for s in symbols))
         return {sym: px for sym, px in results if px is not None}
+
+
+def _request_cash(params: dict[str, Any], account_names: list[str]) -> tuple[dict[str, float], list[str]]:
+    """MGN#5: cash stated in the request, for one account and this calculation only.
+
+    With ``account`` it applies to that account; without it, it applies only when the book
+    has one account. With several accounts and no ``account`` it is not guessed onto one.
+    """
+    raw = params.get("cash")
+    if raw is None or str(raw).strip() == "":
+        return {}, []
+    try:
+        amount = float(str(raw).replace(",", ""))
+    except (TypeError, ValueError):
+        return {}, [f"Cash '{raw}' is not a number and was not applied."]
+    account = str(params.get("account") or "").strip()
+    if account:
+        if account in account_names:
+            return {account: amount}, []
+        return {}, [f"Cash not applied: the book has no account named '{account}'."]
+    if len(account_names) == 1:
+        return {account_names[0]: amount}, []
+    return {}, ["Cash not applied: the book has several accounts, so pass account=<name> to say which one holds this cash."]
 
 
 def _cash_warnings(cash_sources: dict[str, str], unallocated_usd: float) -> list[str]:

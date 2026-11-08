@@ -57,6 +57,20 @@ def mgn() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
+                name="cash",
+                label="Cash",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Cash for the account named by account (or the only account in the book). Applies to this calculation only and is not saved.",
+            ),
+            InputSpec(
+                name="account",
+                label="Account",
+                control=ControlKind.TEXT,
+                required=False,
+                description="Account the cash belongs to. Optional when the saved book has one account; required when it has several.",
+            ),
+            InputSpec(
                 name="margin_type",
                 label="Margin model",
                 control=ControlKind.SELECT,
@@ -130,8 +144,10 @@ def mgn() -> FunctionManifest:
             "divided by the initial rate, or times PORTFOLIO_BUYING_POWER_MULTIPLE (4) for a "
             "portfolio-margin account, whose maintenance is scaled by PORTFOLIO_MAINTENANCE_SCALE "
             "(0.6). These are model assumptions, not broker-published requirements. Equity is "
-            "cash plus market value, and cash is the account's recorded cash (0 when none is "
-            "recorded)."
+            "cash plus market value. Cash is, in order: the cash stated for the account in the "
+            "request (cash with account, for this calculation only); the account's recorded cash; "
+            "or, for a single-account book with no recorded account, the book's recorded USD cash "
+            "(PORT). An account with no cash on record counts as 0 and is flagged as cash not recorded."
         ),
         formula_dict={
             "ExcessInitial": Formula(

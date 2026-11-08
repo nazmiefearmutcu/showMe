@@ -266,6 +266,10 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
     views: "",
     marketCaps: "",
   });
+  // MGN#5: cash and the account it belongs to, for the saved-book margin calculation.
+  // Blank means "not stated": the backend then uses the recorded or PORT cash.
+  const [cash, setCash] = useState("");
+  const [cashAccount, setCashAccount] = useState("");
 
   const effectiveSymbol = config.usesSymbol
     ? (symbol || symbolInput || config.defaultSymbol)
@@ -285,8 +289,10 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
         stop,
         target,
         blak,
+        cash,
+        cashAccount,
       }),
-    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak],
+    [upper, symbols, targetText, live, mode, account, capital, entry, stop, target, blak, cash, cashAccount],
   );
   const { state, data, error, refetch } = useFunction<PortfolioPayload>({
     code: upper,
@@ -404,6 +410,10 @@ export function PortfolioAnalyticsPane({ code, symbol }: FunctionPaneProps) {
             setTarget={setTarget}
             blak={blak}
             setBlak={setBlak}
+            cash={cash}
+            setCash={setCash}
+            cashAccount={cashAccount}
+            setCashAccount={setCashAccount}
           />
           {body}
         </PaneBody>
@@ -457,6 +467,10 @@ function PortfolioControls({
   setTarget,
   blak,
   setBlak,
+  cash,
+  setCash,
+  cashAccount,
+  setCashAccount,
 }: {
   config: ToolConfig;
   code: string;
@@ -478,8 +492,12 @@ function PortfolioControls({
   setTarget: (value: string) => void;
   blak: BlakInputs;
   setBlak: (value: BlakInputs) => void;
+  cash: string;
+  setCash: (value: string) => void;
+  cashAccount: string;
+  setCashAccount: (value: string) => void;
 }) {
-  if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC") {
+  if (!config.usesUniverse && !config.usesSymbol && code !== "REBA" && code !== "PSC" && code !== "MGN") {
     return null;
   }
   // A1: each field binds <label htmlFor> ↔ input id so the control is
@@ -586,6 +604,31 @@ function PortfolioControls({
             inputMode="decimal"
           />
         </label>
+      ) : null}
+      {code === "MGN" ? (
+        // MGN#5: the pane had no cash input, so buying power ignored the user's cash. Blank
+        // keeps the recorded or PORT cash; a stated cash applies to the named account only.
+        <>
+          <label className="portfolio-control-field" htmlFor={fid("cash")}>
+            <span>Cash</span>
+            <input
+              id={fid("cash")}
+              value={cash}
+              onChange={(e) => setCash(e.target.value)}
+              inputMode="decimal"
+              placeholder="recorded cash"
+            />
+          </label>
+          <label className="portfolio-control-field" htmlFor={fid("cash-account")}>
+            <span>Cash account</span>
+            <input
+              id={fid("cash-account")}
+              value={cashAccount}
+              onChange={(e) => setCashAccount(e.target.value)}
+              placeholder="single account"
+            />
+          </label>
+        </>
       ) : null}
       {code === "PSC" || code === "PORT_WHATIF" ? (
         <>
@@ -1080,10 +1123,21 @@ function buildParams(
     stop: string;
     target: string;
     blak: BlakInputs;
+    cash: string;
+    cashAccount: string;
   },
 ): Record<string, unknown> {
   const symbols = splitSymbols(state.symbols);
   switch (code) {
+    case "MGN": {
+      // MGN#5: only what the user typed is sent; blanks keep the backend's recorded/PORT cash.
+      const out: Record<string, unknown> = {};
+      const amount = optionalNumber(state.cash);
+      if (amount !== undefined) out.cash = amount;
+      const account = state.cashAccount.trim();
+      if (account) out.account = account;
+      return out;
+    }
     case "BLAK":
       return {
         symbols,
