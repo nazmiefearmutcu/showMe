@@ -132,6 +132,7 @@ class TLDRFunction(BaseFunction):
         # Today's economic events. ECO answers with a dict envelope whose rows
         # live under "events". A failed call is "unavailable", never a zero count.
         events: list[dict[str, Any]] = []
+        calendar_total = 0
         calendar_status = "unavailable"
         calendar_reason = "no response"
         try:
@@ -144,6 +145,8 @@ class TLDRFunction(BaseFunction):
                 timeout=eco_timeout,
             )
             rows, calendar_reason = _payload_rows(eco, "events")
+            # The count is the real row total; only the listed events are capped.
+            calendar_total = len(rows)
             events = rows[:10]
             if calendar_reason:
                 calendar_status = "unavailable"
@@ -235,7 +238,7 @@ class TLDRFunction(BaseFunction):
             else:
                 news_line = f"unavailable ({news_reason})."
             if calendar_status == "ok":
-                calendar_line = f"{len(events)} scheduled."
+                calendar_line = f"{calendar_total} scheduled."
             else:
                 calendar_line = f"unavailable ({calendar_reason}); not a zero count."
             prose = (
@@ -252,6 +255,7 @@ class TLDRFunction(BaseFunction):
             code=self.code, instrument=None,
             data={"markdown": prose, "quotes": quotes,
                    "news": news_summary, "events": events,
+                   "calendar_total": calendar_total,
                    "news_status": news_status, "news_reason": news_reason,
                    "calendar_status": calendar_status, "calendar_reason": calendar_reason,
                    "watchlist": symbols, "watchlist_source": watchlist_source,

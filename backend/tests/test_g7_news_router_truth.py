@@ -424,3 +424,24 @@ def test_sat_all_blank_tiles_is_explicit_empty_state(monkeypatch) -> None:
     assert data["cards"] == []
     assert data["reason"]
     assert all(check["state"] == "blank" for check in data["tile_checks"])
+
+
+def test_tldr_calendar_count_is_full_row_total_not_capped(monkeypatch) -> None:
+    """TLDR#3 follow-up: the markdown count must be the real ECO row total.
+    The listed events are capped for display, but a 12-row day is not '10 scheduled'."""
+    from showme.engine.core.base_function import FunctionResult
+
+    _patch_offline(monkeypatch)
+    events = [{"event": f"Event {i}", "country": "US"} for i in range(12)]
+    eco = FunctionResult(
+        code="ECO", instrument=None,
+        data={"status": "ok", "events": events, "rows": events, "surface": [], "cards": []},
+        sources=["forex_factory"],
+    )
+    _patch_news_calendar(monkeypatch, _top_ok(), eco)
+    result = asyncio.run(TLDRFunction(deps=FunctionDeps()).execute(symbols=["MSFT"]))
+    markdown = result.data["markdown"]
+    assert "Calendar items:** 12 scheduled" in markdown, markdown
+    assert "10 scheduled" not in markdown
+    assert result.data["calendar_total"] == 12
+    assert len(result.data["events"]) == 10
