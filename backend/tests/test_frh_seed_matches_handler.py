@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from showme.manifest.seeds.frh_seed import frh
 
-HANDLER_INPUTS = {"symbols", "limit", "provider_mode"}
+HANDLER_INPUTS = {"symbols", "limit"}
 
 
 def test_inputs_are_only_ones_the_handler_reads():

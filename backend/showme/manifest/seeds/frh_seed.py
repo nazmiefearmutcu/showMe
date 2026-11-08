@@ -70,19 +70,10 @@ def frh() -> FunctionManifest:
                 max=100,
                 step=1,
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Only live exchange data is served; the chain reports provider failures.",
-                options=[DataMode.LIVE_EXCHANGE.value],
-            ),
         ],
         defaults={
             "symbols": [],
             "limit": 25,
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
         },
         provider_chain=ProviderChain(
             primary="binance",
