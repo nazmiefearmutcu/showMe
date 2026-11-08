@@ -303,6 +303,13 @@ class SRSKFunction(BaseFunction):
                 elif target_y is not None:
                     proxy_spread = round(target_y - ust_y, 4)
                     source_mode = "fred+worldbank" if risk_score is not None else "fred"
+                    if risk_score is None:
+                        # The spread/PD now come from a real FRED differential, but
+                        # there is still no macro score: say exactly that.
+                        row_note = (
+                            f"no live World Bank macro for {country}; no risk score computed "
+                            "(unranked); spread and PD come from the FRED 10Y differential"
+                        )
 
             if proxy_spread is not None:
                 pd_1y: float | None = proxy_spread / 100 / max(0.01, (1 - recovery))
@@ -374,12 +381,10 @@ class SRSKFunction(BaseFunction):
             )
 
         # Rank: highest risk first for the bar ladder / cards.
-        # Unscored rows (no live macro, no PD) never lead the cards.
+        # Rows without a live risk score stay unranked and never lead the cards,
+        # even when a FRED differential gives them a spread and PD.
         scored = [r for r in rows if r.get("risk_score") is not None]
-        priced = [r for r in rows if r.get("pd_1y_pct") is not None]
-        highest = max(scored, key=lambda r: r["risk_score"]) if scored else (
-            max(priced, key=lambda r: r["pd_1y_pct"]) if priced else None
-        )
+        highest = max(scored, key=lambda r: r["risk_score"]) if scored else None
 
         as_of = next((r.get("as_of") for r in rows if r.get("as_of")), None)
         cards = {
@@ -403,7 +408,7 @@ class SRSKFunction(BaseFunction):
                     "recovery": recovery,
                     "formula": "PD ~= spread / (1 - recovery)",
                     "worldbank_countries": wb_success,
-                    "unscored_countries": sum(1 for r in rows if r["source_mode"] == "unavailable"),
+                    "unscored_countries": sum(1 for r in rows if r["risk_score"] is None),
                     "highest_risk_country": highest["country"] if highest else None,
                 },
                 "methodology": (

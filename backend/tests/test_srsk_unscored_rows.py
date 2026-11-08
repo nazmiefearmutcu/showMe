@@ -105,3 +105,74 @@ def test_fallback_spread_param_no_longer_substitutes_a_value(no_network: None) -
     out = asyncio.run(fn.execute(countries="XX,TR", proxy_spread_pct=5.0))
     by_country = {row["country"]: row for row in out.data["rows"]}
     assert by_country["XX"]["proxy_spread_pct"] is None
+
+
+class _Col:
+    """Minimal stand-in for a pandas column: only ``.iloc[-1]`` is used."""
+
+    def __init__(self, value: float) -> None:
+        self.iloc = [value]
+
+
+class _FakeFred:
+    """Serves a fixed UST 10Y and per-country 10Y yields; no network."""
+
+    _SERIES: dict[str, float] = {
+        "DGS10": 2.0,  # UST 10Y
+        "IRLTLT01DEM156N": 3.5,  # Germany 10Y -> spread 1.5
+        "IRLTLT01TRM156N": 9.0,  # Turkey 10Y -> spread 7.0
+    }
+
+    async def series(self, series_id: str) -> dict[str, _Col]:
+        return {"value": _Col(self._SERIES[series_id])}
+
+
+class _NoWorldBank:
+    """World Bank returns no observation for any country (outage-like)."""
+
+    async def indicator(self, iso3: str, indicator: str) -> Any:
+        return [{"page": 1, "total": 0}, None]
+
+
+def _run_fred(countries: str, worldbank: Any = None) -> Any:
+    deps = FunctionDeps(worldbank=worldbank or _PartialWorldBank(), fred=_FakeFred())
+    fn = SRSKFunction(deps)
+    return asyncio.run(fn.execute(countries=countries))
+
+
+def test_fred_refined_unscored_row_note_is_not_the_no_spread_note(no_network: None) -> None:
+    # DE has a FRED 10Y yield but no World Bank macro: spread/PD come from FRED.
+    out = _run_fred("DE,TR,US")
+    de = {row["country"]: row for row in out.data["rows"]}["DE"]
+    assert de["risk_score"] is None
+    assert de["proxy_spread_pct"] == pytest.approx(1.5)
+    assert de["source_mode"] == "fred"
+    note = de["note"] or ""
+    # The row carries a numeric spread, so its note must not say none was computed.
+    assert "no risk score, spread or PD computed" not in note
+    assert "no risk score computed" in note
+    assert "FRED" in note
+
+
+def test_fred_priced_unscored_row_never_leads_the_cards(no_network: None) -> None:
+    # No World Bank macro for any country: TR is priced by FRED but has no score.
+    out = _run_fred("TR,XX", worldbank=_NoWorldBank())
+    by_country = {row["country"]: row for row in out.data["rows"]}
+    assert by_country["TR"]["risk_score"] is None
+    assert by_country["TR"]["pd_1y_pct"] is not None
+    assert out.data["cards"]["highest_pd_country"] is None
+    assert out.data["cards"]["highest_pd"] is None
+    assert out.data["summary"]["highest_risk_country"] is None
+
+
+def test_fred_scored_leader_still_drives_the_cards(no_network: None) -> None:
+    out = _run_fred("DE,TR,US")
+    cards = out.data["cards"]
+    assert cards["highest_pd_country"] in {"TR", "US"}
+    assert out.data["summary"]["highest_risk_country"] in {"TR", "US"}
+
+
+def test_unscored_count_includes_fred_priced_rows(no_network: None) -> None:
+    # DE is FRED-priced but unscored; XX is unscored and unpriced.
+    out = _run_fred("DE,XX,US")
+    assert out.data["summary"]["unscored_countries"] == 2
