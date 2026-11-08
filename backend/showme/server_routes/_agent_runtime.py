@@ -811,6 +811,16 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         ranged_days = _days_from_range(merged.get("range"))
         if ranged_days is not None:
             defaults["days"] = ranged_days
+    if code.upper() == "TECH":
+        # wc1-g33 (TECH#4): the generic agent profile injects limit=6 and
+        # days=120 for every route. TECH reads limit as its visible-bar tail,
+        # so an injected 6 clamped the pane to 60 bars over 3 months, while
+        # its manifest window is 365 days and 1000 bars. Drop only the injected
+        # values; a caller-supplied limit/days/range still wins.
+        if "limit" not in merged:
+            defaults.pop("limit", None)
+        if "days" not in merged and "range" not in merged:
+            defaults.pop("days", None)
     if code.upper() == "FRH" and "symbols" not in merged:
         defaults.pop("symbols", None)
     if code.upper() == "MOSS" and not (merged.get("universe") or merged.get("symbols")):

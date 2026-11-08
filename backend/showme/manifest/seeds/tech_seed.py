@@ -103,9 +103,9 @@ def tech() -> FunctionManifest:
                 control=ControlKind.MULTISELECT,
                 required=True,
                 description=(
-                    "Indicator families to compute. Each family becomes its own"
+                    "Indicator families to compute and return. Each family becomes its own"
                     " sub-pane (RSI/MACD/ATR/ADX/Stochastic/OBV) or price overlay"
-                    " (SMA/EMA/Bollinger/Ichimoku)."
+                    " (SMA/EMA/Bollinger/Ichimoku). Omit to compute every family."
                 ),
                 options=[
                     "SMA", "EMA", "BB", "Ichimoku",
@@ -196,7 +196,7 @@ def tech() -> FunctionManifest:
             "interval": "1d",
             "days": 365,
             "tail": 1000,
-            "studies": ["SMA", "EMA", "BB", "RSI", "MACD"],
+            "studies": ["SMA", "EMA", "BB", "Ichimoku", "RSI", "MACD", "ATR", "ADX", "Stochastic", "OBV"],
             "rsi_period": 14,
             "macd_fast": 12,
             "macd_slow": 26,
@@ -315,14 +315,18 @@ def tech() -> FunctionManifest:
         },
         field_dict={
             "ohlcv[]": FieldDef(description="Price candles used for the chart.", source="yfinance"),
-            "indicators.rsi": FieldDef(description="Wilder RSI series.", source="computed"),
-            "indicators.macd": FieldDef(description="MACD line series.", source="computed"),
-            "indicators.bb_upper": FieldDef(description="Bollinger upper band.", source="computed"),
-            "indicators.bb_lower": FieldDef(description="Bollinger lower band.", source="computed"),
-            "indicators.atr": FieldDef(description="ATR series.", source="computed"),
-            "indicators.adx": FieldDef(description="ADX series.", source="computed"),
-            "indicators.stoch_k": FieldDef(description="Stochastic %K.", source="computed"),
-            "indicators.obv": FieldDef(description="On-Balance Volume cumulative series.", source="computed"),
+            # wc1-g33 (TECH#6): RSI, MACD, ATR and ADX exist per bar in rows[]
+            # (and as a latest value in summary / indicator_rows), not as
+            # indicators.* series. Only the overlays and oscillator bands are
+            # keyed under indicators.
+            "rows[].rsi": FieldDef(description="Wilder RSI per bar (when RSI is in studies).", source="computed"),
+            "rows[].macd": FieldDef(description="MACD line per bar (when MACD is in studies).", source="computed"),
+            "indicators.bb_upper": FieldDef(description="Bollinger upper band (when BB is in studies).", source="computed"),
+            "indicators.bb_lower": FieldDef(description="Bollinger lower band (when BB is in studies).", source="computed"),
+            "rows[].atr": FieldDef(description="ATR per bar (when ATR is in studies).", source="computed"),
+            "rows[].adx": FieldDef(description="ADX per bar (when ADX is in studies).", source="computed"),
+            "indicators.stoch_k": FieldDef(description="Stochastic %K (when Stochastic is in studies).", source="computed"),
+            "indicators.obv": FieldDef(description="On-Balance Volume cumulative series (when OBV is in studies).", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

@@ -1,8 +1,9 @@
 /**
  * TECH — Technical Indicators pane.
  *
- * Backend (`backend/showme/engine/functions/chart/`) returns live 60-bar
- * OHLCV plus 7 indicator families (moving averages, RSI, MACD, Bollinger
+ * Backend (`backend/showme/engine/functions/chart/`) returns live OHLCV over
+ * its manifest window (365 days, up to 1000 bars; wc1-g33 TECH#4) plus the
+ * indicator families (moving averages, RSI, MACD, Bollinger
  * Bands, Stochastic, ADX, OBV) with exposed `indicator_params`.
  *
  * Layout: persisted per-family toggle chips (`showme.tech.families`) +
