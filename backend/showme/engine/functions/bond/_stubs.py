@@ -920,7 +920,7 @@ class ALLQFunction(BaseFunction):
                     },
                     sources=[],
                     warnings=[f"Operator mid {user_mid!r} is not a number."],
-                    metadata={"latency_ms": latency_ms, "data_mode": "input_error", "as_of": _as_of()},
+                    metadata={"latency_ms": latency_ms, "data_mode": "explicit_unavailable", "as_of": _as_of()},
                 )
             reference = f"; overrides {ref_note}" if ref_note else ""
             source = "user_input"
