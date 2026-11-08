@@ -393,9 +393,10 @@ class TCAFunction(BaseFunction):
                     # not a fill. Never fall back to the limit price or the
                     # ordered quantity here.
                     continue
+                # Arrival is only what the order recorded. The limit price is
+                # an order instruction, not a market benchmark: when it is
+                # absent, arrival stays None and slippage/IS stay unset.
                 arrival = md.get("arrival_price")
-                if arrival is None and o.get("price"):
-                    arrival = o.get("price")
                 ts = o.get("ts")
                 out.append({
                     "order_id": o.get("order_id") or f"ord-{o.get('id')}",

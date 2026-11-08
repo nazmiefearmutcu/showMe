@@ -22,6 +22,17 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+@pytest.fixture(autouse=True)
+def _offline_tca_benchmark(monkeypatch):
+    """TCA never reaches yfinance from these tests: the intraday bars are empty."""
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    async def _no_bars(self, symbol):
+        return []
+
+    monkeypatch.setattr(TCAFunction, "_yfinance_intraday", _no_bars)
+
+
 def _mk_handler(klass, deps=None):
     try:
         return klass(deps=deps)
@@ -210,3 +221,42 @@ def test_treasury_mapping_does_not_capture_other_futures():
 
     assert server.default_asset_class_name("GC=F") == "COMMODITY"
     assert server.default_asset_class_name("ZZ=F") == "EQUITY"
+
+
+# ---------------------------------------------------------------------------
+# TCA#1 (review follow-up) — the limit price must never stand in for the
+# arrival benchmark or for a fill price.
+# ---------------------------------------------------------------------------
+def test_tca_manual_fill_without_arrival_price_has_no_limit_price_arrival(tmp_path, monkeypatch):
+    from showme.engine.services import order_history
+
+    _use_temp_home(tmp_path, monkeypatch)
+    order_history.record_order(
+        broker="binance", order_id="ord-99", symbol="BTCUSDT", side="BUY",
+        quantity=2.0, asset_class="CRYPTO", price=190.0,
+        type="LIMIT", status="filled",
+        metadata={"fills": [{"px": 191.0, "qty": 2.0}], "filled_qty": 2.0},
+    )
+
+    res = _run(_make_tca().execute(symbol="BTCUSDT", benchmark="ARRIVAL"))
+    data = res.data
+
+    assert data["status"] == "ok", data
+    row = data["rows"][0]
+    assert row["avg_fill_px"] == pytest.approx(191.0)
+    assert row["arrival_px"] is None
+    assert row["is_bps"] is None
+
+
+def test_services_tca_unfilled_limit_order_has_no_book_price_fill():
+    from showme.engine.services import tca as services_tca
+
+    out = services_tca.analyze_order({
+        "id": 1, "order_id": "ord-77", "broker": "ibkr", "symbol": "AAPL",
+        "side": "BUY", "quantity": 3.0, "price": 190.0, "status": "submitted",
+        "metadata": {},
+    })
+
+    assert out["avg_fill"] is None
+    assert out["arrival_price"] is None
+    assert "implementation_shortfall_bps" not in out
