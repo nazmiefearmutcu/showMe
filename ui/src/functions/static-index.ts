@@ -393,7 +393,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "GC3D",
-    "name": "Yield Curve 3D (live FRED)",
+    "name": "Yield Curve Surface (live FRED)",
     "category": "bond",
     "description": ""
   },
