@@ -2,11 +2,13 @@
 
 Computes per-strike dealer gamma exposure (assuming dealer is short call OI
 and long put OI) and aggregates the chain into:
-- gex_per_strike: dict of strike → notional gamma per 1% move
+- gex_per_strike: dict of strike → net notional gamma per 1% move
 - net_gex: signed aggregate
-- gex_flip: zero-gamma strike (where dealer hedging flips polarity)
-- call_wall / put_wall: largest positive/negative concentrations
-- gamma_curve: per-strike cumulative gex (for chart)
+- gamma_flip: spot level where total dealer GEX changes sign (zero crossing of
+  net GEX re-evaluated on a ±10% spot grid with the same chain; None if none)
+- call_wall / put_wall: strike with the largest absolute dealer call / put
+  gamma exposure, reported with that side's own GEX value
+- gex_per_strike: per-strike net values (for chart)
 
 Black-Scholes gamma:
     γ = N'(d1) / (S σ √T)
@@ -35,6 +37,36 @@ def bs_gamma(spot: float, strike: float, vol: float, T: float, r: float = 0.04,
         return 0.0
     d1 = (math.log(spot / strike) + (r - q + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
     return math.exp(-q * T) * _norm_pdf(d1) / (spot * vol * math.sqrt(T))
+
+
+_FLIP_GRID_PCT = 0.10
+_FLIP_GRID_STEP = 0.0025
+
+
+def _gamma_flip_spot_grid(spot: float, total_gex_at: Any) -> float | None:
+    """Spot level nearest ``spot`` where total dealer GEX changes sign.
+
+    Evaluates ``total_gex_at(s)`` on a grid of ±10% around spot and linearly
+    interpolates each sign change. Returns None when no crossing lies inside
+    the grid, so callers can report "no crossing in range" honestly.
+    """
+    if spot <= 0:
+        return None
+    steps = int(round(_FLIP_GRID_PCT / _FLIP_GRID_STEP))
+    grid = [spot * (1.0 + _FLIP_GRID_STEP * i) for i in range(-steps, steps + 1)]
+    values = [total_gex_at(s) for s in grid]
+    best: float | None = None
+    for i in range(len(grid) - 1):
+        v0, v1 = values[i], values[i + 1]
+        if v0 == 0:
+            cross = grid[i]
+        elif v0 * v1 < 0:
+            cross = grid[i] + (grid[i + 1] - grid[i]) * v0 / (v0 - v1)
+        else:
+            continue
+        if best is None or abs(cross - spot) < abs(best - spot):
+            best = cross
+    return round(best, 2) if best is not None else None
 
 
 def chain_gex(
@@ -98,46 +130,50 @@ def chain_gex(
         except Exception:
             return 0.0
 
-    per_strike: dict[float, float] = {}
-    call_gex_total = 0.0
-    put_gex_total = 0.0
+    # Per-side contract terms, kept so total GEX can be re-evaluated at
+    # hypothetical spots with the same chain (fixed IV, OI and expiry).
+    call_terms: list[tuple[float, float, float, float]] = []  # (K, vol, T, oi)
+    put_terms: list[tuple[float, float, float, float]] = []
     for c in calls:
         K = float(c.get("strike") or 0)
         if K <= 0:
             continue
-        gamma = bs_gamma(spot, K, _vol(c), _T(c), rate, div_yield)
-        # Dealers short calls → negative gamma to dealers; we report dealer-perspective.
-        oi = _oi(c)
-        gex = -gamma * oi * contract_size * (spot ** 2) * 0.01    # $ per 1% move
-        per_strike[K] = per_strike.get(K, 0.0) + gex
-        call_gex_total += gex
+        call_terms.append((K, _vol(c), _T(c), _oi(c)))
     for p in puts:
         K = float(p.get("strike") or 0)
         if K <= 0:
             continue
-        gamma = bs_gamma(spot, K, _vol(p), _T(p), rate, div_yield)
-        # Dealers long puts → positive gamma to dealers.
-        oi = _oi(p)
-        gex = +gamma * oi * contract_size * (spot ** 2) * 0.01
-        per_strike[K] = per_strike.get(K, 0.0) + gex
-        put_gex_total += gex
+        put_terms.append((K, _vol(p), _T(p), _oi(p)))
+
+    def _side_gex(s: float, terms: list[tuple[float, float, float, float]], sign: float,
+                  ) -> dict[float, float]:
+        out: dict[float, float] = {}
+        for K, vol, T, oi in terms:
+            gamma = bs_gamma(s, K, vol, T, rate, div_yield)
+            # Dealers short calls (sign -1), long puts (sign +1); $ per 1% move.
+            out[K] = out.get(K, 0.0) + sign * gamma * oi * contract_size * (s ** 2) * 0.01
+        return out
+
+    call_by_strike = _side_gex(spot, call_terms, -1.0)
+    put_by_strike = _side_gex(spot, put_terms, +1.0)
+    call_gex_total = sum(call_by_strike.values())
+    put_gex_total = sum(put_by_strike.values())
+    per_strike: dict[float, float] = {}
+    for side in (call_by_strike, put_by_strike):
+        for K, v in side.items():
+            per_strike[K] = per_strike.get(K, 0.0) + v
     net = sum(per_strike.values())
     sorted_strikes = sorted(per_strike.items(), key=lambda kv: kv[0])
-    # Gamma flip = first strike where cumulative GEX changes sign as price rises through it.
-    flip_strike = None
-    cumulative = 0.0
-    last_sign = None
-    for K, gex in sorted_strikes:
-        cumulative += gex
-        sign = 1 if cumulative > 0 else (-1 if cumulative < 0 else 0)
-        if last_sign is not None and sign != 0 and sign != last_sign:
-            flip_strike = K
-            break
-        if sign != 0:
-            last_sign = sign
-    # Walls
-    call_wall = max(per_strike.items(), key=lambda kv: kv[1], default=(None, 0))
-    put_wall = min(per_strike.items(), key=lambda kv: kv[1], default=(None, 0))
+
+    # Gamma flip: zero crossing of TOTAL dealer GEX as spot moves (same chain).
+    flip_strike = _gamma_flip_spot_grid(
+        spot,
+        lambda s: sum(_side_gex(s, call_terms, -1.0).values())
+        + sum(_side_gex(s, put_terms, +1.0).values()),
+    )
+    # Walls: largest absolute dealer GEX on each side, with that side's value.
+    call_wall = max(call_by_strike.items(), key=lambda kv: abs(kv[1]), default=(None, 0.0))
+    put_wall = max(put_by_strike.items(), key=lambda kv: abs(kv[1]), default=(None, 0.0))
     return {
         "spot": spot,
         "net_gex": net,
@@ -145,6 +181,7 @@ def chain_gex(
         "put_gex_total": put_gex_total,
         "gex_per_strike": [{"strike": k, "gex": v} for k, v in sorted_strikes],
         "gamma_flip": flip_strike,
+        "gamma_flip_method": "spot_grid_zero_crossing",
         "call_wall": {"strike": call_wall[0], "gex": call_wall[1]},
         "put_wall": {"strike": put_wall[0], "gex": put_wall[1]},
         "n_strikes": len(sorted_strikes),

@@ -521,7 +521,7 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
       ? `${(flipStrike - spot).toFixed(2)} vs spot`
       : flipStrike != null
         ? "first sign change"
-        : "no sign change in range";
+        : "no crossing within ±10% of spot";
   const callWallGex = gexOf(payload?.call_wall);
   const putWallGex = gexOf(payload?.put_wall);
 

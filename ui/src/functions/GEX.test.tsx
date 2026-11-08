@@ -236,6 +236,23 @@ describe("GEX pane — data honesty", () => {
   });
 });
 
+describe("GEX pane — zero-gamma caption", () => {
+  it("says no crossing within ±10% of spot when gamma_flip is null", () => {
+    const payload = livePayload();
+    (payload.data.data as Record<string, unknown>).summary = {
+      ...liveSummary,
+      gamma_flip: null,
+    };
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<GEXPane code="GEX" symbol="SPY" />);
+    const zeroCard = Array.from(container.querySelectorAll(".stat-card")).find(
+      (card) => card.textContent?.includes("Zero-gamma"),
+    );
+    expect(zeroCard?.textContent).toContain("no crossing within ±10% of spot");
+    expect(zeroCard?.textContent).not.toContain("no sign change");
+  });
+});
+
 describe("GEX pane — KPI + primary ladder", () => {
   it("renders exactly four KPI cards", () => {
     setMockFn({ state: "ok", ...livePayload() });
