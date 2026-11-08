@@ -239,7 +239,11 @@ def _result(
                 "cut_25bp": "Probability of a 25 bp (or deeper) cut.",
                 "hold": "Probability of no policy-rate change.",
                 "hike_25bp": "Probability of a 25 bp (or deeper) hike.",
-                "implied_change_bp": "Probability-weighted expected policy-rate move in basis points.",
+                "implied_change_bp": (
+                    "Probability-weighted expected policy-rate move in basis points vs the "
+                    "current-target anchor at that meeting. Cumulative to that meeting, not an "
+                    "incremental move, so it must not be summed across meetings."
+                ),
             },
             "source_mode": source_mode,
             "data_mode": data_mode,
