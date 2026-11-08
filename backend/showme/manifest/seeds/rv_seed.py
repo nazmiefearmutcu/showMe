@@ -104,19 +104,21 @@ def rv() -> FunctionManifest:
                 ColumnSpec(key="ps_ttm", label="P/S", kind="number", format="%.2f"),
                 ColumnSpec(key="pb", label="P/B", kind="number", format="%.2f"),
                 ColumnSpec(key="dividend_yield", label="Div yield", kind="percent", unit="ratio", format="%.2f"),
-                ColumnSpec(key="fcf_yield", label="FCF yield", kind="percent", format="%.2f"),
+                ColumnSpec(key="fcf_yield", label="FCF yield", kind="percent", unit="ratio", format="%.2f"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="own_pe_ttm", label="Own P/E", kind="big_number"),
-                CardSlot(key="peer_median_pe_ttm", label="Peer median P/E", kind="kpi"),
+                # Keys match the payload emitted by rv.py: own_pe, peer_median_pe,
+                # pe_vs_peer_pct, peer_count, data_mode. No as-of slot: yfinance
+                # multiples carry no exchange timestamp, so none is shown.
+                CardSlot(key="own_pe", label="Own P/E", kind="big_number"),
+                CardSlot(key="peer_median_pe", label="Peer median P/E", kind="kpi"),
                 CardSlot(key="pe_vs_peer_pct", label="P/E vs peers", kind="trend_pill", unit="%"),
                 CardSlot(key="peer_count", label="Peers", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
