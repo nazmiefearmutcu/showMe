@@ -283,13 +283,14 @@ class ONCHFunction(BaseFunction):
             for i, b in enumerate(blocks)
         ]
 
+        # Each card's key is the slot key declared in the seed's card_schema.
         cards = [
-            {"label": "Chain", "value": "BTC"},
-            {"label": "Mempool", "value": f"{mempool_label} tx"},
-            {"label": "Fastest Fee", "value": f"{_fmt(fastest)} sat/vB"},
-            {"label": "Hashrate",
+            {"key": "chain", "label": "Chain", "value": "BTC"},
+            {"key": "mempool", "label": "Mempool", "value": f"{mempool_label} tx"},
+            {"key": "fastest_fee", "label": "Fastest Fee", "value": f"{_fmt(fastest)} sat/vB"},
+            {"key": "hashrate", "label": "Hashrate",
              "value": f"{_fmt(hashrate_eh, 1)} EH/s" if hashrate_eh is not None else "—"},
-            {"label": "Difficulty",
+            {"key": "difficulty", "label": "Difficulty",
              "value": f"{_fmt(difficulty_t, 2)} T" if difficulty_t is not None else "—"},
         ]
 

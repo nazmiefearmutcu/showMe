@@ -89,11 +89,9 @@ def onch() -> FunctionManifest:
             slots=[
                 CardSlot(key="chain", label="Chain", kind="badge"),
                 CardSlot(key="mempool", label="Mempool", kind="big_number"),
-                CardSlot(key="fastest_fee", label="Fastest fee", kind="kpi"),
+                CardSlot(key="fastest_fee", label="Fastest Fee", kind="kpi"),
                 CardSlot(key="hashrate", label="Hashrate", kind="kpi"),
                 CardSlot(key="difficulty", label="Difficulty", kind="kpi"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
