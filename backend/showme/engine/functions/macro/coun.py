@@ -196,13 +196,24 @@ class _Series:
     transform: str = "level"
     max_age_days: int = 120
     note: str | None = None
+    # Unit of the World Bank fallback when ECST serves the same concept from
+    # the World Bank (e.g. GDPC1 -> NY.GDP.MKTP.KD, constant 2015 USD).
+    worldbank_unit: str | None = None
 
 
 # FRED ids. TURGDPRQDSMEI is not on FRED (HTTP 404); NGDPRSAXDCTRQ is the FRED
 # id for Real GDP, Republic of Turkiye (verified 2026-11-08).
 _LIVE_SERIES: dict[str, tuple[_Series, ...]] = {
     "US": (
-        _Series("GDPC1", "gdp_level", "growth", "Real GDP", "bn chained USD", max_age_days=270),
+        _Series(
+            "GDPC1",
+            "gdp_level",
+            "growth",
+            "Real GDP",
+            "bn chained USD",
+            max_age_days=270,
+            worldbank_unit="bn constant 2015 USD",
+        ),
         _Series("GDPC1", "gdp_growth", "growth", "Real GDP growth", "% y/y", transform="yoy_pct", max_age_days=270),
         _Series("CPIAUCSL", "inflation", "prices", "Inflation", "% y/y", transform="yoy_pct"),
         _Series("UNRATE", "unemployment", "labor", "Unemployment rate", "%"),
@@ -466,7 +477,7 @@ def _series_row(
                 "date": row.get("date"),
                 "metric": spec.label,
                 "value": row.get("value"),
-                "unit": spec.unit,
+                "unit": _unit_for(spec, row.get("source_mode")),
                 "series_id": spec.series_id,
                 "source_mode": row.get("source_mode"),
             }
@@ -479,7 +490,7 @@ def _series_row(
         "section": spec.section,
         "metric": spec.label,
         "value": value,
-        "unit": spec.unit,
+        "unit": _unit_for(spec, latest.get("source_mode")),
         "as_of": as_of,
         "series_id": spec.series_id,
         "source_mode": latest.get("source_mode"),
@@ -493,6 +504,13 @@ def _series_row(
             f"{spec.max_age_days} days. Shown with its as-of date; not treated as live."
         )
     return row, points
+
+
+def _unit_for(spec: _Series, source_mode: Any) -> str:
+    """The unit of the provider that actually served the row."""
+    if source_mode == "worldbank" and spec.worldbank_unit:
+        return spec.worldbank_unit
+    return spec.unit
 
 
 def _observation_on(rows: list[dict[str, Any]], target: date) -> dict[str, Any] | None:

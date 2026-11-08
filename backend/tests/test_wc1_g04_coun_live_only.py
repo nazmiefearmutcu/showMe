@@ -238,3 +238,34 @@ def test_policy_path_stale_only_row_is_not_live(monkeypatch):
     assert "btmm" not in result.sources
     assert result.data["source_mode"] != "live_macro"
     assert any("not fresh" in warning for warning in result.warnings)
+
+
+class _WorldBankGdp:
+    """World Bank stand-in: NY.GDP.MKTP.KD is constant 2015 USD, in units of USD."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def indicator(self, country, indicator):
+        self.calls.append(indicator)
+        return pd.DataFrame(
+            {"date": ["2025-07-01", "2026-07-01"], "value": [22.0e12, 23.0e12]}
+        )
+
+
+def test_worldbank_gdp_fallback_is_labelled_constant_2015_usd_not_chained(monkeypatch):
+    """COUN units: the World Bank fallback for GDPC1 is constant 2015 USD, not chained USD."""
+    _patch(monkeypatch, _Fred())
+    worldbank = _WorldBankGdp()
+
+    result = _run(
+        COUNFunction(FunctionDeps(worldbank=worldbank)).execute(country="US", live=True)
+    )
+
+    assert "NY.GDP.MKTP.KD" in worldbank.calls
+    gdp = _rows_named(result, "Real GDP")
+    assert len(gdp) == 1
+    assert gdp[0]["source_mode"] == "worldbank"
+    assert gdp[0]["value"] == 23000.0
+    assert gdp[0]["unit"] == "bn constant 2015 USD"
+    assert "chained" not in gdp[0]["unit"]
