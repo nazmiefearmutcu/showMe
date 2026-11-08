@@ -261,7 +261,11 @@ class CORRFunction(BaseFunction):
         # B6: scrub NaN-dominant columns AFTER all fallbacks have populated
         # the frame so the matrix downstream stays finite. Surface the drop
         # in coverage_status + payload so the UI is honest about it.
-        frame, dropped_symbols = _drop_nan_heavy_columns(frame)
+        # CORR#1: the threshold applies to each symbol's own missing trading
+        # sessions. Weekend and holiday rows of a weekday-only series are a
+        # calendar artifact, not a data gap, so they never count.
+        gap_ratios = _calendar_gap_ratios(_price_frame(price_series, frequency), frequency)
+        frame, dropped_symbols = _drop_nan_heavy_columns(frame, gap_ratios=gap_ratios)
         for symbol in dropped_symbols:
             previous = coverage_status.get(symbol, {})
             coverage_status[symbol] = {
@@ -269,8 +273,8 @@ class CORRFunction(BaseFunction):
                 "source": previous.get("source") or "live_provider",
                 "provider_symbol": previous.get("provider_symbol") or _provider_symbol(symbol),
                 "message": (
-                    f"Series had more than {int(NAN_DROP_THRESHOLD * 100)}% null rows; "
-                    "removed from correlation matrix."
+                    f"More than {int(NAN_DROP_THRESHOLD * 100)}% of its expected trading sessions have "
+                    "no data; removed from correlation matrix. Weekend and holiday gaps are not counted."
                 ),
             }
         active_symbols = [s for s in symbols if s not in dropped_symbols]
@@ -1004,9 +1008,16 @@ def _heatmap_rows(symbols: list[str], pearson: dict[str, dict[str, float | None]
 
 
 def _drop_nan_heavy_columns(
-    frame: pd.DataFrame, threshold: float = NAN_DROP_THRESHOLD
+    frame: pd.DataFrame,
+    threshold: float = NAN_DROP_THRESHOLD,
+    gap_ratios: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Drop columns whose NaN ratio exceeds ``threshold``.
+    """Drop columns whose missing-data ratio exceeds ``threshold``.
+
+    ``gap_ratios`` (from ``_calendar_gap_ratios``) is the share of each symbol's
+    own expected trading sessions with no data. When it is given, that share is
+    what is tested, so calendar gaps in the joined frame never count. Without
+    it the raw NaN ratio of the frame is used.
 
     Returns the cleaned frame and the list of dropped symbols so callers can
     surface them in the response payload instead of silently propagating NaN
@@ -1014,7 +1025,13 @@ def _drop_nan_heavy_columns(
     """
     if frame.empty:
         return frame, []
-    nan_ratio = frame.isna().mean(axis=0)
+    if gap_ratios is None:
+        nan_ratio = frame.isna().mean(axis=0)
+    else:
+        nan_ratio = pd.Series(
+            {col: float(gap_ratios.get(str(col), 1.0)) for col in frame.columns},
+            dtype=float,
+        )
     keep = nan_ratio[nan_ratio <= threshold].index.tolist()
     drop = [str(col) for col in frame.columns if col not in keep]
     if drop:
@@ -1027,12 +1044,11 @@ def _drop_nan_heavy_columns(
     return frame.loc[:, keep], drop
 
 
-def _build_return_frame(
+def _price_frame(
     price_series: list[dict[str, Any]],
     frequency: str,
-    return_method: str,
-    missing_policy: str,
 ) -> pd.DataFrame:
+    """Union price frame on the selected frequency; NaN where a symbol has no close."""
     close_by_symbol: dict[str, pd.Series] = {}
     for series in price_series:
         symbol = series["asset"]["symbol"]
@@ -1052,23 +1068,95 @@ def _build_return_frame(
         prices = prices.resample("W-FRI").last()
     elif frequency == "monthly":
         prices = prices.resample("ME").last()
-    if missing_policy == "forward_fill":
-        prices = prices.ffill()
-    # B6: guard the log transform against zero prices. ``prices > 0`` was
-    # already enforced for the leading series above, but post-resample /
-    # post-ffill rows can still contain leading NaN. Clip non-positive
+    return prices
+
+
+def _series_returns(values: pd.Series, return_method: str) -> pd.Series:
+    # B6: guard the log transform against zero prices by clipping non-positive
     # values to NaN BEFORE the log so we don't emit -inf into the frame.
+    safe = values.where(values > 0)
     if return_method == "log":
-        safe = prices.where(prices > 0)
         returns = np.log(safe / safe.shift(1))
     else:
-        returns = prices.pct_change()
+        # Explicit ratio rather than pct_change(): pct_change pads NaN gaps by default.
+        returns = safe / safe.shift(1) - 1.0
+    return returns.replace([np.inf, -np.inf], np.nan)
+
+
+def _returns_from_prices(
+    prices: pd.DataFrame,
+    return_method: str,
+    missing_policy: str,
+) -> pd.DataFrame:
+    """Per-symbol returns on each symbol's own observed closes.
+
+    CORR#1: returns are taken between a symbol's consecutive observed closes,
+    not between consecutive rows of the joined calendar. Otherwise the first
+    weekday after a weekend would be NaN for every weekday-only series. The
+    joined index then only carries calendar gaps, which the missing-data check
+    no longer counts. ``forward_fill`` keeps the explicit union-calendar fill.
+    """
+    if prices.empty:
+        return pd.DataFrame()
+    if missing_policy == "forward_fill":
+        filled = prices.ffill()
+        returns = pd.DataFrame(
+            {col: _series_returns(filled[col], return_method) for col in filled.columns},
+            index=filled.index,
+        )
+    else:
+        columns = {
+            col: _series_returns(prices[col].dropna(), return_method)
+            for col in prices.columns
+            if prices[col].notna().any()
+        }
+        returns = pd.DataFrame(columns, index=prices.index)
     returns = returns.replace([np.inf, -np.inf], np.nan)
     if missing_policy == "intersection":
         returns = returns.dropna(how="any")
     else:
         returns = returns.dropna(how="all")
     return returns
+
+
+def _calendar_gap_ratios(prices: pd.DataFrame, frequency: str) -> dict[str, float]:
+    """Share of each symbol's expected trading sessions with no observed close.
+
+    A symbol that trades on weekends (24/7 crypto) is expected every calendar
+    day in its span. Any other daily symbol is expected on weekdays only, so a
+    weekend is never a gap for it. Holidays still count, and that is intended:
+    they are sessions the symbol did not print. Weekly and monthly frames use
+    every period in the span.
+    """
+    ratios: dict[str, float] = {}
+    if prices.empty:
+        return ratios
+    for col in prices.columns:
+        observed = prices[col].dropna().index
+        if len(observed) == 0:
+            ratios[str(col)] = 1.0
+            continue
+        span = prices.index[(prices.index >= observed.min()) & (prices.index <= observed.max())]
+        if frequency == "daily":
+            weekend_share = float(np.mean(np.asarray(observed.dayofweek) >= 5))
+            if weekend_share <= 0.10:
+                span = span[span.dayofweek < 5]
+        if len(span) == 0:
+            ratios[str(col)] = 1.0
+            continue
+        missing = len(span.difference(observed))
+        ratios[str(col)] = missing / len(span)
+    return ratios
+
+
+def _build_return_frame(
+    price_series: list[dict[str, Any]],
+    frequency: str,
+    return_method: str,
+    missing_policy: str,
+) -> pd.DataFrame:
+    prices = _price_frame(price_series, frequency)
+    return _returns_from_prices(prices, return_method, missing_policy)
 
 
 def _generate_sample_price_series(assets: list[dict[str, Any]], days: int) -> list[dict[str, Any]]:
