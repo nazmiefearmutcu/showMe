@@ -202,28 +202,28 @@ def strs() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "STRS replays each selected scenario against the current "
-            "portfolio. Historical replay extracts the actual realized "
-            "asset-class returns from the named window (e.g. 2008-09-15 to "
-            "2008-12-15 for Lehman) and applies them to today's positions, "
-            "scaled by the per-scenario magnitude. Factor model decomposes "
-            "current positions into factor exposures (equity-beta, "
-            "credit-spread, rates-duration, USD-DXY) and shocks those "
-            "factors by the scenario's realized factor moves. "
-            "asset_class_map applies one shock per asset class (e.g. SPX "
-            "-30%, credit -15%, gold +10%). All three propagation methods "
-            "are exposed so the user can compare. Worst_case is the "
-            "scenario with the largest realized loss; the manifest forces "
-            "the user to pick scenarios + magnitudes — no silent defaults."
+            "STRS applies hand-set parametric shocks to today's positions. Each "
+            "scenario holds decimal shocks keyed by symbol, sector or asset class; "
+            "a position takes the first match in that order, and bond funds (TLT, "
+            "IEF, AGG and similar) take the BOND row. The engine does not read "
+            "return history, so the shocks are calibrations to each scenario's "
+            "narrative, not replays of the named windows. The exceptions are TLT "
+            "in GFC_2008 (+5.74%) and COVID_2020 (+14.07%), which carry measured "
+            "Yahoo close price returns over the named windows. Each shock is "
+            "multiplied by `scale` and floored at -100% per position; floored "
+            "positions are listed in warnings. Worst_case is the scenario with "
+            "the largest loss. The `scenarios`, `scenario_magnitudes` and "
+            "`propagation` inputs are declared, but the engine applies a single "
+            "shock method."
         ),
         formula_dict={
-            "HistoricalReplay": Formula(
-                expression=r"\Delta = w^\top r_{scenario\_window} \cdot MV \cdot magnitude",
-                variables={"r": "Realized returns during scenario", "MV": "Market value"},
-            ),
-            "FactorShock": Formula(
-                expression=r"\Delta = B w^\top f_{scenario} \cdot MV \cdot magnitude",
-                variables={"B": "Factor exposure matrix", "f": "Scenario factor shocks"},
+            "ParametricShock": Formula(
+                expression=r"\Delta_i = \max(s_{k(i)} \cdot scale,\ -1) \cdot MV_i",
+                variables={
+                    "s_k": "Hand-set scenario shock for the matched symbol, sector or asset class",
+                    "k(i)": "First match of symbol, sector, then asset-class bucket",
+                    "MV": "Market value",
+                },
             ),
             "WorstCase": Formula(
                 expression=r"WC = \min_s \Delta_s",

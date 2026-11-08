@@ -36,8 +36,10 @@ class StressScenario:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Predefined scenarios. Numbers are calibrated to peak-trough drawdowns
-# observed historically (rough decimals — not investment advice).
+# Predefined scenarios. Shocks are hand-set parametric decimals calibrated to
+# each scenario's narrative (not replayed from return history; not investment
+# advice). Exceptions: TLT in GFC_2008 and COVID_2020 carries the measured Yahoo
+# close price return over the named window (inclusive end dates).
 # ─────────────────────────────────────────────────────────────────
 SCENARIOS: dict[str, StressScenario] = {
     "GFC_2008": StressScenario(

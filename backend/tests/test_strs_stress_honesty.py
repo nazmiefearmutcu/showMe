@@ -97,4 +97,24 @@ def test_strs3_equity_etf_still_takes_etf_bucket(monkeypatch):
     assert _row(res, "SPY")["shock"] == pytest.approx(-0.50)
 
 
-# ── STRS#3 and STRS#4 are appended below in their own steps ─────────────
+# ── STRS#4: the manifest must describe what the engine actually does ─────
+
+
+def test_strs4_manifest_does_not_claim_historical_replay():
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    method = REGISTRY.get("STRS").methodology
+    lowered = method.lower()
+    assert "extracts the actual realized" not in lowered, method
+    assert "factor model" not in lowered, method
+    assert "hand-set" in lowered, method
+
+
+def test_strs4_manifest_formulas_match_implementation():
+    from showme.manifest import REGISTRY, load_seeds
+
+    load_seeds()
+    formulas = REGISTRY.get("STRS").formula_dict or {}
+    assert "HistoricalReplay" not in formulas
+    assert "FactorShock" not in formulas
