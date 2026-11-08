@@ -86,8 +86,14 @@ class FTSFunction(BaseFunction):
                                   metadata={"provider_errors": [f"sec_efts: {e}"]})
         limit = max(1, min(int(params.get("limit", 50) or 50), 100))
         rows = _normalise_hits(hits, instrument)[:limit]
-        # EFTS reports the full match count; None when the provider did not say.
-        total_hits = getattr(hits, "total", None)
+        # EFTS reports the match count with a relation. Only relation "eq" is an
+        # exact count (total_hits). "gte" means the count is capped at that value,
+        # so it is a lower bound and is never shown as exact. Any other or missing
+        # relation is reported as neither.
+        raw_total = getattr(hits, "total", None)
+        relation = getattr(hits, "total_relation", None)
+        total_hits = raw_total if (raw_total is not None and relation == "eq") else None
+        total_lower_bound = raw_total if (raw_total is not None and relation == "gte") else None
         status = "ok" if rows else "empty"
         return FunctionResult(code=self.code, instrument=instrument, data={
                               "status": status,
@@ -95,10 +101,12 @@ class FTSFunction(BaseFunction):
                               "query": query,
                               "forms": forms,
                               "total_hits": total_hits,
+                              "total_hits_lower_bound": total_lower_bound,
+                              "total_hits_relation": relation,
                               "returned": len(rows),
                               "date_from": date_from, "date_to": date_to,
                               "methodology": "FTS searches SEC full-text filings by query, optional form list, and date range. The visible rows include company, form, filing date, accession/link, score, and snippet evidence.",
-                              "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type.", "total_hits": "Matches reported by EDGAR (may exceed returned rows); null when not reported."}},
+                              "field_dictionary": {"score": "Provider relevance score when available.", "snippet": "Matched filing text excerpt.", "form": "SEC form type.", "total_hits": "Exact match count reported by EDGAR (may exceed returned rows); null when not reported or when EDGAR marks it a lower bound.", "total_hits_lower_bound": "Lower bound on the match count when EDGAR caps it (relation gte); null otherwise."}},
                               sources=["sec_efts"],
                               metadata={"query": query, "forms": forms,
                                          "count": len(rows),

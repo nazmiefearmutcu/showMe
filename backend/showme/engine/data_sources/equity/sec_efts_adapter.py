@@ -42,9 +42,13 @@ class EftsHits(list):
     """Hit list that also carries the EFTS-reported total (``hits.total.value``).
 
     ``total`` is None when the provider response did not report one.
+    ``total_relation`` is the EFTS ``hits.total.relation`` (``"eq"`` means the
+    total is exact, ``"gte"`` means it is a lower bound). A bare-int total is
+    treated as ``"eq"``, as in older responses; None when not reported.
     """
 
     total: int | None = None
+    total_relation: str | None = None
 
 
 def _filing_index_url(cik: Any, accession: str | None) -> str | None:
@@ -71,6 +75,16 @@ def _total_hits(raw: Any) -> int | None:
         return None
     if isinstance(raw, int):
         return raw
+    return None
+
+
+def _total_relation(raw: Any) -> str | None:
+    """``hits.total.relation`` as reported (lower-cased). A bare int is exact (``"eq"``)."""
+    if isinstance(raw, dict):
+        rel = raw.get("relation")
+        return rel.strip().lower() if isinstance(rel, str) and rel.strip() else None
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return "eq"
     return None
 
 
@@ -136,6 +150,7 @@ class SECFullTextSearch(BaseDataSource):
         hits = hits_block.get("hits") or []
         out = EftsHits()
         out.total = _total_hits(hits_block.get("total"))
+        out.total_relation = _total_relation(hits_block.get("total"))
         for h in hits:
             src = h.get("_source") or {}
             adsh = (h.get("_id") or "").split(":")[0]

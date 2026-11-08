@@ -57,6 +57,7 @@ interface FTSData {
   forms?: string[] | null;
   methodology?: string;
   total_hits?: number | null;
+  total_hits_lower_bound?: number | null;
   date_from?: string | null;
   date_to?: string | null;
 }
@@ -222,7 +223,9 @@ export function FTSPane({ code }: FunctionPaneProps) {
         <div role="status" aria-label="FTS result count" style={countNoteStyle}>
           {typeof payload?.total_hits === "number"
             ? `${payload.total_hits.toLocaleString("en-US")} EDGAR match${payload.total_hits === 1 ? "" : "es"} · showing ${rows.length}`
-            : `${rows.length} filing hit${rows.length === 1 ? "" : "s"} (EDGAR total not reported)`}
+            : typeof payload?.total_hits_lower_bound === "number"
+              ? `at least ${payload.total_hits_lower_bound.toLocaleString("en-US")} EDGAR matches · showing ${rows.length}`
+              : `${rows.length} filing hit${rows.length === 1 ? "" : "s"} (EDGAR total not reported)`}
           {` for “${payload?.query ?? query}”`}
           {forms ? ` · forms ${forms}` : ""}
           {payload?.date_from || payload?.date_to

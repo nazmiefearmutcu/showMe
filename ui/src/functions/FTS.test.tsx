@@ -204,6 +204,23 @@ describe("FTS pane — totals, reasons and date bounds", () => {
     expect(screen.getByText(/EDGAR total not reported/i)).toBeInTheDocument();
   });
 
+  it("labels a capped EDGAR total as a lower bound, never as an exact count", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          ...(okPayload().data.data),
+          total_hits: null,
+          total_hits_lower_bound: 10000,
+          total_hits_relation: "gte",
+        },
+      },
+    });
+    render(<FTSPane code="FTS" />);
+    expect(screen.getByText(/at least 10,000 EDGAR matches · showing 2/)).toBeInTheDocument();
+    expect(screen.queryByText(/^10,000 EDGAR match/)).not.toBeInTheDocument();
+  });
+
   it("explains a skipped search with the provider reason instead of 'no filings'", () => {
     setMockFn({
       state: "ok",

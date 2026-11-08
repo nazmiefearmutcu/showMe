@@ -164,3 +164,55 @@ def test_fts_handler_total_hits_is_none_when_provider_does_not_report_it() -> No
     sec = _RecordingSec(rows=[])
     result = _run(FTSFunction(FunctionDeps(sec_efts=sec)).execute(instrument=AAPL, query="supply chain"))
     assert result.data["total_hits"] is None
+
+
+# ── FTS#6 (review): EFTS total relation must not be reported as exact ─────
+
+EFTS_BODY_GTE = {
+    "hits": {
+        "total": {"value": 10000, "relation": "gte"},
+        "hits": EFTS_BODY["hits"]["hits"],
+    }
+}
+
+
+def test_adapter_carries_total_relation_gte() -> None:
+    hits = _run(_adapter(body=EFTS_BODY_GTE).search("supply chain"))
+    assert hits.total == 10000
+    assert hits.total_relation == "gte"
+
+
+def test_adapter_carries_total_relation_eq() -> None:
+    hits = _run(_adapter().search("supply chain"))
+    assert hits.total_relation == "eq"
+
+
+def test_handler_gte_total_is_a_lower_bound_not_an_exact_count() -> None:
+    result = _run(FTSFunction(FunctionDeps(sec_efts=_adapter(body=EFTS_BODY_GTE)))
+                  .execute(instrument=AAPL, query="supply chain"))
+    assert result.data["total_hits"] is None
+    assert result.data["total_hits_lower_bound"] == 10000
+    assert result.data["total_hits_relation"] == "gte"
+
+
+def test_handler_eq_total_is_exact_and_has_no_lower_bound() -> None:
+    result = _run(FTSFunction(FunctionDeps(sec_efts=_adapter()))
+                  .execute(instrument=AAPL, query="supply chain"))
+    assert result.data["total_hits"] == 1775
+    assert result.data["total_hits_lower_bound"] is None
+
+
+def test_handler_bare_int_total_is_exact_as_in_old_responses() -> None:
+    body = {"hits": {"total": 42, "hits": EFTS_BODY["hits"]["hits"]}}
+    result = _run(FTSFunction(FunctionDeps(sec_efts=_adapter(body=body)))
+                  .execute(instrument=AAPL, query="supply chain"))
+    assert result.data["total_hits"] == 42
+    assert result.data["total_hits_lower_bound"] is None
+
+
+def test_handler_unknown_total_relation_is_reported_as_neither_exact_nor_bound() -> None:
+    body = {"hits": {"total": {"value": 7, "relation": "approx"}, "hits": EFTS_BODY["hits"]["hits"]}}
+    result = _run(FTSFunction(FunctionDeps(sec_efts=_adapter(body=body)))
+                  .execute(instrument=AAPL, query="supply chain"))
+    assert result.data["total_hits"] is None
+    assert result.data["total_hits_lower_bound"] is None
