@@ -53,7 +53,10 @@ def anr() -> FunctionManifest:
                 label="History (months)",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Lookback window for the bucket trend table.",
+                description=(
+                    "Lookback window for the bucket trend table. The provider returns only its own "
+                    "periods (yfinance: current month back to -3m); a longer window shows those and warns."
+                ),
                 min=3,
                 max=36,
                 step=1,
