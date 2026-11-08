@@ -144,3 +144,32 @@ def test_gc3d_template_fallback_reports_span_when_live_fails(_fresh_fred_cache) 
     assert out.sources == ["yield_curve_model"]
     assert out.data["summary"]["days"] == 45
     assert any("365-day look-back" in w for w in out.warnings)
+
+
+def test_gc3d_semantic_tests_use_declared_inputs_only() -> None:
+    """The seed's semantic test inputs must name real inputs: a stale key such as
+    ``live_curve`` (removed) would silently skip the path the test describes."""
+    from showme.manifest.seeds.gc3d_seed import gc3d
+
+    declared = {spec.name for spec in gc3d.inputs}
+    for test in gc3d.semantic_tests:
+        unknown = set(test.inputs) - declared
+        assert not unknown, f"{test.name} uses undeclared inputs {sorted(unknown)}"
+
+
+def test_gc3d_template_semantic_test_switches_on_reference() -> None:
+    from showme.manifest.seeds.gc3d_seed import gc3d
+
+    template = next(t for t in gc3d.semantic_tests if t.name == "gc3d_template_dates_are_rolling")
+    assert template.inputs == {"reference": True}
+
+
+def test_gc3d_seed_does_not_advertise_3d_surface() -> None:
+    """GC3D renders a date x tenor grid, not a 3D structure: the seed must not say so."""
+    import re
+
+    from showme.manifest.seeds.gc3d_seed import gc3d
+
+    for test in gc3d.semantic_tests:
+        assert not re.search(r"\b3d\b", test.name.lower()), test.name
+        assert not re.search(r"\b3d\b", test.description.lower()), test.description

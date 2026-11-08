@@ -178,10 +178,10 @@ def gc3d() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="gc3d_surface_is_three_dimensional",
+                name="gc3d_surface_spans_dates_and_tenors",
                 description=(
                     "Surface array contains points across at least 3 distinct dates × all selected tenors"
-                    " so the renderer has real 3D structure to draw."
+                    " so the date x tenor grid has real extent to draw."
                 ),
                 inputs={"days": 90},
                 assertions=[
@@ -202,7 +202,7 @@ def gc3d() -> FunctionManifest:
                     "Template (live off) mode emits rolling-anchored dates relative to today, never"
                     " hard-coded 2026-04 strings from the source file."
                 ),
-                inputs={"live_curve": False},
+                inputs={"reference": True},
                 assertions=["template_dates_anchored_to_today_minus_offsets"],
             ),
             SemanticTest(
