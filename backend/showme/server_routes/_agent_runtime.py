@@ -906,6 +906,12 @@ def _route_function_params(code: str, params: dict[str, Any]) -> dict[str, Any]:
         defaults.pop("asset_class", None)
     if code.upper() == "MOST" and merged.get("asset_class"):
         defaults["asset_class"] = str(merged["asset_class"]).strip()
+    if code.upper() == "GRAB":
+        # GRAB reads only its own inputs (target/url, recipient/to, send) and
+        # takes its own defaults internally. The generic agent defaults (news
+        # query, peer symbols, limit, timeouts) must not reach it, or the
+        # envelope inputEcho shows values the handler never used (GRAB#3).
+        defaults = {key: value for key, value in defaults.items() if key in merged}
     defaults["__explicit_symbol"] = explicit_symbol
     return defaults
 
