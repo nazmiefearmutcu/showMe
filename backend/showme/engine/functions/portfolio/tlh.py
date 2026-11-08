@@ -109,6 +109,17 @@ class TLHFunction(BaseFunction):
             warnings.append(
                 f"Display currency {ccy_req} was not applied; values are in each position's native currency."
             )
+        paper_req = params.get("paper_mode")
+        if paper_req not in (None, "") and not _truthy(paper_req):
+            warnings.append(
+                "paper_mode=false was not applied: TLH never submits trades, so the output stays preview-only. "
+                "Hand-off to EMSX is a separate explicit action."
+            )
+        provider_req = str(params.get("provider_mode") or "").strip().lower()
+        if provider_req and provider_req != "live_exchange":
+            warnings.append(
+                f"provider_mode {provider_req} was not applied: quotes come from yfinance and positions from the local book."
+            )
 
         base = {
             "as_of": now.isoformat(),

@@ -248,7 +248,7 @@ def tlh() -> FunctionManifest:
             "wash_sale_rule_respected": FieldDef(description="Null: the buy-history wash-sale check is not run. Only blocked positions are reported.", source="computed"),
             "candidates[].wash_sale_safe": FieldDef(description="False when the open date is inside the window; null when not checked.", source="computed"),
             "candidates[].wash_sale_reason": FieldDef(description="Human-readable explanation of the wash-sale block.", source="computed"),
-            "candidates[].suggested_replacement": FieldDef(description="Optional not-substantially-identical replacement.", source="computed"),
+            "candidates[].replacement_etf": FieldDef(description="Optional similar sector ETF (not substantially identical); null when no sector map entry applies.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
