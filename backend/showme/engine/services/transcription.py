@@ -171,7 +171,15 @@ async def transcribe(audio_path: str | Path,
     key = _cache_key(audio)
     cache = _cache_path(key)
     if cache.exists():
-        return {"text": cache.read_text(), "model": "cache", "language": language}
+        try:
+            cached_text = cache.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # A cache file written under the old locale codec (cp1254) is
+            # not UTF-8: treat it as a miss so the audio is re-transcribed
+            # instead of failing the whole call.
+            LOG.warning("transcript cache %s is not UTF-8; re-transcribing", cache.name)
+        else:
+            return {"text": cached_text, "model": "cache", "language": language}
 
     if use_singleton is None:
         use_singleton = os.environ.get("SHOWME_WHISPER_SINGLETON", "1") != "0"
@@ -190,7 +198,7 @@ async def transcribe(audio_path: str | Path,
                 text = (envelope.get("text") or "").strip()
                 if text:
                     cache.parent.mkdir(parents=True, exist_ok=True)
-                    cache.write_text(text)
+                    cache.write_text(text, encoding="utf-8")
                 return {
                     "text": text,
                     "language": envelope.get("language") or language,
@@ -213,7 +221,7 @@ async def transcribe(audio_path: str | Path,
         )
         text = result.get("text", "").strip()
         cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(text)
+        cache.write_text(text, encoding="utf-8")
         return {"text": text, "language": result.get("language"),
                 "model": f"whisper:{model_name}",
                 "segments": result.get("segments", [])[:50]}
@@ -234,7 +242,7 @@ async def transcribe(audio_path: str | Path,
         seg_list, info = await asyncio.to_thread(_tier2)
         text = " ".join(s.text for s in seg_list).strip()
         cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(text)
+        cache.write_text(text, encoding="utf-8")
         return {"text": text, "language": info.language,
                 "model": f"faster-whisper:{model_name}",
                 "segments": [{"start": s.start, "end": s.end, "text": s.text}
@@ -254,7 +262,7 @@ async def transcribe(audio_path: str | Path,
                 )
             text = getattr(resp, "text", "") or ""
             cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(text)
+            cache.write_text(text, encoding="utf-8")
             return {"text": text, "model": "openai:whisper-1",
                     "language": language}
         except Exception as e:
