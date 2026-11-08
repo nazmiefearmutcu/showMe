@@ -192,6 +192,12 @@ export function PcaStressPane({ code }: FunctionPaneProps) {
       ? ` · first ${cumulative.length} of up to ${assetRows.length} components returned`
       : "";
 
+  // The return-source label is read from the payload, never hard-coded: the
+  // backend marks its yfinance daily returns as "delayed_reference", which the
+  // shared badge also reports as partial-live. A payload with no data_mode gets
+  // no source label rather than a guessed one.
+  const returnSourceLabel =
+    payload && payload.data_mode === "delayed_reference" ? "DELAYED · yfinance daily" : null;
   const warnings = data?.warnings ?? [];
   const status = str(payload?.status) ?? data?.status ?? "ok";
   const isEmpty = !payload || (assetRows.length === 0 && loadings.length === 0 && variance.length === 0);
@@ -400,12 +406,14 @@ export function PcaStressPane({ code }: FunctionPaneProps) {
                 ]}
                 onChange={setKSigma}
               />
-              <span
-                className="portfolio-analytics-live portfolio-analytics-live--on"
-                title="Return source: live yfinance daily history (delayed reference, not a model)"
-              >
-                LIVE · yfinance daily
-              </span>
+              {returnSourceLabel ? (
+                <span
+                  className="portfolio-analytics-live"
+                  title="Return source: yfinance daily history, delayed reference (not real-time, not a model)"
+                >
+                  {returnSourceLabel}
+                </span>
+              ) : null}
               <LoadStatePill state={state} status={status} />
               <RefreshButton
                 loading={state === "loading"}

@@ -46,8 +46,12 @@ afterEach(() => {
   recordedCalls.length = 0;
 });
 
+// Mirrors the real backend success payload (pcas.py): data_mode is
+// "delayed_reference" because yfinance daily bars are not real-time.
 const LIVE_PAYLOAD = {
   status: "ok",
+  data_mode: "delayed_reference",
+  as_of: "2026-09-14",
   pc_index: 0,
   k_sigma: 3,
   explained_variance_ratio: [0.52, 0.18, 0.09, 0.05, 0.03],
@@ -97,7 +101,10 @@ describe("PCAS PCA Stress pane", () => {
     expect(screen.getAllByText("AAPL").length).toBeGreaterThan(0);
     // Shock table + loading table.
     expect(container.querySelectorAll("table").length).toBe(2);
-    expect(screen.queryByTestId("portx-data-badge")).toBeNull();
+    // delayed_reference is partial-live: the shared badge must say so.
+    const badge = screen.getByTestId("portx-data-badge");
+    expect(badge.getAttribute("data-mode")).toBe("degraded");
+    expect(badge.textContent).toContain("PARTIAL LIVE DATA");
   });
 
   it("discloses template returns via the shared badge", () => {
@@ -113,6 +120,22 @@ describe("PCAS PCA Stress pane", () => {
     expect(pc2).not.toBeDisabled();
     fireEvent.click(pc2);
     expect(screen.getByRole("button", { name: "PC2" })).toBeDisabled();
+  });
+});
+
+describe("PCAS return-source label follows the payload", () => {
+  it("shows no return-source pill when the payload declares no data_mode", () => {
+    const { data_mode: _omit, ...withoutMode } = LIVE_PAYLOAD;
+    ok(withoutMode);
+    render(<PcaStressPane code="PCAS" />);
+    expect(screen.queryByText(/yfinance daily/)).toBeNull();
+    expect(screen.queryByText(/^LIVE/)).toBeNull();
+  });
+
+  it("never labels a non-delayed payload as delayed", () => {
+    ok({ ...LIVE_PAYLOAD, data_mode: "modeled" });
+    render(<PcaStressPane code="PCAS" />);
+    expect(screen.queryByText("DELAYED · yfinance daily")).toBeNull();
   });
 });
 
@@ -176,7 +199,10 @@ describe("PCAS cumulative variance curve (real derivation)", () => {
     // offer a MODEL path that comes back as delayed live data under a template label.
     expect(screen.queryByRole("button", { name: "MODEL" })).toBeNull();
     expect(screen.queryByRole("button", { name: "LIVE" })).toBeNull();
-    expect(screen.getByText(/LIVE · yfinance daily/)).toBeInTheDocument();
+    // The return-source pill follows the payload: a delayed payload must not
+    // be painted as LIVE next to the PARTIAL LIVE DATA badge.
+    expect(screen.getByText("DELAYED · yfinance daily")).toBeInTheDocument();
+    expect(screen.queryByText(/^LIVE · yfinance/)).toBeNull();
     for (const call of recordedCalls) {
       expect(call.params?.live).toBe(true);
       expect(call.params?.live_prices).toBe(true);
