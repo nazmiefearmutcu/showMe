@@ -126,7 +126,7 @@ const TOOL_CONFIG: Record<string, ToolConfig> = {
   },
   BTFW: {
     title: "Walk-Forward Backtest",
-    subtitle: "Historical out-of-sample folds, stitched OOS equity curve",
+    subtitle: "Historical out-of-sample folds; equity curve requires live mode",
     defaultSymbol: "AAPL",
     usesSymbol: true,
     supportsLive: true,
