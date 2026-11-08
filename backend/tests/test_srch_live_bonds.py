@@ -133,7 +133,9 @@ def test_srch_partial_coverage_keeps_unavailable_markers(monkeypatch) -> None:
     # The Yahoo tier fills the CBOE-mapped tenors FRED could not answer.
     assert rows["US3M"]["quote_type"] == "live"
     assert rows["US3M"]["yield"] == pytest.approx(3.96)
-    assert rows["US3M"]["yield_source"] == "yahoo_quote"
+    # The row names the provider that actually answered (the snapshot's source), not a
+    # fixed label: the mock answered from yahoo_chart.
+    assert rows["US3M"]["yield_source"] == "yahoo_chart"
     assert rows["US3M"]["yield_cadence"] == "intraday"
     # Unresolved configured tenors keep their curated rows, labelled.
     assert rows["US2Y"]["quote_type"] == "unavailable"
@@ -141,7 +143,8 @@ def test_srch_partial_coverage_keeps_unavailable_markers(monkeypatch) -> None:
     for symbol in FOREIGN_2Y:
         assert rows[symbol]["quote_type"] == "unavailable", symbol
     assert any("no provider answer" in warning.lower() for warning in result.warnings)
-    assert {"fred_csv", "yahoo_quote"} <= set(result.sources)
+    assert {"fred_csv", "yahoo_chart"} <= set(result.sources)
+    assert "yahoo_quote" not in result.sources
 
 
 def test_srch_total_provider_failure_is_honest(monkeypatch) -> None:
