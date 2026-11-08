@@ -176,3 +176,53 @@ def test_unscored_count_includes_fred_priced_rows(no_network: None) -> None:
     # DE is FRED-priced but unscored; XX is unscored and unpriced.
     out = _run_fred("DE,XX,US")
     assert out.data["summary"]["unscored_countries"] == 2
+
+
+class _EmptyHttpResponse:
+    def json(self) -> Any:
+        return [{"page": 1, "total": 0}, None]
+
+
+class _EmptyHttpClient:
+    """World Bank answers, but with no observations for any indicator."""
+
+    def get(self, *args: Any, **kwargs: Any) -> Any:
+        return _EmptyHttpResponse()
+
+
+def test_fred_key_with_no_priced_country_is_not_status_ok(no_network: None) -> None:
+    # XX has no World Bank macro and no FRED sovereign series: nothing is priced.
+    # Pre-fix this returned status 'ok' with sources ['sovereign_risk_model'] and
+    # data_mode 'modeled', although no modeled value exists.
+    out = _run_fred("XX", worldbank=_NoWorldBank())
+    assert out.data["status"] in {"empty", "provider_unavailable"}, out.data
+    assert out.data["rows"] == []
+    assert out.data.get("reason")
+    assert out.data.get("next_actions")
+    assert "sovereign_risk_model" not in out.sources
+    assert out.data.get("data_mode") != "modeled"
+    assert out.data.get("cards") is None
+
+
+def test_fred_key_empty_worldbank_without_errors_is_status_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    import showme.providers._http as http_mod
+
+    monkeypatch.setattr(http_mod, "get_client", lambda: _EmptyHttpClient(), raising=False)
+    out = _run_fred("XX", worldbank=_NoWorldBank())
+    assert out.data["status"] == "empty", out.data
+    assert out.data["rows"] == []
+    assert out.data.get("reason")
+    assert out.data.get("next_actions")
+    assert out.sources == []
+    assert "sovereign_risk_model" not in out.sources
+
+
+def test_fred_only_result_labels_fred_provenance_not_modeled(no_network: None) -> None:
+    # DE is priced by a real FRED 10Y differential; there is no World Bank macro.
+    out = _run_fred("DE,XX,US", worldbank=_NoWorldBank())
+    assert out.data["status"] == "ok"
+    assert "fred" in out.sources
+    assert "worldbank" not in out.sources
+    assert "sovereign_risk_model" not in out.sources
+    assert out.data["data_mode"] == "live"
+    assert out.data["cards"]["data_mode"] == "live"
