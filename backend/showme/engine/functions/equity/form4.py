@@ -271,11 +271,13 @@ def _normalize_transaction_type(raw: Any) -> str:
         return ""
     if text in {"p", "purchase", "acquisition", "acquired"}:
         return "buy"
-    if text in {"g", "grant", "award"}:
+    if text in {"g", "grant", "award", "a"}:
         return "grant"
-    if text in {"j", "option", "exercise"}:
+    if text in {"j", "option", "exercise", "x", "m", "c", "o"}:
         return "option_exercise"
-    if text in {"s", "d", "x", "v", "r", "sell", "sale", "disposition", "disposed", "forfeit"}:
+    if text in {"e", "f", "h"}:
+        return "other"
+    if text in {"s", "d", "v", "r", "sell", "sale", "disposition", "disposed", "forfeit"}:
         return "sell"
     if "option" in text:
         return "option_exercise"
@@ -435,11 +437,15 @@ def _direction(row: dict[str, Any]) -> int | None:
     # not market purchases — classifying them as +1 inflated "net insider
     # buying" whenever an executive gifted shares. They now count as
     # neutral (direction 0), like the description-path default.
-    if code in {"p", "a", "e", "buy"}:
+    # FORM4#3: P is the only open-market purchase code and S the only open-market
+    # sale. X/M (derivative exercise, acquires common stock) and A (grant), E/H
+    # (derivative expiration), F (tax/exercise-price withholding), C/O are not
+    # buys or sales, so they are known-neutral rather than +1 / -1.
+    if code in {"p", "buy"}:
         return 1
-    if code in {"s", "d", "x", "v", "r", "sell"}:
+    if code in {"s", "d", "v", "r", "sell"}:
         return -1
-    if code in {"g", "j", "gift", "grant", "other"}:
+    if code in {"a", "c", "e", "f", "g", "h", "j", "m", "o", "x", "gift", "grant", "other", "option_exercise"}:
         return 0
 
     description = str(
@@ -459,7 +465,10 @@ def _direction(row: dict[str, Any]) -> int | None:
     # Transaction="Grant") follow the G-code treatment — neutral, not net buying.
     if any(keyword in description for keyword in ("gift", "grant", "award")):
         return 0
-    if any(keyword in description for keyword in ("buy", "purchase", "acquire", "exercise", "subscription", "option", "issue", "receive", "vest", "transfer in")):
+    # FORM4#3: derivative exercise / conversion is not an open-market purchase.
+    if any(keyword in description for keyword in ("exercise", "option", "conversion")):
+        return 0
+    if any(keyword in description for keyword in ("buy", "purchase", "acquire", "subscription", "issue", "receive", "vest", "transfer in")):
         return 1
     return None
 
