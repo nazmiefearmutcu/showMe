@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from showme.crypto_aliases import is_crypto_symbol as _is_crypto_symbol
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 
@@ -64,8 +65,9 @@ _FIELD_DICTIONARY = {
 
 
 def _crypto_interval(symbol: str) -> bool:
-    s = (symbol or "").upper()
-    return s.endswith(("USDT", "USDC", "BUSD", "USD", "BTC", "ETH"))
+    # TCA#7: a bare "USD"/"BTC"/"ETH" suffix match also caught FX pairs such as
+    # EURUSD. Use the canonical crypto alias knowledge base instead.
+    return bool(_is_crypto_symbol(symbol))
 
 
 def _vwap_from_candles(candles: list[dict[str, Any]]) -> float | None:

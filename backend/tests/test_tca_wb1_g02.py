@@ -38,3 +38,48 @@ def test_tca_seed_describes_avg_slippage_as_count_weighted():
     desc = REGISTRY.get("TCA").field_dict["summary.avg_slippage_bps"].description.lower()
     assert "notional" not in desc, desc
     assert "count" in desc, desc
+
+
+# ---------------------------------------------------------------------------
+# TCA#7 — an FX pair such as EURUSD ends in "USD" but is not crypto, so its
+# benchmark must not be requested from Binance.
+# ---------------------------------------------------------------------------
+class _CountingBinance:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def klines(self, symbol, interval="5m", limit=288, **kwargs):
+        self.calls.append(symbol)
+        return [{"high": 1.1, "low": 1.1, "close": 1.1, "volume": 10.0}]
+
+
+def test_fx_pair_ending_in_usd_is_not_routed_to_binance(tmp_path, monkeypatch):
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.functions.trade.tca import TCAFunction
+
+    _use_temp_home(tmp_path, monkeypatch)
+    yf_calls: list[str] = []
+
+    async def _fake_yf(self, symbol, *args, **kwargs):
+        yf_calls.append(symbol)
+        return []
+
+    monkeypatch.setattr(TCAFunction, "_yfinance_intraday", _fake_yf)
+    binance = _CountingBinance()
+    _seed_fx = BotStore.fresh()
+    _seed_fx.save(BotRecord(
+        strategy_id="s1", credential_id="c1", exchange_id="binance",
+        symbol="EURUSD", timeframe="1h", mode="live", enabled=True,
+        signal_log=[SignalEntry(
+            bar_index=0, bar_time="2026-06-01T00:00:00Z", kind="entry",
+            price=1.10, action="placed", order_id="fx1",
+            fill_price=1.11, qty=1000.0,
+        )],
+    ))
+
+    res = _run(TCAFunction(deps=FunctionDeps(binance=binance)).execute(
+        symbol="EURUSD", benchmark="VWAP"))
+
+    assert binance.calls == [], binance.calls
+    assert yf_calls == ["EURUSD"], yf_calls
+    assert res.data["rows"][0]["benchmark_source"] == "arrival"
