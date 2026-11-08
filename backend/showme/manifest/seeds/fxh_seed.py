@@ -197,8 +197,9 @@ def fxh() -> FunctionManifest:
             "(1 - hedge_ratio). Under the user's spot shock the unhedged "
             "P/L (in home/quote currency) is exposure × spot × shock_pct/100; the "
             "hedged P/L applies the same shock only to the residual notional. "
-            "Hedge cost = hedge_notional × (bid_ask_pips / 10000), reported "
-            "in home (quote) currency. The handler refuses to invent a spot value: "
+            "Hedge cost = hedge_notional × bid_ask_pips × pip_size, reported "
+            "in home (quote) currency; pip_size is 0.0001, or 0.01 when the home "
+            "(quote) currency is JPY (e.g. USDJPY). The handler refuses to invent a spot value: "
             "if the live quote is unavailable, the calculation halts with a "
             "warning rather than silently using zero."
         ),
@@ -221,8 +222,11 @@ def fxh() -> FunctionManifest:
                 variables={"cost": "Hedge cost"},
             ),
             "hedge_cost": Formula(
-                expression=r"cost = N_{hedge} \cdot \frac{pips}{10^{4}}",
-                variables={"pips": "Bid-ask in pips"},
+                expression=r"cost = N_{hedge} \cdot pips \cdot p",
+                variables={
+                    "pips": "Bid-ask in pips",
+                    "p": "Pip size: 0.0001, or 0.01 when the home (quote) currency is JPY",
+                },
             ),
         },
         field_dict={
