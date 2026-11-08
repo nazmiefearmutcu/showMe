@@ -69,7 +69,9 @@ const SECTOR_OPTIONS = [
   { value: "ALL", label: "ALL", title: "Sector ALL" },
   { value: "Energy", label: "ENERGY", title: "Sector Energy" },
   { value: "Metals", label: "METALS", title: "Sector Metals" },
-  { value: "Agriculture", label: "AGRS", title: "Sector Agriculture" },
+  { value: "Grains", label: "GRAINS", title: "Sector Grains" },
+  { value: "Softs", label: "SOFTS", title: "Sector Softs" },
+  { value: "Livestock", label: "LSTK", title: "Sector Livestock" },
 ] as const;
 
 const SORT_OPTIONS = [

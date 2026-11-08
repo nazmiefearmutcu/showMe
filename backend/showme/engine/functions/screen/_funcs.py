@@ -641,7 +641,7 @@ class WEIFunction(BaseFunction):
 
 _COMMODITY_FIELDS = [
     {"field": "symbol", "meaning": "Yahoo futures ticker used for quote lookup."},
-    {"field": "sector", "meaning": "Commodity complex such as Energy, Metals, or Agriculture."},
+    {"field": "sector", "meaning": "Commodity complex: Energy, Metals, Grains, Softs, or Livestock."},
     {"field": "last", "meaning": "Latest available futures price when live quotes are available."},
     {"field": "change_pct", "meaning": "Percent move versus prior close when live quotes are available."},
     {"field": "volume", "meaning": "Latest session volume from the quote provider when available."},
