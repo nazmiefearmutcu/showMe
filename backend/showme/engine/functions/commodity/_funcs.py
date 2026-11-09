@@ -300,7 +300,7 @@ async def _symbol_history(
             timeout=max(timeout + 1.0, 3.0),
         )
     except Exception as exc:  # noqa: BLE001 — history is best-effort
-        return [], [f"{symbol} history: {exc}"]
+        return [], [f"{symbol} history: {str(exc) or type(exc).__name__}"]
     return _history_rows(df, symbol, limit=limit), []
 
 
@@ -877,7 +877,8 @@ def _bgas_reconcile_prev(
         return row
     if len(history) < 2:
         return _bgas_unreconciled(row, warnings, "fewer than two daily bars")
-    quote_day = str(row.get("as_of") or "")[:10]
+    # NGAS#2: the session day is the US Eastern trade day, not the UTC date.
+    quote_day = _exchange_trade_day(row.get("as_of"))
     dates = [str(h.get("date") or "")[:10] for h in history]
     bar_prev: float | None = None
     bar_day: str | None = None
@@ -903,6 +904,8 @@ def _bgas_reconcile_prev(
             f"{bar_prev} for {bar_day}; the change is computed from the daily bars."
         )
     last = _finite(row.get("last"))
+    # Keep the quote's own value so a later check (NGAS) labels the replacement.
+    row["quote_previous_close"] = quote_prev
     row["prev"] = bar_prev
     row["prev_source"] = "daily_bars"
     row["prev_as_of"] = bar_day
@@ -1024,7 +1027,7 @@ class BGASFunction(BaseFunction):
             # transport failures so the yfinance fallback ran silently
             # even when EIA was the configured primary. Capture into
             # provider_errors so the source/status panel can show why.
-            provider_errors.append(f"eia: {exc}")
+            provider_errors.append(f"eia: {str(exc) or type(exc).__name__}")
         row = None
         history: list[dict[str, Any]] = []
         if live and self.deps.yfinance:
@@ -1165,7 +1168,9 @@ def _ngas_verify_previous_close(result: FunctionResult) -> FunctionResult:
         if as_of_day and str(bar.get("date") or "") < as_of_day and _finite(bar.get("close")) is not None
     ]
     bar_prev = _finite(prior_bars[-1].get("close")) if prior_bars else None
-    quote_prev = _finite(row.get("prev"))
+    # The shared BGAS body may already have replaced a disagreeing quote value
+    # with the daily bar; judge the quote's own previousClose, not the replacement.
+    quote_prev = _finite(row["quote_previous_close"]) if "quote_previous_close" in row else _finite(row.get("prev"))
     warnings = list(result.warnings or [])
     if bar_prev is None:
         if quote_prev is None:
@@ -1178,10 +1183,11 @@ def _ngas_verify_previous_close(result: FunctionResult) -> FunctionResult:
         prev, source, check = quote_prev, "quote_previous_close", "matches_daily_bar"
     else:
         prev, source, check = bar_prev, "daily_bar_prior_close", "quote_previous_close_disagrees"
-        warnings.append(
-            f"NGAS previousClose {quote_prev} disagrees with the daily bar close {bar_prev} "
-            f"for {prior_bars[-1].get('date')}; change uses the daily bar."
-        )
+        if not any("disagrees with the daily bar close" in w for w in warnings):
+            warnings.append(
+                f"NGAS previousClose {quote_prev} disagrees with the daily bar close {bar_prev} "
+                f"for {prior_bars[-1].get('date')}; change uses the daily bar."
+            )
     last = _finite(row.get("last"))
     row["prev"] = prev
     row["prev_source"] = source
@@ -1364,7 +1370,7 @@ class CPFFunction(BaseFunction):
         try:
             actual_series = await self._yahoo_history(futures, timeout)
         except Exception as exc:  # noqa: BLE001
-            provider_errors.append(f"{futures} yahoo: {exc}")
+            provider_errors.append(f"{futures} yahoo: {str(exc) or type(exc).__name__}")
         if not actual_series and self.deps.yfinance:
             try:
                 _row, hist, snap_errors = await _contract_snapshot(
@@ -1381,7 +1387,7 @@ class CPFFunction(BaseFunction):
                         continue
                     actual_series.append({"date": h.get("date"), "value": close})
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"{futures} adapter: {exc}")
+                provider_errors.append(f"{futures} adapter: {str(exc) or type(exc).__name__}")
         if actual_series:
             latest_actual = _finite(actual_series[-1].get("value"))
             actual_as_of = actual_series[-1].get("date")
@@ -1399,7 +1405,7 @@ class CPFFunction(BaseFunction):
                     actual_series, horizon_months, now,
                 )
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"forecast: {exc}")
+                provider_errors.append(f"forecast: {str(exc) or type(exc).__name__}")
 
         # Genuine outage on the live source -> honest provider_unavailable. The
         # reason carries the errors that were really raised, never a guess.
@@ -1751,7 +1757,7 @@ class GLCOFunction(BaseFunction):
                     try:
                         history = task.result()
                     except Exception as exc:  # noqa: BLE001 — best-effort history
-                        provider_errors.append(f"{sym} history: {exc}")
+                        provider_errors.append(f"{sym} history: {str(exc) or type(exc).__name__}")
                         continue
                     if history:
                         history_by_symbol[sym] = history
@@ -1891,7 +1897,7 @@ class WETRFunction(BaseFunction):
         # the live chain. Any other value is an explicit input error, never a
         # silent live or model fallback.
         provider_mode = str(params.get("provider_mode") or "").strip().lower()
-        allowed_modes = ("live_official", "modeled")
+        allowed_modes = ("live_official", "modeled")  # modeled is refused below (not offered)
         if provider_mode and provider_mode not in allowed_modes:
             return FunctionResult(
                 code=self.code,
@@ -1922,17 +1928,38 @@ class WETRFunction(BaseFunction):
                 metadata={"allowed_provider_modes": list(allowed_modes)},
             )
         reference = _truthy(params.get("reference")) or provider_mode == "modeled"
+        if reference:
+            # Data policy: the old "seasonal model" was a sine curve, not a
+            # measured or published normal. It is no longer served.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "field": "provider_mode" if provider_mode == "modeled" else "reference",
+                    "reason": ("The synthetic seasonal weather model is not offered: WETR serves live "
+                               "forecast rows only (Open-Meteo keyless, or OpenWeather with a key)."),
+                    "location": location_key,
+                    "lat": lat,
+                    "lon": lon,
+                    "commodity_context": commodity,
+                    "source_mode": "not_offered",
+                    "rows": [],
+                    "history": [],
+                    "risk_flags": [],
+                    "methodology": "WETR serves live forecast rows only; no generated weather rows.",
+                    "field_dictionary": {},
+                    "next_actions": ["Use the Live data mode (the default)."],
+                },
+                sources=[],
+                warnings=["synthetic seasonal weather model is not offered"],
+                metadata={"live": False},
+            )
         provider, provider_name = self._live_weather_provider()
-        if reference or provider is None:
+        if provider is None:
             return self._seasonal_model_result(
                 days, lat, lon, location_key, commodity,
-                reason=(
-                    "Rows are a labelled seasonal weather model (reference), "
-                    "not live forecast data."
-                    if reference
-                    else "No live weather provider is wired; no weather rows are served."
-                ),
-                reference=reference,
+                reason="No live weather provider is wired; no weather rows are served.",
             )
         try:
             if provider_name == "open_meteo":
@@ -1942,8 +1969,8 @@ class WETRFunction(BaseFunction):
         except Exception as e:  # noqa: BLE001 — provider outage degrades honestly
             return self._seasonal_model_result(
                 days, lat, lon, location_key, commodity,
-                reason=f"Live weather request failed: {e}",
-                warning=f"{provider_name}: {e}",
+                reason=f"Live weather request failed: {str(e) or type(e).__name__}",
+                warning=f"{provider_name}: {str(e) or type(e).__name__}",
             )
         live_mode = "live_open_meteo" if provider_name == "open_meteo" else "live_openweathermap"
         rows = _normalise_weather_rows(
@@ -2021,44 +2048,24 @@ class WETRFunction(BaseFunction):
         warning: str | None = None,
         reference: bool = False,
     ) -> FunctionResult:
-        """Honest non-live result.
+        """Honest non-live result: a provider outage or an unwired provider.
 
-        ``reference=True`` is the explicit opt-in to the labelled seasonal model.
-        Any other call is a provider outage or an unwired provider: WETR-R1
-        serves no weather rows then, because the seasonal model is synthetic
-        and is not a measured or published normal.
+        No weather rows are served (the old synthetic seasonal model is gone);
+        ``reference`` is kept for call-site compatibility and is always False.
         """
-        if reference:
-            rows = _weather_model_rows(days, lat, lon, location_key, commodity)
-            status = "reference_model"
-            source_mode = "seasonal_model"
-            sources = ["seasonal_weather_model"]
-            data_mode = "modeled"
-            methodology = (
-                "WETR shows weather variables relevant to commodities. "
-                "HDD=max(18C-temp,0), CDD=max(temp-18C,0); risk flags map "
-                "dry/hot/cold/wet days to demand or crop-weather pressure. "
-                "These rows are a labelled seasonal model, not a live forecast."
-            )
-            next_actions = [
-                "Retry WETR without reference=true for live forecast rows.",
-                "Rows shown are a deterministic seasonal model, not live forecast data.",
-            ]
-        else:
-            rows = []
-            status = "provider_unavailable"
-            source_mode = "provider_unavailable"
-            sources = []
-            data_mode = "provider_unavailable"
-            methodology = (
-                "WETR serves weather rows only from a configured live provider. "
-                "During an outage no weather rows are served; the labelled "
-                "seasonal model is available only with reference=true."
-            )
-            next_actions = [
-                "Retry WETR after the public weather providers recover.",
-                "No weather rows are shown while the provider is unavailable.",
-            ]
+        rows: list[dict[str, Any]] = []
+        status = "provider_unavailable"
+        source_mode = "provider_unavailable"
+        sources: list[str] = []
+        data_mode = "provider_unavailable"
+        methodology = (
+            "WETR serves weather rows only from a configured live provider. "
+            "During an outage no weather rows are served."
+        )
+        next_actions = [
+            "Retry WETR after the public weather providers recover.",
+            "No weather rows are shown while the provider is unavailable.",
+        ]
         if warning:
             provider_errors = [warning]
         else:
@@ -2140,38 +2147,6 @@ def _wetr_risk_flag(temp: float, precip: float) -> str:
     return "normal"
 
 
-def _weather_model_rows(
-    days: int,
-    lat: float,
-    lon: float,
-    location: str,
-    commodity: str,
-) -> list[dict[str, Any]]:
-    start = datetime.now(timezone.utc).date()
-    warm_bias = 2.5 if lat < 35 else 0.0
-    rows: list[dict[str, Any]] = []
-    for i in range(days):
-        date = start + timedelta(days=i)
-        temp = 17.5 + warm_bias + math.sin(i / 2.2) * 3.0 + i * 0.15
-        precip = max(0.0, 2.4 - i * 0.12 + (0.8 if i % 5 == 0 else 0.0))
-        hdd = max(18.0 - temp, 0.0)
-        cdd = max(temp - 18.0, 0.0)
-        risk = _wetr_risk_flag(temp, precip)
-        rows.append({
-            "date": date.isoformat(),
-            "day": i + 1,
-            "location": location,
-            "lat": lat,
-            "lon": lon,
-            "temp_c": round(temp, 2),
-            "precip_mm": round(precip, 2),
-            "hdd": round(hdd, 2),
-            "cdd": round(cdd, 2),
-            "risk_flag": risk,
-            "commodity_impact": _weather_impact(risk, commodity),
-            "source_mode": "seasonal_model",
-        })
-    return rows
 
 
 def _normalise_weather_rows(
@@ -2187,7 +2162,7 @@ def _normalise_weather_rows(
 ) -> list[dict[str, Any]]:
     daily = data.get("daily") if isinstance(data, dict) else None
     if not isinstance(daily, list):
-        return _weather_model_rows(days, lat, lon, location, commodity) if allow_model_fallback else []
+        return []
     rows: list[dict[str, Any]] = []
     for i, item in enumerate(daily[:days]):
         if not isinstance(item, dict):
@@ -2230,7 +2205,7 @@ def _normalise_weather_rows(
             "source_mode": source_mode,
         })
     if not rows:
-        return _weather_model_rows(days, lat, lon, location, commodity) if allow_model_fallback else []
+        return []
     return rows
 
 

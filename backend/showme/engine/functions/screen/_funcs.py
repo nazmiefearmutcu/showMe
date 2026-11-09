@@ -742,7 +742,7 @@ _BOND_FIELDS = [
     {"field": "maturity", "meaning": "Maturity bucket or final maturity date."},
     {"field": "quote_type", "meaning": "live when a keyless provider refreshed this tenor this cycle; monthly when the provider observation is a dated monthly series (not live); unavailable when a configured live tenor had no provider answer (curated value shown); reference for curated-only rows."},
     {"field": "yield_state", "meaning": "live or reference — whether the yield value shown came from a provider refresh or the curated table."},
-    {"field": "yield_source", "meaning": "Provider that refreshed this row (fred_csv, yahoo_quote, ustreasury) or null."},
+    {"field": "yield_source", "meaning": "Provider that refreshed this row (fred_csv, yahoo_chart, stooq, yfinance_fast_info, ustreasury) or null."},
     {"field": "yield_as_of", "meaning": "Observation date of the refreshed yield (monthly foreign series carry their publication date)."},
 ]
 
@@ -1241,15 +1241,25 @@ async def _yahoo_yield_values(
             return None
         if not math.isfinite(value):
             return None
-        fetched_at = str(snapshot.get("fetched_at") or "")
+        # ASOF-3: the date is the provider observation date (snapshot as_of), never the
+        # retrieval date. A quote observed on the retrieval date is intraday; an earlier
+        # observation (weekend, holiday, overnight) is the last close; with no observation
+        # time the cadence is unknown rather than guessed.
+        observed = str(snapshot.get("as_of") or "")[:10]
+        fetched_day = str(snapshot.get("fetched_at") or "")[:10]
+        # Provenance: the row names the provider that actually answered (yahoo_chart, stooq
+        # or yfinance_fast_info), never a fixed label that would hide a fallback.
+        provider = snapshot.get("source")
         entry: dict[str, Any] = {
             "symbol": symbol,
             "value": value,
-            "source": "yahoo_quote",
-            "cadence": "intraday",
+            "source": str(provider) if provider else None,
         }
-        if fetched_at:
-            entry["as_of"] = fetched_at[:10]
+        if observed:
+            entry["as_of"] = observed
+            entry["cadence"] = "intraday" if observed == fetched_day else "last_close"
+        else:
+            entry["cadence"] = "unknown"
         return entry
 
     results = await asyncio.gather(
@@ -1316,7 +1326,8 @@ async def _collect_live_bond_yields(
         yahoo_values = await _yahoo_yield_values(yahoo_targets)
         if yahoo_values:
             values.update(yahoo_values)
-            sources.append("yahoo_quote")
+            for provider in sorted({str(e["source"]) for e in yahoo_values.values() if e.get("source")}):
+                sources.append(provider)
     missing = sorted(_LIVE_BOND_PROVIDER_TENORS - set(values))
     if missing:
         warnings.append(

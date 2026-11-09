@@ -7,6 +7,7 @@ backtest eder; her hücrede Sharpe ve total return raporlar.
 from __future__ import annotations
 
 import asyncio
+import functools
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -256,13 +257,21 @@ def _run_backtests(
             fn = STRATEGY_REGISTRY.get(strat)
             if fn is None:
                 continue
+            # BMTX-R1 follow-up: Backtest.run catches every strategy exception bar by bar and
+            # holds the position, so the engine never raises for a broken strategy. The guard
+            # records what the strategy raised; a raising cell is a failed cell, not an ok flat one.
+            raised: list[str] = []
+            guarded = _recording_strategy(fn, raised)
             try:
-                bt = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps)
+                bt = Backtest(df, guarded, initial_cash=initial_equity, fee_bps=fee_bps)
                 r = bt.run()
                 # BMTX#6: holdout score on the final slice only. The strategies
                 # use fixed default parameters, so nothing is fitted on it.
-                holdout = Backtest(df, fn, initial_cash=initial_equity, fee_bps=fee_bps,
+                holdout = Backtest(df, guarded, initial_cash=initial_equity, fee_bps=fee_bps,
                                    eval_start=split).run()
+                if raised:
+                    strategy_errors.setdefault(sym, []).append((strat, raised[0]))
+                    continue
                 cells.append({
                     "label": f"{sym} {strat}",
                     "symbol": sym, "strategy": strat,
@@ -280,6 +289,20 @@ def _run_backtests(
                     (strat, f"{type(exc).__name__}: {exc}")
                 )
     return cells, strategy_errors, oos_windows
+
+
+def _recording_strategy(fn: Any, raised: list[str]) -> Any:
+    """Wrap a strategy so each exception it raises is recorded before the engine swallows it."""
+
+    @functools.wraps(fn)
+    def guarded(bars: pd.DataFrame, state: dict[str, Any]) -> int:
+        try:
+            return fn(bars, state)
+        except Exception as exc:
+            raised.append(f"{type(exc).__name__}: {exc}")
+            raise
+
+    return guarded
 
 
 def _failure_warning(sym: str, reason: str) -> str:

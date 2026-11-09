@@ -1,6 +1,6 @@
 {
   "_doc": "Offline truth-gate ratchet (backend/showme/audit/gate.py). Per function: count per '<check>:<rule>'. Counts may only go down. Regenerate downward with SHOWME_UPDATE_TRUTH_BASELINE=1 pytest tests/test_function_truth_gate.py.",
-  "total": 362,
+  "total": 361,
   "counts": {
     "ACCT": {
       "T6:generic_inputs": 1
@@ -324,8 +324,7 @@
     },
     "HFS": {
       "T6:generic_inputs": 1,
-      "T9:manifest_control_ignored": 1,
-      "T9:manifest_input_ignored": 1
+      "T9:manifest_control_ignored": 1
     },
     "HP": {
       "T6:generic_inputs": 1

@@ -4,7 +4,6 @@ import {
   CardHeader,
   DataGrid,
   type DataGridColumn,
-  DeltaChip,
   Empty,
   HeatCell,
   intensityToken,
@@ -1143,8 +1142,8 @@ function CompactPairList({
   return (
     <div className="u-grid u-p-8 u-gap-4">
       {rows.map((row, idx) => {
-        const value = row.correlation ?? 0;
-        const delta = pseudoDelta(`${row.left}-${row.right}-${idx}`);
+        // UI-15: a missing coefficient stays null (neutral swatch, "—"), never 0.
+        const value = row.correlation ?? null;
         return (
           <div key={idx} style={pairRowStyle}>
             <HeatCell value={value} size={26} fractionDigits={2} />
@@ -1167,7 +1166,6 @@ function CompactPairList({
               >
                 {formatNum(value, 3)}
               </span>
-              <DeltaChip value={delta} format="raw" fractionDigits={3} />
             </div>
           </div>
         );
@@ -1458,14 +1456,6 @@ function formatNum(value?: number | null, digits = 4) {
 
 function formatPct(value?: number | null) {
   return formatPercent(value, { fromFraction: true, digits: 1 });
-}
-
-// Stable seeded pseudo-delta for "Δ vs prev window" indicator on top pairs.
-function pseudoDelta(seed: string): number {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
-  const v = ((h % 200) - 100) / 1000; // ~ -0.1..0.1
-  return Number(v.toFixed(3));
 }
 
 // A coverage row is "synthetic" when the backend could not fetch the symbol

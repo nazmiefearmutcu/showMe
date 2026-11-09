@@ -269,7 +269,7 @@ def fetch_crypto_quote_sync(symbol: str) -> dict[str, Any]:
             if snapshot.get("last") is not None:
                 return snapshot
         except Exception as exc:  # noqa: BLE001
-            attempts.append(f"{provider.__name__}: {exc}")
+            attempts.append(f"{provider.__name__}: {str(exc) or type(exc).__name__}")
     raise QuoteFetchError("; ".join(attempts) or f"no crypto quote for {symbol}")
 
 
@@ -364,7 +364,7 @@ def fetch_equity_quote_sync(symbol: str) -> dict[str, Any]:
                         snapshot.update(bbo)
                 return snapshot
         except Exception as exc:  # noqa: BLE001
-            attempts.append(f"{provider.__name__}: {exc}")
+            attempts.append(f"{provider.__name__}: {str(exc) or type(exc).__name__}")
     raise QuoteFetchError("; ".join(attempts) or f"no equity quote for {symbol}")
 
 
@@ -602,7 +602,7 @@ def _fetch_yahoo_chart_quote(symbol: str) -> dict[str, Any]:
         # on range=5d it is the close before the window.
         prev = number(meta.get("previousClose"))
     volume = number(meta.get("regularMarketVolume")) or last_non_null(volumes)
-    return normalized_snapshot(
+    snapshot = normalized_snapshot(
         symbol=symbol,
         asset_class="EQUITY",
         last=last,
@@ -621,6 +621,15 @@ def _fetch_yahoo_chart_quote(symbol: str) -> dict[str, Any]:
             "prior_session_established": prior_session_established,
         },
     )
+    # ASOF-3: as_of is the provider's observation time of the last price. It is never the
+    # retrieval clock (fetched_at); it stays None when the provider published no time.
+    observed = number(meta.get("regularMarketTime"))
+    snapshot["as_of"] = (
+        datetime.fromtimestamp(observed, timezone.utc).isoformat()
+        if observed is not None and observed > 0
+        else None
+    )
+    return snapshot
 
 
 def _fetch_stooq_quote(symbol: str) -> dict[str, Any]:

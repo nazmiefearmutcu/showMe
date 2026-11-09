@@ -198,7 +198,7 @@ class ECSTFunction(BaseFunction):
                 except Exception:
                     pass
             except Exception as e:
-                provider_errors.append(f"fred: {e}")
+                provider_errors.append(f"fred: {str(e) or type(e).__name__}")
                 
             if compare_sid:
                 try:
@@ -219,7 +219,7 @@ class ECSTFunction(BaseFunction):
                         except Exception:
                             pass
                 except Exception as e:
-                    provider_errors.append(f"fred (compare): {e}")
+                    provider_errors.append(f"fred (compare): {str(e) or type(e).__name__}")
 
         # World Bank mapping dictionary
         wb_map = {
@@ -242,7 +242,7 @@ class ECSTFunction(BaseFunction):
                     sources.append("worldbank")
                     source_mode = "worldbank"
                 except Exception as e:
-                    provider_errors.append(f"worldbank: {e}")
+                    provider_errors.append(f"worldbank: {str(e) or type(e).__name__}")
                     
             if compare_sid and compare_df.empty:
                 wb_compare_indicator = wb_map.get(compare_sid)
@@ -258,7 +258,7 @@ class ECSTFunction(BaseFunction):
                             _note_source("worldbank")
                             compare_source_mode = "worldbank"
                     except Exception as e:
-                        provider_errors.append(f"worldbank (compare): {e}")
+                        provider_errors.append(f"worldbank (compare): {str(e) or type(e).__name__}")
 
         # Data policy: no synthetic series is ever served as data. When no
         # provider returned observations the series is unavailable (no rows,

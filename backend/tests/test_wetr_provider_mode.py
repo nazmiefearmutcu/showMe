@@ -37,11 +37,13 @@ def _run(**params: Any) -> tuple[Any, _RecordingOpenMeteo]:
     return result, fake
 
 
-def test_provider_mode_modeled_serves_labelled_seasonal_model_not_live() -> None:
+def test_provider_mode_modeled_is_refused_no_synthetic_rows() -> None:
+    # Data policy: the seasonal model was a generated sine curve; it is not served.
     result, fake = _run(provider_mode="modeled")
     assert fake.calls == [], "modeled mode must not query the live provider"
-    assert result.data["source_mode"] == "seasonal_model"
-    assert result.data["status"] == "reference_model"
+    assert result.data["status"] == "input_error"
+    assert result.data["source_mode"] == "not_offered"
+    assert result.data["rows"] == []
 
 
 def test_provider_mode_live_official_queries_live_chain() -> None:

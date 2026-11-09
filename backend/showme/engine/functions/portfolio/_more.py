@@ -338,17 +338,6 @@ def _max_drawdown(daily_returns: list[float]) -> float | None:
     return float((index / running_peak - 1.0).min())
 
 
-def _split_factors(split_ratios: pd.Series) -> np.ndarray:
-    """Cumulative split factor S_t: the product of split ratios on bars <= t.
-
-    A bar with no split holds 0 or NaN and counts as 1; 4:1 is 4.0, 1:10 is 0.1.
-    Adjusted price = raw close * S_t, so a split leaves the adjusted series
-    continuous and is never read as a loss (TRA#2).
-    """
-    ratios = pd.to_numeric(split_ratios, errors="coerce").fillna(0.0).to_numpy(dtype=float)
-    return np.cumprod(np.where(ratios > 0, ratios, 1.0))
-
-
 def _unconfirmed_split_dates(close: pd.Series) -> list[Any]:
     """Bars whose one-day raw move matches a whole-number split ratio.
 
@@ -414,6 +403,31 @@ def _irr(cashflows: list[tuple[datetime, float]],
     return rate
 
 
+def _tra_unavailable(
+    instrument: Instrument, years: int, *, status: str, reason: str, next_actions: list[str],
+) -> FunctionResult:
+    """TRA with no live history: an explicit state, never a generated price path."""
+    return FunctionResult(
+        code="TRA",
+        instrument=instrument,
+        data={
+            "status": status,
+            "reason": reason,
+            "symbol": instrument.symbol,
+            "years": years,
+            "rows": [],
+            "points": [],
+            "twr": None, "irr": None, "cagr": None, "price_return": None, "max_drawdown": None,
+            "next_actions": next_actions,
+            "methodology": "TRA computes total return from live daily closes and dividends only.",
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"live": False,
+                  "data_mode": "provider_unavailable" if status == "provider_unavailable" else "empty"},
+    )
+
+
 @FunctionRegistry.register
 class TRAFunction(BaseFunction):
     """TRA — Total Return Analysis (TWR + IRR + price + dividend)."""
@@ -426,51 +440,45 @@ class TRAFunction(BaseFunction):
         if instrument is None:
             raise ValueError("TRA requires instrument")
         years = int(params.get("years", 5))
-        # Default-polarity flip (2026-09-08): TRA computes from the live
-        # price feed by default; ``reference=true`` opts into the labelled
-        # template history. A live-feed failure may still fall back to the
-        # template, but only WITH an explicit warning + honest data_mode.
+        # TRA computes from the live price feed only. The old labelled template
+        # history (btfw._template_history, a generated price path) is gone:
+        # reference=true, a feed failure or an empty feed is an explicit state
+        # with no total-return figures (data policy).
         live = not _truthy(params.get("reference"))
         warnings: list[str] = []
-        metadata: dict[str, Any] = {"live": False, "data_mode": "modeled"}
-        if live:
-            try:
-                if not self.deps.yfinance:
-                    raise RuntimeError("yfinance adapter unavailable")
-                import asyncio
-                df = await asyncio.wait_for(
-                    self.deps.yfinance.fetch(DataRequest(
+        if not live:
+            return _tra_unavailable(
+                instrument, years, status="input_error",
+                reason=("TRA computes total return from live price history only; reference=true asked "
+                        "for a template history, which is not offered."),
+                next_actions=["Run TRA without reference=true."],
+            )
+        try:
+            if not self.deps.yfinance:
+                raise RuntimeError("yfinance adapter unavailable")
+            import asyncio
+            df = await asyncio.wait_for(
+                self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=instrument,
                     start=datetime.now(timezone.utc) - timedelta(days=365 * years),
                     interval="1d",
-                    )),
-                    timeout=float(params.get("quote_timeout", 8)),
-                )
-                sources = ["yfinance"]
-                metadata = {"live": True, "data_mode": "live_yfinance"}
-            except Exception as exc:
-                from showme.engine.functions.portfolio.btfw import _template_history
-                df = _template_history(365 * years)
-                sources = ["total_return_model"]
-                metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
-                warnings.append(
-                    "TRA fell back to the labelled template history after the live "
-                    f"price feed failed: {exc}"
-                )
-        else:
-            from showme.engine.functions.portfolio.btfw import _template_history
-            df = _template_history(365 * years)
-            sources = ["total_return_model"]
-        if df.empty:
-            from showme.engine.functions.portfolio.btfw import _template_history
-            df = _template_history(365 * years)
-            sources = ["total_return_model"]
-            metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
-            if live:
-                warnings.append(
-                    "Live price feed returned no usable observations; showing the "
-                    "labelled template history instead."
-                )
+                )),
+                timeout=float(params.get("quote_timeout", 8)),
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never substituted
+            return _tra_unavailable(
+                instrument, years, status="provider_unavailable",
+                reason=f"Live price feed failed: {str(exc) or type(exc).__name__}. No total return is computed.",
+                next_actions=["Retry once the price provider recovers."],
+            )
+        if df is None or df.empty or "close" not in df.columns:
+            return _tra_unavailable(
+                instrument, years, status="provider_unavailable",
+                reason="Live price feed returned no usable observations. No total return is computed.",
+                next_actions=["Retry later or check the symbol."],
+            )
+        sources = ["yfinance"]
+        metadata: dict[str, Any] = {"live": True, "data_mode": "live_yfinance"}
         close = df["close"]
         # A source without a dividend series (e.g. the template) must not read
         # as "no dividends paid": keep the count/total null and say so.
@@ -483,30 +491,57 @@ class TRAFunction(BaseFunction):
             )
         div_count = int((divs > 0).sum()) if dividends_known else None
         div_total = float(divs.sum()) if dividends_known else None
-        # TRA#2/#3: splits are removed before any return is measured. A source
-        # that reports split events gives an adjusted series; one that does not
-        # is labelled, and a one-day move that looks like a split is named.
+        # TRA#2/#3: the live sources (Yahoo chart and the yfinance ticker history)
+        # deliver closes and dividends already split-adjusted to the latest share
+        # basis, so they are used as delivered. Multiplying them by the split
+        # ratio again read every split as a large gain. A source with split
+        # events is labelled split_adjusted; one without is labelled too, and a
+        # one-day move that matches a split ratio is named in the warnings.
         splits_known = "splits" in df.columns
+        split_bars: set[Any] = set()
         if splits_known:
-            split_factor = _split_factors(df["splits"])
-            splits_count: int | None = int(
-                (pd.to_numeric(df["splits"], errors="coerce").fillna(0.0) > 0).sum()
-            )
+            split_events = pd.to_numeric(df["splits"], errors="coerce").fillna(0.0) > 0
+            split_bars = set(close.index[split_events.to_numpy()])
+            splits_count: int | None = int(split_events.sum())
         else:
-            # No split column: closes stay unadjusted and split_adjusted says so.
-            split_factor = np.ones(len(close), dtype=float)
             splits_count = None
-            for bar in _unconfirmed_split_dates(close):
-                warnings.append(
-                    f"TRA: the one-day price move on {bar.strftime('%Y-%m-%d')} matches a stock "
-                    "split ratio, but the source reported no split event. Verify it before "
-                    "reading total return or drawdown."
-                )
-        adj_close = pd.Series(close.to_numpy(dtype=float) * split_factor, index=close.index)
-        adj_divs = (
-            pd.Series(divs.to_numpy(dtype=float) * split_factor, index=divs.index)
-            if dividends_known else divs
-        )
+        adj_close = close.astype(float).copy()
+        adj_divs = divs.astype(float).copy() if dividends_known else divs
+        # Reconciles TRA#2 and TRA#3: closes are used as delivered (already
+        # split-adjusted by the live sources), except when a reported split bar
+        # carries a one-day jump equal to the reported ratio. Then the earlier
+        # closes are evidently raw, and they (and their dividends) are put on
+        # the post-split basis by that ratio, so the split is neither a gain
+        # nor a phantom loss.
+        raw_split_fixed: list[str] = []
+        if splits_known:
+            ratios = pd.to_numeric(df["splits"], errors="coerce").fillna(0.0)
+            positions = {bar: i for i, bar in enumerate(close.index)}
+            for bar in sorted(split_bars):
+                i = positions.get(bar)
+                ratio = float(ratios.loc[bar]) if bar in ratios.index else 0.0
+                if not i or ratio <= 1.0:
+                    continue
+                prev, cur = float(adj_close.iloc[i - 1]), float(adj_close.iloc[i])
+                if prev > 0 and cur > 0 and abs((prev / cur) / ratio - 1.0) <= 0.02:
+                    adj_close.iloc[:i] = adj_close.iloc[:i] / ratio
+                    if dividends_known:
+                        adj_divs.iloc[:i] = adj_divs.iloc[:i] / ratio
+                    raw_split_fixed.append(bar.strftime("%Y-%m-%d"))
+        for stamp in raw_split_fixed:
+            warnings.append(
+                f"TRA: closes before {stamp} were not split-adjusted by the source; they were put "
+                "on the post-split basis with the reported split ratio."
+            )
+        for bar in _unconfirmed_split_dates(close):
+            stamp = bar.strftime("%Y-%m-%d")
+            if bar in split_bars:
+                continue  # reported split: handled above (adjusted or already adjusted)
+            warnings.append(
+                f"TRA: the one-day price move on {stamp} matches a stock split ratio, but "
+                "the source reported no split event. Verify it before reading total return "
+                "or drawdown."
+            )
         price_ret = float(adj_close.iloc[-1] / adj_close.iloc[0] - 1)
         # TRA#2: TWR is a total return: each day compounds (close + dividend) over
         # the prior close, so dividends are reinvested at the ex-date close. With
@@ -517,7 +552,24 @@ class TRAFunction(BaseFunction):
         daily_returns = _total_daily_returns(adj_close, adj_divs if dividends_known else None)
         twr = _twr(daily_returns)
         # TRA#3: drawdown on the full daily total-return index, not on sampled points.
-        max_dd = _max_drawdown(daily_returns)
+        # wc3-g15: without a split column, a split-sized one-day move is an unadjusted
+        # jump, so the drawdown would report a loss that did not happen. Null, with a reason.
+        # wc3-g15 (TRA#3 review): a live adapter always sends a splits column, zeros when the
+        # source reports no event. A split-sized one-day move is only explained when a split
+        # event is reported on that same bar; otherwise it is an unadjusted jump.
+        reported_split_bars = (
+            df.index[pd.to_numeric(df["splits"], errors="coerce").fillna(0.0).to_numpy() > 0]
+            if splits_known else df.index[:0]
+        )
+        unconfirmed_splits = [
+            bar for bar in _unconfirmed_split_dates(close) if bar not in reported_split_bars
+        ]
+        max_dd = None if unconfirmed_splits else _max_drawdown(daily_returns)
+        if unconfirmed_splits:
+            warnings.append(
+                "TRA: max drawdown is not reported because a split-sized one-day move sits "
+                "inside the window with no reported split event on that bar."
+            )
         # MWR / IRR — buy 1 share at start, dividends as positive cashflows, sell at end
         cashflows = [(adj_close.index[0].to_pydatetime(), -float(adj_close.iloc[0]))]
         for d, amt in zip(adj_divs.index, adj_divs.values):
@@ -593,10 +645,10 @@ class TRAFunction(BaseFunction):
                 "price_return_total_pct": _as_percent(price_ret),
                 "max_drawdown_pct": _as_percent(max_dd),
                 "methodology": (
-                    "Compute price return from the first and last split-adjusted closes (dividends "
-                    "excluded). Splits are adjusted by multiplying each close by the cumulative split "
-                    "ratio up to that bar, so a split is not read as a loss. Compound daily total returns "
-                    "(split-adjusted close plus split-adjusted dividend, over the prior close) for "
+                    "Compute price return from the first and last closes as the source delivers them "
+                    "(dividends excluded). The source split-adjusts closes and dividends, so TRA does not "
+                    "adjust them again. Compound daily total returns "
+                    "(close plus dividend, over the prior close) for "
                     "time-weighted return, with dividends reinvested at their ex-date close. Estimate "
                     "IRR from buy, dividend, and sale cash flows. Max drawdown is measured on the full "
                     "daily total-return index. Without a dividend series, TWR and CAGR are price-only "
@@ -604,10 +656,10 @@ class TRAFunction(BaseFunction):
                     "a one-day move that matches a split ratio is named in the warnings."
                 ),
                 "field_dictionary": {
-                    "split_adjusted": "True when the source reported split events and closes were adjusted for them; false when no split events were available.",
+                    "split_adjusted": "True when the source reported split events; its closes and dividends are split-adjusted by the source (TRA does not re-adjust them). False when no split events were available, so the basis is not verified.",
                     "splits_count": "Number of split events inside the window; null when the source reported none.",
-                    "split_adjusted_close": "Close multiplied by the cumulative split ratio; continuous across splits.",
-                    "price_return_total": "Last split-adjusted close divided by first split-adjusted close minus one; excludes dividends.",
+                    "split_adjusted_close": "Close as delivered by the source (split-adjusted); continuous across splits.",
+                    "price_return_total": "Last close divided by first close minus one, on the source's split-adjusted basis; excludes dividends.",
                     "twr_total": "Time-weighted total return from daily returns with dividends reinvested; price-only when total_return_basis says so.",
                     "irr_annualized": "Money-weighted annualized return from cash flows.",
                     "cagr": "Annualized growth of the same basis as twr_total over the observed span.",

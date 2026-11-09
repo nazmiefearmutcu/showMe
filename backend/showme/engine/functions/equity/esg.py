@@ -5,7 +5,7 @@ risk scores) via the wired yfinance adapter / yfinance package. When Yahoo does
 not publish a sustainability frame for a ticker (common for smaller or non-US
 names), fall back to a SEC EDGAR full-text-mined E/S/G *proxy*: term-frequency
 counts of environmental / social / governance language across the company's
-recent 10-K filings, fetched keyless from the EDGAR full-text search index. The
+10-K filings from the last three years, fetched keyless from the EDGAR full-text search index. The
 proxy is clearly labelled as a derived signal, never presented as a vendor
 (Sustainalytics) score.
 """
@@ -196,7 +196,7 @@ class ESGFunction(BaseFunction):
             else:
                 yahoo_note = "yahoo sustainability: yfinance adapter not configured"
         except Exception as exc:  # network / parse failure -> try proxy next
-            yahoo_note = f"yfinance esg: {exc}"
+            yahoo_note = f"yfinance esg: {str(exc) or type(exc).__name__}"
 
         flat = _flatten_sustainability(scores)
         rows = _build_rows_from_sustainability(flat) if flat else None
@@ -255,7 +255,7 @@ class ESGFunction(BaseFunction):
                     "field_dictionary": _FIELD_DICTIONARY,
                 },
                 sources=["yfinance", "sec_edgar"],
-                metadata={"provider_errors": warnings + [f"sec_edgar: {exc}"]},
+                metadata={"provider_errors": warnings + [f"sec_edgar: {str(exc) or type(exc).__name__}"]},
             )
 
         # Total = filings matching any E/S/G term (never the sum of the pillars,

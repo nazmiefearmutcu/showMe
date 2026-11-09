@@ -303,7 +303,7 @@ class EQSFunction(BaseFunction):
                     "matched": 0,
                     "scanned": int(len(df)),
                 },
-                warnings=[f"DSL parse error: {e}"],
+                warnings=[f"DSL parse error: {str(e) or type(e).__name__}"],
                 metadata={
                     "query": query,
                     "matched": 0,

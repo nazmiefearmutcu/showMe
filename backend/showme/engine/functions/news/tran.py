@@ -168,6 +168,13 @@ class TRANFunction(BaseFunction):
                 sources.append("user_supplied")
                 event.setdefault("title", f"{symbol} pasted transcript")
                 event["source"] = "user_supplied"
+                if requested_quarter:
+                    # TRAN#3: the pasted text is never matched to a filing, so the
+                    # requested label is what the user said, not a derived fiscal quarter.
+                    event["quarter_basis"] = (
+                        "user-stated quarter label, not verified: the pasted text was not "
+                        "matched to any filing or fiscal calendar"
+                    )
 
         # 2) Local archive (previously ingested verbatim transcript).
         if not utterances:
@@ -199,7 +206,7 @@ class TRANFunction(BaseFunction):
                             "event_id": ev.get("event_id"),
                         })
             except Exception as e:  # noqa: BLE001 - archive optional
-                warnings.append(f"transcripts_archive: {e}")
+                warnings.append(f"transcripts_archive: {str(e) or type(e).__name__}")
 
         # 3) DEFAULT keyless live source — SEC EDGAR 8-K earnings exhibit.
         sec_error: str | None = None
@@ -264,7 +271,7 @@ class TRANFunction(BaseFunction):
                         model_name=params.get("model", "base"),
                     )
                 except Exception as e:  # noqa: BLE001 - whisper optional
-                    warnings.append(f"whisper: {e}")
+                    warnings.append(f"whisper: {str(e) or type(e).__name__}")
             if audio_path and not whisper_result:
                 try:
                     from showme.engine.services.transcription import transcribe
@@ -273,7 +280,7 @@ class TRANFunction(BaseFunction):
                         model_name=params.get("model", "base"),
                     )
                 except Exception as e:  # noqa: BLE001 - whisper optional
-                    warnings.append(f"whisper local: {e}")
+                    warnings.append(f"whisper local: {str(e) or type(e).__name__}")
             if whisper_result:
                 text = whisper_result.get("text") if isinstance(whisper_result, dict) else None
                 if text:
@@ -605,6 +612,13 @@ def _parse_transcript_text(
             section = "qa"
             continue
         m = _SPEAKER_RE.match(block) if allow_speaker_headers else None
+        # A colon line is ambiguous: "Retail Sales: gains continue" is a table or outline
+        # label as often as a name. An explicit "--" or dash line is the transcript's own
+        # header syntax and is trusted as written; a colon line names a speaker only when
+        # its label is a role word such as "Operator".
+        colon_line = bool(m) and block[m.end(1):].lstrip().startswith(":")
+        if m and colon_line and m.group(1).strip().lower() not in _ROLE_HINTS:
+            m = None
         if m and _looks_like_name(m.group(1).strip()):
             head = m.group(1).strip()
             rest = m.group(2).strip()
@@ -649,6 +663,10 @@ def _looks_like_name(head: str) -> bool:
     if head.lower() in _ROLE_HINTS:
         return True
     if any(p.lower().strip(".,:;") in _NON_NAME_TOKENS for p in parts):
+        return False
+    # Financial acronyms (EPS, EBITDA, GAAP, FCF) are metrics, not name tokens.
+    # Two-letter all-caps tokens are kept: they are ordinary initials ("AJ Brown").
+    if any(len(p) >= 3 and p.isalpha() and p.isupper() for p in parts):
         return False
     capish = sum(1 for p in parts if p[:1].isupper())
     return capish >= max(1, len(parts) - 1)

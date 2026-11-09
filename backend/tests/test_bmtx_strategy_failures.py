@@ -17,6 +17,7 @@ import pytest
 from showme.engine.core.base_function import FunctionDeps
 from showme.engine.functions.portfolio import bmtx as bmtx_mod
 from showme.engine.functions.portfolio.bmtx import BMTXFunction
+from showme.engine.services.backtest_framework import STRATEGY_REGISTRY
 
 
 def _run(coro):
@@ -65,15 +66,14 @@ def test_symbol_whose_every_strategy_fails_is_excluded_with_reason(monkeypatch: 
     assert any("BADX" in w and "synthetic engine failure" in w for w in res.warnings)
 
 
+def _raising_strategy(bars, state):
+    raise ValueError("synthetic strategy failure")
+
+
 def test_partial_strategy_failure_keeps_symbol_and_reports_the_failed_cell(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_backtest = bmtx_mod.Backtest
-
-    def fake_backtest(df, fn, **kwargs):
-        if getattr(fn, "__name__", "") == "rsi_meanrev":
-            raise ValueError("synthetic engine failure")
-        return real_backtest(df, fn, **kwargs)
-
-    monkeypatch.setattr(bmtx_mod, "Backtest", fake_backtest)
+    # Real engine path: Backtest is NOT patched. The strategy itself raises, and the
+    # framework's per-bar catch must not turn that into an ok flat cell (BMTX-R1 follow-up).
+    monkeypatch.setitem(STRATEGY_REGISTRY, "rsi_meanrev", _raising_strategy)
     fn = BMTXFunction(FunctionDeps(yfinance=_Yf(frames={"AAPL": _ohlcv()})))
     res = _run(fn.execute(symbols=["AAPL"], strategies=["buy_and_hold", "rsi_meanrev"], live_backtest=True))
 
@@ -81,9 +81,24 @@ def test_partial_strategy_failure_keeps_symbol_and_reports_the_failed_cell(monke
     assert res.data["symbols"] == ["AAPL"]
     assert [c["strategy"] for c in res.data["cells"]] == ["buy_and_hold"]
     assert res.data["failed_cells"] == [
-        {"symbol": "AAPL", "strategy": "rsi_meanrev", "error": "ValueError: synthetic engine failure"}
+        {"symbol": "AAPL", "strategy": "rsi_meanrev", "error": "ValueError: synthetic strategy failure"}
     ]
-    assert any("rsi_meanrev" in w and "synthetic engine failure" in w for w in res.warnings)
+    assert any("rsi_meanrev" in w and "synthetic strategy failure" in w for w in res.warnings)
+
+
+def test_raising_strategy_on_real_path_is_never_an_ok_flat_cell(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The only strategy raises on every bar. Without the guard the framework holds flat
+    # and reports status ok with trades 0; the matrix must instead say it failed.
+    monkeypatch.setitem(STRATEGY_REGISTRY, "buy_and_hold", _raising_strategy)
+    fn = BMTXFunction(FunctionDeps(yfinance=_Yf(frames={"AAPL": _ohlcv()})))
+    res = _run(fn.execute(symbols=["AAPL"], strategies=["buy_and_hold"], live_backtest=True))
+
+    # Every cell failed: an empty run with the named cause, never status ok.
+    assert res.data["status"] == "empty"
+    assert res.data["cells"] == []
+    assert res.data["symbols"] == []
+    assert "synthetic strategy failure" in res.data["reason"]
+    assert any("synthetic strategy failure" in w for w in res.warnings)
 
 
 def test_all_symbols_failing_every_strategy_is_provider_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

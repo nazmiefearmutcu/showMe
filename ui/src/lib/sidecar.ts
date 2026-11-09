@@ -4,7 +4,7 @@
  * Outside Tauri (vite preview / browser dev) we fall back to localhost:8765
  * so designers can still wire components to a hand-started ShowMe instance.
  */
-import { recordPaneContract } from "./pane-contract-store";
+import { observationAsOf, recordPaneContract } from "./pane-contract-store";
 import { useAppStore } from "./store";
 import { invoke, isInTauri, listen } from "./tauri";
 
@@ -484,7 +484,8 @@ function _stampFnContract(path: string, payload: unknown): void {
     _str(r.data_mode) ||
     _str(metadata.data_mode) ||
     legacyMode;
-  const asOf = _str(data.as_of) || _str(r.as_of) || _str(r.fetched_at);
+  // ASOF-2: the observation time only; fetched_at (server answer time) is never a stamp.
+  const asOf = observationAsOf(r, data);
   const latency =
     _num(r.elapsed_ms) ?? _num(r.latency_ms) ?? _num(data.latency_ms);
   const symbolMatch = /[?&]symbol=([^&]+)/.exec(path);

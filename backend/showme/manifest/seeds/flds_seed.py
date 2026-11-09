@@ -153,7 +153,7 @@ def flds() -> FunctionManifest:
             "rows[].availability": FieldDef(description="bql_live_ohlcv when BQL live mode returns it; reference_only when no provider returns it.", source="catalog"),
             "rows[].category": FieldDef(description="market/valuation/statement/technical/option/risk/fixed_income/general.", source="catalog"),
             "rows[].description": FieldDef(description="Plain-language meaning of the field.", source="catalog"),
-            "rows[].example": FieldDef(description="One concrete place the field can be used, naming a function in the index.", source="catalog"),
+            "rows[].example": FieldDef(description="A concrete use where one exists (BQL get for OHLCV, MLSIG feature names for technical names). Reference-only names get a note that no function returns them, never a screener example.", source="catalog"),
             "rows[].bql_get": FieldDef(description="True only when BQL get() returns this field (live mode: OHLCV only).", source="catalog"),
             "summary.matched": FieldDef(unit="count", description="Total matches before limit.", source="flds"),
             "summary.shown": FieldDef(unit="count", description="Rows returned after limit.", source="flds"),

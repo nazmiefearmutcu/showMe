@@ -37,6 +37,7 @@ import {
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
+import { safeHref } from "@/lib/safe-href";
 
 interface TSARHit {
   id?: number;
@@ -297,9 +298,9 @@ export function TSARPane({ code, symbol }: FunctionPaneProps) {
         header: "Source",
         width: 160,
         render: (r) =>
-          r.url ? (
+          safeHref(r.url) ? (
             <a
-              href={r.url}
+              href={safeHref(r.url)}
               target="_blank"
               rel="noreferrer"
               style={linkStyle}

@@ -302,17 +302,22 @@ class EXECFunction(BaseFunction):
                     metadata={"error": True, "status": "unsupported_algo"},
                 )
             try:
+                # EXEC#6: NaN, inf and zero/negative quantities must never be
+                # stored as the parent quantity (every pace figure divides by it).
+                target_qty = float(params["target_qty"])
+                if not math.isfinite(target_qty) or target_qty <= 0:
+                    raise ValueError("target_qty must be a finite number greater than 0")
                 pid = exec_monitor.open_parent(
                     parent_id=params["parent_id"],
                     symbol=params["symbol"], side=params["side"],
-                    target_qty=float(params["target_qty"]),
+                    target_qty=target_qty,
                     arrival_price=params.get("arrival_price"),
                     algo=algo,
                     horizon_seconds=int(params.get("horizon_seconds", 600)),
                     metadata=params.get("metadata") or {},
                 )
             except (TypeError, ValueError) as exc:
-                return _error_result(self.code, action, f"invalid field value: {exc}")
+                return _error_result(self.code, action, f"invalid field value: {str(exc) or type(exc).__name__}")
             return FunctionResult(code=self.code, instrument=None,
                                   data={"id": pid, "parent_id": params["parent_id"]})
         if action == "slice":
@@ -339,7 +344,7 @@ class EXECFunction(BaseFunction):
                     vwap_running=params.get("vwap_running"),
                 )
             except (TypeError, ValueError) as exc:
-                return _error_result(self.code, action, f"invalid field value: {exc}")
+                return _error_result(self.code, action, f"invalid field value: {str(exc) or type(exc).__name__}")
             return FunctionResult(code=self.code, instrument=None,
                                   data={"slice_id": sid})
         if action == "close":
@@ -464,7 +469,7 @@ class EXECFunction(BaseFunction):
             horizon_s = int(params.get("horizon_seconds") or 600)
             slices = int(params.get("slices") or 12)
         except (TypeError, ValueError) as exc:
-            return _error_result(self.code, "plan", f"invalid field value: {exc}")
+            return _error_result(self.code, "plan", f"invalid field value: {str(exc) or type(exc).__name__}")
         # EXEC#6: no silent 100-unit schedule when the parent quantity is missing.
         # NaN and inf pass a plain ``<= 0`` test, so require a finite positive value.
         if target_qty is None or not math.isfinite(target_qty) or target_qty <= 0:
@@ -541,7 +546,7 @@ class EXECFunction(BaseFunction):
                     "action": "plan",
                     "symbol": symbol,
                     "algo": algo,
-                    "reason": f"live intraday feed for {symbol} unavailable: {exc}",
+                    "reason": f"live intraday feed for {symbol} unavailable: {str(exc) or type(exc).__name__}",
                     "rows": [],
                     "orders": [],
                     "n": 0,

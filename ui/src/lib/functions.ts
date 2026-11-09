@@ -4,7 +4,7 @@
  * Round 14 keeps this HTTP-based; Round 18 will swap the underlying
  * transport for a proper Tauri command without touching the call sites.
  */
-import { recordPaneContract } from "./pane-contract-store";
+import { observationAsOf, recordPaneContract } from "./pane-contract-store";
 import { loadSidecarAuthToken, waitForSidecarReady } from "./sidecar";
 import { useAppStore } from "./store";
 
@@ -258,10 +258,8 @@ function _stampContract<T>(
     _str(r.data_mode) ||
     _str(metadata.data_mode) ||
     _legacyDataState(r, data, metadata);
-  const asOf =
-    _str(data.as_of) ||
-    _str(r.as_of) ||
-    _str(r.fetched_at);
+  // ASOF-2: the stamp is the observation time only; fetched_at (server answer time) is never used.
+  const asOf = observationAsOf(r, data);
   const latency =
     _num(r.elapsed_ms) ?? _num(r.latency_ms) ?? _num(data.latency_ms);
   recordPaneContract(code, symbol, {

@@ -421,8 +421,8 @@ class AIMFunction(BaseFunction):
             try:
                 open_orders = await broker.get_open_orders()
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"{name}.get_open_orders: {exc}")
-                warnings.append(f"{name} unavailable: {exc}")
+                provider_errors.append(f"{name}.get_open_orders: {str(exc) or type(exc).__name__}")
+                warnings.append(f"{name} unavailable: {str(exc) or type(exc).__name__}")
                 continue
             brokers_online.append(name)
             for raw in (open_orders or []):
@@ -463,8 +463,8 @@ class AIMFunction(BaseFunction):
             for raw in raw_history:
                 history_rows.append(self._normalise_order("history", raw, from_history=True))
         except Exception as exc:  # noqa: BLE001
-            provider_errors.append(f"order_history.list_orders: {exc}")
-            warnings.append(f"order history unavailable: {exc}")
+            provider_errors.append(f"order_history.list_orders: {str(exc) or type(exc).__name__}")
+            warnings.append(f"order history unavailable: {str(exc) or type(exc).__name__}")
         # A history row that a live adapter already lists is the same order:
         # keep the live row only, so it is neither duplicated nor double counted.
         # AIM#3-RQ: one order can be stored under an adapter's .name AND its config
@@ -646,6 +646,30 @@ class AIMFunction(BaseFunction):
         )
 
 
+# TSOX#2: US Treasury yield quotes (mirrors server.BOND_SYMBOLS). These are yields,
+# not prices, so a price-unit limit cannot be checked against them.
+_YIELD_QUOTED_SYMBOLS = frozenset({
+    "US1M", "US3M", "US6M", "US1Y", "US2Y", "US3Y", "US5Y", "US7Y", "US10Y", "US20Y", "US30Y",
+})
+
+
+def _is_yield_quoted(symbol: str) -> bool:
+    return str(symbol or "").upper().replace("-", "") in _YIELD_QUOTED_SYMBOLS
+
+
+def _tsox_ticket_type(params: dict[str, Any]) -> str:
+    """The order type the TSOX ticket uses: type, then order_type, then MARKET.
+
+    A blank value counts as absent here (TSOX#2), so a blank "type" cannot hide
+    an order_type=LIMIT from the yield guard.
+    """
+    for key in ("type", "order_type"):
+        value = params.get(key)
+        if value not in (None, ""):
+            return str(value).strip().upper()
+    return "MARKET"
+
+
 @FunctionRegistry.register
 class TSOXFunction(EMSXFunction):
     """TSOX — Treasury / Bond order ticket."""
@@ -655,11 +679,39 @@ class TSOXFunction(EMSXFunction):
     asset_classes = (AssetClass.BOND, AssetClass.DERIVATIVE)
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        yield_quoted = instrument is not None and _is_yield_quoted(instrument.symbol)
+        ticket_type = _tsox_ticket_type(params)
+        if yield_quoted and ticket_type == "LIMIT":
+            # TSOX#2: a yield quote cannot take a price-unit limit. There is no
+            # yield-to-price conversion here (it needs the bond's terms), so the
+            # ticket says so instead of previewing the price as valid.
+            return _ticket_input_error_result(
+                self.code, instrument,
+                {
+                    "field": "price",
+                    "reason": (
+                        f"{instrument.symbol} is quoted as a yield, not a price. A limit price in price "
+                        "units cannot be checked against it and no yield-to-price conversion is "
+                        "performed. Trade a price-quoted instrument (for example ZN=F) or source the bond's terms."
+                    ),
+                },
+                side=str(params.get("side", "BUY")).upper(),
+                quantity=_float_param(params.get("quantity")),
+                order_type="LIMIT",
+                tif=str(params.get("tif", params.get("time_in_force", "GTC"))).upper(),
+            )
         result = await super().execute(instrument=instrument, **params)
         if isinstance(result.data, dict):
             # WB1-G16 TSOX#3: bond-ticket analytics are not in the ticket inputs,
             # so say so explicitly instead of leaving them silently absent.
             result.data["analytics"] = _tsox_analytics_not_computed()
+        # The MARKET note belongs to a previewed MARKET ticket only, not to an input_error.
+        errored = isinstance(result.data, dict) and result.data.get("status") == "input_error"
+        if yield_quoted and ticket_type == "MARKET" and not errored:
+            result.warnings.append(
+                f"{instrument.symbol} is quoted as a yield; a MARKET ticket has no price and no "
+                "yield-to-price conversion is performed."
+            )
         return result
 
 

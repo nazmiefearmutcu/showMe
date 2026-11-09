@@ -40,7 +40,9 @@ def time_to_expiry_years(expiry: Any, now: datetime) -> float | None:
 
     Every expiry (today or later) runs to the 16:00 America/New_York equity
     option close, so T is consistent across expiries and the same-day branch
-    is not a special case. Returns None when ``expiry`` is not a date.
+    is not a special case. Returns None when ``expiry`` is not a date, or when
+    its close has already passed: an expired contract has no term to price, so
+    it is excluded rather than given a substitute T (wc3-g15, GEX#4).
     """
     try:
         day = datetime.fromisoformat(str(expiry)[:10]).date()
@@ -48,7 +50,9 @@ def time_to_expiry_years(expiry: Any, now: datetime) -> float | None:
         return None
     close_local = datetime(day.year, day.month, day.day, 16, 0, tzinfo=_EXPIRY_TZ)
     seconds = (close_local.astimezone(timezone.utc) - now).total_seconds()
-    return max(seconds / (365 * 86400), 1e-9)
+    if seconds <= 0:
+        return None
+    return seconds / (365 * 86400)
 
 
 def bs_gamma(spot: float, strike: float, vol: float, T: float, r: float = 0.04,

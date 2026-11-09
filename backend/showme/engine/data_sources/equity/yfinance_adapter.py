@@ -121,8 +121,9 @@ def _splits_on_bars(index: pd.DatetimeIndex, events: Any) -> pd.Series:
     """Place chart split events as a per-bar ratio (4:1 -> 4.0, 1:10 -> 0.1).
 
     Same bar rule as the dividends. Bars with no split hold 0.0, matching the
-    ``splits`` column the yfinance ticker path returns. TRA uses the ratio to
-    split-adjust closes, so a split is not read as a price drop (TRA#2).
+    ``splits`` column the yfinance ticker path returns. The source already
+    split-adjusts closes and dividends; TRA reads the ratio only to count
+    split events and name unadjusted moves (TRA#2).
     """
     out = pd.Series(0.0, index=index, dtype=float)
     if len(index) == 0 or not isinstance(events, dict):
@@ -561,7 +562,7 @@ class YFinanceAdapter(BaseDataSource):
         # dividends column so callers do not read a missing series as zero.
         frame["dividends"] = _dividends_on_bars(frame.index, result.get("events"))
         # Split events are kept as a per-bar ratio, like the ticker path's
-        # "splits" column, so TRA can split-adjust prices (TRA#2).
+        # "splits" column; closes are already split-adjusted by the source (TRA#2).
         frame["splits"] = _splits_on_bars(frame.index, result.get("events"))
         return frame
 

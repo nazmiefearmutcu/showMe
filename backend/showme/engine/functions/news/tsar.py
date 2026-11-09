@@ -39,6 +39,17 @@ _MGMT_HINTS = (
 # A "SPEAKER: utterance" line. Capture group 1 = speaker label, 2 = text.
 _SPEAKER_LINE = re.compile(r"^\s*([A-Z][\w .,'&/-]{0,60}?)\s*[:\-—]\s+(.*\S.*)$")
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+# TSAR#1-RQ: a speaker label never spans a sentence end. "Strong quarter
+# overall. Management Discussion: ..." is prose, not a speaker named
+# "Strong quarter overall. Management Discussion".
+_LABEL_SENTENCE_END = re.compile(r"[.!?]\s")
+
+
+def _speaker_match(line: str) -> "re.Match[str] | None":
+    m = _SPEAKER_LINE.match(line)
+    if m and _LABEL_SENTENCE_END.search(m.group(1)):
+        return None
+    return m
 # TSAR#1: a speaker label that follows a sentence end inside the same block
 # ("... headwinds. Kevan Parekh, CFO: We expect ...") starts a new utterance.
 # A candidate label is accepted only when it is a "Name, Role" label (a name of
@@ -162,7 +173,9 @@ class TSARFunction(BaseFunction):
             if finbert_warn:
                 warnings.append(finbert_warn)
             else:
-                sources.append("finbert")
+                # wc3-g15 (TSAR#2 review): a FinBERT reading of pasted text is a model
+                # output; the bare "finbert" name classifies as live data.
+                sources.append("finbert_model")
         else:
             finbert_scores = [None] * len(texts)
 
@@ -172,7 +185,9 @@ class TSARFunction(BaseFunction):
             if xsen_warn:
                 warnings.append(xsen_warn)
             else:
-                sources.append("xsen_roberta")
+                # wc3-g15 (TSAR#2): the "_model" suffix makes the source classify as a
+                # model reading; a bare "xsen_roberta" name is read as live data.
+                sources.append("xsen_roberta_model")
 
         # Build per-(utterance, model) rows. Every row carries a model id.
         utterances: list[dict[str, Any]] = []
@@ -247,7 +262,9 @@ class TSARFunction(BaseFunction):
         ]
 
         as_of = datetime.now(timezone.utc).isoformat()
-        data_mode = "live_official" if "finbert" in sources else "modeled"
+        # wc3-g15 (TSAR#2 review): every reading here is model output over transcript
+        # text, and a model is not live, so the data_mode is always "modeled".
+        data_mode = "modeled"
         cards = {
             "dominant_tone": dominant_tone,
             "net_score": round(net_score, 4),
@@ -639,7 +656,7 @@ class TSARFunction(BaseFunction):
                     if content:
                         ingest_sources.append("whisper")
                 except Exception as exc:  # noqa: BLE001
-                    ingest_warnings.append(f"transcribe_url: {exc}")
+                    ingest_warnings.append(f"transcribe_url: {str(exc) or type(exc).__name__}")
             if not content and params.get("audio_path"):
                 try:
                     from showme.engine.services.transcription import transcribe
@@ -656,7 +673,7 @@ class TSARFunction(BaseFunction):
                     if content:
                         ingest_sources.append("whisper")
                 except Exception as exc:  # noqa: BLE001
-                    ingest_warnings.append(f"transcribe: {exc}")
+                    ingest_warnings.append(f"transcribe: {str(exc) or type(exc).__name__}")
         sentiment = params.get("sentiment")
         if sentiment is None and content:
             try:
@@ -665,7 +682,7 @@ class TSARFunction(BaseFunction):
                 analyzer = await asyncio.to_thread(FinBertAnalyzer.instance)
                 result = await analyzer.label(content[:512])
                 sentiment = float(result.get("score_signed") or 0.0)
-                ingest_sources.append("finbert")
+                ingest_sources.append("finbert_model")
             except Exception as exc:  # noqa: BLE001
                 ingest_warnings.append(f"finbert: {exc.__class__.__name__}")
         tid = archive.upsert(
@@ -754,7 +771,7 @@ def _segment(text: str) -> list[dict[str, Any]]:
 
     known_speakers = {
         m.group(1).strip()
-        for m in (_SPEAKER_LINE.match(ln) for ln in lines)
+        for m in (_speaker_match(ln) for ln in lines)
         if m
     }
     pieces = [
@@ -769,7 +786,7 @@ def _segment(text: str) -> list[dict[str, Any]]:
         ):
             section = "qa"
             saw_qa = True
-        m = _SPEAKER_LINE.match(ln)
+        m = _speaker_match(ln)
         if m:
             matched_any = True
             current_speaker = m.group(1).strip()
@@ -793,24 +810,29 @@ def _segment(text: str) -> list[dict[str, Any]]:
     ]
 
 
-# TSAR#1 follow-up: a bare two-to-four word name ("Tim Cook: Thanks everyone.")
-# is a speaker when the turn starts with a word, not a figure, and no word of
-# the label is a common metric or section head. Single-word prose labels
-# ("Guidance:", "Note:") are still not speakers.
-_NAME_WORD = re.compile(r"^[A-Z][A-Za-z'.-]*$")
-_TURN_START = re.compile(r"""^["'(“]?[A-Z]""")
-_PROSE_HEAD_WORDS = frozenset({
-    "adjusted", "backlog", "bookings", "buyback", "capex", "cash", "costs",
-    "dividend", "earnings", "eps", "expenses", "flow", "forward", "free", "growth",
-    "guidance", "gross", "harbor", "highlights", "income", "key", "looking", "margin",
-    "margins", "metrics", "net", "note", "notes", "operating", "orders", "outlook",
-    "pricing", "quarter", "results", "revenue", "safe", "sales", "segment", "statement",
-    "statements", "summary", "takeaways", "total", "disclaimer", "question", "answer",
-    "demand", "fiscal",
+# TSAR#1 (wc3-g15 follow-up): an inline label is a speaker when it is a speaker
+# already seen opening a line in this transcript, or a "Name, Role" label (a name
+# of at least two words before the comma). A bare two-to-four word Title Case run
+# is a speaker only when its turn opens with a speech word ("Thanks everyone.",
+# "Our margins ...") and the run holds no section or product head word. A bare
+# run whose body is a plain noun phrase ("Apple Watch: Sales rose ...") stays in
+# the sentence it sits in. This is a heuristic on text alone: a product name with
+# a speech-opening body would still split (see the wc3-g15 residual).
+_BARE_NAME_HEAD_WORDS = frozenset({
+    "discussion", "overview", "analysis", "report", "section", "products", "product",
+    "services", "service", "segment", "division", "business", "company", "group",
+    "update", "introduction", "appendix", "presentation", "disclosure", "watch",
+    "management", "reference", "summary", "highlights", "outlook", "guidance",
 })
+_SPEECH_OPENER = re.compile(
+    r"""^["'(“]?(?:thanks?|thank\s+you|good|welcome|hello|hi|yes|great|sure|okay|ok|"""
+    r"""i|i'm|i’m|i'd|i’d|i'll|we|we're|we’re|our|let|let's|let’s|turning|"""
+    r"""first|so\s+thank)\b""",
+    re.IGNORECASE,
+)
 
 
-def _is_speaker_label(label: str, known_speakers: set[str], turn_text: str = "") -> bool:
+def _is_speaker_label(label: str, known_speakers: set[str], body: str = "") -> bool:
     """True when an inline candidate label is a real speaker, not prose."""
     if label in known_speakers:
         return True
@@ -822,9 +844,12 @@ def _is_speaker_label(label: str, known_speakers: set[str], turn_text: str = "")
         return False
     if not all(_NAME_WORD.match(w) for w in words):
         return False
-    if any(w.lower() in _PROSE_HEAD_WORDS for w in words):
+    if any(w.lower() in _BARE_NAME_HEAD_WORDS for w in words):
         return False
-    return bool(_TURN_START.match(turn_text))
+    return bool(_SPEECH_OPENER.match(body.lstrip()))
+
+
+_NAME_WORD = re.compile(r"^[A-Z][A-Za-z'.-]*$")
 
 
 def _split_inline_speakers(line: str, known_speakers: set[str]) -> list[str]:
@@ -832,7 +857,9 @@ def _split_inline_speakers(line: str, known_speakers: set[str]) -> list[str]:
     cuts = [
         m.start()
         for m in _INLINE_LABEL.finditer(line)
-        if _is_speaker_label(m.group("label"), known_speakers, line[m.end():])
+        if _is_speaker_label(
+            m.group("label"), known_speakers, line[m.end("label"):].lstrip(" \t:")
+        )
     ]
     if not cuts:
         stripped = line.strip()

@@ -1351,7 +1351,6 @@
     },
     "TRA": {
       "keys": [
-        "reference",
         "years"
       ],
       "conditional": [],

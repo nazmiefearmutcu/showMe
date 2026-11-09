@@ -117,16 +117,18 @@ export function recordPaneContract(
  * and PaneHealth chip render.
  *
  * Tier semantics (frozen, shared with PaneHealth):
- *   - stale    : stamp older than PANE_STALE_AFTER_MS (highest precedence —
- *                age is the strongest evidence that data can't be trusted)
- *   - degraded : warnings present, OR the declared mode is not a live tier
- *                (synthetic/reference/modeled/cached/unavailable/unknown — an
- *                undeclared mode can never claim "live")
- *   - live     : live_official / live_exchange, fresh, no warnings
+ *   - degraded : no parseable observation date, OR a bare calendar date (unknown
+ *                cadence, never judged against the intraday window), OR warnings,
+ *                OR the declared mode is not a live tier (synthetic/reference/
+ *                modeled/cached/unavailable/unknown — an undeclared mode can
+ *                never claim "live")
+ *   - stale    : timed observation older than PANE_STALE_AFTER_MS (outranks
+ *                warnings and a live mode)
+ *   - live     : live_official / live_exchange, timed and fresh, no warnings
  *
- * The stamp is the payload's own ISO `asOf` when parseable, falling back to
- * the client `receivedAt` (a pane whose fetches stopped ages out even when
- * the provider never stamped the payload).
+ * The stamp is the payload's own observation time only. The client `receivedAt`
+ * is never a data time: it orders the cache and feeds lastUpdatedAt, but it does
+ * not make a contract look fresh or stale.
  * ────────────────────────────────────────────────────────────────────────── */
 
 /** Canonical shape alias for component props (frozen cross-lane interface). */
@@ -157,23 +159,56 @@ const LIVE_DATA_MODES: ReadonlySet<string> = new Set<string>([
   "live_exchange",
 ]);
 
-/** Resolve the timestamp a contract is judged by (asOf, else receivedAt). */
-export function paneStampedAt(snap: PaneContractSnapshot): number {
-  if (typeof snap.asOf === "string") {
-    const parsed = Date.parse(snap.asOf);
-    if (Number.isFinite(parsed)) return parsed;
+/**
+ * The observation time a response declares, for the desk freshness stamp (ASOF-2).
+ *
+ * Order: the function's own `data.as_of`, the top-level `as_of`, then the backend envelope
+ * `asOf` (the observation date, null when the payload declares none). `fetched_at` is the
+ * server's answer time, never an observation time, so it is not read here; with nothing
+ * declared the stamp is left empty and the desk judges the contract by receipt time.
+ */
+export function observationAsOf(
+  r: Record<string, unknown>,
+  data: Record<string, unknown>,
+): string | undefined {
+  for (const value of [data.as_of, r.as_of, r.asOf]) {
+    if (typeof value === "string" && value.trim() !== "") return value;
   }
-  return snap.receivedAt;
+  return undefined;
 }
 
-/** Clamped age of a contract in ms (never negative — clock skew reads 0). */
-export function paneAgeMs(snap: PaneContractSnapshot, now: number): number {
-  return Math.max(0, now - paneStampedAt(snap));
+const DATE_ONLY_ASOF = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * True when the declared observation is a bare calendar date (a daily or monthly print).
+ * Its cadence is unknown, so it is never judged against the intraday staleness window.
+ */
+export function paneAsOfIsDateOnly(snap: PaneContractSnapshot): boolean {
+  return typeof snap.asOf === "string" && DATE_ONLY_ASOF.test(snap.asOf.trim());
+}
+
+/**
+ * The observation time a contract declares (ASOF-2 follow-up), or null when it declares
+ * none parseable. Receipt time is never a stamp: an undated payload has no data age.
+ */
+export function paneStampedAt(snap: PaneContractSnapshot): number | null {
+  if (typeof snap.asOf !== "string") return null;
+  const parsed = Date.parse(snap.asOf);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Clamped age of a contract's observation in ms (never negative); null when undated. */
+export function paneAgeMs(snap: PaneContractSnapshot, now: number): number | null {
+  const stamped = paneStampedAt(snap);
+  return stamped == null ? null : Math.max(0, now - stamped);
 }
 
 /** Classify a single contract into exactly one tier. */
 export function paneHealthTier(snap: PaneContractSnapshot, now: number): PaneHealthTier {
-  if (paneAgeMs(snap, now) > PANE_STALE_AFTER_MS) return "stale";
+  // Undated, or a bare date with unknown cadence: the desk cannot verify freshness, so it
+  // is never live and never judged stale by a window that does not fit it.
+  if (paneStampedAt(snap) == null || paneAsOfIsDateOnly(snap)) return "degraded";
+  if ((paneAgeMs(snap, now) ?? 0) > PANE_STALE_AFTER_MS) return "stale";
   if ((snap.warnings?.length ?? 0) > 0) return "degraded";
   const mode = typeof snap.dataMode === "string" ? snap.dataMode : "";
   return LIVE_DATA_MODES.has(mode) ? "live" : "degraded";

@@ -399,7 +399,7 @@ class CRPRFunction(BaseFunction):
                     "next_actions": ["Retry when SEC EDGAR (data.sec.gov) is reachable."],
                 },
                 sources=["sec_edgar"],
-                warnings=[f"SEC EDGAR unreachable: {exc}"],
+                warnings=[f"SEC EDGAR unreachable: {str(exc) or type(exc).__name__}"],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 
@@ -794,7 +794,7 @@ class DDISFunction(BaseFunction):
                     "next_actions": ["Retry when SEC EDGAR (data.sec.gov) is reachable."],
                 },
                 sources=["sec_edgar"],
-                warnings=[f"SEC EDGAR unreachable: {exc}"],
+                warnings=[f"SEC EDGAR unreachable: {str(exc) or type(exc).__name__}"],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 

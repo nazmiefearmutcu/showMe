@@ -624,7 +624,9 @@ class ICXFunction(BaseFunction):
             }
         else:
             members = full_members
-            sector_source = "showme_security_master"
+            # Local static membership data: labelled as reference, like the
+            # screeners that read the same master (never "live" on its own).
+            sector_source = "showme_security_master_reference"
             sector_coverage = None
 
         # Best-effort live quote snapshot. Constituent rows are real regardless;

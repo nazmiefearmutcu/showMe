@@ -566,7 +566,7 @@ async def _execute_showme_function_on_worker(code: str, params: dict[str, Any]) 
         factory._showme_worker_thread = threading.get_ident()
     except Exception as exc:  # noqa: BLE001
         LOG.exception("get_factory failed")
-        raise HTTPException(status_code=500, detail=f"factory: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"factory: {str(exc) or type(exc).__name__}") from exc
     upper_code = code.upper()
     local_params = dict(params)
     symbol = local_params.pop("symbol", None)
@@ -758,7 +758,7 @@ async def _execute_price_history_alias(
                 metadata={"alias": "price_history", **history.metadata},
             )
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"longest_history: {exc}")
+        warnings.append(f"longest_history: {str(exc) or type(exc).__name__}")
     for name, adapter in adapter_candidates:
         if adapter is None:
             continue
@@ -776,7 +776,7 @@ async def _execute_price_history_alias(
                 source_name = name
                 break
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"{name}: {exc}")
+            warnings.append(f"{name}: {str(exc) or type(exc).__name__}")
     if not rows:
         warnings.append("no price history")
     FunctionResult = registry_mod.FunctionResult
@@ -2548,7 +2548,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         port, reserved_sock = _pick_port(args.port, host=args.host)
     except PortInUseError as exc:
-        print(f"showme.server: error: {exc}", file=sys.stderr, flush=True)
+        print(f"showme.server: error: {str(exc) or type(exc).__name__}", file=sys.stderr, flush=True)
         return 2
     app_home = prepare_writable_cwd() or ensure_app_home_env()
     if app_home:

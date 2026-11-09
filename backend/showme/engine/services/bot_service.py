@@ -57,7 +57,7 @@ class BotService:
                 )
                 logger.info("Data pipeline (WS cache) enabled")
             except Exception as e:
-                logger.error(f"Data pipeline init failed, falling back to REST-only: {e}")
+                logger.error(f"Data pipeline init failed, falling back to REST-only: {str(e) or type(e).__name__}")
                 self.market_cache = None
                 self.market_store = None
 
@@ -210,7 +210,7 @@ class BotService:
         try:
             from showme.engine.data.ws_manager import WSManager
         except Exception as e:
-            logger.error(f"Cannot import WSManager: {e}")
+            logger.error(f"Cannot import WSManager: {str(e) or type(e).__name__}")
             return
 
         # Determine which symbols to subscribe to
@@ -241,7 +241,7 @@ class BotService:
                 asyncio.set_event_loop(self._ws_loop)
                 self._ws_loop.run_until_complete(self.ws_manager.run())
             except Exception as e:
-                logger.error(f"WS thread crashed: {e}")
+                logger.error(f"WS thread crashed: {str(e) or type(e).__name__}")
 
         self._ws_thread = threading.Thread(target=_run, daemon=True, name="ws-manager")
         self._ws_thread.start()
@@ -296,7 +296,7 @@ class BotService:
                 self.running = False
                 break
             except Exception as e:
-                logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
+                logger.error(f"Unexpected error in main loop: {str(e) or type(e).__name__}", exc_info=True)
                 time.sleep(5)
                 continue
 
@@ -378,7 +378,7 @@ class BotService:
             except Exception as e:
                 logger.error(
                     f"Config reload: BinanceClient re-init for "
-                    f"{new_mode}/{new_market_type} failed ({e}) — reverting to "
+                    f"{new_mode}/{new_market_type} failed ({str(e) or type(e).__name__}) — reverting to "
                     f"{old_mode}/{old_market_type}.",
                     exc_info=True,
                 )
@@ -603,7 +603,7 @@ class BotService:
             except Exception as e:
                 # Unreadable/locked file may be transient (mid-write) — retry
                 # next cycle instead of destroying the user's close request.
-                logger.warning(f"Close command {cmd_file.name} unread ({e}) — kept for retry")
+                logger.warning(f"Close command {cmd_file.name} unread ({str(e) or type(e).__name__}) — kept for retry")
                 continue
             sym = data.get("symbol", "")
             if not sym:
@@ -645,7 +645,7 @@ class BotService:
                 exec_result = self.execution_engine.execute(decision)
             except Exception as e:
                 logger.warning(
-                    f"Close command for {sym} raised {e} — command kept for retry"
+                    f"Close command for {sym} raised {str(e) or type(e).__name__} — command kept for retry"
                 )
                 continue
             if exec_result.get("executed"):
@@ -696,7 +696,7 @@ class BotService:
                     pos.warning = exit_reason
                     self._auto_close_non_active(sym, pos, price, exit_reason)
             except Exception as e:
-                logger.warning(f"Failed to update position {sym}: {e}")
+                logger.warning(f"Failed to update position {sym}: {str(e) or type(e).__name__}")
 
     def _auto_close_non_active(self, sym: str, pos: Any, price: float, exit_reason: str) -> None:
         """F1 (HIGH): SL/TP/trailing hit on a NON-ACTIVE position → actually close.
@@ -751,7 +751,7 @@ class BotService:
                 )
         except Exception as e:
             logger.error(
-                f"Auto-close of non-active position {sym} failed ({exit_reason}): {e} — "
+                f"Auto-close of non-active position {sym} failed ({exit_reason}): {str(e) or type(e).__name__} — "
                 f"manual close required.",
                 exc_info=True,
             )
@@ -823,7 +823,7 @@ class BotService:
                 tmp.write_text(json.dumps(data, default=str))
                 tmp.replace(out)
             except Exception as e:
-                logger.warning(f"Active coin signals update failed: {e}")
+                logger.warning(f"Active coin signals update failed: {str(e) or type(e).__name__}")
 
         self._active_signals_thread = threading.Thread(target=_worker, daemon=True)
         self._active_signals_thread.start()
@@ -1135,7 +1135,7 @@ class BotService:
                     if done == total_tfs:
                         self._process_multi_scan_results(symbol_path)
                 except Exception as e:
-                    logger.error(f"Auto-scan {tf} failed: {e}", exc_info=True)
+                    logger.error(f"Auto-scan {tf} failed: {str(e) or type(e).__name__}", exc_info=True)
                     with self._scan_lock:
                         if tf not in self._multi_scan_results:
                             self._multi_scan_results[tf] = []
@@ -1182,7 +1182,7 @@ class BotService:
                 if i < len(_phase2_tfs) - 1:
                     time.sleep(1)
         except Exception as e:
-            logger.error(f"Auto-scan failed: {e}", exc_info=True)
+            logger.error(f"Auto-scan failed: {str(e) or type(e).__name__}", exc_info=True)
             self._scanning_active = False
 
     def _process_multi_scan_results(self, symbol_path: Path) -> None:
@@ -1388,7 +1388,7 @@ class BotService:
                 tmp.replace(scan_file)
                 logger.info(f"Multi-TF results saved to {scan_file}")
             except Exception as e:
-                logger.warning(f"Failed to save multi-scan results: {e}")
+                logger.warning(f"Failed to save multi-scan results: {str(e) or type(e).__name__}")
 
             # Mark progress as complete with full scan data + cumulative table
             self._write_auto_scan_progress({
@@ -1410,7 +1410,7 @@ class BotService:
             })
 
         except Exception as e:
-            logger.error(f"Multi-scan processing failed: {e}", exc_info=True)
+            logger.error(f"Multi-scan processing failed: {str(e) or type(e).__name__}", exc_info=True)
         finally:
             self._last_auto_scan_time = time.time()
             self._scanning_active = False
@@ -1440,7 +1440,7 @@ class BotService:
             tmp.write_text(json.dumps(ds, indent=2, default=str))
             tmp.replace(status_path)
         except Exception as e:
-            logger.warning(f"Failed to patch dashboard_status.json: {e}")
+            logger.warning(f"Failed to patch dashboard_status.json: {str(e) or type(e).__name__}")
 
     def _fetch_all_position_prices(self) -> dict[str, float]:
         """Fetch current prices for all symbols with open positions.
@@ -1480,7 +1480,7 @@ class BotService:
                 data_pipeline_health=self._collect_pipeline_health(),
             )
         except Exception as e:
-            logger.error(f"Failed to export dashboard status: {e}")
+            logger.error(f"Failed to export dashboard status: {str(e) or type(e).__name__}")
 
     def _collect_pipeline_health(self) -> dict[str, Any]:
         """Collect WS/cache/store metrics for the dashboard."""
@@ -1519,17 +1519,17 @@ class BotService:
                 )
                 fut.result(timeout=5)
             except Exception as e:
-                logger.warning(f"WS manager stop failed during shutdown: {e}")
+                logger.warning(f"WS manager stop failed during shutdown: {str(e) or type(e).__name__}")
         if self.market_store is not None:
             try:
                 self.market_store.close()
             except Exception as e:
-                logger.warning(f"Market store close failed during shutdown: {e}")
+                logger.warning(f"Market store close failed during shutdown: {str(e) or type(e).__name__}")
         self.state_store.save()
         try:
             self.status_exporter.export_stopped(self.config, self.state_store.state)
         except Exception as e:
-            logger.error(f"Failed to export shutdown status: {e}")
+            logger.error(f"Failed to export shutdown status: {str(e) or type(e).__name__}")
         logger.info("State saved. Bot stopped.")
 
     def stop(self) -> None:

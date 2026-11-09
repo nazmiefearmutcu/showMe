@@ -139,7 +139,9 @@ async def test_explicit_inputs_still_value_normally():
         growth_terminal=0.02, years=3,
     )
     assert dcf.data["status"] == "ok"
-    assert dcf.data["wacc"] == pytest.approx(0.10)
+    # DCFS#2: the caller rate is the discount rate applied to FCFE; "wacc" is the
+    # WACC model reference value (null when the caller set the rate).
+    assert dcf.data["discount_rate"] == pytest.approx(0.10)
     ddm = await DDMFunction(deps).execute(
         _instrument("JPM"), dividend_ttm=2.0, required_return=0.10, growth_rate=0.03
     )

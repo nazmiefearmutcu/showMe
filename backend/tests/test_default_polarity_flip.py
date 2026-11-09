@@ -101,11 +101,12 @@ def test_chgs_default_defers_to_live_tech():
 def test_tra_default_is_live_and_failure_is_labelled():
     from showme.engine.functions.portfolio._more import TRAFunction
     result = _run(TRAFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.sources == ["total_return_model"]
-    assert result.metadata.get("fallback") is True
+    # Data policy: no template fallback any more; a failed feed is an explicit
+    # provider_unavailable with no sources and no figures.
+    assert result.sources == []
+    assert result.data["status"] == "provider_unavailable"
     assert result.metadata.get("live") is False
-    assert result.warnings, "template fallback must carry an explicit warning"
-    assert "template" in " ".join(result.warnings).lower()
+    assert result.warnings, "the failure must carry an explicit warning"
 
 
 def test_mars_default_is_live_and_failure_is_labelled():

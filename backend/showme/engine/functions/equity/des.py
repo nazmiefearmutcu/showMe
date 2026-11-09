@@ -173,12 +173,20 @@ def _coingecko_to_des(payload: dict[str, Any], symbol_hint: str) -> dict[str, An
     high_52w = _md_usd("high_52w")
     low_52w = _md_usd("low_52w")
     change_pct = md.get("price_change_percentage_24h")
-    prev_close = None
+    # ASOF-9: crypto trades 24/7, so CoinGecko's 24h change is measured against the price
+    # 24 hours ago, not a prior session close. That baseline is exposed as price_24h_ago
+    # and never published as previousClose.
+    price_24h_ago = None
     if current_price is not None and change_pct not in (None, 0):
         try:
-            prev_close = current_price / (1.0 + float(change_pct) / 100.0)
+            price_24h_ago = current_price / (1.0 + float(change_pct) / 100.0)
         except (TypeError, ValueError, ZeroDivisionError):
-            prev_close = None
+            price_24h_ago = None
+    change_24h = (
+        current_price - price_24h_ago
+        if current_price is not None and price_24h_ago is not None
+        else None
+    )
 
     return {
         "symbol": (payload.get("symbol") or symbol_hint or "").upper(),
@@ -197,7 +205,11 @@ def _coingecko_to_des(payload: dict[str, Any], symbol_hint: str) -> dict[str, An
         "market_cap": _md_usd("market_cap"),
         "regularMarketPrice": current_price,
         "currentPrice": current_price,
-        "previousClose": prev_close,
+        # ASOF-9: no prior session close exists for crypto, so previousClose is null.
+        "previousClose": None,
+        "price_24h_ago": price_24h_ago,
+        "change_24h": change_24h,
+        "change_basis": "24h_rolling",
         "regularMarketChangePercent": (
             float(change_pct) if change_pct not in (None, "") else None
         ),
@@ -440,7 +452,7 @@ class DESFunction(BaseFunction):
                     timeout=budget,
                 )
             except Exception as e:
-                warnings.append(f"{src_name}: {e}")
+                warnings.append(f"{src_name}: {str(e) or type(e).__name__}")
                 continue
             if _has_profile_content(candidate):
                 rd = candidate
@@ -599,7 +611,10 @@ def _des_field_dictionary() -> dict[str, str]:
         "fiftyTwoWeekHigh": "Highest regular-session price in the trailing 52 weeks.",
         "fiftyTwoWeekLow": "Lowest regular-session price in the trailing 52 weeks.",
         "regularMarketPrice": "Latest regular-session last price.",
-        "previousClose": "Previous regular-session close used to derive change percent.",
+        "previousClose": "Previous regular-session close used to derive change percent (equities, ETFs, FX). Null for crypto, which has no prior session close.",
+        "price_24h_ago": "Crypto only: price 24 hours ago, implied from CoinGecko's 24h change. A rolling window, not a prior close.",
+        "change_24h": "Crypto only: last price minus the 24h-ago price, in USD.",
+        "change_basis": "Basis of the change figures: previous_close (equities, ETFs, FX) or 24h_rolling (crypto).",
         # Crypto-specific fields exposed when ``asset_class == 'CRYPTO'``.
         "circulating_supply": "Coins currently in circulation per CoinGecko.",
         "total_supply": "Total minted coin supply.",
