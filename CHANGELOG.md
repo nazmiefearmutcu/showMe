@@ -5,6 +5,26 @@ All notable changes to showMe are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-09
+
+### Added
+- **Awareness data backbone.** News, sentiment, economic and corporate
+  calendars, holidays, exchange sessions and SEC filings now come from the
+  Awareness service (http://127.0.0.1:8086, autostarted from
+  `SHOWME_AWARENESS_HOME`, default `~/awareness`). TOP, NI, CN, NALRT, NSE,
+  SOSC, MSENT, ECO, MEET, EVTS, DVD, CACT, TRDH, ERN, IPO and LITM read it;
+  every headline names its publisher, tier, quality verdict and sentiment
+  model, and low-quality or unsourced items stay out of top stories.
+- **Home page:** Newsflow and Brief are built from sourced Awareness rows;
+  the brief no longer falls back to illustrative demo headlines.
+- First Windows installer (NSIS, x64).
+
+### Changed
+- BRIEF takes a `sections` input with a per-section limit; LITM takes a
+  months lookback and labels litigation and governance items apart.
+- `/api/fn` no longer injects agent-probe defaults into routed calls.
+
+
 ### Fixed
 - **FinBERT bear-listed contrarian headlines ("cycle bottom may already be
   in at $56K").** FinBERT scores the tone of the words, not the direction a
