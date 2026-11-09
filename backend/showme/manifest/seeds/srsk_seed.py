@@ -71,17 +71,6 @@ def srsk() -> FunctionManifest:
                 step=0.01,
             ),
             InputSpec(
-                name="proxy_spread_pct",
-                label="Fallback spread",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Fallback proxy spread (%) used when no FRED mapping is available.",
-                min=0.0,
-                max=50.0,
-                step=0.01,
-                unit="%",
-            ),
-            InputSpec(
                 name="provider_mode",
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
@@ -97,7 +86,6 @@ def srsk() -> FunctionManifest:
         defaults={
             "countries": ["TR", "US", "DE", "JP"],
             "recovery": 0.4,
-            "proxy_spread_pct": 3.25,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
@@ -146,8 +134,8 @@ def srsk() -> FunctionManifest:
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="highest_pd_country", label="Highest PD", kind="kpi"),
-                CardSlot(key="highest_pd", label="PD", kind="big_number", unit="%"),
+                CardSlot(key="highest_pd_country", label="Highest PD proxy", kind="kpi"),
+                CardSlot(key="highest_pd", label="PD proxy", kind="big_number", unit="%"),
                 CardSlot(key="recovery", label="R", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
@@ -156,12 +144,15 @@ def srsk() -> FunctionManifest:
         methodology=(
             "SRSK reads UST 10Y (FRED ``DGS10``) once per call. For every requested country with a"
             " known FRED long-rate series ID (a curated mapping in ``_SOVEREIGN_FRED_IDS``), the engine"
-            " pulls the latest yield, computes ``proxy_spread = country_yield − ust_y`` (US itself is"
-            " pinned to spread=0 with a 'self-spread is zero' note), then ``PD_1Y ≈ spread/100 /"
-            " (1 − recovery)`` using the Hull approximation. Countries without a FRED mapping use the"
-            " ``proxy_spread_pct`` fallback and a warning explaining the gap. When DGS10 is unavailable"
-            " the response is marked ``provider_unavailable`` rather than emitting a flat identical PD"
-            " for every sovereign (the S12 BugHunt fix)."
+            " pulls the latest yield, computes ``proxy_spread = country_yield − ust_y`` (the US is the"
+            " UST benchmark and gets no FRED spread; its macro-derived row is kept), then ``PD_1Y ≈ spread/100 /"
+            " (1 − recovery)`` using the Hull approximation. A country with no live macro data gets no"
+            " invented spread: its row stays unranked with null spread and PD and source_mode"
+            " 'unavailable'. When DGS10 is unavailable the response is marked ``provider_unavailable``"
+            " rather than emitting a flat identical PD for every sovereign (the S12 BugHunt fix)."
+            " The PD is an UNCALIBRATED proxy: it is a linear transform of an equal-weight macro score"
+            " (or of a FRED yield differential) and is not implied by CDS or credit ratings, so it is a"
+            " relative ranking, not a market default probability."
         ),
         formula_dict={
             "pd_hull": Formula(
@@ -179,10 +170,12 @@ def srsk() -> FunctionManifest:
             "rows[].country": FieldDef(description="ISO-2 country code.", source="catalog"),
             "rows[].proxy_spread_pct": FieldDef(unit="%", description="Sovereign yield minus US 10Y, percent.", source="computed"),
             "rows[].pd_1y_proxy": FieldDef(unit="decimal", description="1Y PD proxy as decimal in [0,1].", source="computed"),
-            "rows[].pd_1y_pct": FieldDef(unit="%", description="1Y PD proxy as percent.", source="computed"),
+            "rows[].pd_1y_pct": FieldDef(unit="%", description="1Y PD proxy as percent (uncalibrated; see rows[].pd_basis).", source="computed"),
+            "rows[].pd_basis": FieldDef(description="'macro_composite_proxy' or 'fred_yield_differential': what the PD proxy is derived from.", source="computed"),
+            "rows[].legs_present": FieldDef(description="Number of the four macro legs that fed the composite; fewer than 4 means a partial, unranked-vs-full composite.", source="adapter"),
             "rows[].recovery": FieldDef(description="Assumed recovery rate.", source="user_or_default"),
-            "rows[].source_mode": FieldDef(description="'fred' when the country has a real long-rate mapping, else 'sovereign_risk_model'.", source="adapter"),
-            "rows[].note": FieldDef(description="Per-row explanation when the row uses fallback or self-spread.", source="adapter"),
+            "rows[].source_mode": FieldDef(description="'worldbank' / 'fred' / 'fred+worldbank' for a priced row; 'unavailable' when no live macro data exists (spread and PD are null).", source="adapter"),
+            "rows[].note": FieldDef(description="Per-row explanation for self-spread or unscored (unavailable) rows.", source="adapter"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -207,24 +200,28 @@ def srsk() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="srsk_us_self_spread_is_zero",
-                description="US sovereign self-spread is pinned to zero with an explicit note.",
+                name="srsk_us_fred_configured_never_pins_zero_spread",
+                description=(
+                    "With FRED configured the US (the UST benchmark) never gets a constant 0.0 spread or PD:"
+                    " without World Bank macro it is unscored with null spread and PD."
+                ),
                 inputs={"countries": ["US"]},
                 assertions=[
-                    "us_proxy_spread_pct_equals_zero",
-                    "us_row_note_mentions_self_spread",
+                    "us_proxy_spread_pct_is_null_when_unscored",
+                    "us_source_mode_is_unavailable_when_unscored",
                 ],
             ),
             SemanticTest(
-                name="srsk_unmapped_country_uses_fallback_with_warning",
+                name="srsk_unscored_country_has_no_invented_spread_or_pd",
                 description=(
-                    "A country without a curated FRED mapping uses proxy_spread_pct and surfaces a"
-                    " warning that names the missing mapping so the operator knows the row is fallback."
+                    "A country with no live World Bank macro data is kept unranked with null proxy spread,"
+                    " null PD and source_mode 'unavailable' plus a visible note; no fallback value is"
+                    " substituted (the placeholder-PD bug)."
                 ),
-                inputs={"countries": ["XX"], "proxy_spread_pct": 5.0},
+                inputs={"countries": ["XX"]},
                 assertions=[
-                    "xx_row_uses_fallback_spread",
-                    "warning_mentions_no_fred_mapping_for_xx",
+                    "xx_row_has_null_spread_and_pd",
+                    "xx_row_source_mode_is_unavailable",
                 ],
             ),
             SemanticTest(

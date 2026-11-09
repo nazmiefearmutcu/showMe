@@ -7,19 +7,20 @@
  * inferred) + a status table: callsign, country, altitude, speed, heading,
  * ground/airborne pill, last contact (UTC) + the in-pane alert history.
  *
- * Honesty: the backend only returns aircraft when `live_flight=true` AND
- * OpenSky answers; the pane always sends the flag and renders the
- * provider_unavailable payload's reason as an explicit empty state —
- * no sample aircraft are ever invented. Applied filters show as pills so
+ * Honesty: the backend returns aircraft only when OpenSky answers (the
+ * `reference` flag skips the feed and returns an explicit empty state); the
+ * pane renders the provider_unavailable payload's reason as an explicit empty
+ * state — no sample aircraft are ever invented. Applied filters show as pills so
  * an empty board is always attributable to a filter or an outage.
  *
  * Alerts (2026-09-16): client-side rules evaluated on every poll against
- * the current rows — erratic flight path, crash risk (steep/low descent),
+ * the current rows — erratic flight path, descent state (steep/low descent),
  * stale ADS-B contact. Rules never fire on missing fields; see
  * `fly-alerts.ts` for the per-rule data requirements. Fired alerts land in
  * the app toast host AND the pane's alert-history list; dedupe/cooldown is
- * per callsign+rule. The pane auto-refreshes every 60 s while visible (the
- * OpenSky public quota is 4000 requests/day, well above 1/min).
+ * per callsign+rule. The pane auto-refreshes every 60 s while visible; each
+ * poll is an unfiltered /states/all request. The OpenSky quota is not
+ * verified here.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
@@ -94,7 +95,12 @@ const LIMIT_OPTIONS = [
   { value: 100, label: "100", title: "LIMIT 100 (OpenSky backend cap)" },
 ] as const;
 const LIMIT_IDS = LIMIT_OPTIONS.map((o) => o.value);
-/** Visibility-paused auto-refresh. OpenSky public quota: 4000 req/day. */
+/**
+ * Visibility-paused auto-refresh. Each poll is an unfiltered OpenSky
+ * /states/all request (no bounding box). The OpenSky quota for anonymous
+ * and registered use was NOT verified against current documentation, so
+ * no quota figure is asserted here.
+ */
 const REFRESH_MS = 60_000;
 const ALERT_HISTORY_MAX = 50;
 const ALERT_HISTORY_SHOWN = 10;
@@ -127,9 +133,6 @@ export function FLYPane({ code }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<FLYData>({
     code,
     params: {
-      // live_flight is the backend's explicit opt-in for the keyless
-      // OpenSky feed — without it the function refuses to run.
-      live_flight: true,
       callsign: applied.callsign || undefined,
       country: applied.country || undefined,
       limit,
@@ -391,7 +394,7 @@ export function FLYPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Flight Tracking"
-          subtitle={`${rows.length} aircraft · OpenSky live_flight`}
+          subtitle={`${rows.length} aircraft · OpenSky live feed`}
           trailing={
             <FunctionControlGroup>
               <input
@@ -439,7 +442,7 @@ export function FLYPane({ code }: FunctionPaneProps) {
                   aria-expanded={alertsOpen}
                   aria-label="FLY alerts"
                   onClick={() => setAlertsOpen((open) => !open)}
-                  title="FLY alert rules: erratic path · crash risk · stale contact"
+                  title="FLY alert rules: erratic path · steep descent · stale contact"
                 >
                   Alerts{alertHistory.length > 0 ? ` · ${alertHistory.length}` : ""}
                 </button>
@@ -568,7 +571,7 @@ function FlyAlertsPopover({
 
       <div style={ruleBlockStyle}>
         <ToggleRow
-          label="Crash risk"
+          label="Steep / low descent"
           checked={config.crash.enabled}
           onToggle={(checked) =>
             onChange({ ...config, crash: { ...config.crash, enabled: checked } })
@@ -576,7 +579,7 @@ function FlyAlertsPopover({
         />
         <ThresholdInput
           label="steep descent ≤ −"
-          inputLabel="Crash vertical rate threshold (ft/min)"
+          inputLabel="Steep descent threshold (ft/min)"
           value={config.crash.verticalFpm}
           min={200}
           max={10000}
@@ -588,7 +591,7 @@ function FlyAlertsPopover({
         />
         <ThresholdInput
           label="or below"
-          inputLabel="Crash low altitude threshold (ft)"
+          inputLabel="Low altitude descent threshold (ft)"
           value={config.crash.lowAltFt}
           min={100}
           max={30000}

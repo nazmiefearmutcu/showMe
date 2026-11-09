@@ -714,7 +714,7 @@ const TPL: Record<string, MockTemplate> = {
     ],
   },
   EREV: {
-    title: "Earnings Revisions",
+    title: "Analyst Recommendation Momentum",
     sub: "Analyst bucket changes month-over-month + revision velocity.",
     allowMockDuringLoad: false,
     kpis: [

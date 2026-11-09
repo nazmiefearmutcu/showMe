@@ -53,7 +53,8 @@ interface FAData {
   methodology?: string;
   field_dictionary?: Record<string, unknown>;
   currency?: string;
-  filing_date?: string;
+  filing_date?: string | null;
+  period_end?: string | null;
   [key: string]: unknown;
 }
 
@@ -108,9 +109,10 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
   // ever merged (error + stale-data + in-flight), Retry would self-disable.
   const isFetching: boolean = state === "loading" || state === "refreshing";
   const currency = (payload?.currency as string | undefined) ?? "USD";
-  const filingDate =
-    (payload?.filing_date as string | undefined) ??
-    (typeof payload?.last_updated === "string" ? (payload.last_updated as string) : undefined);
+  // filing_date is the SEC filed date (null when the source did not supply one);
+  // period_end is the statement data date. Neither is substituted for the other.
+  const filingDate = typeof payload?.filing_date === "string" ? payload.filing_date : undefined;
+  const periodEnd = typeof payload?.period_end === "string" ? payload.period_end : undefined;
 
   const heroRatios = useMemo(() => deriveHeroRatios(payload?.ratios), [payload?.ratios]);
 
@@ -194,6 +196,7 @@ export function FAPane({ code, symbol }: FunctionPaneProps) {
           <span data-testid="function-source">
             sources · {data?.sources?.join(", ") || "—"}
           </span>
+          {periodEnd ? <span>period end · {periodEnd}</span> : null}
           {filingDate ? <span>filing · {filingDate}</span> : null}
           {data?.warnings?.length ? <span>{data.warnings.length} warnings</span> : null}
         </PaneFooter>
@@ -438,6 +441,28 @@ function Ratios({ data }: { data?: Record<string, unknown> }) {
   );
 }
 
+// Backend ratios (equity/fa.py _compute_ratios) are raw fractions: margins and
+// returns are x/y ratios, not percents, and leverage/liquidity are multiples.
+const FRACTION_RATIO_KEYS = new Set([
+  "gross_margin",
+  "operating_margin",
+  "net_margin",
+  "return_on_assets",
+  "return_on_equity",
+  "free_cash_flow_margin",
+]);
+const MULTIPLE_RATIO_KEYS = new Set(["debt_to_equity", "current_ratio"]);
+
+function formatRatioValue(key: string, value: unknown): string {
+  if (value == null) return formatMissing;
+  if (typeof value !== "number" || !Number.isFinite(value)) return String(value);
+  if (FRACTION_RATIO_KEYS.has(key)) {
+    return formatPercent(value, { fromFraction: true, digits: 1 });
+  }
+  if (MULTIPLE_RATIO_KEYS.has(key)) return `${value.toFixed(2)}x`;
+  return formatCompactNumber(value);
+}
+
 function RatioCell({ label, value }: { label: string; value: unknown }) {
   const n = typeof value === "number" ? value : Number(value);
   const tone = Number.isFinite(n)
@@ -447,12 +472,7 @@ function RatioCell({ label, value }: { label: string; value: unknown }) {
         ? "fa-ratio-cell__value--negative"
         : ""
     : "";
-  const display =
-    value == null
-      ? formatMissing
-      : typeof value === "number"
-        ? formatCompactNumber(value)
-        : String(value);
+  const display = formatRatioValue(label, value);
   return (
     <div className="fa-ratio-cell">
       <span className="fa-ratio-cell__label" title={humanizeLabel(label)}>

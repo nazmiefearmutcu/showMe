@@ -51,7 +51,7 @@ def test_bs_price_valid_inputs_still_work() -> None:
 async def test_ovme_function_surfaces_warnings_on_invalid_spot() -> None:
     """The full OVMEFunction must produce a structured envelope, not crash."""
     fn = OVMEFunction()
-    result = await fn.execute(instrument=None, spot=-50.0, strike=100.0, vol=0.2)
+    result = await fn.execute(instrument=None, spot=-50.0, strike=100.0, years_to_expiry=0.25, vol=0.2)
     assert result.data["status"] == "error"
     assert any("invalid_inputs" in w for w in result.warnings)
     assert math.isnan(result.data["price"])
@@ -61,7 +61,7 @@ async def test_ovme_function_surfaces_warnings_on_invalid_spot() -> None:
 
 async def test_ovme_function_valid_input_returns_ok() -> None:
     fn = OVMEFunction()
-    result = await fn.execute(instrument=None, spot=100, strike=100, vol=0.2)
+    result = await fn.execute(instrument=None, spot=100, strike=100, years_to_expiry=0.25, vol=0.2)
     assert result.data["status"] == "ok"
     assert result.data["price"] > 0
     assert len(result.data["curve"]) == 51

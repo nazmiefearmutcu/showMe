@@ -89,6 +89,8 @@ interface OVDVPayload {
   series?: TermPoint[];
   cards?: OVDVCard[] | Record<string, unknown>;
   vol_source?: string;
+  /** "user_quotes" only when the caller supplied both 25Δ RR and BF. */
+  smile_source?: string;
   data_mode?: string;
   source_mode?: string;
   tenors?: string[];
@@ -218,6 +220,9 @@ export function OVDVPane({ code }: FunctionPaneProps) {
   const dataMode = payload.data_mode ?? payload.source_mode ?? "modeled";
   const volSource = payload.vol_source ?? "user_inputs";
   const isLive = volSource === "live_realized_vol";
+  // The 25Δ RR / BF are shown only when the backend reports user-quoted
+  // wings. A missing or "not_quoted" smile is an honest absence, not 0.
+  const smileQuoted = payload.smile_source === "user_quotes";
 
   // FIX R1-H/R2-#1: the failure disposition comes from the ENVELOPE status
   // (`data.status`, falling back to the payload status) — never from the
@@ -234,8 +239,11 @@ export function OVDVPane({ code }: FunctionPaneProps) {
     return [...fromPayload, ...fromEnvelope.map((w) => String(w))];
   }, [payload.warnings, data?.warnings]);
 
+  // With no vol source the backend reports provider_unavailable and emits no
+  // sources; the footer must not name a reference model that was never used.
   const sources =
-    data?.sources?.join(", ") || (isLive ? "yfinance" : "reference_fx_vol_model");
+    data?.sources?.join(", ") ||
+    (isLive ? "yfinance" : statusOverride ? "none" : "user_inputs");
 
   // ATM term-structure points (chronological) for the term panel.
   // Preferred source: the REAL `series[].atm_vol_pct` (verified live 2026-09-12:
@@ -268,8 +276,12 @@ export function OVDVPane({ code }: FunctionPaneProps) {
   const slopeTone: "neutral" | "positive" | "negative" =
     termSlope == null ? "neutral" : termSlope >= 0 ? "positive" : "negative";
 
-  const rr = cardVal("risk_reversal_25d_pct", payload.risk_reversal_25d_pct);
-  const bf = cardVal("butterfly_25d_pct", payload.butterfly_25d_pct);
+  const rr = smileQuoted
+    ? cardVal("risk_reversal_25d_pct", payload.risk_reversal_25d_pct)
+    : undefined;
+  const bf = smileQuoted
+    ? cardVal("butterfly_25d_pct", payload.butterfly_25d_pct)
+    : undefined;
   const atmQuote = cardVal("atm_vol_pct", payload.atm_vol_pct) ?? frontAtm;
 
   /* ── roving-focus surface grid ─────────────────────────────────────── */
@@ -388,10 +400,16 @@ export function OVDVPane({ code }: FunctionPaneProps) {
     downloadGridCsv(gridCsvFilename(`ovdv-${payload.pair ?? pair}`), csv);
   };
 
+  // The provenance notice is always shown for a live surface too: a green
+  // "live" state must not hide that the ATM values are realized vol and that
+  // the smile is not quoted.
   const showNotice =
-    (state === "ok" || state === "refreshing") &&
-    surface.length > 0 &&
-    (!isLive || warningsList.length > 0);
+    (state === "ok" || state === "refreshing") && surface.length > 0;
+  const surfaceHeadLabel = isLive
+    ? "Realized-vol anchor · tenor × delta (%, not option-implied)"
+    : volSource === "user_inputs"
+      ? "User-quoted vol · tenor × delta (%)"
+      : "Reference vol model · tenor × delta (%)";
 
   return (
     <div className="u-pane-host">
@@ -458,11 +476,31 @@ export function OVDVPane({ code }: FunctionPaneProps) {
               >
                 {!isLive && (
                   <div>
-                    <strong className="u-text-warn">Reference vol model</strong>{" "}
+                    <strong className="u-text-warn">
+                      {volSource === "user_inputs"
+                        ? "User-quoted vol"
+                        : "Reference vol model"}
+                    </strong>{" "}
                     <span className="u-text-secondary">
                       ATM curve labelled <code>{dataMode}</code> — no live OTC FX
-                      vol vendor configured; smile wings modelled from the 25Δ
-                      RR/BF inputs. Reference, not vendor-quoted OTC vols.
+                      vol vendor configured. Reference, not vendor-quoted OTC vols.
+                    </span>
+                  </div>
+                )}
+                {isLive && (
+                  <div>
+                    <strong className="u-text-warn">Realized vol, not implied</strong>{" "}
+                    <span className="u-text-secondary">
+                      ATM values are trailing realized vol from yfinance; no OTC
+                      option quotes are configured, so these are not implied vols.
+                    </span>
+                  </div>
+                )}
+                {!smileQuoted && (
+                  <div>
+                    <strong className="u-text-warn">25Δ RR / BF not quoted</strong>{" "}
+                    <span className="u-text-secondary">
+                      No market option-quote source; the smile wings are not shown.
                     </span>
                   </div>
                 )}
@@ -483,14 +521,18 @@ export function OVDVPane({ code }: FunctionPaneProps) {
               />
               <StatCard
                 label="25Δ risk reversal"
-                value={fmtPctSigned(rr)}
-                caption="call − put · 25Δ"
-                tone={(rr ?? 0) >= 0 ? "positive" : "negative"}
+                value={rr == null ? "—" : fmtPctSigned(rr)}
+                caption={
+                  rr == null ? "not quoted · no market source" : "call − put · 25Δ · user quote"
+                }
+                tone={rr == null ? "neutral" : rr >= 0 ? "positive" : "negative"}
               />
               <StatCard
                 label="25Δ butterfly"
-                value={fmtPct(bf)}
-                caption="wing convexity · 25Δ"
+                value={bf == null ? "—" : fmtPct(bf)}
+                caption={
+                  bf == null ? "not quoted · no market source" : "wing convexity · 25Δ · user quote"
+                }
                 tone="neutral"
               />
               <StatCard
@@ -509,9 +551,7 @@ export function OVDVPane({ code }: FunctionPaneProps) {
 
             <section aria-label="FX vol surface grid" style={surfaceSection}>
               <div style={sectionHead}>
-                <span style={sectionLabel}>
-                  Surface · tenor × delta (implied vol %)
-                </span>
+                <span style={sectionLabel}>{surfaceHeadLabel}</span>
                 <span style={sectionLabel}>
                   {fmtPct(volStats.min)} – {fmtPct(volStats.max)}
                 </span>
@@ -573,7 +613,7 @@ export function OVDVPane({ code }: FunctionPaneProps) {
                                 size={32}
                                 label={vol.toFixed(2)}
                                 tabIndex={isActive ? 0 : -1}
-                                ariaLabel={`${tenor} × ${delta} implied vol ${vol.toFixed(2)} percent`}
+                                ariaLabel={`${tenor} × ${delta} vol ${vol.toFixed(2)} percent`}
                                 onClick={() => setActivePref({ r, c })}
                               />
                             )}

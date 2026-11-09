@@ -86,20 +86,12 @@ def read() -> FunctionManifest:
                 step=10,
             ),
             InputSpec(
-                name="live",
-                label="Refresh from feeds",
-                control=ControlKind.BOOLEAN,
-                required=False,
-                description="When true, refresh saved-article freshness by re-fetching source feeds; otherwise serve from store.",
-            ),
-            InputSpec(
                 name="provider_mode",
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
+                description="READ always reads the local saved-articles store (cached snapshot).",
                 options=[
-                    DataMode.LIVE_OFFICIAL.value,
                     DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
@@ -109,14 +101,12 @@ def read() -> FunctionManifest:
             "status": ["unread", "in_progress"],
             "tags": [],
             "limit": 50,
-            "live": False,
             "provider_mode": DataMode.CACHED_SNAPSHOT.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
             fallbacks=["cached_snapshot"],
             acceptable_modes=[
-                DataMode.LIVE_OFFICIAL,
                 DataMode.CACHED_SNAPSHOT,
                 DataMode.NOT_CONFIGURED,
             ],
@@ -154,16 +144,16 @@ def read() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "READ is backed by the internal saved-articles store (engine/services/news_store). "
+            "READ is backed by the internal saved-articles store "
+            "(showme.engine.services.reading_list_store.ReadingListStore, a local SQLite store). "
             "Articles get saved from CN / NI / NSE / TOP via a 'Save' action that writes a row "
             "with {url, title, source, published_utc, matched_symbol, tags, status}. READ reads "
-            "the store, applies the input filters (watchlist, status, tags), and returns the "
-            "rows in saved-time desc. When live=true, the dropped freshness path re-fetches the "
-            "source URL's open-graph metadata to detect updated titles / removed articles and "
-            "marks broken links with a warning. Status transitions (unread → in_progress → "
-            "read → archived) are recorded server-side via separate /api/read/mark endpoints; "
-            "READ surfaces the current status without mutation. When the store is missing or "
-            "empty, articles=[] with a clear setup-hint warning — no synthetic placeholder rows."
+            "the store, applies the input filters (watchlist, status, tags), and returns the rows "
+            "in saved-time desc. When no status is sent the default is unread and in_progress. "
+            "READ does not re-fetch source feeds or check links: every row is the stored snapshot "
+            "and data_mode is cached_snapshot. READ reports the stored status and does not change "
+            "it. When the store is missing or empty, articles=[] with a clear setup-hint warning, "
+            "and no synthetic placeholder rows are returned."
         ),
         field_dict={
             "articles[].saved_utc": FieldDef(unit="iso8601", description="When the article was added to the queue.", source="store"),

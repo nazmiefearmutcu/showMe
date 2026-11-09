@@ -65,17 +65,19 @@ def blak() -> FunctionManifest:
             ),
             InputSpec(
                 name="market_caps",
-                label="Market caps",
+                label="Market caps (overrides)",
                 control=ControlKind.MODEL_ASSUMPTION,
-                required=True,
+                required=False,
                 description=(
-                    "Cap-weighted market portfolio used to back out the "
-                    "implied-equilibrium prior. Required — the model is "
-                    "ill-defined without it."
+                    "Optional SYMBOL:USD overrides for the cap-weighted market "
+                    "portfolio that backs out the implied-equilibrium prior. "
+                    "Without them the provider market cap is used; when none is "
+                    "available the equal-weight fallback is labelled. Overrides "
+                    "are user-supplied, not provider data."
                 ),
             ),
             InputSpec(
-                name="risk_aversion",
+                name="delta",
                 label="Risk aversion (δ)",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
@@ -89,7 +91,12 @@ def blak() -> FunctionManifest:
                 label="Prior covariance (Σ)",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
-                description="Covariance estimator for the prior.",
+                description=(
+                    "Covariance estimator for the prior, applied to the return "
+                    "series: sample_cov (plain sample), ledoit_wolf (Ledoit-Wolf "
+                    "2004 shrinkage toward mu*I, reports the intensity) or exp_cov "
+                    "(EWMA, 180-day span)."
+                ),
                 options=["sample_cov", "ledoit_wolf", "exp_cov"],
             ),
             InputSpec(
@@ -100,6 +107,18 @@ def blak() -> FunctionManifest:
                 description=(
                     "Picking matrix P + view returns vector Q. Each view is "
                     "absolute (single asset) or relative (long-short basket)."
+                ),
+            ),
+            InputSpec(
+                name="views_text",
+                label="Views (text)",
+                control=ControlKind.MODEL_ASSUMPTION,
+                required=False,
+                description=(
+                    "Typed views, comma-separated: SYMBOL:percent is an absolute "
+                    "expected annual return (AAPL:8), LONG>SHORT:percent is a "
+                    "relative view that LONG beats SHORT by (AAPL>SPY:2). "
+                    "Malformed views are refused, never dropped."
                 ),
             ),
             InputSpec(
@@ -154,7 +173,7 @@ def blak() -> FunctionManifest:
             ),
         ],
         defaults={
-            "risk_aversion": 2.5,
+            "delta": 2.5,
             "prior_covariance": "ledoit_wolf",
             "tau": 0.05,
             "window": "1Y",
@@ -209,7 +228,7 @@ def blak() -> FunctionManifest:
             slots=[
                 CardSlot(key="tau", label="τ", kind="kpi"),
                 CardSlot(key="num_views", label="Views", kind="kpi"),
-                CardSlot(key="risk_aversion", label="δ", kind="kpi"),
+                CardSlot(key="delta", label="δ", kind="kpi"),
                 CardSlot(key="avg_delta", label="Avg Δ", kind="kpi", unit="%"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),

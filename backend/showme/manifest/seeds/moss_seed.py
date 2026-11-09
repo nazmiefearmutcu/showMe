@@ -1,7 +1,7 @@
 """MOSS — Most Volatile (realised-volatility leaderboard).
 
 Ranks a watchlist / universe by annualized realised volatility computed
-from daily close history: ``std(close-to-close returns) * sqrt(252)``.
+from daily close history: ``std(close-to-close returns) * sqrt(252)`` for equities, FX and commodities, ``* sqrt(365)`` for crypto (24/7).
 Live by default (yfinance); ``reference=true`` serves the explicitly
 labelled modeled template. Resynced to the shipped handler
 (``engine/functions/misc/_bonus.py::MOSSFunction``) by fix lane F14 —
@@ -43,7 +43,7 @@ def moss() -> FunctionManifest:
         category=Category.SCREENING,
         intent=(
             "Rank a universe by annualized realised volatility (std of daily close-to-close "
-            "returns × sqrt(252)) so an operator can see which names are moving hardest; "
+            "returns × sqrt(252); × sqrt(365) for crypto) so an operator can see which names are moving hardest; "
             "reference=true serves the labelled modeled template when live history is off."
         ),
         asset_classes=[
@@ -145,7 +145,7 @@ def moss() -> FunctionManifest:
         ),
         methodology=(
             "MOSS computes annualized realised volatility per symbol from daily closes: "
-            "pct_change over the requested lookback, std(daily returns) * sqrt(252), ranked "
+            "pct_change over the requested lookback, std(daily returns) * sqrt(252) (sqrt(365) for crypto, which trades every calendar day), ranked "
             "descending. The history series is the rolling realized volatility for the top "
             "symbol, using window = min(20, max(5, n//2)) sessions so short histories still "
             "produce a curve. The live path requires the yfinance provider; when it is "

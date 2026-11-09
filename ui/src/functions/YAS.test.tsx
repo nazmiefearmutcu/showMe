@@ -174,6 +174,13 @@ describe("YAS pane — headline cards", () => {
     expect(screen.getByText("78.6")).toBeInTheDocument();
   });
 
+  it("labels convexity with its years-squared unit", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    const { container } = render(<YASPane code="YAS" />);
+    expect(container.textContent).toContain("YEARS²");
+    expect(container.textContent).not.toContain("PRICE SENS.");
+  });
+
   it("renders the ±100bp shock ladder with price deltas", () => {
     setMockFn({ state: "ok", ...livePayload() });
     const { container } = render(<YASPane code="YAS" />);
@@ -191,51 +198,89 @@ describe("YAS pane — headline cards", () => {
   });
 });
 
-describe("YAS pane — model inputs", () => {
-  it("sends default inputs (price 99.5, coupon 4.25% → 0.0425, 10y, bench 4.45%)", () => {
+describe("YAS pane — inputs are optional overrides", () => {
+  it("sends no demo bond: a generic tenor goes out with only the frequency and the BOND asset class", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<YASPane code="YAS" />);
-    expect(lastParams).toMatchObject({
-      price: 99.5,
-      coupon: 0.0425,
-      maturity_years: 10,
-      freq: 2,
-      benchmark_rate: 0.0445,
-    });
+    expect(lastParams).toEqual({ asset_class: "BOND", freq: 2 });
     expect(lastSymbol).toBe("US10Y");
   });
 
-  it("drives params from the price input and persists it", () => {
+  it("shows the backend's live values as placeholders, not as sent inputs", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<YASPane code="YAS" />);
-    fireEvent.change(screen.getByLabelText("Price (per 100 face)"), {
-      target: { value: "101.25" },
-    });
-    expect(lastParams?.price).toBe(101.25);
-    expect(localStorage.getItem("showme.yas.price")).toBe("101.25");
+    const price = screen.getByLabelText("Price (per 100 face)") as HTMLInputElement;
+    expect(price.value).toBe("");
+    expect(price.placeholder).toBe("99.5");
   });
 
-  it("converts coupon percent to a decimal and persists it", () => {
+  it("sends a price override only once typed, and drops it when cleared", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<YASPane code="YAS" />);
+    const input = screen.getByLabelText("Price (per 100 face)");
+    fireEvent.change(input, { target: { value: "101.25" } });
+    expect(lastParams?.price).toBe(101.25);
+    fireEvent.change(input, { target: { value: "" } });
+    expect(lastParams).not.toHaveProperty("price");
+  });
+
+  it("converts a coupon override from percent to decimal", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<YASPane code="YAS" />);
     fireEvent.change(screen.getByLabelText("Coupon percent"), {
       target: { value: "5.5" },
     });
     expect(lastParams?.coupon).toBe(0.055);
-    expect(localStorage.getItem("showme.yas.coupon")).toBe("5.5");
   });
 
-  it("drives the benchmark input and persists it", () => {
+  it("converts a benchmark override from percent to decimal", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<YASPane code="YAS" />);
     fireEvent.change(screen.getByLabelText("Benchmark percent"), {
       target: { value: "4" },
     });
     expect(lastParams?.benchmark_rate).toBe(0.04);
-    expect(localStorage.getItem("showme.yas.benchmark")).toBe("4");
   });
 
-  it("switches coupon frequency via the segmented control", () => {
+  it("sends the chosen UST benchmark tenor and labels the spread caption with the series used", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<YASPane code="YAS" />);
+    fireEvent.click(screen.getByTitle("Spread vs the UST 2Y CMT"));
+    expect(lastParams?.benchmark).toBe("UST2Y");
+    expect(lastParams).not.toHaveProperty("benchmark_rate");
+  });
+
+  it("shows which benchmark the spread uses, not a bare BENCH percentage", () => {
+    const base = livePayload();
+    setMockFn({
+      state: "ok",
+      ...base,
+      data: {
+        ...base.data,
+        data: {
+          ...base.data.data,
+          summary: {
+            ...base.data.data.summary,
+            benchmark_label: "UST10Y (default) · FRED DGS10",
+          },
+        },
+      },
+    });
+    render(<YASPane code="YAS" />);
+    expect(screen.getByText(/UST10Y \(default\) · FRED DGS10/)).toBeInTheDocument();
+  });
+
+  it("states the decimal unit when a rate override is sent, so a 25% coupon is not read as ambiguous", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<YASPane code="YAS" />);
+    fireEvent.change(screen.getByLabelText("Coupon percent"), {
+      target: { value: "25" },
+    });
+    expect(lastParams?.coupon).toBe(0.25);
+    expect(lastParams?.assume_decimal).toBe(true);
+  });
+
+  it("switches coupon frequency via the segmented control and persists it", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<YASPane code="YAS" />);
     fireEvent.click(screen.getByText("4x"));
@@ -243,13 +288,43 @@ describe("YAS pane — model inputs", () => {
     expect(localStorage.getItem("showme.yas.freq")).toBe("4");
   });
 
-  it("lets the bond symbol input drive the instrument", () => {
+  it("lets the bond symbol drive the instrument and resets overrides", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<YASPane code="YAS" />);
-    fireEvent.change(screen.getByLabelText("Bond symbol"), {
-      target: { value: "UST5Y" },
+    fireEvent.change(screen.getByLabelText("Price (per 100 face)"), {
+      target: { value: "97" },
     });
-    expect(lastSymbol).toBe("UST5Y");
+    expect(lastParams?.price).toBe(97);
+    fireEvent.change(screen.getByLabelText("Bond symbol"), {
+      target: { value: "US2Y" },
+    });
+    expect(lastSymbol).toBe("US2Y");
+    expect(lastParams).toEqual({ asset_class: "BOND", freq: 2 });
+  });
+
+  it("keeps the inputs visible and shows the reason when the backend needs them", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "input_error",
+          reason: "XS1 is not a generic US Treasury tenor; YAS needs price, coupon, maturity.",
+          rows: [],
+        },
+      },
+    });
+    render(<YASPane code="YAS" symbol="XS1" />);
+    expect(screen.getByText(/Bond inputs needed/i)).toBeInTheDocument();
+    expect(screen.getByText(/YAS needs price, coupon, maturity/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Price (per 100 face)")).toBeInTheDocument();
+  });
+
+  it("labels a generic tenor priced from FRED as live CMT", () => {
+    const live = livePayload();
+    live.data.sources = ["fred"];
+    setMockFn({ state: "ok", ...live });
+    render(<YASPane code="YAS" />);
+    expect(screen.getByText("live CMT")).toBeInTheDocument();
   });
 });
 

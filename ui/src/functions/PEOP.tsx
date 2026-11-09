@@ -37,11 +37,14 @@ import {
   RefreshButton,
 } from "./function-controls";
 import type { FunctionPaneProps } from "./registry-types";
+import { safeHref } from "@/lib/safe-href";
 
 interface PEOPItem {
   full_name?: string;
   role?: string;
   company?: string;
+  /** "wikidata:P108" = an employer claim; "summary_pattern" = named in the summary text only (PEOP#7). */
+  company_source?: string | null;
   description?: string;
   summary?: string;
   nationality?: string;
@@ -63,9 +66,23 @@ interface PEOPData {
   items?: PEOPItem[];
   rows?: PEOPItem[];
   source_mode?: string;
+  reference_as_of?: string | null;
+  reason?: string | null;
   connection_status?: { source?: string; status?: string }[];
   next_actions?: string[];
   methodology?: string;
+}
+
+/** PEOP#7: a company taken from summary text is not an employer claim. */
+function isMentionedCompany(r: PEOPItem): boolean {
+  return !!r.company && r.company_source === "summary_pattern";
+}
+
+function firmText(r: PEOPItem): string {
+  if (!r.company) return "";
+  return isMentionedCompany(r)
+    ? `${r.company} (mentioned in summary, not an employer claim)`
+    : r.company;
 }
 
 export function PEOPPane({ code }: FunctionPaneProps) {
@@ -91,7 +108,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
     () => [
       { key: "full_name", header: "Name", value: (r) => r.full_name ?? "" },
       { key: "role", header: "Role / title", value: (r) => r.role ?? "" },
-      { key: "company", header: "Firm", value: (r) => r.company ?? "" },
+      { key: "company", header: "Firm", value: (r) => firmText(r) },
       { key: "bio", header: "Bio", value: (r) => r.bio ?? "" },
       {
         key: "contact_status",
@@ -163,6 +180,14 @@ export function PEOPPane({ code }: FunctionPaneProps) {
         render: (r) => (
           <span style={cellStackStyle}>
             <span style={titleStyle}>{r.company ?? "—"}</span>
+            {isMentionedCompany(r) && (
+              <span
+                style={summaryStyle}
+                title="Named in the Wikipedia summary text. Wikidata has no employer (P108) claim for this person."
+              >
+                mentioned in summary, not an employer claim
+              </span>
+            )}
             {r.nationality && <span style={summaryStyle}>{r.nationality}</span>}
           </span>
         ),
@@ -191,9 +216,9 @@ export function PEOPPane({ code }: FunctionPaneProps) {
         header: "Source",
         width: 140,
         render: (r) =>
-          r.profile_url ?? r.source_url ? (
+          safeHref(r.profile_url ?? r.source_url) ? (
             <a
-              href={r.profile_url ?? r.source_url}
+              href={safeHref(r.profile_url ?? r.source_url)}
               target="_blank"
               rel="noreferrer"
               style={linkStyle}
@@ -220,7 +245,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
                 buildTsvRow([
                   r.full_name,
                   r.role,
-                  r.company,
+                  firmText(r),
                   r.contact_status,
                   r.source_url ?? r.source,
                 ]),
@@ -236,6 +261,18 @@ export function PEOPPane({ code }: FunctionPaneProps) {
     [],
   );
 
+  // PEOP#3: a provider outage must say so; "no people matched" would read as
+  // "no people exist", so the failure reason leads the empty state.
+  const providerDown = payload?.status === "provider_unavailable";
+  const emptyBody = providerDown
+    ? `The live Wikipedia/Wikidata people search failed${
+        payload?.reason ? `: ${payload.reason}` : "."
+      } The local directory has no match for "${query}". ${
+        payload?.next_actions?.[0] ?? ""
+      }`.trim()
+    : (payload?.next_actions?.[0] ??
+      `The local directory and the live Wikipedia/Wikidata search returned nothing for "${query}".`);
+
   const body = !hasSearched ? (
     <Empty
       title="Search for a person"
@@ -247,14 +284,17 @@ export function PEOPPane({ code }: FunctionPaneProps) {
       state={state}
       error={error}
       empty={items.length === 0}
-      emptyTitle="No people matched"
-      emptyBody={
-        payload?.next_actions?.[0] ??
-        `The local directory and the live Wikipedia/Wikidata search returned nothing for "${query}".`
-      }
+      emptyTitle={providerDown ? "People search unavailable" : "No people matched"}
+      emptyBody={emptyBody}
       onRetry={refetch}
     >
       <div className="u-grid-gap-14">
+        {payload?.source_mode === "public_reference" && (
+          <div role="note" style={referenceNoteStyle}>
+            Bundled reference snapshot dated {payload.reference_as_of ?? "unknown"}.
+            Live search found no match, so these rows are not a live lookup and may be out of date.
+          </div>
+        )}
         <section style={kpiGridStyle} aria-label="PEOP summary">
           <StatCard
             label="Matches"
@@ -271,7 +311,7 @@ export function PEOPPane({ code }: FunctionPaneProps) {
           <StatCard
             label="Top match"
             value={items[0]?.full_name ?? "—"}
-            caption={items[0]?.company ?? ""}
+            caption={items[0] ? firmText(items[0]) : ""}
             tone="neutral"
           />
         </section>
@@ -367,6 +407,12 @@ export function PEOPPane({ code }: FunctionPaneProps) {
     </div>
   );
 }
+
+const referenceNoteStyle: CSSProperties = {
+  fontSize: "var(--font-size-xs)",
+  color: "var(--text-mute)",
+  lineHeight: 1.4,
+};
 
 const kpiGridStyle: CSSProperties = {
   display: "grid",

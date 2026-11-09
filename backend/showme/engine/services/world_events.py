@@ -1190,7 +1190,9 @@ def next_high_impact(
     return None
 
 
-MEET_GDELT_LOOKBACK_DAYS = 2
+# 7-day lookback: the pane's floor is 20 events per followed country per
+# 7-day window — a 2-day GDELT slice starved small-country wires.
+MEET_GDELT_LOOKBACK_DAYS = 7
 MEET_GDELT_LIMIT = 75
 MEET_GDELT_TIMEOUT_SECONDS = 5.0
 

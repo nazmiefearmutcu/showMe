@@ -7,11 +7,11 @@
  * holder), % of shares outstanding, reported/quarter stamp and a per-row
  * source pill.
  *
- * Data honesty: HDS has a live path (yfinance holder tables + local SEC 13F),
- * but when both providers are unavailable the backend falls back to labelled
- * public-reference rows. The pane detects those rows (source_mode containing
- * "reference" / status "reference_holders") and renders a prominent
- * "Reference data" badge + inline note instead of implying live 13F filings.
+ * Data honesty: HDS has a live path (yfinance holder tables + local SEC 13F).
+ * When no provider returns holder rows the backend reports an explicit state
+ * (provider_unavailable / empty / needs_input) with a reason, and the pane
+ * shows that reason instead of rows. The "Reference data" banner is kept as a
+ * guard for any payload that still labels rows as public-reference.
  */
 import { useMemo, type CSSProperties } from "react";
 import {
@@ -263,7 +263,7 @@ export function HDSPane({ code, symbol }: FunctionPaneProps) {
         <StatCard
           label="Total % out"
           value={fmtPctOut(stats.totalPct)}
-          caption="SUM OF ROWS"
+          caption={stats.totalPctCaption}
           tone="neutral"
         />
       </section>
@@ -335,13 +335,22 @@ interface HDSStats {
   topHolder: string | null;
   topShares: number | null;
   institutions: number;
+  /** Fraction of shares outstanding (0.146 = 14.6%), or null when no single table has pct. */
   totalPct: number | null;
+  totalPctCaption: string;
   asOf: string;
 }
 
 function deriveStats(rows: HDSRow[]): HDSStats {
   if (!rows.length) {
-    return { topHolder: null, topShares: null, institutions: 0, totalPct: null, asOf: "—" };
+    return {
+      topHolder: null,
+      topShares: null,
+      institutions: 0,
+      totalPct: null,
+      totalPctCaption: "SUM OF ONE TABLE",
+      asOf: "—",
+    };
   }
   const sorted = [...rows].sort(
     (a, b) => (finite(b.shares) ?? 0) - (finite(a.shares) ?? 0),
@@ -349,10 +358,7 @@ function deriveStats(rows: HDSRow[]): HDSStats {
   const institutions = rows.filter((r) =>
     (r.holder_type ?? "").includes("institutional"),
   ).length;
-  const pctVals = rows
-    .map((r) => normalizePct(r.pct_outstanding))
-    .filter((v): v is number => v != null);
-  const totalPct = pctVals.length ? pctVals.reduce((a, v) => a + v, 0) : null;
+  const pctTable = pctSumTable(rows);
   const dated = rows
     .map((r) => (r.date_reported ?? "").slice(0, 10))
     .filter((d) => /^\d{4}-\d{2}-\d{2}/.test(d))
@@ -363,16 +369,44 @@ function deriveStats(rows: HDSRow[]): HDSStats {
     topHolder: sorted[0]?.holder ?? null,
     topShares: finite(sorted[0]?.shares),
     institutions,
-    totalPct,
+    totalPct: pctTable?.total ?? null,
+    totalPctCaption: pctTable
+      ? `SUM OF ${pctTable.holderType.replace(/_/g, " ").toUpperCase()} ROWS`
+      : "NO SINGLE HOLDER TABLE",
     asOf: dated ?? (quarter ? String(quarter).slice(0, 32) : "—"),
   };
 }
 
-/** Normalize a % outstanding figure: yfinance reports fractions (0.087). */
+/**
+ * pct_outstanding is a fraction of shares outstanding (yfinance pctHeld, 0.087).
+ * The unit is never guessed from magnitude: values outside [0, 1] are missing.
+ */
 function normalizePct(v: unknown): number | null {
   const n = finite(v);
-  if (n == null) return null;
-  return Math.abs(n) <= 1.5 ? n * 100 : n;
+  if (n == null || n < 0 || n > 1) return null;
+  return n * 100;
+}
+
+/**
+ * Total % out sums ONE holder table, as a fraction. Yahoo's mutual-fund
+ * holdings sit inside the institutional managers' share counts, so adding the
+ * two tables double counts. Institutional wins when it has pct rows; otherwise
+ * a lone table with pct rows is summed; mixed leftovers give no total.
+ */
+function pctSumTable(rows: HDSRow[]): { holderType: string; total: number } | null {
+  const withPct = rows.filter((r) => normalizePct(r.pct_outstanding) != null);
+  if (!withPct.length) return null;
+  const types = [...new Set(withPct.map((r) => r.holder_type ?? ""))];
+  const holderType = types.includes("institutional")
+    ? "institutional"
+    : types.length === 1
+      ? types[0]
+      : null;
+  if (holderType == null) return null;
+  const total = withPct
+    .filter((r) => (r.holder_type ?? "") === holderType)
+    .reduce((acc, r) => acc + (finite(r.pct_outstanding) ?? 0), 0);
+  return { holderType: holderType || "holders", total };
 }
 
 function fmtPctOut(v: unknown): string {

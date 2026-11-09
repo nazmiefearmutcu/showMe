@@ -201,6 +201,16 @@ describe("BQUANT pane — configured payload", () => {
   });
 });
 
+describe("BQUANT pane — probe-based readiness copy", () => {
+  it("does not claim modules are preloaded and says readiness comes from the probe", () => {
+    setMockFn({ state: "ok", ...notConfiguredPayload });
+    render(<BQUANTPane code="BQUANT" />);
+    const note = screen.getByLabelText("BQUANT would-render note").textContent ?? "";
+    expect(note).not.toMatch(/preloaded/i);
+    expect(note).toMatch(/answers its probe/i);
+  });
+});
+
 describe("BQUANT pane — refresh", () => {
   it("re-checks readiness from the refresh control", () => {
     setMockFn({ state: "ok", ...notConfiguredPayload });

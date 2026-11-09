@@ -137,7 +137,8 @@ def test_dcfs_tornado_marks_invalid_perturbation() -> None:
     )
     tornado = result.data.get("tornado") or []
     assert tornado, "Tornado should produce some rows."
-    wacc_row = next((row for row in tornado if row.get("input") == "wacc"), None)
+    # DCFS#2 residual: the tornado row is labelled by the discount rate it perturbs.
+    wacc_row = next((row for row in tornado if row.get("input") == "discount_rate"), None)
     assert wacc_row is not None, f"WACC row missing from tornado: {tornado}"
     assert wacc_row.get("status") == "invalid_perturbation" or wacc_row.get("delta") is not None, (
         f"WACC tornado row should be flagged invalid_perturbation when WACC*0.8 ≤ g_terminal. Got: {wacc_row}"

@@ -59,17 +59,17 @@ def hfs() -> FunctionManifest:
             InputSpec(
                 name="quarter",
                 label="Quarter",
-                control=ControlKind.SELECT,
+                control=ControlKind.TEXT,
                 required=False,
-                description="Quarter end (YYYY-Q#); defaults to most-recent ingested quarter.",
+                description="Quarter as YYYY-Q# (for example 2026-Q2) or a report date YYYY-MM-DD. Empty returns every ingested report date, labelled per row.",
             ),
             InputSpec(
                 name="filer_type",
                 label="Filer type",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Optional filer subset.",
-                options=["all", "hedge_fund", "long_only", "pension", "sovereign"],
+                description="Only all is supported: the local 13F store has no filer classification, so other values return input_error.",
+                options=["all"],
             ),
             InputSpec(
                 name="provider_mode",
@@ -126,7 +126,8 @@ def hfs() -> FunctionManifest:
         ),
         methodology=(
             "HFS resolves the issuer to a CUSIP, then queries the local duckdb 13F store for all "
-            "filers reporting the security in the chosen (or most-recent ingested) quarter. Each "
+            "filers reporting the security in the chosen quarter (with no quarter, every ingested "
+            "report date, each row labelled with its report_date). Each "
             "row carries shares + notional + percent-of-portfolio + quarter-over-quarter share "
             "delta. The duckdb store is populated by `scripts/ingest_13f.py`; if the store is "
             "empty the response is status=provider_unavailable / mode=not_configured with a "
@@ -158,10 +159,10 @@ def hfs() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="hfs_filer_type_filter_applies",
-                description="filer_type=hedge_fund restricts the result to hedge_fund rows.",
+                name="hfs_filer_type_non_all_is_refused",
+                description="filer_type other than all returns input_error on filer_type with no rows; the store has no filer classification.",
                 inputs={"symbol": "AAPL", "filer_type": "hedge_fund"},
-                assertions=["all_filers_have_filer_type_hedge_fund_when_populated"],
+                assertions=["status == 'input_error'", "field == 'filer_type'", "rows_empty"],
             ),
             SemanticTest(
                 name="hfs_empty_store_returns_not_configured",

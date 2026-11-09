@@ -94,6 +94,46 @@ function mapInterval(interval: IntervalId): string {
   return interval;
 }
 
+/**
+ * Detects a bar-cap shortfall. The alias keeps the newest `bars` rows inside
+ * the requested window, so a full cap (rows.length >= barCap) whose span is
+ * well short of the requested days means the cap cut the window. Returns the
+ * measured span, or null when the window is covered or cannot be measured.
+ */
+export function historyWindowShortfall(
+  rows: HPRow[],
+  requestedDays: number,
+  barCap: number,
+): { spanDays: number; requestedDays: number } | null {
+  if (rows.length < barCap || !(requestedDays > 0)) return null;
+  let minMs = Number.POSITIVE_INFINITY;
+  let maxMs = Number.NEGATIVE_INFINITY;
+  for (const r of rows) {
+    const t = Date.parse(r.date ?? r.ts ?? "");
+    if (!Number.isFinite(t)) continue;
+    if (t < minMs) minMs = t;
+    if (t > maxMs) maxMs = t;
+  }
+  if (!Number.isFinite(minMs) || !Number.isFinite(maxMs) || maxMs <= minMs) {
+    return null;
+  }
+  const spanDays = (maxMs - minMs) / 86_400_000;
+  return spanDays < requestedDays * 0.9 ? { spanDays, requestedDays } : null;
+}
+
+function fmtSpanDays(days: number): string {
+  if (days >= 365) return `${(days / 365).toFixed(1)} years`;
+  if (days >= 1) return `${days.toFixed(1)} days`;
+  return `${(days * 24).toFixed(1)} hours`;
+}
+
+const windowShortfallStyle: CSSProperties = {
+  padding: "6px 12px",
+  fontSize: 12,
+  color: "var(--text-secondary)",
+  borderBottom: "1px solid var(--border-subtle, rgba(127,127,127,0.25))",
+};
+
 function mapStyle(style: ChartStyle): "candles" | "line" | "area" {
   return style === "candle" ? "candles" : style;
 }
@@ -124,6 +164,11 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
   });
 
   const rows = useMemo(() => decorate(normalizeRows(data?.data)), [data]);
+  const windowShortfall = useMemo(
+    () => historyWindowShortfall(rows, days, DEFAULT_BARS),
+    [rows, days],
+  );
+  const rangeLabel = RANGES.find((r) => r.id === range)?.label ?? range;
   // S12 HP live-data wiring: HP subscribes to the canonical live quote
   // channel (`useLiveQuote`) so the header strip reports honest transport
   // state (RT LIVE / RECONNECTING / STALE / SNAPSHOT ONLY / OFFLINE) and
@@ -153,9 +198,17 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
       .map((r) => r.close ?? r.adj_close ?? r.adjClose)
       .filter((v): v is number => v != null);
     if (!closes.length) return null;
+    // Range extremes are the bar highs and lows ("Range high/low" labels);
+    // a bar missing its high/low falls back to its close.
+    const highs = rows
+      .map((r) => r.high ?? r.close ?? r.adj_close ?? r.adjClose)
+      .filter((v): v is number => v != null);
+    const lows = rows
+      .map((r) => r.low ?? r.close ?? r.adj_close ?? r.adjClose)
+      .filter((v): v is number => v != null);
     // UA-CRITICAL-01: stack-safe; closes can be 10k+ rows on intraday history.
-    const high = maxOf(closes);
-    const low = minOf(closes);
+    const high = maxOf(highs);
+    const low = minOf(lows);
     const first = closes[closes.length - 1];
     const last = closes[0];
     const totalPct = first ? ((last - first) / first) * 100 : null;
@@ -310,6 +363,18 @@ export function HPPane({ code, symbol }: FunctionPaneProps) {
             />
           </div>
         </div>
+
+        {windowShortfall ? (
+          <div
+            role="status"
+            data-testid="hp-window-truncated"
+            style={windowShortfallStyle}
+          >
+            Only {fmtSpanDays(windowShortfall.spanDays)} of the {rangeLabel} window is
+            loaded: HP requests at most {DEFAULT_BARS} bars at this interval, so older
+            bars are cut. A coarser interval covers a longer span.
+          </div>
+        ) : null}
 
         <PaneBody className="u-p-0 u-flex u-min-h-0">
           {!effectiveSymbol ? (
@@ -609,8 +674,10 @@ function RightRail({
   symbol: string;
 }) {
   const indicators = useMemo(() => computeIndicators(rows), [rows]);
-  const support = stats ? stats.low + (stats.high - stats.low) * 0.236 : null;
-  const resist = stats ? stats.low + (stats.high - stats.low) * 0.786 : null;
+  // Standard retracements of the low-to-high move, measured down from the
+  // range high: level = high - fraction * span.
+  const fib236 = stats ? stats.high - (stats.high - stats.low) * 0.236 : null;
+  const fib786 = stats ? stats.high - (stats.high - stats.low) * 0.786 : null;
   // True 52-week extremes when the provider meta carried them; otherwise the
   // label is honest about being the selected range's high/low.
   const highLabel = week52 ? "52w high" : "Range high";
@@ -619,8 +686,18 @@ function RightRail({
   return (
     <aside style={rightRailStyle}>
       <RailSection title="Key levels">
-        <RailKv label="Support" value={fmtNum(support)} tone="positive" />
-        <RailKv label="Resistance" value={fmtNum(resist)} tone="negative" />
+        <RailKv
+          label="Fib 23.6%"
+          value={fmtNum(fib236)}
+          tone="positive"
+          title="Fibonacci 23.6% retracement of the selected range, measured down from the range high. A computed level, not a support signal."
+        />
+        <RailKv
+          label="Fib 78.6%"
+          value={fmtNum(fib786)}
+          tone="negative"
+          title="Fibonacci 78.6% retracement of the selected range, measured down from the range high. A computed level, not a resistance signal."
+        />
         <RailKv
           label={highLabel}
           value={fmtNum(week52?.high ?? stats?.high)}
@@ -704,10 +781,12 @@ function RailKv({
   label,
   value,
   tone = "neutral",
+  title,
 }: {
   label: string;
   value: string;
   tone?: "positive" | "negative" | "neutral" | "accent";
+  title?: string;
 }) {
   const color =
     tone === "positive"
@@ -718,7 +797,7 @@ function RailKv({
           ? "var(--accent)"
           : "var(--text-primary)";
   return (
-    <div style={railKvRowStyle}>
+    <div style={railKvRowStyle} title={title}>
       <span style={railKvLabelStyle}>{label}</span>
       <span style={{ ...railKvValueStyle, color }}>{value}</span>
     </div>
@@ -859,7 +938,7 @@ function lastDefined(values: (number | null)[]): number | null {
 }
 
 /** Wilder RSI, aligned to the close series (null before the first value). */
-function rsiSeries(closes: number[], period = 14): (number | null)[] {
+export function rsiSeries(closes: number[], period = 14): (number | null)[] {
   const out: (number | null)[] = new Array(closes.length).fill(null);
   if (closes.length <= period) return out;
   let gains = 0;
@@ -872,6 +951,10 @@ function rsiSeries(closes: number[], period = 14): (number | null)[] {
       if (i === period) {
         const rs = losses === 0 ? 100 : gains / losses;
         out[i] = 100 - 100 / (1 + rs);
+        // Wilder seed is the simple AVERAGE of the first `period` gains and
+        // losses. Carrying the sum made the recurrence 14x too large.
+        gains /= period;
+        losses /= period;
       }
     } else {
       const gain = diff >= 0 ? diff : 0;
@@ -955,9 +1038,17 @@ function trueAtrSeries(
   return out;
 }
 
-function computeIndicators(
-  rows: Array<HPRow & { _change?: number; _changePct?: number }>,
+export function computeIndicators(
+  input: Array<HPRow & { _change?: number; _changePct?: number }>,
 ) {
+  // The indicator recursions (EMA, Wilder RSI, true range) must run oldest ->
+  // newest. decorate() hands rows over newest-first for display, so order the
+  // series here rather than trusting the caller's order.
+  const rows = [...input].sort(
+    (a, b) =>
+      new Date(a.date ?? a.ts ?? "").getTime() -
+      new Date(b.date ?? b.ts ?? "").getTime(),
+  );
   const closes = rows
     .map((r) => r.close ?? r.adj_close ?? r.adjClose)
     .filter((v): v is number => v != null && Number.isFinite(v));

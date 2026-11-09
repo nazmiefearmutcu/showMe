@@ -157,15 +157,13 @@ describe("TLH Tax-Loss Harvesting pane", () => {
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
   });
 
-  it("toggles the MODEL control state", () => {
+  it("has no LIVE/MODEL toggle and never asks for the removed model path", () => {
     ok(LIVE_PAYLOAD);
     render(<TaxLossHarvestPane code="TLH" />);
-    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
-    expect(screen.getByRole("button", { name: "MODEL" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "MODEL" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "LIVE" })).toBeNull();
   });
-});
 
-describe("TLH tax assumptions (user-controlled, persisted)", () => {
   it("sends the default bracket / LT-rate as fractions", () => {
     ok(LIVE_PAYLOAD);
     render(<TaxLossHarvestPane code="TLH" />);

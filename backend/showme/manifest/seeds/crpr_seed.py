@@ -1,10 +1,10 @@
-"""CRPR — Credit Rating Profile (agency rating snapshot).
+"""CRPR — Credit Rating Profile (model-implied credit profile).
 
-Displays the agency rating record for an issuer (S&P, Moody's, Fitch)
-with outlook, watch state, rating date, and rationale per row. Without a
-paid ratings feed the engine ships a public/default sovereign profile
-explicitly labelled ``manual_or_public_defaults`` so the row source is
-never mistaken for a live agency feed.
+For a corporate issuer the engine derives a MODEL-IMPLIED rating bucket from
+SEC EDGAR companyfacts (leverage and interest coverage) and emits one
+``model_implied`` row. It is not a paid S&P / Moody's / Fitch rating. Sovereign
+issuers get an empty payload. A pinned ``rating`` override is echoed as three
+agency rows with ``source_mode=user_input``.
 """
 from __future__ import annotations
 
@@ -38,9 +38,10 @@ def crpr() -> FunctionManifest:
         name="Credit Rating Profile",
         category=Category.BONDS_RATES,
         intent=(
-            "Show the per-agency credit rating snapshot (S&P / Moody's / Fitch)"
-            " for an issuer with outlook, watch state, and rationale so a desk"
-            " can read credit headlines next to portfolio holdings."
+            "Show a model-implied credit profile for a corporate issuer, built from SEC"
+            " financials (leverage and interest coverage), with its rationale so a desk"
+            " can read a transparent credit bucket next to portfolio holdings. Not an"
+            " agency rating."
         ),
         asset_classes=[AssetClass.BOND, AssetClass.EQUITY],
         inputs=[
@@ -63,14 +64,6 @@ def crpr() -> FunctionManifest:
                 ),
             ),
             InputSpec(
-                name="bucket",
-                label="Implied bucket",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Coarse credit bucket label surfaced in the summary.",
-                options=["high_grade", "investment_grade", "crossover", "high_yield", "distressed"],
-            ),
-            InputSpec(
                 name="provider_mode",
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
@@ -84,7 +77,6 @@ def crpr() -> FunctionManifest:
             ),
         ],
         defaults={
-            "bucket": "high_grade",
             "provider_mode": DataMode.MODELED.value,
         },
         provider_chain=ProviderChain(
@@ -129,23 +121,26 @@ def crpr() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "CRPR returns one row per rating agency (S&P / Moody's / Fitch) with the visible rating,"
-            " outlook, watch state, rating date, and a rationale string. When the caller pins a"
-            " ``rating`` dict the engine echoes it verbatim and marks ``source_mode=user_input``."
-            " Without an explicit override the engine returns a bundled public/default sovereign"
-            " profile marked ``source_mode=manual_or_public_defaults`` with a warning explaining the"
-            " row is not from a paid live agency feed. The agency scale ladder (AAA → CCC) is"
-            " surfaced in the response so the renderer can plot the bucket next to the row."
+            "For a corporate issuer CRPR derives a MODEL-IMPLIED credit profile from the latest SEC"
+            " EDGAR companyfacts (XBRL): gross debt = LongTermDebt (+ current) + ShortTermBorrowings;"
+            " EBITDA proxy = OperatingIncomeLoss + DepreciationDepletionAndAmortization; interest"
+            " coverage = EBITDA / InterestExpense. Leverage and coverage map to a coarse, transparent"
+            " bucket (AA to CCC). It emits one row with agency=model_implied and"
+            " source_mode=model_implied_from_financials. It is not a paid S&P / Moody's / Fitch"
+            " rating, and a warning says so. A pinned ``rating`` dict is echoed verbatim as three"
+            " agency rows with source_mode=user_input. A sovereign issuer (no SEC CIK) gets"
+            " status=empty and no rating row, because no keyless sovereign rating feed is wired."
+            " The agency scale ladder (AAA to CCC) is returned so the renderer can plot the bucket."
         ),
         formula_dict={},
         field_dict={
-            "rows[].agency": FieldDef(description="Rating agency (S&P / Moody's / Fitch).", source="catalog"),
-            "rows[].rating": FieldDef(description="Agency long-term credit rating.", source="user_or_default"),
-            "rows[].outlook": FieldDef(description="Stable / positive / negative outlook when available.", source="user_or_default"),
-            "rows[].watch": FieldDef(description="Watchlist state when available.", source="user_or_default"),
-            "rows[].rating_date": FieldDef(unit="date", description="Date attached to the visible rating snapshot.", source="user_or_default"),
-            "rows[].rationale": FieldDef(description="Why this row is shown and whether it is fallback data.", source="adapter"),
-            "summary.implied_bucket": FieldDef(description="Coarse credit bucket label inferred from the rating set.", source="adapter"),
+            "rows[].agency": FieldDef(description="Row source: model_implied, or the pinned override label.", source="adapter"),
+            "rows[].rating": FieldDef(description="Model-implied rating bucket, or the pinned override rating.", source="derived from SEC financials or user_input"),
+            "rows[].outlook": FieldDef(description="Stable / positive / negative, derived with the bucket or pinned.", source="derived from SEC financials or user_input"),
+            "rows[].watch": FieldDef(description="Watchlist state; 'none' unless pinned.", source="user_input or default"),
+            "rows[].rating_date": FieldDef(unit="date", description="As-of date of the underlying SEC financials or the override.", source="SEC EDGAR or user_input"),
+            "rows[].rationale": FieldDef(description="Leverage and coverage inputs, or the override note.", source="adapter"),
+            "summary.implied_bucket": FieldDef(description="Coarse credit bucket label inferred from leverage and coverage.", source="adapter"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -155,16 +150,31 @@ def crpr() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="crpr_default_response_is_labelled",
+                name="crpr_corporate_emits_one_model_implied_row",
                 description=(
-                    "Without a user-supplied rating the response is marked"
-                    " source_mode=manual_or_public_defaults and includes a warning that the row is"
-                    " not from a paid live agency feed."
+                    "A corporate issuer with SEC companyfacts returns exactly one row with"
+                    " agency=model_implied and source_mode=model_implied_from_financials, plus a"
+                    " warning that the rating is not a paid agency rating."
+                ),
+                inputs={"issuer": "AAPL"},
+                assertions=[
+                    "rows_length_equals_1",
+                    "agency_equals_model_implied",
+                    "source_mode_equals_model_implied_from_financials",
+                    "warning_mentions_model_implied_not_agency",
+                ],
+            ),
+            SemanticTest(
+                name="crpr_sovereign_returns_no_rating_row",
+                description=(
+                    "A sovereign issuer with no SEC CIK returns status=empty, no rating row and a"
+                    " reason, and never a constant rating."
                 ),
                 inputs={"issuer": "US Treasury"},
                 assertions=[
-                    "source_mode_equals_manual_or_public_defaults",
-                    "warning_mentions_public_defaults_or_no_live_feed",
+                    "status_equals_empty",
+                    "rows_empty",
+                    "reason_present",
                 ],
             ),
             SemanticTest(
@@ -177,9 +187,9 @@ def crpr() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="crpr_emits_three_agency_rows",
-                description="Every response carries exactly three rows (S&P, Moody's, Fitch) so the table layout stays stable.",
-                inputs={"issuer": "US Treasury"},
+                name="crpr_override_emits_three_agency_rows",
+                description="A pinned rating override carries exactly three rows (S&P, Moody's, Fitch).",
+                inputs={"issuer": "GENERIC", "rating": {"sp": "BB", "moodys": "Ba2", "fitch": "BB", "outlook": "negative"}},
                 assertions=["rows_length_equals_3"],
             ),
             SemanticTest(

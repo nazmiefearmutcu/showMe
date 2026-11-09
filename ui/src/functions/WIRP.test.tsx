@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { WIRPPane, anchorEntries, cumulativeBpPath } from "./WIRP";
+import { WIRPPane, anchorEntries, impliedLevelPath, lastImpliedBp } from "./WIRP";
 
 /* ── useFunction / tick mocks ─────────────────────────────────────── */
 
@@ -90,8 +90,7 @@ function livePayload() {
           current_target_mid: 3.625,
           current_target_upper: 3.75,
           current_target_lower: 3.5,
-          implied_near_term_rate: 3.5,
-          implied_near_term_source: "^IRX 13-week T-bill",
+          tbill_13w_pct: 3.5,
           effr: 3.63,
           as_of: "2026-09-12",
         },
@@ -145,12 +144,12 @@ afterEach(() => {
 });
 
 describe("WIRP pane — source-mode honesty", () => {
-  it("labels a live_fed_funds_futures payload as live, never reference", () => {
+  it("never labels the retired live_fed_funds_futures label as live", () => {
     setMockFn({ state: "ok", ...livePayload() });
     render(<WIRPPane code="WIRP" />);
     const pill = screen.getByTestId("wirp-mode-pill");
-    expect(within(pill).getByText("live")).toBeInTheDocument();
-    expect(screen.queryByText(/Reference probability table/i)).toBeNull();
+    expect(within(pill).getByText("reference table")).toBeInTheDocument();
+    expect(screen.getByText(/Reference probability table/i)).toBeInTheDocument();
     expect(screen.getByText("2026-09-16")).toBeInTheDocument();
   });
 
@@ -226,13 +225,15 @@ describe("WIRP pane — visibility poll (F4 refetch contract)", () => {
 /* ── campaign C1: implied path + anchor labels ─────────────────────── */
 
 describe("WIRP pane — implied-path derivation (real fields only)", () => {
-  it("builds a zero-baseline cumulative path from implied_change_bp", () => {
+  it("plots each meeting's implied level as-is, not a running sum", () => {
+    // implied_change_bp is already the move vs the anchor at that meeting
+    // (cumulative to that date), so summing it again double-counts.
     const rows = [
       { implied_change_bp: -1.25 },
       { implied_change_bp: -2.5 },
       { implied_change_bp: 0 },
     ];
-    expect(cumulativeBpPath(rows)).toEqual([0, -1.25, -3.75, -3.75]);
+    expect(impliedLevelPath(rows)).toEqual([0, -1.25, -2.5, 0]);
   });
 
   it("skips meetings without a finite implied move instead of zeroing them", () => {
@@ -242,11 +243,29 @@ describe("WIRP pane — implied-path derivation (real fields only)", () => {
       { implied_change_bp: Number.NaN },
       { implied_change_bp: 2.5 },
     ];
-    expect(cumulativeBpPath(rows)).toEqual([0, 5, 7.5]);
+    expect(impliedLevelPath(rows)).toEqual([0, 5, 2.5]);
   });
 
   it("returns an empty path when no meeting carries an implied move", () => {
-    expect(cumulativeBpPath([{ date: "2026-09-16" }])).toEqual([]);
+    expect(impliedLevelPath([{ date: "2026-09-16" }])).toEqual([]);
+  });
+
+  it("reports the last finite implied move, not a sum of meetings", () => {
+    expect(
+      lastImpliedBp([
+        { implied_change_bp: -1.25 },
+        { implied_change_bp: -2.5 },
+      ]),
+    ).toBe(-2.5);
+    expect(lastImpliedBp([{ date: "2026-09-16" }])).toBeNull();
+  });
+
+  it("shows the last meeting's implied move in the KPI ribbon, not the sum", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<WIRPPane code="WIRP" />);
+    const ribbon = screen.getByLabelText("WIRP KPI ribbon");
+    expect(within(ribbon).getByText("-2.5 bp")).toBeInTheDocument();
+    expect(within(ribbon).queryByText("-3.8 bp")).toBeNull();
   });
 
   it("derives anchor labels only from fields present on the wire", () => {
@@ -255,17 +274,16 @@ describe("WIRP pane — implied-path derivation (real fields only)", () => {
         current_target_mid: 3.625,
         current_target_upper: 3.75,
         current_target_lower: 3.5,
-        implied_near_term_rate: 3.5,
-        implied_near_term_source: "^IRX 13-week T-bill",
+        tbill_13w_pct: 3.5,
       }),
     ).toEqual([
       { key: "target", label: "Target", value: "3.50–3.75%" },
       { key: "mid", label: "Mid", value: "3.625%" },
       {
-        key: "near",
-        label: "Near-term",
+        key: "tbill",
+        label: "13w T-bill",
         value: "3.500%",
-        title: "^IRX 13-week T-bill",
+        title: "13-week T-bill yield: a bill basis, not a policy-rate expectation",
       },
     ]);
     // Absent anchor → no fabricated labels.
@@ -279,13 +297,13 @@ describe("WIRP pane — implied-path derivation (real fields only)", () => {
     const panel = screen.getByLabelText("WIRP implied path");
     expect(
       within(panel).getByRole("img", {
-        name: "Cumulative implied policy-rate path",
+        name: "Implied policy-rate path vs anchor",
       }),
     ).toBeInTheDocument();
     expect(within(panel).getByText("3.50–3.75%")).toBeInTheDocument();
     expect(within(panel).getByText("3.625%")).toBeInTheDocument();
     expect(within(panel).getByText("3.500%")).toBeInTheDocument();
-    expect(within(panel).getByText(/Σ implied Δ from the FED anchor/)).toBeInTheDocument();
+    expect(within(panel).getByText(/Implied Δ vs the FED anchor at each meeting/)).toBeInTheDocument();
   });
 
   it("keeps the anchor strip but drops the sparkline honestly when the series is absent", () => {
@@ -308,5 +326,45 @@ describe("WIRP pane — implied-path derivation (real fields only)", () => {
     setMockFn({ state: "ok", ...payload });
     render(<WIRPPane code="WIRP" />);
     expect(screen.queryByLabelText("WIRP implied path")).toBeNull();
+  });
+});
+
+describe("WIRP pane — keyless basis is an anchor, never odds", () => {
+  it("shows the FRED target and T-bill basis as reference anchors with no hike/cut rows", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "provider_unavailable",
+          source_mode: "provider_unavailable",
+          data_mode: "provider_unavailable",
+          rows: [],
+          anchor: {
+            current_target_mid: 4.375,
+            current_target_upper: 4.5,
+            current_target_lower: 4.25,
+            tbill_13w_pct: 4.3,
+          },
+          cards: [],
+          field_dictionary: {},
+        },
+        warnings: [
+          "Hike/cut probabilities unavailable: no keyless market-implied policy-rate source.",
+        ],
+        sources: ["fred", "yfinance"],
+      },
+    });
+    render(<WIRPPane code="WIRP" />);
+    expect(
+      within(screen.getByTestId("wirp-mode-pill")).getByText("unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No meetings — probabilities unavailable/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Hike\/cut probabilities unavailable/),
+    ).toBeInTheDocument();
+    const panel = screen.getByLabelText("WIRP reference anchors");
+    expect(within(panel).getByText("4.300%")).toBeInTheDocument();
+    expect(within(panel).getByText("13w T-bill")).toBeInTheDocument();
+    expect(within(panel).getByText("4.375%")).toBeInTheDocument();
   });
 });

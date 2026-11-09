@@ -18,7 +18,6 @@ from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.quote import Quote
 from showme.engine.functions.screen._funcs import (
     WEIFunction,
-    _WORLD_INDEX_BASELINE,
     _WORLD_INDEX_META,
     _complete_world_index_rows,
     _world_index_symbols,
@@ -92,13 +91,6 @@ def test_each_region_has_multiple_indices() -> None:
         assert n >= 2, f"region {region} only has {n} index(es)"
 
 
-def test_every_symbol_has_a_baseline_so_template_never_defaults() -> None:
-    # Guards META/BASELINE drift: a symbol added to META without a baseline
-    # would silently render a wrong-magnitude ~1000.0 model level.
-    missing = set(_world_index_symbols()) - set(_WORLD_INDEX_BASELINE.keys())
-    assert not missing, f"symbols missing from _WORLD_INDEX_BASELINE: {missing}"
-
-
 def test_template_derives_from_symbol_set_and_is_labelled_model() -> None:
     template = _world_index_template()
     template_symbols = {row["symbol"] for row in template}
@@ -106,9 +98,11 @@ def test_template_derives_from_symbol_set_and_is_labelled_model() -> None:
         "template must cover exactly the curated world-index set"
     )
     for row in template:
-        assert row.get("market_state") == "model", (
-            f"{row['symbol']} fallback row not labelled model"
+        # WEI#3 follow-up: identity only, no invented level.
+        assert row.get("market_state") == "unavailable", (
+            f"{row['symbol']} fallback row not labelled unavailable"
         )
+        assert row.get("last") is None and row.get("change_pct") is None, row
         assert row.get("name"), f"{row['symbol']} template row missing name"
         assert row.get("region") in _REGIONS, f"{row['symbol']} template region invalid"
 
@@ -126,7 +120,7 @@ def test_partial_live_fetch_never_drops_unresolved_symbols() -> None:
     assert {row["symbol"] for row in rows} == set(_world_index_symbols())
     by_symbol = {row["symbol"]: row for row in rows}
     assert by_symbol["^GSPC"]["last"] == 100.0
-    assert by_symbol["^GSPC"]["market_state"] == "live"
+    assert by_symbol["^GSPC"]["market_state"] == "unknown"  # no provider session state (WEI#1)
     unresolved = [row for row in rows if row["symbol"] not in {"^GSPC", "^N225"}]
     assert unresolved, "test needs unresolved rows"
     for row in unresolved:
@@ -156,10 +150,11 @@ def test_non_live_payload_is_model_with_as_of() -> None:
     out = asyncio.run(WEIFunction().execute(live=False))
     rows = out.data["rows"]
     assert rows, "non-live WEI returned no rows"
-    assert all(r.get("market_state") == "model" for r in rows)
-    # Honesty: a real data freshness stamp must be present.
-    assert out.data.get("as_of"), "non-live WEI payload missing as_of timestamp"
+    assert all(r.get("market_state") == "unavailable" and r.get("last") is None for r in rows)
+    # Honesty: the model carries its generation time, never a fake market as_of.
+    assert out.data.get("generated_at"), "non-live WEI payload missing generated_at"
+    assert "as_of" not in out.data
     assert out.data.get("source_mode") == "world_index_template"
-    assert out.data.get("status") == "ok"
+    assert out.data.get("status") == "model"
     assert out.metadata.get("live") is False
     assert out.metadata.get("fallback") is True

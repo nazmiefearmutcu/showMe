@@ -103,6 +103,10 @@ interface BBGTData {
   time_in_force?: string;
   price?: number | null;
   leverage?: number | null;
+  notional?: number | null;
+  notional_currency?: string | null;
+  notional_indicative?: boolean | null;
+  notional_reason?: string | null;
   order_id?: string;
   reason?: string;
   next_actions?: string[];
@@ -525,6 +529,20 @@ function PreviewView({
             <span style={monoPrimaryStyle}>
               {typeof p?.price === "number" && p.price > 0 ? String(p.price) : "—"}
             </span>
+          }
+        />
+        <PreviewRow
+          label="Notional"
+          value={
+            typeof p?.notional === "number" ? (
+              <span style={monoPrimaryStyle} data-field="notional">
+                {p.notional.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                {p?.notional_currency ? ` ${p.notional_currency}` : ""}
+                {p?.notional_indicative ? " · indicative" : ""}
+              </span>
+            ) : (
+              <span title={p?.notional_reason ?? undefined}>—</span>
+            )
           }
         />
         <PreviewRow

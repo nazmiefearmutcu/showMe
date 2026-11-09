@@ -24,6 +24,13 @@ import pytest
 from showme.engine.core.instrument import AssetClass, Instrument
 
 
+def _fresh_quote_time():
+    """A quote stamped now: the stubbed board is live, not a stale reference."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
 def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
@@ -204,7 +211,12 @@ def test_fxgo_default_board_live_or_graceful_real_network():
             assert key in first
         assert first["bid"] > 0 and first["ask"] > 0
         assert first["ask"] >= first["bid"]
-        assert data["data_mode"] == "live_exchange"
+        # A quote older than the stale threshold must NOT be labelled live.
+        # FXGO#1-RQ: cards.status is "ok" only for a live board.
+        if data["cards"]["status"] == "ok":
+            assert data["data_mode"] == "live_yfinance_quote"
+        else:
+            assert data["data_mode"] == "delayed_reference"
     else:
         # Offline / rate-limited: honest unavailable shape, no numbers.
         assert data["data_mode"] == "provider_unavailable"
@@ -216,16 +228,21 @@ def test_fxgo_default_board_ok_with_stub(monkeypatch):
     """Deterministic default-path board with a stubbed spot (no network)."""
     from showme.engine.functions.trade._funcs import FXGOFunction
 
+    # FXGO#1: a live label needs a provider quote time; the stub supplies a fresh one.
     monkeypatch.setattr(
         FXGOFunction, "_fetch_fx_spot",
-        lambda self, pair: (1.10 if not pair.upper().endswith("JPY") else 150.0, None),
+        lambda self, pair: (
+            1.10 if not pair.upper().endswith("JPY") else 150.0,
+            None,
+            {"previous_close_date": None, "quote_time": _fresh_quote_time()},
+        ),
     )
 
     h = _mk_handler(FXGOFunction, deps=None)
     res = _run(h.execute())
     data = res.data
     assert data["status"] == "ok"
-    assert data["data_mode"] == "live_exchange"
+    assert data["data_mode"] == "live_yfinance_quote"
     assert len(data["rows"]) == len(FXGOFunction._BOARD_PAIRS)
     assert "yfinance" in res.sources
     first = data["rows"][0]
@@ -256,20 +273,48 @@ def test_fxgo_partial_board_survival_is_labelled_degraded(monkeypatch):
     assert res.metadata["row_count"] == 2
 
 
+def test_fxgo_partial_board_cards_status_is_not_ok(monkeypatch):
+    """FXGO#1-RQ: a degraded board (provider failures) must not be labelled
+    cards.status 'ok' just because the surviving rows are fresh."""
+    from showme.engine.functions.trade._funcs import FXGOFunction
+
+    def half_failing(self, pair):
+        if pair.upper().startswith("EUR"):
+            return (
+                1.10,
+                None,
+                {"previous_close_date": None, "quote_time": _fresh_quote_time()},
+            )
+        raise RuntimeError("simulated 404")
+
+    monkeypatch.setattr(FXGOFunction, "_fetch_fx_spot", half_failing)
+    h = _mk_handler(FXGOFunction, deps=None)
+    res = _run(h.execute(pairs="EURUSD,GBPUSD"))
+    data = res.data
+    assert data["data_mode"] == "delayed_reference"
+    assert data["cards"]["data_mode"] == "delayed_reference"
+    assert data["cards"]["status"] != "ok", data["cards"]
+
+
 def test_fxgo_board_via_injected_spot(monkeypatch):
     """With a stubbed FX spot, the board computes a real bid/ask/spread."""
     from showme.engine.functions.trade._funcs import FXGOFunction
 
+    # FXGO#1: a live label needs a provider quote time; the stub supplies a fresh one.
     monkeypatch.setattr(
         FXGOFunction, "_fetch_fx_spot",
-        lambda self, pair: (1.0850, 1.0800),
+        lambda self, pair: (
+            1.0850,
+            1.0800,
+            {"previous_close_date": None, "quote_time": _fresh_quote_time()},
+        ),
     )
 
     h = _mk_handler(FXGOFunction, deps=None)
     res = _run(h.execute(pairs="EURUSD"))
     data = res.data
     assert data["status"] == "ok"
-    assert data["data_mode"] == "live_exchange"
+    assert data["data_mode"] == "live_yfinance_quote"
     row = data["rows"][0]
     assert row["pair"] == "EURUSD"
     assert row["mid"] == pytest.approx(1.0850, abs=1e-6)

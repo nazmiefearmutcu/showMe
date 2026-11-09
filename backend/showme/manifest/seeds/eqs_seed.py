@@ -137,7 +137,7 @@ def eqs() -> FunctionManifest:
                 ColumnSpec(key="sector", label="Sector", kind="tag"),
                 ColumnSpec(key="market_cap", label="Mkt Cap", kind="currency", format="si"),
                 ColumnSpec(key="pe", label="P/E", kind="number", format="%.2f"),
-                ColumnSpec(key="dividend_yield", label="Div Y", kind="percent", format="%.2f"),
+                ColumnSpec(key="dividend_yield", label="Div Y", kind="percent", unit="ratio", format="%.2f"),
                 ColumnSpec(key="beta", label="β", kind="number", format="%.2f"),
                 ColumnSpec(key="change_pct", label="Δ %", kind="percent", format="%.2f"),
                 ColumnSpec(key="volume", label="Vol", kind="number", format="si"),

@@ -24,7 +24,9 @@ from showme.engine.functions.commodity._funcs import (
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run: a fresh loop per call. ``get_event_loop()`` raises
+    # "no current event loop" on Python 3.12+/3.13 (see test_session03_codes).
+    return asyncio.run(coro)
 
 
 def _make_handler():
@@ -46,11 +48,14 @@ _OK_STATUSES = {"ok", "empty"}
 def test_cpf_series_map_covers_manifest_options():
     # The manifest seed offers these series_id options; the map must route
     # each to a real keyless Yahoo futures proxy (no canned constants).
-    for sid in ("WTISPLC", "DCOILWTICO", "DHHNGSP", "PCOPPUSDM", "PGOLD", "PNGASEUUSDM"):
+    for sid in ("WTISPLC", "DCOILWTICO", "DHHNGSP", "PCOPPUSDM", "PGOLD"):
         assert sid in CPF_SERIES_MAP, f"{sid} missing from CPF_SERIES_MAP"
         entry = CPF_SERIES_MAP[sid]
         assert entry["futures"].endswith("=F")
         assert entry["unit"]
+    # CPF#1: European gas was mapped to the Henry Hub contract (NG=F); it must
+    # not be routed at all now.
+    assert "PNGASEUUSDM" not in CPF_SERIES_MAP
 
 
 def test_cpf_returns_live_or_graceful_unavailable():

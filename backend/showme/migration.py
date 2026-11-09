@@ -219,7 +219,7 @@ def import_state(
             )
             pos_done += 1
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"position {sym}: {exc}")
+            warnings.append(f"position {sym}: {str(exc) or type(exc).__name__}")
             pos_skip += 1
 
     if not isinstance(trades, list):
@@ -260,7 +260,7 @@ def import_state(
             )
             tr_done += 1
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"trade {trade.get('symbol')}: {exc}")
+            warnings.append(f"trade {trade.get('symbol')}: {str(exc) or type(exc).__name__}")
             tr_skip += 1
 
     finished = time.time()

@@ -135,6 +135,15 @@ export function ManifestPane(props: ManifestPaneProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manifest]);
 
+  // UI-1: the terminal link owns the symbol. initialInputs only seeds the first
+  // render, so follow later link changes here; a non-empty linked symbol replaces
+  // the current one (the same rule HFS applies), and a cleared link keeps it.
+  const linkedSymbol = typeof initialInputs?.symbol === "string" ? initialInputs.symbol.trim() : "";
+  useEffect(() => {
+    if (!linkedSymbol) return;
+    setInputs((prev) => (prev.symbol === linkedSymbol ? prev : { ...prev, symbol: linkedSymbol }));
+  }, [linkedSymbol]);
+
   // Fetch data with the current inputs.
   const fnResult = useFunction<ManifestPanePayload>({
     code,
@@ -287,7 +296,11 @@ function formatAsOf(iso: string): string {
     const sameDay = d.toDateString() === now.toDateString();
     const hms = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     if (sameDay) return `${hms} · today`;
-    return `${d.toISOString().slice(0, 10)} · ${hms}`;
+    // Date parts come from the same local zone as the clock time above; the
+    // former toISOString() slice printed the UTC calendar date next to a
+    // local time, which is a day off for UTC+ users before local midnight.
+    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return `${ymd} · ${hms}`;
   } catch {
     return iso;
   }

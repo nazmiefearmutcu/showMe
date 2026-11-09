@@ -5,9 +5,9 @@ relevant regions (US northeast for heating, US Gulf for hurricanes,
 EU NW / Asia East for cooling demand) with HDD/CDD and a curated
 commodity-impact label. Provider chain: keyed OpenWeatherMap when
 configured, otherwise the KEYLESS Open-Meteo adapter (the default) —
-so rows are genuinely live. Only ``reference=true`` or a provider
-outage serves the labelled seasonal-model fallback — never a
-fabricated live forecast.
+so rows are genuinely live. No synthetic seasonal model is served
+(``reference=true`` / ``provider_mode=modeled`` is an input_error); a provider
+outage serves no weather rows (status provider_unavailable).
 """
 from __future__ import annotations
 
@@ -76,10 +76,9 @@ def wetr() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred data mode; chain may downgrade to seasonal model.",
+                description="Data mode; live forecast only (no synthetic seasonal model is served).",
                 options=[
                     DataMode.LIVE_OFFICIAL.value,
-                    DataMode.MODELED.value,
                 ],
             ),
         ],
@@ -89,15 +88,13 @@ def wetr() -> FunctionManifest:
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         # NOTE: openweathermap is the canonical keyed adapter; when no API
-        # key is configured the chain serves KEYLESS Open-Meteo live rows,
-        # and only degrades to the in-process seasonal model on request or
-        # provider outage.
+        # key is configured the chain serves KEYLESS Open-Meteo live rows; a
+        # provider outage serves no rows (no synthetic seasonal model).
         provider_chain=ProviderChain(
             primary="openweathermap",
-            fallbacks=["open_meteo", "seasonal_weather_model", "cached_snapshot"],
+            fallbacks=["open_meteo", "cached_snapshot"],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.MODELED,
                 DataMode.PROVIDER_UNAVAILABLE,
                 DataMode.NOT_CONFIGURED,
             ],
@@ -151,10 +148,10 @@ def wetr() -> FunctionManifest:
             "CDD = max(0, temp - 18°C) per UK Met Office convention. Each "
             "region carries a curated commodity_context (US_NORTHEAST → "
             "NatGas heating, US_GULF → refined-product hurricane risk, "
-            "BRAZIL_SE → coffee/sugar). Only reference=true or a provider "
-            "outage downgrades the chain to seasonal_weather_model — a "
-            "labelled climatological average — and source_mode flips so "
-            "consumers can render the seasonal-model banner. There is no "
+            "BRAZIL_SE → coffee/sugar). No synthetic seasonal model is served: "
+            "reference=true or provider_mode=modeled is an explicit input_error. A provider outage "
+            "serves no weather rows: status is provider_unavailable with "
+            "source_mode provider_unavailable. There is no "
             "synthesized 'live' forecast: the handler refuses to fake "
             "live provider output."
         ),
@@ -177,9 +174,9 @@ def wetr() -> FunctionManifest:
             "rows[].precip_mm": FieldDef(unit="mm", description="Daily total precipitation.", source="provider"),
             "rows[].hdd": FieldDef(description="Heating degree days (18°C base).", source="computed"),
             "rows[].cdd": FieldDef(description="Cooling degree days (18°C base).", source="computed"),
-            "rows[].risk_flag": FieldDef(description="severe | hot | cold | normal.", source="rules"),
+            "rows[].risk_flag": FieldDef(description="heating_demand | cooling_demand | wet_weather | dry_heat_watch | normal (one taxonomy for live and model rows).", source="rules"),
             "rows[].commodity_impact": FieldDef(description="Human-readable impact note (e.g. 'bullish NatGas').", source="rules"),
-            "source_mode": FieldDef(description="live_openweathermap | live_open_meteo | seasonal_model | cached.", source="envelope"),
+            "source_mode": FieldDef(description="live_openweathermap | live_open_meteo | provider_unavailable | not_offered (reference/modeled requested) | unsupported_region.", source="envelope"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -203,13 +200,13 @@ def wetr() -> FunctionManifest:
                 description=(
                     "When NO weather provider can serve (no OpenWeather key "
                     "AND the keyless Open-Meteo adapter is unwired or fails), "
-                    "WETR returns status=provider_unavailable with labelled "
-                    "source_mode=seasonal_model — never a fabricated live "
-                    "forecast."
+                    "WETR returns status=provider_unavailable with no weather "
+                    "rows (source_mode=provider_unavailable) — never a fabricated "
+                    "live forecast or a synthetic seasonal model."
                 ),
                 inputs={"location": "US_NORTHEAST", "_mock": "no_openweather_key"},
                 assertions=[
-                    "status_is_provider_unavailable_or_source_mode_is_seasonal_model",
+                    "status_is_provider_unavailable_with_no_rows",
                     "no_synthetic_live_forecast",
                     "next_actions_mention_api_key",
                 ],

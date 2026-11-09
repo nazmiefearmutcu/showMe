@@ -1,10 +1,9 @@
 """ESG — Environment / Social / Governance scoring.
 
-No real ESG vendor is wired into the showMe adapter list, so the manifest
-declares primary=internal and pegs acceptable_modes to NOT_CONFIGURED + a
-cached snapshot for any vendor data the operator has loaded manually. The
-methodology explains the gap: a paid vendor plugin must be wired to return
-LIVE_OFFICIAL.
+Primary source is Yahoo Finance's sustainability table (Sustainalytics-derived
+risk scores, keyless, delayed reference). When Yahoo publishes none for a
+ticker the handler falls back to a labelled SEC EDGAR 10-K text proxy
+(filing-mention counts, not risk scores). No paid vendor plugin is needed.
 """
 from __future__ import annotations
 
@@ -38,8 +37,9 @@ def esg() -> FunctionManifest:
         name="ESG Scores",
         category=Category.EQUITIES,
         intent=(
-            "Surface vendor ESG scores (Total / E / S / G) plus controversy level for a single "
-            "equity or ETF when a real ESG provider plugin is configured."
+            "Surface the Yahoo Finance sustainability ESG risk score (Total / E / S / G plus highest "
+            "controversy) for a single equity or ETF; when Yahoo publishes none, show a clearly "
+            "labelled SEC EDGAR 10-K text proxy instead."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
@@ -55,20 +55,25 @@ def esg() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
+                description=(
+                    "Accepted for compatibility only: the ESG handler reads the symbol and not this "
+                    "input, so it has no effect on the source chain (Yahoo first, then the labelled "
+                    "EDGAR proxy)."
+                ),
                 options=[
+                    DataMode.DELAYED_REFERENCE.value,
                     DataMode.CACHED_SNAPSHOT.value,
-                    DataMode.NOT_CONFIGURED.value,
                 ],
             ),
         ],
-        defaults={"provider_mode": DataMode.NOT_CONFIGURED.value},
+        defaults={"provider_mode": DataMode.DELAYED_REFERENCE.value},
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["yfinance", "cached_snapshot"],
+            primary="yfinance",
+            fallbacks=["sec_edgar"],
             acceptable_modes=[
+                DataMode.DELAYED_REFERENCE,
+                DataMode.LIVE_OFFICIAL,
                 DataMode.NOT_CONFIGURED,
-                DataMode.CACHED_SNAPSHOT,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=86400, scope="per_input", persist=True),
@@ -102,23 +107,27 @@ def esg() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "ESG requires a paid vendor plugin (Sustainalytics / MSCI / Refinitiv) — none is "
-            "bundled with showMe. The handler probes the configured ESG adapter and returns Total, "
-            "E, S, G, and controversy level when available. With no plugin configured the response "
-            "is status=provider_unavailable with data_mode=not_configured and a next_actions list "
-            "explaining how to wire a vendor. yfinance's sustainability blob may be cached as a "
-            "best-effort snapshot fallback but is signalled via source_mode=cached_snapshot and "
-            "should not be treated as a live score."
+            "Primary: Yahoo Finance sustainability table (Sustainalytics-derived ESG risk scores: "
+            "total, E, S, G and highest controversy 1-5; lower total = lower unmanaged ESG risk), "
+            "keyless, delayed reference (the handler tags these rows source_mode=delayed_reference and "
+            "data_mode=delayed_reference; they are not real-time). Fallback when Yahoo publishes "
+            "no sustainability table for the ticker: a DERIVED SEC EDGAR proxy counting "
+            "environmental, social and governance phrases in 10-K filings from the last 3 years via the keyless "
+            "EDGAR full-text search (source_mode=sec_text_proxy, data_mode=live_official: a live fetch of SEC filings, "
+            "not a cached snapshot). Proxy values are filing-mention "
+            "counts, not risk scores, and are not comparable to vendor ratings. No paid vendor "
+            "plugin is required. If neither source responds the status is provider_unavailable "
+            "with next_actions."
         ),
         field_dict={
             "symbol": FieldDef(description="Equity or ETF ticker.", source="instrument"),
-            "rows": FieldDef(description="Per-pillar score rows with scale + source_mode.", source="provider"),
-            "totalEsg": FieldDef(description="Composite ESG risk / opportunity score.", source="provider"),
-            "environmentScore": FieldDef(description="E pillar score.", source="provider"),
-            "socialScore": FieldDef(description="S pillar score.", source="provider"),
-            "governanceScore": FieldDef(description="G pillar score.", source="provider"),
-            "controversyLevel": FieldDef(description="Numeric or labelled controversy level.", source="provider"),
-            "data_mode": FieldDef(description="not_configured | cached_snapshot.", source="envelope"),
+            "rows": FieldDef(description="Per-pillar rows with scale + source_mode (vendor-risk scale or filing-mention proxy).", source="provider"),
+            "totalEsg": FieldDef(description="Yahoo/Sustainalytics total ESG risk score (yfinance path, source_mode=delayed_reference), or on the SEC proxy path (source_mode=sec_text_proxy) the count of unique 10-K filings matching any E/S/G term, not a risk score.", source="provider"),
+            "environmentScore": FieldDef(description="E pillar score (vendor score, or proxy mention count).", source="provider"),
+            "socialScore": FieldDef(description="S pillar score (vendor score, or proxy mention count).", source="provider"),
+            "governanceScore": FieldDef(description="G pillar score (vendor score, or proxy mention count).", source="provider"),
+            "controversyLevel": FieldDef(description="Highest active controversy level 1-5 (Yahoo only; null for the proxy).", source="provider"),
+            "data_mode": FieldDef(description="delayed_reference (Yahoo) | live_official (EDGAR proxy: live SEC filings, rows labelled sec_text_proxy) | not_configured (no source).", source="envelope"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -128,29 +137,29 @@ def esg() -> FunctionManifest:
         alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="esg_no_vendor_returns_not_configured",
-                description="With no ESG vendor plugin wired, the response is status=provider_unavailable / mode=not_configured.",
+                name="esg_no_source_returns_provider_unavailable",
+                description="When Yahoo and the EDGAR proxy both fail, the response is status=provider_unavailable with next_actions.",
                 inputs={"symbol": "AAPL"},
                 assertions=[
                     "status_in_unavailable_set",
-                    "data_mode_in_not_configured_or_cached_snapshot",
+                    "data_mode_in_not_configured_or_live_official",
                     "next_actions_non_empty",
                 ],
             ),
             SemanticTest(
-                name="esg_cached_snapshot_passes_through_when_available",
-                description="If a cached snapshot exists (e.g. from yfinance sustainability), it is returned with source_mode=cached_snapshot.",
+                name="esg_sec_proxy_is_labelled_as_counts",
+                description="When Yahoo has no sustainability table, rows carry source_mode=sec_text_proxy and the scale says filing mentions (proxy), never a risk score.",
                 inputs={"symbol": "AAPL"},
                 assertions=[
                     "rows_source_mode_in_known_set",
                 ],
             ),
             SemanticTest(
-                name="esg_methodology_documents_vendor_gap",
-                description="Methodology must explicitly state that ESG needs a paid vendor plugin.",
+                name="esg_methodology_documents_sources",
+                description="Methodology must name the Yahoo/Sustainalytics source, the SEC EDGAR proxy fallback and its labelling.",
                 inputs={},
                 assertions=[
-                    "methodology_mentions_paid_vendor_plugin",
+                    "methodology_names_yahoo_sustainalytics_and_sec_proxy",
                 ],
             ),
         ],

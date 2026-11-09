@@ -1,1616 +1,212 @@
 /**
- * NI / CN — topic-news and company-news headline drawers.
+ * NI — News Index (topic presets) and CN — company news (symbol-bound), one pane.
  *
- * Bloomberg-grade news intelligence: header with symbol focus + sentiment
- * score badge, two-column layout (feed left, rule-based synthesis right with
- * Bull / Bear / Catalysts sections), and an adaptive sentiment timeline strip
- * (24H / 72H / 7D — sized to the newest headline).
- *
- * Signal sources, in order of preference: the Veryfinder social overlay, then
- * the backend FinBERT `sentiment_score` stamp as an explicitly labelled
- * headline fallback. Social and headline numbers are never blended silently.
+ * Both are Awareness-backed story lists (see awareness/StoryList). NI sends a `topic`
+ * preset; CN requires the pane symbol and sends it as the instrument. Market/price
+ * rows never appear here: CN is news only.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import {
-  Card,
-  CardBody,
-  CardHeader,
-  Empty,
-  Field,
-  Pane,
-  PaneBody,
-  PaneFooter,
-  PaneHeader,
-  Pill,
-  Skeleton,
-  StatCard,
-} from "@/design-system";
-import { runFunction, FunctionCallError } from "@/lib/functions";
-import { formatMissing } from "@/lib/format";
-import { defaultSymbolForFunction } from "@/lib/symbols";
-import { useAppStore } from "@/lib/store";
-import { isInTauri } from "@/lib/tauri";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { Pane, PaneBody, PaneEmpty, PaneHeader } from "@/design-system";
+import { useFunction, type UseFunctionResult } from "@/lib/useFunction";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
-import { relativeTimeLabel, sortNewsNewestFirst } from "@/lib/time";
-import { SymbolBar } from "@/shell/SymbolBar";
-import { useWorkspace } from "@/lib/workspace";
-import { navigate } from "@/lib/router";
-import { toast } from "@/lib/toast";
-import {
-  fetchVeryfinderBatch,
-  recommendedVeryfinderSampleForNews,
-  type VeryfinderBatchItem,
-  type VeryfinderOverlay,
-  type VeryfinderTone,
-} from "@/lib/veryfinder";
+import { NewsFrame } from "./awareness/NewsFrame";
+import { hourOption } from "./awareness/format";
+import type { NewsPayload, NewsRow } from "./awareness/news-types";
 import {
   FunctionControlGroup,
   LoadStatePill,
-  NewsLimitControl,
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
-import {
-  NEWS_LIMITS,
-  type NewsLimit,
-  usePersistentOption,
-} from "./function-control-state";
-import { XSenChip } from "./XSenChip";
+import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
-interface NIArticle {
-  title?: string;
-  headline?: string;
-  summary?: string;
-  source?: string;
-  url?: string;
-  link?: string;
-  published_at?: string;
-  publishedAt?: string;
-  published_on?: string;
-  published?: string;
-  date?: string;
-  datetime?: string;
-  time?: string;
-  ts?: string;
-  symbols?: string[];
-  symbol?: string;
-  category?: string;
-  severity?: string;
-  importance_score?: number;
-  relevance_score?: number;
-  importance_reasons?: string[];
-  matched_terms?: string[];
-  // Backend FinBERT stamps on every CN/NI row: long-form label plus a signed
-  // score in -1..+1. Used as the honest fallback signal source when the
-  // Veryfinder social overlay is unavailable for an article.
-  sentiment?: string;
-  sentiment_score?: number;
-}
-
-/**
- * FinBERT fallback thresholds (headline sentiment_score is -1..+1) and the
- * number of strongest headline titles surfaced as detail rows per side.
- */
-const FINBERT_POSITIVE = 0.5;
-const FINBERT_NEGATIVE = -0.5;
-const FINBERT_TOP_HEADLINES = 3;
-
-const REFRESH_MS = 90_000;
-const FETCH_NEWS_LIMIT = Math.max(...NEWS_LIMITS);
-const TOPIC_PRESETS = ["MACRO", "FED", "EARN", "CHIPS", "OIL", "BANKS", "TECH", "CRYPTO"] as const;
-type TopicPreset = (typeof TOPIC_PRESETS)[number];
-type LoadState = "idle" | "loading" | "ok" | "error";
+const REFRESH_MS = 60_000;
+export const TOPIC_PRESETS: readonly string[] = [
+  "MACRO",
+  "FED",
+  "EARN",
+  "CHIPS",
+  "OIL",
+  "BANKS",
+  "TECH",
+  "CRYPTO",
+  "WAR",
+  "M&A",
+  "IPO",
+];
+const NI_HOURS: readonly number[] = [24, 48, 168];
+const CN_HOURS: readonly number[] = [24, 168, 720];
 
 export function NIPane({ code, symbol }: FunctionPaneProps) {
-  const upperCode = code.toUpperCase();
-  const topicMode = upperCode === "NI";
-  // 2026-05-11 hotfix: in CN (company news) mode fall back to a default
-  // equity symbol so palette-cold renders pull headlines immediately.
-  // Topic mode (NI) keeps the existing "MACRO" default for `topicText`.
-  const effectiveSymbol = topicMode
-    ? symbol
-    : symbol || defaultSymbolForFunction(code, ["EQUITY"]);
-  const [topicText, setTopicText] = useState("MACRO");
-  const [articles, setArticles] = useState<NIArticle[] | null>(null);
-  const [veryfinderMap, setVeryfinderMap] = useState<Record<string, VeryfinderOverlay>>({});
-  const [veryfinderState, setVeryfinderState] = useState<LoadState>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [state, setState] = useState<LoadState>("idle");
-  const [limit, setLimit] = usePersistentOption<NewsLimit>(
-    `showme.${topicMode ? "ni-topic" : "cn"}-news-limit`,
-    NEWS_LIMITS,
-    50,
-  );
-  // Bundle D / PERF-04. Manual tick (buttons) blended with the
-  // visibility-aware auto-tick so background tabs no longer keep polling
-  // every 90s.
-  const [manualTick, setManualTick] = useState(0);
-  const visTick = useVisibilityTick(REFRESH_MS);
-  const tick = manualTick + visTick;
-  const setTick = (next: ((prev: number) => number) | number) => {
-    setManualTick((prev) => (typeof next === "function" ? next(prev) : next));
-  };
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const setFocusedTarget = useWorkspace((s) => s.setFocusedTarget);
-  const sidecarPort = useAppStore((s) => s.sidecarPort);
-  const waitingForSidecar = isInTauri() && sidecarPort == null;
-  const requestLabel = topicMode ? topicText.trim() : effectiveSymbol;
-  const veryfinderNotifiedBatch = useRef("");
-
-  useEffect(() => {
-    const currentTopic = topicText.trim();
-    const currentLabel = topicMode ? currentTopic : effectiveSymbol;
-    if (!currentLabel) {
-      setArticles(null);
-      setError(null);
-      setState("idle");
-      return;
-    }
-    if (waitingForSidecar) {
-      setArticles(null);
-      setError(null);
-      setState("loading");
-      return;
-    }
-    let cancelled = false;
-    setError(null);
-    setArticles(null);
-    setVeryfinderMap({});
-    setVeryfinderState("idle");
-    setState("loading");
-    const fnCode = topicMode ? "NI" : "CN";
-    const liveParams = { limit: FETCH_NEWS_LIMIT, live: true, news_timeout: 6, timeout: 6 };
-    const topicParams = { ...liveParams, topic: currentTopic, query: currentTopic };
-    const requestNews = (params: Record<string, unknown>) =>
-      runFunction<unknown>(fnCode, {
-        symbol: topicMode ? undefined : effectiveSymbol,
-        params,
-        timeoutMs: 18_000,
-      }).catch(async (err) => {
-        if (!topicMode && err instanceof FunctionCallError && err.status === 404) {
-          return runFunction<unknown>("NI", {
-            symbol: effectiveSymbol,
-            params: { ...params, topic: effectiveSymbol },
-          });
-        }
-        throw err;
-      });
-
-    requestNews(topicMode ? topicParams : liveParams)
-      .then(async (res) => {
-        const items = normalize(res.data);
-        const hasOnlyPlaceholders =
-          items.length > 0 &&
-          items.every((item) => {
-            const status = String((item as { status?: unknown }).status ?? "").toLowerCase();
-            return status === "provider_unavailable" || status === "news_feed_empty";
-          });
-        const looksEmpty = items.length === 0 || hasOnlyPlaceholders;
-        const sourcesUnavailable = res.sources?.some(
-          (source) => String(source).toLowerCase() === "no_live_source",
-        );
-        if (!cancelled && looksEmpty && sourcesUnavailable) {
-          await delay(600);
-          const retryParams = { ...liveParams, news_timeout: 10, timeout: 10, deep: true };
-          return requestNews(
-            topicMode
-              ? { ...retryParams, topic: currentTopic, query: currentTopic }
-              : retryParams,
-          );
-        }
-        return res;
-      })
-      .then((res) => {
-        if (cancelled) return;
-        const nextArticles = normalize(res.data);
-        setArticles(nextArticles);
-        setVeryfinderState(nextArticles.length ? "loading" : "idle");
-        setState("ok");
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setState("error");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [code, topicMode, effectiveSymbol, tick, waitingForSidecar, sidecarPort, topicText]);
-
-  useEffect(() => {
-    if (!articles?.length || waitingForSidecar) {
-      setVeryfinderMap({});
-      setVeryfinderState(articles?.length ? "loading" : "idle");
-      return;
-    }
-    const sorted = sortNewsNewestFirst(articles, articleTimestamp);
-    const items: VeryfinderBatchItem[] = sorted.map((article, index) => ({
-      key: articleKey(article, index),
-      title: article.title,
-      headline: article.headline,
-      summary: article.summary,
-      source: article.source,
-      url: article.url,
-      link: article.link,
-      category: article.category,
-      symbol: article.symbol,
-      sample: recommendedVeryfinderSampleForNews(article, topicMode ? undefined : effectiveSymbol),
-    }));
-    if (!items.length) {
-      setVeryfinderMap({});
-      setVeryfinderState("idle");
-      return;
-    }
-    let cancelled = false;
-    setVeryfinderState("loading");
-    fetchVeryfinderBatch({
-      items,
-      symbol: topicMode ? undefined : effectiveSymbol,
-      topic: topicMode ? topicText.trim() : undefined,
-      sample: 25,
-      source: "auto",
-      engine: "rules",
-      limit: items.length,
-    })
-      .then((payload) => {
-        if (cancelled) return;
-        const next: Record<string, VeryfinderOverlay> = {};
-        for (const item of payload.items ?? []) {
-          next[item.key] = item.overlay;
-        }
-        setVeryfinderMap(next);
-        setVeryfinderState(payload.ok ? "ok" : "error");
-        const batchId = items.map((item) => `${item.key}:${item.sample}`).join("|");
-        if (payload.ok && batchId && veryfinderNotifiedBatch.current !== batchId) {
-          veryfinderNotifiedBatch.current = batchId;
-          toast.success("Veryfinder news inference ready", `${payload.items?.length ?? 0} headline(s) scored with article-level tweet targets.`);
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setVeryfinderMap({});
-        setVeryfinderState("error");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [articles, topicMode, topicText, effectiveSymbol, waitingForSidecar, sidecarPort]);
-
-  // Auto-refresh interval lives in `useVisibilityTick(REFRESH_MS)` above —
-  // it pauses on hidden tabs and resumes on focus. No local setInterval.
-
-  // P1.3 honesty: Veryfinder no longer gates the headline list, so the
-  // load state reflects only the real headline fetch. The social column shows
-  // its own inline "scoring…" indicator while `veryfinderState === "loading"`.
-  const veryfinderScoring =
-    Boolean(articles?.length) && (veryfinderState === "idle" || veryfinderState === "loading");
-  const effectiveState: LoadState = state;
-
-  // Aggregate sentiment — average of veryfinder direction scores, mapped
-  // -1..+1. HONESTY (headline FinBERT fallback): when no usable social
-  // overlay exists (Veryfinder down, still scoring, or every overlay empty),
-  // aggregate the backend's FinBERT `sentiment_score` instead and tag the
-  // source so the badge can say "headline sentiment (FinBERT)" — never a
-  // silent mix of social and headline numbers.
-  const sentimentAggregate = useMemo(() => {
-    const overlays = Object.values(veryfinderMap).filter(
-      (o) => o.ok && Number(o.unique_accounts ?? 0) > 0,
+  const isCN = code === "CN";
+  const sym = (symbol ?? "").trim().toUpperCase();
+  if (isCN && !sym) {
+    return (
+      <div className="u-pane-host">
+        <Pane>
+          <PaneHeader code={code} title="Company news" subtitle="Symbol required" />
+          <PaneBody>
+            <PaneEmpty
+              title="Pick a symbol"
+              body="Company news is symbol-bound. Select a ticker to see its stories."
+            />
+          </PaneBody>
+        </Pane>
+      </div>
     );
-    if (overlays.length) {
-      let sum = 0;
-      for (const o of overlays) {
-        const s = Number(o.social_score ?? 0);
-        if (Number.isFinite(s)) {
-          // social_score is -100..+100 → /100 → -1..+1
-          sum += Math.max(-1, Math.min(1, s / 100));
-        }
-      }
-      return {
-        score: Math.max(-1, Math.min(1, sum / overlays.length)),
-        source: "social" as const,
-        count: overlays.length,
-      };
-    }
-    const scores = (articles ?? [])
-      .map((a) => finbertScore(a))
-      .filter((s): s is number => s != null);
-    if (!scores.length) {
-      return { score: null, source: "finbert" as const, count: 0 };
-    }
-    const avg = scores.reduce((acc, s) => acc + s, 0) / scores.length;
-    return {
-      score: Math.max(-1, Math.min(1, avg)),
-      source: "finbert" as const,
-      count: scores.length,
-    };
-  }, [veryfinderMap, articles]);
+  }
+  return isCN ? <CNBody code={code} symbol={sym} /> : <NIBody code={code} />;
+}
 
-  // Impact distribution for KPI ribbon.
-  //
-  // UA-HIGH-07: previously each filter callback called `list.indexOf(a)` —
-  // O(n) per item → O(n²) overall. On a 500-article feed that's 250k passes
-  // *per render*. Single forEach pass + accumulator drops it to O(n).
-  //
-  // Honesty (headline FinBERT fallback): when NO usable social overlay is
-  // present, Bull/Bear counts come from the FinBERT `sentiment_score`
-  // aggregate (≥ +0.5 / ≤ -0.5) and the KPI caption says so. The fallback is
-  // all-or-nothing so social and headline numbers are never mixed silently.
-  const impactStats = useMemo(() => {
-    const list = articles ?? [];
-    let bull = 0;
-    let bear = 0;
-    let high = 0;
-    const hasUsableSocial = Object.values(veryfinderMap).some(
-      (o) => o.ok && Number(o.unique_accounts ?? 0) > 0,
-    );
-    list.forEach((a, i) => {
-      const k = articleKey(a, i);
-      if (hasUsableSocial) {
-        const o = veryfinderMap[k];
-        const score = Number(o?.social_score ?? 0);
-        if (o?.ok && score > 12) bull += 1;
-        if (o?.ok && score < -12) bear += 1;
-      } else {
-        const s = finbertScore(a);
-        if (s != null && s >= FINBERT_POSITIVE) bull += 1;
-        if (s != null && s <= FINBERT_NEGATIVE) bear += 1;
-      }
-      if (Number(a.importance_score ?? 0) >= 70) high += 1;
-    });
-    return { bull, bear, high, source: hasUsableSocial ? ("social" as const) : ("finbert" as const) };
-  }, [articles, veryfinderMap]);
+function useRefreshTick(refetch: () => void) {
+  const tick = useVisibilityTick(REFRESH_MS);
+  const refetchRef = useRef(refetch);
+  useEffect(() => {
+    refetchRef.current = refetch;
+  });
+  useEffect(() => {
+    if (tick > 0) refetchRef.current();
+  }, [tick]);
+}
 
-  const sortedArticles = useMemo(
-    () =>
-      articles ? sortNewsNewestFirst(articles, articleTimestamp).slice(0, limit) : [],
-    [articles, limit],
-  );
-
-  const selectedArticle = useMemo(() => {
-    if (!selectedKey) return sortedArticles[0] ?? null;
-    return sortedArticles.find((a, i) => articleKey(a, i) === selectedKey) ?? sortedArticles[0] ?? null;
-  }, [sortedArticles, selectedKey]);
-
-  const synthesis = useMemo(
-    () => buildSynthesis(sortedArticles, veryfinderMap),
-    [sortedArticles, veryfinderMap],
-  );
-
-  const timeline = useMemo(() => buildTimeline(sortedArticles, veryfinderMap), [sortedArticles, veryfinderMap]);
-
-  // P1.1 honesty: when every row the backend returned is a
-  // provider-unavailable / no-live-source placeholder, do NOT render those
-  // synthetic cards as real headlines. Surface an honest status banner
-  // instead. Real headlines (any non-placeholder row present) render normally.
-  const providersUnavailable = isProviderUnavailableFeed(articles);
-
-  // P1.3 honesty: headlines render as soon as they're fetched. The feed is
-  // no longer gated on the Veryfinder social-signal service — that column
-  // shows its own inline "scoring…" indicator instead. So the body only
-  // waits on the headline fetch (`state`), not on `veryfinderIsBlocking`.
-  const body = !requestLabel ? (
-    <Empty
-      title={topicMode ? "Enter a topic" : "Pick a symbol"}
-      body={topicMode ? "NI searches recent headlines by topic." : `${code} tails recent headlines for one ticker.`}
-      icon="⌖"
-    />
-  ) : error ? (
-    <Empty title="Function error" body={error} icon="!" />
-  ) : state === "loading" || articles == null ? (
-    <LoadingNews label={requestLabel} />
-  ) : providersUnavailable ? (
-    <div role="status" aria-live="polite" style={providerDownShell}>
-      <Empty
-        title="News providers unavailable"
-        body="No live headlines right now — every news source ShowMe tried is temporarily down or rate-limited. Try again in a moment."
-        icon="⚠"
-        action={
-          <RefreshButton
-            loading={false}
-            onClick={() => setTick((t) => t + 1)}
-            title="Retry headlines"
-            label="Retry"
-          />
-        }
-      />
-    </div>
-  ) : sortedArticles.length === 0 ? (
-    <Empty title="No headlines yet" body={`No news payload for ${requestLabel} in last ${limit}.`} />
-  ) : (
-    <div style={twoColumnLayout}>
-      <section style={feedColumn}>
-        <ArticleList
-          articles={sortedArticles}
-          setFocusedTarget={setFocusedTarget}
-          veryfinderMap={veryfinderMap}
-          veryfinderState={veryfinderState}
-          fallbackSymbol={topicMode ? undefined : effectiveSymbol}
-          selectedKey={selectedKey ?? articleKey(sortedArticles[0]!, 0)}
-          onSelect={setSelectedKey}
-        />
-        <SentimentTimeline timeline={timeline} />
-      </section>
-      <aside style={synthesisColumn}>
-        <AISynthesisCard
-          synthesis={synthesis}
-          selectedArticle={selectedArticle}
-          veryfinderState={veryfinderState}
-        />
-      </aside>
-    </div>
-  );
+function NIBody({ code }: { code: string }) {
+  const [topic, setTopic] = usePersistentOption("aw.ni.topic", TOPIC_PRESETS, "MACRO");
+  const [hours, setHours] = usePersistentOption("aw.ni.hours", NI_HOURS, 48);
+  const params = useMemo(() => ({ topic, hours, limit: 50 }), [topic, hours]);
+  const { state, data, error, refetch } = useFunction<NewsPayload>({ code, params });
+  useRefreshTick(refetch);
+  const rows: NewsRow[] = data?.data?.rows ?? [];
 
   return (
-    <div className="u-pane-host--bb">
+    <NewsPaneFrame
+      code={code}
+      title="News index"
+      subtitle={`${topic} preset`}
+      subject="news"
+      state={state}
+      error={error}
+      data={data}
+      refetch={refetch}
+      emptyBody={`Topic ${topic}, window ${hours}h.`}
+      summary={`${rows.length} stories · ${topic} · ${hours}h`}
+      toolbarControls={
+        <>
+          <SegmentedControl
+            label="Topic"
+            value={topic}
+            options={TOPIC_PRESETS}
+            onChange={setTopic}
+          />
+          <SegmentedControl
+            label="Window"
+            value={hours}
+            options={NI_HOURS.map(hourOption)}
+            onChange={setHours}
+          />
+        </>
+      }
+      ariaLabel="News index stories"
+    />
+  );
+}
+
+function CNBody({ code, symbol }: { code: string; symbol: string }) {
+  const [hours, setHours] = usePersistentOption("aw.cn.hours", CN_HOURS, 168);
+  const params = useMemo(() => ({ hours, limit: 50 }), [hours]);
+  const { state, data, error, refetch } = useFunction<NewsPayload>({
+    code,
+    symbol,
+    params,
+  });
+  useRefreshTick(refetch);
+  const rows: NewsRow[] = data?.data?.rows ?? [];
+
+  return (
+    <NewsPaneFrame
+      code={code}
+      symbol={symbol}
+      title={`Company news — ${symbol}`}
+      subtitle="Awareness news for the pane symbol"
+      subject="company news"
+      state={state}
+      error={error}
+      data={data}
+      refetch={refetch}
+      emptyBody={`No stories for ${symbol} in the last ${hours}h.`}
+      summary={`${rows.length} stories for ${symbol} · ${hours}h`}
+      toolbarControls={
+        <SegmentedControl
+          label="Window"
+          value={hours}
+          options={CN_HOURS.map(hourOption)}
+          onChange={setHours}
+        />
+      }
+      ariaLabel={`Company news for ${symbol}`}
+    />
+  );
+}
+
+interface NewsPaneFrameProps {
+  code: string;
+  symbol?: string;
+  title: string;
+  subtitle: string;
+  subject: string;
+  state: UseFunctionResult<NewsPayload>["state"];
+  error: unknown;
+  data: UseFunctionResult<NewsPayload>["data"];
+  refetch: () => void;
+  emptyBody: string;
+  summary: string;
+  toolbarControls: ReactNode;
+  ariaLabel: string;
+}
+
+function NewsPaneFrame(p: NewsPaneFrameProps) {
+  return (
+    <div className="u-pane-host">
       <Pane>
         <PaneHeader
-          code={code}
-          title={topicMode ? `News intelligence — ${topicText.trim() || "topic"}` : `Company news — ${effectiveSymbol ?? ""}`}
-          subtitle={
-            effectiveState === "loading" && requestLabel
-              ? `loading ${requestLabel} · fetching latest ${FETCH_NEWS_LIMIT}`
-              : providersUnavailable
-                ? "news providers unavailable"
-                : veryfinderScoring && articles?.length
-                  ? `${Math.min(articles.length, limit)}/${articles.length} shown · scoring social signals`
-                  : articles
-                    ? `${Math.min(articles.length, limit)}/${articles.length} shown`
-                    : "polling every 90s"
-          }
+          code={p.code}
+          title={p.title}
+          subtitle={p.subtitle}
           trailing={
             <FunctionControlGroup>
-              {requestLabel ? (
-                <Pill tone="accent" variant="soft" withDot={false}>
-                  {topicMode ? "topic" : "symbol"} · {requestLabel}
-                </Pill>
-              ) : null}
-              <SentimentScoreBadge score={sentimentAggregate.score} source={sentimentAggregate.source} />
-              {!topicMode ? <XSenChip symbol={effectiveSymbol} compact /> : null}
-              <NewsLimitControl value={limit} onChange={setLimit} disabled={effectiveState === "loading"} />
-              <LoadStatePill state={effectiveState} />
+              <LoadStatePill
+                state={p.state}
+                status={p.data?.data?.status ?? p.data?.status}
+              />
               <RefreshButton
-                loading={effectiveState === "loading"}
-                onClick={() => setTick((t) => t + 1)}
-                title="Refresh headlines"
+                loading={p.state === "loading"}
+                onClick={p.refetch}
+                title="Refresh news"
               />
             </FunctionControlGroup>
           }
         />
-        {/* KPI ribbon — hidden when only provider-unavailable placeholders
-            were returned, so synthetic rows never inflate the headline count. */}
-        {articles && articles.length > 0 && !providersUnavailable ? (
-          <section style={kpiRibbon}>
-            <StatCard
-              label="Headlines"
-              value={String(articles.length)}
-              caption={`shown ${Math.min(articles.length, limit)}`}
-              tone="neutral"
-            />
-            <StatCard
-              label="Sentiment"
-              value={sentimentAggregate.score == null ? "—" : `${sentimentAggregate.score >= 0 ? "+" : ""}${sentimentAggregate.score.toFixed(2)}`}
-              caption={
-                sentimentAggregate.score == null
-                  ? "no signal"
-                  : sentimentAggregate.score > 0.18
-                    ? "bullish bias"
-                    : sentimentAggregate.score < -0.18
-                      ? "bearish bias"
-                      : "neutral"
-              }
-              tone={sentimentAggregate.score == null ? "neutral" : sentimentAggregate.score > 0.18 ? "positive" : sentimentAggregate.score < -0.18 ? "negative" : "neutral"}
-            />
-            <StatCard
-              label="Bull / Bear"
-              value={`${impactStats.bull} / ${impactStats.bear}`}
-              caption={impactStats.source === "finbert" ? "headline FinBERT split" : "vf signal split"}
-              tone={impactStats.bull > impactStats.bear ? "positive" : impactStats.bear > impactStats.bull ? "negative" : "neutral"}
-            />
-            <StatCard
-              label="High impact"
-              value={String(impactStats.high)}
-              caption="score ≥ 70"
-              tone={impactStats.high > 0 ? "negative" : "neutral"}
-            />
-          </section>
-        ) : null}
-        {topicMode ? (
-          <section style={topicBar}>
-            <Field
-              label="Topic"
-              value={topicText}
-              onChange={(e) => setTopicText(e.target.value)}
-              placeholder="FED, earnings, crypto liquidity..."
-              hint="Topic text is sent as topic/query; it is not treated as a ticker."
-              onKeyDown={(e) => {
-                if (e.key === "Enter") setTick((t) => t + 1);
-              }}
-            />
-            <SegmentedControl
-              label="TOPIC"
-              value={TOPIC_PRESETS.includes(topicText as TopicPreset) ? topicText : ""}
-              options={TOPIC_PRESETS}
-              onChange={(next) => {
-                setTopicText(String(next));
-                setTick((t) => t + 1);
-              }}
-              disabled={effectiveState === "loading"}
-            />
-          </section>
-        ) : (
-          <SymbolBar code={code} symbol={effectiveSymbol} />
-        )}
-        <PaneBody className="ni-pane-body">
-          {body}
+        <PaneBody>
+          <NewsFrame
+            code={p.code}
+            symbol={p.symbol}
+            subject={p.subject}
+            state={p.state}
+            error={p.error}
+            data={p.data}
+            onRetry={p.refetch}
+            toolbar={
+              <div className="aw-toolbar" role="toolbar" aria-label={`${p.code} filters`}>
+                {p.toolbarControls}
+              </div>
+            }
+            emptyTitle="No stories match these filters"
+            emptyBody={p.emptyBody}
+            ariaLabel={p.ariaLabel}
+            summary={p.summary}
+          />
         </PaneBody>
-        <PaneFooter>
-          <span>refresh · {REFRESH_MS / 1000}s</span>
-          <span>last · show {limit}</span>
-          <span>cached · {articles?.length ?? 0} news</span>
-          <span>veryfinder · {veryfinderState}</span>
-          <span>{topicMode ? `topic · ${topicText || "—"}` : `symbol · ${symbol ?? "—"}`}</span>
-        </PaneFooter>
       </Pane>
     </div>
   );
 }
-
-function SentimentScoreBadge({
-  score,
-  source,
-}: {
-  score: number | null;
-  source: "social" | "finbert";
-}) {
-  if (score == null) {
-    return (
-      <Pill tone="muted" variant="soft" withDot={false}>
-        sentiment · —
-      </Pill>
-    );
-  }
-  const clamped = Math.max(-1, Math.min(1, score));
-  const tone = clamped > 0.18 ? "positive" : clamped < -0.18 ? "negative" : "warn";
-  const sign = clamped >= 0 ? "+" : "";
-  // Honesty: never present the headline FinBERT fallback as a social read.
-  const heading =
-    source === "finbert" ? "Headline sentiment (FinBERT)" : "Aggregate sentiment";
-  // Inline mini-bar
-  return (
-    <span
-      title={`${heading} ${clamped.toFixed(2)} (-1..+1)`}
-      aria-label={`${heading} ${sign}${clamped.toFixed(2)}`}
-      className={`ni-sent-badge ni-sent-badge--${tone}`}
-    >
-      <span className="ni-sent-badge__label">{source === "finbert" ? "sentiment · headlines" : "sentiment"}</span>
-      <span className="ni-sent-badge__track">
-        <span
-          className="ni-sent-badge__fill"
-          style={{
-            ["--u-left" as string]: clamped >= 0 ? "50%" : `${50 + clamped * 50}%`,
-            ["--u-width" as string]: `${Math.abs(clamped) * 50}%`,
-          }}
-        />
-        <span className="ni-sent-badge__mid" />
-      </span>
-      <strong>
-        {sign}
-        {clamped.toFixed(2)}
-      </strong>
-    </span>
-  );
-}
-
-interface SynthesisItem {
-  text: string;
-  cite?: number;
-}
-
-interface SynthesisData {
-  bull: SynthesisItem[];
-  bear: SynthesisItem[];
-  catalysts: SynthesisItem[];
-  /**
-   * True when at least one Bull/Bear entry was classified from headline
-   * FinBERT (`sentiment_score`) instead of a Veryfinder social overlay. The
-   * rail must label the source whenever this is true — social and headline
-   * numbers are never presented as the same thing.
-   */
-  finbertFallback: boolean;
-}
-
-function buildSynthesis(
-  articles: NIArticle[],
-  veryfinderMap: Record<string, VeryfinderOverlay>,
-): SynthesisData {
-  const bull: SynthesisItem[] = [];
-  const bear: SynthesisItem[] = [];
-  const catalysts: SynthesisItem[] = [];
-  const finbertBull: Array<SynthesisItem & { score: number }> = [];
-  const finbertBear: Array<SynthesisItem & { score: number }> = [];
-  articles.forEach((a, i) => {
-    const cite = i + 1;
-    const overlay = veryfinderMap[articleKey(a, i)];
-    // A social overlay only counts when it actually carries social evidence;
-    // "ok" overlays with zero unique accounts are treated as unavailable.
-    const socialUsable = Boolean(overlay?.ok && Number(overlay.unique_accounts ?? 0) > 0);
-    const score = socialUsable ? Number(overlay?.social_score ?? 0) : null;
-    const headline = truncate(cleanSummary(a.title ?? a.headline ?? "(untitled)"), 120);
-    const importance = Number(a.importance_score ?? 0);
-    if (score != null) {
-      if (score > 18) {
-        bull.push({ text: headline, cite });
-      } else if (score < -18) {
-        bear.push({ text: headline, cite });
-      }
-    } else {
-      // HONESTY (headline FinBERT fallback): no usable social overlay for
-      // this article → classify from the backend FinBERT sentiment_score
-      // (≥ +0.5 bullish / ≤ -0.5 bearish) and label the section entry.
-      const fb = finbertScore(a);
-      if (fb != null && fb >= FINBERT_POSITIVE) {
-        finbertBull.push({ text: headline, cite, score: fb });
-      } else if (fb != null && fb <= FINBERT_NEGATIVE) {
-        finbertBear.push({ text: headline, cite, score: fb });
-      }
-    }
-    if (importance >= 70 || a.severity === "high" || a.severity === "critical") {
-      catalysts.push({ text: headline, cite });
-    }
-  });
-  const finbertFallback = finbertBull.length > 0 || finbertBear.length > 0;
-  if (finbertBull.length) {
-    bull.push({ text: `${finbertBull.length} positive headline(s) — FinBERT` });
-    for (const item of finbertBull.sort((x, y) => y.score - x.score).slice(0, FINBERT_TOP_HEADLINES)) {
-      bull.push({ text: item.text, cite: item.cite });
-    }
-  }
-  if (finbertBear.length) {
-    bear.push({ text: `${finbertBear.length} negative headline(s) — FinBERT` });
-    for (const item of finbertBear.sort((x, y) => x.score - y.score).slice(0, FINBERT_TOP_HEADLINES)) {
-      bear.push({ text: item.text, cite: item.cite });
-    }
-  }
-  return {
-    bull: bull.slice(0, 5),
-    bear: bear.slice(0, 5),
-    catalysts: catalysts.slice(0, 5),
-    finbertFallback,
-  };
-}
-
-function AISynthesisCard({
-  synthesis,
-  selectedArticle,
-  veryfinderState,
-}: {
-  synthesis: SynthesisData;
-  selectedArticle: NIArticle | null;
-  veryfinderState: LoadState;
-}) {
-  // Honesty (AUDIT A2 [H]): the previous "AI" pill implied an LLM over this
-  // section, but the synthesis is a deterministic client-side rule/threshold
-  // filter (Veryfinder social score > ±18 for Bull/Bear, importance_score ≥ 70
-  // or high/critical severity for Catalysts). No model call exists in this
-  // path — the pill now says RULE and the tooltip spells out the rule.
-  return (
-    <Card variant="elev-2">
-      <CardHeader
-        trailing={
-          <span
-            title="Deterministic rule-based filter over the headlines: Bull/Bear from Veryfinder social scores (|score| > 18), or headline FinBERT sentiment (±0.5) for articles with no usable social overlay; Catalysts from importance_score ≥ 70 or high/critical severity. No LLM is involved."
-            data-testid="ni-synthesis-rule-pill"
-          >
-            <Pill tone="muted" variant="soft" withDot={false}>
-              RULE
-            </Pill>
-          </span>
-        }
-      >
-        Synthesis
-      </CardHeader>
-      <CardBody>
-        <div className="u-grid-gap-12">
-          {/*
-            Honesty (AUDIT A2 [L]): when the Veryfinder overlay is unreachable
-            the Bull/Bear sections go empty while Catalysts (headline-only)
-            still fills. Attribute the emptiness explicitly so it is not read
-            as "no bullish/bearish news exists".
-          */}
-          {veryfinderState === "error" ? (
-            <p data-testid="ni-social-unavailable" style={synthUnavailableStyle}>
-              Social overlay unavailable — Veryfinder could not be reached, so
-              Bull/Bear signals use headline sentiment (FinBERT) where
-              available. Catalysts still reflect headline impact scores.
-            </p>
-          ) : null}
-          {/*
-            Honesty (headline FinBERT fallback): whenever Bull/Bear entries
-            come from the backend FinBERT stamps instead of a social overlay,
-            say so — never let headline numbers read as social numbers.
-          */}
-          {synthesis.finbertFallback ? (
-            <p data-testid="ni-finbert-fallback" style={synthFinbertStyle}>
-              Bull/Bear fall back to headline sentiment (FinBERT) for
-              headlines without a usable social overlay. These are not
-              social-signal scores.
-            </p>
-          ) : null}
-          {selectedArticle ? (
-            <div style={selectedSummaryStyle}>
-              <div style={selectedKickerStyle}>NOW READING</div>
-              <strong style={selectedTitleStyle}>
-                {selectedArticle.title ?? selectedArticle.headline ?? "(untitled)"}
-              </strong>
-              {selectedArticle.summary ? (
-                <p style={selectedExcerptStyle}>
-                  {truncate(cleanSummary(selectedArticle.summary), 220)}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-          <SynthSection
-            title="Bull"
-            tone="positive"
-            items={synthesis.bull}
-            emptyText="No bullish signal in this window."
-          />
-          <SynthSection
-            title="Bear"
-            tone="negative"
-            items={synthesis.bear}
-            emptyText="No bearish signal in this window."
-          />
-          <SynthSection
-            title="Catalysts"
-            tone="warn"
-            items={synthesis.catalysts}
-            emptyText="No high-impact catalysts."
-          />
-        </div>
-      </CardBody>
-    </Card>
-  );
-}
-
-function SynthSection({
-  title,
-  tone,
-  items,
-  emptyText,
-}: {
-  title: string;
-  tone: "positive" | "negative" | "warn";
-  items: SynthesisItem[];
-  emptyText: string;
-}) {
-  return (
-    <div>
-      <header style={synthSectionHeader}>
-        <Pill tone={tone} variant="soft" withDot={false}>
-          {title}
-        </Pill>
-        <span className="ni-section-count">{items.length}</span>
-      </header>
-      {items.length === 0 ? (
-        <p style={synthEmpty}>{emptyText}</p>
-      ) : (
-        <ul style={synthList}>
-          {items.map((item, i) => (
-            <li key={i} style={synthListItem}>
-              {item.cite != null ? (
-                <span style={citationChipStyle} title={`citation [${item.cite}]`}>
-                  [{item.cite}]
-                </span>
-              ) : null}
-              <span>{item.text}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-interface TimelineBucket {
-  count: number;
-  posScore: number;
-  negScore: number;
-}
-
-type TimelineWindow = "24H" | "72H" | "7D";
-
-interface TimelineData {
-  window: TimelineWindow;
-  bucketHours: number;
-  buckets: TimelineBucket[];
-}
-
-const HOUR_MS = 3_600_000;
-
-/**
- * Adaptive sentiment timeline.
- *
- * HONESTY: the old version hard-cut every article older than 24h, so a feed
- * whose newest headline is 25h old rendered an empty "24H" axis (the reported
- * "timeline bomboş" bug). The window now follows the data: 24H hourly buckets
- * when anything is fresh, else 72H in 3h buckets, else 7D in daily buckets.
- * Nothing within 7d → `null` (the component renders an honest empty state).
- * Buckets are tinted by the Veryfinder social score when a usable overlay
- * exists, otherwise by the FinBERT `sentiment_score` sign.
- */
-function buildTimeline(
-  articles: NIArticle[],
-  veryfinderMap: Record<string, VeryfinderOverlay>,
-): TimelineData | null {
-  const now = Date.now();
-  const dated: Array<{ article: NIArticle; index: number; ageMs: number }> = [];
-  articles.forEach((a, i) => {
-    const ts = articleTimestamp(a);
-    const parsed = ts ? Date.parse(ts) : NaN;
-    if (!Number.isFinite(parsed)) return;
-    const ageMs = now - parsed;
-    if (ageMs < 0) return;
-    dated.push({ article: a, index: i, ageMs });
-  });
-  if (!dated.length) return null;
-  const newestAgeMs = Math.min(...dated.map((d) => d.ageMs));
-  let window: TimelineWindow;
-  let bucketHours: number;
-  let bucketCount: number;
-  if (newestAgeMs <= 24 * HOUR_MS) {
-    window = "24H";
-    bucketHours = 1;
-    bucketCount = 24;
-  } else if (newestAgeMs <= 72 * HOUR_MS) {
-    window = "72H";
-    bucketHours = 3;
-    bucketCount = 24;
-  } else if (newestAgeMs <= 7 * 24 * HOUR_MS) {
-    window = "7D";
-    bucketHours = 24;
-    bucketCount = 7;
-  } else {
-    return null;
-  }
-  const buckets: TimelineBucket[] = Array.from({ length: bucketCount }, () => ({
-    count: 0,
-    posScore: 0,
-    negScore: 0,
-  }));
-  const spanMs = bucketHours * HOUR_MS * bucketCount;
-  for (const d of dated) {
-    if (d.ageMs > spanMs) continue;
-    const idx = Math.max(
-      0,
-      Math.min(bucketCount - 1, bucketCount - 1 - Math.floor(d.ageMs / (bucketHours * HOUR_MS))),
-    );
-    buckets[idx].count += 1;
-    const overlay = veryfinderMap[articleKey(d.article, d.index)];
-    const socialUsable = Boolean(overlay?.ok && Number(overlay.unique_accounts ?? 0) > 0);
-    if (socialUsable) {
-      const s = Number(overlay?.social_score ?? 0);
-      if (s > 0) buckets[idx].posScore += s;
-      else if (s < 0) buckets[idx].negScore += Math.abs(s);
-    } else {
-      // FinBERT fallback tint (never mixes into a social score — the bar
-      // tooltip and the rail label keep the sources distinct).
-      const fb = finbertScore(d.article);
-      if (fb != null && fb > 0) buckets[idx].posScore += fb * 100;
-      else if (fb != null && fb < 0) buckets[idx].negScore += Math.abs(fb) * 100;
-    }
-  }
-  return { window, bucketHours, buckets };
-}
-
-function SentimentTimeline({ timeline }: { timeline: TimelineData | null }) {
-  if (!timeline) {
-    return (
-      <section style={timelineWrap} data-testid="ni-timeline-empty">
-        <header style={timelineHeader}>
-          <span style={timelineLabel}>Sentiment timeline</span>
-        </header>
-        <p style={timelineEmptyText}>No headlines in the last 7 days</p>
-      </section>
-    );
-  }
-  const { window: windowLabel, bucketHours, buckets } = timeline;
-  const maxCount = Math.max(1, ...buckets.map((b) => b.count));
-  const totalEvents = buckets.reduce((sum, b) => sum + b.count, 0);
-  const axis: Record<TimelineWindow, [string, string]> = {
-    "24H": ["-24h", "-12h"],
-    "72H": ["-72h", "-36h"],
-    "7D": ["-7d", "-3d"],
-  };
-  return (
-    <section style={timelineWrap}>
-      <header style={timelineHeader}>
-        <span style={timelineLabel} data-testid="ni-timeline-window">
-          {windowLabel} sentiment timeline
-        </span>
-        <span className="ni-section-count">{totalEvents} events</span>
-      </header>
-      <div style={timelineBars}>
-        {buckets.map((b, i) => {
-          const height = (b.count / maxCount) * 28;
-          const tone =
-            b.posScore > b.negScore
-              ? "var(--positive)"
-              : b.negScore > b.posScore
-                ? "var(--negative)"
-                : "var(--text-mute)";
-          const startH = (buckets.length - i - 1) * bucketHours;
-          const endH = (buckets.length - i) * bucketHours;
-          const barAge =
-            bucketHours >= 24 ? `${startH / 24}d–${endH / 24}d` : `${startH}h–${endH}h`;
-          return (
-            <span
-              key={i}
-              title={`${barAge} ago · ${b.count} events`}
-              className={`ni-timeline-bar${b.count > 0 ? "" : " ni-timeline-bar--empty"}`}
-              style={{
-                ["--u-height" as string]: `${Math.max(2, height)}px`,
-                ["--u-bg" as string]: b.count > 0 ? tone : "var(--border-subtle)",
-              }}
-            />
-          );
-        })}
-      </div>
-      <footer style={timelineAxis}>
-        <span>{axis[windowLabel][0]}</span>
-        <span>{axis[windowLabel][1]}</span>
-        <span>now</span>
-      </footer>
-    </section>
-  );
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function LoadingNews({ label }: { label: string }) {
-  // Honest loader: a labelled spinner + skeleton rows. No fabricated
-  // step-by-step "streaming" logs — only the two real phases the page runs
-  // (fetch headlines, then score social signals).
-  return (
-    <div role="status" aria-busy="true" aria-live="polite" style={newsLoadShell}>
-      <div style={newsLoadHeader}>
-        <span className="ni-load-spinner" aria-hidden="true" />
-        <div className="u-min-w-0">
-          <strong style={newsLoadTitle}>Fetching live headlines…</strong>
-          <p style={newsLoadText}>
-            Pulling the latest headlines for {label}, then scoring social signals.
-          </p>
-        </div>
-      </div>
-      <div style={newsLoadSkeletonList} aria-hidden="true">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <div key={index} style={newsLoadSkeletonRow}>
-            <Skeleton width="78%" height={12} />
-            <Skeleton width="94%" height={10} />
-            <Skeleton width="40%" height={10} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ArticleList({
-  articles,
-  setFocusedTarget,
-  veryfinderMap,
-  veryfinderState,
-  fallbackSymbol,
-  selectedKey,
-  onSelect,
-}: {
-  articles: NIArticle[];
-  setFocusedTarget: (code: string, symbol?: string) => void;
-  veryfinderMap: Record<string, VeryfinderOverlay>;
-  veryfinderState: LoadState;
-  fallbackSymbol?: string;
-  selectedKey: string;
-  onSelect: (key: string) => void;
-}) {
-  // P1.3: the social column scores asynchronously; surface its own inline
-  // status instead of blocking the whole feed.
-  const scoring = veryfinderState === "idle" || veryfinderState === "loading";
-  return (
-    <ul
-      className="ni-feed-list"
-      role="list"
-      aria-label="Headlines"
-      aria-live="polite"
-      aria-busy={scoring}
-    >
-      {scoring ? (
-        <li className="ni-feed-scoring">
-          <span className="ni-load-spinner ni-load-spinner--sm" aria-hidden="true" />
-          Scoring social signals…
-        </li>
-      ) : null}
-      {articles.map((a, i) => {
-        const key = articleKey(a, i);
-        const veryfinder = veryfinderMap[key];
-        const tweetTarget = recommendedVeryfinderSampleForNews(a, fallbackSymbol);
-        const isSelected = key === selectedKey;
-        const fullTitle = a.title ?? a.headline ?? "(untitled)";
-        const fullSummary = a.summary ? cleanSummary(a.summary) : "";
-        const sourceLabel = a.source ?? "source";
-        return (
-          <li
-            key={key}
-            role="button"
-            tabIndex={0}
-            data-selected={isSelected}
-            aria-label={fullTitle}
-            onClick={() => onSelect(key)}
-            onKeyDown={(ev) => {
-              if (ev.key === "Enter" || ev.key === " ") {
-                ev.preventDefault();
-                onSelect(key);
-              }
-            }}
-            className="ni-feed-row"
-            style={feedRowStyle(isSelected)}
-          >
-            <div style={feedRowDot}>
-              <SentimentDot overlay={veryfinder} />
-              <span style={feedRowIndex}>{i + 1}</span>
-            </div>
-            <div className="u-min-w-0">
-              <div style={articleHead}>
-                <strong className="ni-feed-title" title={fullTitle}>
-                  {fullTitle}
-                </strong>
-              </div>
-              {fullSummary ? (
-                <p className="ni-feed-summary" style={summaryStyle} title={fullSummary}>
-                  {fullSummary}
-                </p>
-              ) : null}
-              <div style={articleMeta}>
-                {a.source ? (
-                  <Pill tone="muted" variant="soft" withDot={false}>
-                    {a.source}
-                  </Pill>
-                ) : null}
-                {a.category ? <span style={tinyMute}>{a.category}</span> : null}
-                {a.importance_score != null ? (
-                  <Pill
-                    tone={a.severity === "critical" || a.severity === "high" ? "negative" : "muted"}
-                    variant="soft"
-                    withDot={false}
-                  >
-                    impact {Number(a.importance_score).toFixed(0)}
-                  </Pill>
-                ) : null}
-                {veryfinder ? <VeryfinderImpactPill overlay={veryfinder} /> : null}
-                {!veryfinder && veryfinderState === "loading" && i < 3 ? (
-                  <Pill tone="muted" variant="soft" withDot={false}>
-                    vf scanning {tweetTarget}
-                  </Pill>
-                ) : null}
-                {(a.symbols ?? (a.symbol ? [a.symbol] : [])).slice(0, 3).map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    className="btn btn--ghost"
-                    aria-label={`Navigate to ${s}`}
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      setFocusedTarget("DES", s);
-                      navigate(`/symbol/${s}/DES`);
-                    }}
-                    style={symbolButton}
-                  >
-                    {s}
-                  </button>
-                ))}
-                <span className="u-flex-1" />
-                <span style={tinyMute}>{tsLabel(a) ?? formatMissing}</span>
-                {(a.url ?? a.link) ? (
-                  <a
-                    href={a.url ?? a.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label={`Open article at ${sourceLabel} (opens in new tab)`}
-                    onClick={(ev) => ev.stopPropagation()}
-                    className="ni-feed-source"
-                  >
-                    source ↗
-                  </a>
-                ) : null}
-              </div>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function SentimentDot({ overlay }: { overlay?: VeryfinderOverlay }) {
-  if (!overlay?.ok) {
-    return <span className="ni-feed-dot ni-feed-dot--empty" />;
-  }
-  const s = Number(overlay.social_score ?? 0);
-  const color =
-    s > 12 ? "var(--positive)" : s < -12 ? "var(--negative)" : "var(--warn)";
-  return (
-    <span
-      className="ni-feed-dot"
-      style={{ ["--u-color" as string]: color }}
-    />
-  );
-}
-
-function VeryfinderImpactPill({ overlay }: { overlay: VeryfinderOverlay }) {
-  if (!overlay.ok) {
-    return (
-      <Pill tone="warn" variant="soft" withDot={false}>
-        vf error
-      </Pill>
-    );
-  }
-  if ((overlay.dominant_view?.label ?? "") === "no_data" || Number(overlay.unique_accounts ?? 0) <= 0) {
-    return (
-      <Pill tone="muted" variant="soft" withDot={false}>
-        vf no match
-      </Pill>
-    );
-  }
-  const vfScore = formatInt(veryfinderDisplayScore(overlay));
-  const directionScore = formatSignedInt(overlay.social_score);
-  const view = overlay.dominant_view?.display ?? "social";
-  const confidence = Math.round(Number(overlay.dominant_view?.score ?? 0) * 100);
-  const source = veryfinderSourceLabel(overlay);
-  const title = [
-    overlay.meaning,
-    `vf impact score: ${vfScore}`,
-    `direction score: ${directionScore}`,
-    `query: ${overlay.query ?? "n/a"}`,
-    `source: ${source}`,
-    `unique accounts: ${overlay.unique_accounts ?? "n/a"}`,
-    overlay.top_mood ? `mood: ${overlay.top_mood.label}` : null,
-    overlay.top_action ? `action: ${overlay.top_action.label}` : null,
-  ].filter(Boolean).join("\n");
-  return (
-    <span title={title}>
-      <Pill tone={veryfinderTone(overlay.tone)} variant="soft" withDot={false}>
-        vf {vfScore} {view} {confidence}%
-      </Pill>
-    </span>
-  );
-}
-
-function veryfinderSourceLabel(overlay: VeryfinderOverlay): string {
-  if (overlay.fallback_mode === "article_context" || overlay.source === "news_proxy") {
-    const from = overlay.source_fallback_from ? ` after ${overlay.source_fallback_from}` : "";
-    return `news context proxy${from}`;
-  }
-  return overlay.fixture_mode ? "fixture source" : overlay.source ?? "source —";
-}
-
-function veryfinderDisplayScore(overlay: VeryfinderOverlay): number {
-  const explicit = Number(overlay.impact_score);
-  if (Number.isFinite(explicit)) return Math.round(explicit);
-  const confidence = Number(overlay.dominant_view?.score);
-  if (Number.isFinite(confidence) && Number(overlay.unique_accounts ?? 0) > 0) {
-    return Math.round(Math.max(0, Math.min(1, confidence)) * 100);
-  }
-  return Math.abs(Math.round(Number(overlay.social_score ?? 0)));
-}
-
-function articleKey(a: NIArticle, index: number): string {
-  return [
-    a.url ?? a.link ?? "",
-    a.title ?? a.headline ?? "",
-    articleTimestamp(a) ?? "",
-    String(index),
-  ].join("|");
-}
-
-/**
- * Backend FinBERT sentiment score clamped to -1..+1; null when the article
- * carries no finite stamp (then there is no headline signal to fall back to).
- */
-function finbertScore(a: NIArticle): number | null {
-  if (a.sentiment_score == null) return null;
-  const n = Number(a.sentiment_score);
-  return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : null;
-}
-
-function formatSignedInt(value?: number | null): string {
-  if (value == null || !Number.isFinite(Number(value))) return "—";
-  const n = Math.round(Number(value));
-  return n > 0 ? `+${n}` : String(n);
-}
-
-function formatInt(value?: number | null): string {
-  if (value == null || !Number.isFinite(Number(value))) return "—";
-  return Number(value).toLocaleString("en-US", { maximumFractionDigits: 0 });
-}
-
-function veryfinderTone(tone?: VeryfinderTone): "positive" | "negative" | "warn" | "muted" | "neutral" {
-  if (tone === "positive" || tone === "negative" || tone === "warn" || tone === "muted") {
-    return tone;
-  }
-  return "neutral";
-}
-
-/**
- * True when the backend returned only synthetic provider-unavailable
- * placeholders (status `provider_unavailable`, severity `unavailable`, or a
- * `no_live_source` source marker) — i.e. there are no real headlines to show.
- * Returns false the moment a single genuine headline is present, so partial
- * live feeds still render normally.
- */
-function isProviderUnavailableFeed(articles: NIArticle[] | null): boolean {
-  if (!articles || articles.length === 0) return false;
-  return articles.every((a) => {
-    const status = String((a as { status?: unknown }).status ?? "").toLowerCase();
-    const severity = String(a.severity ?? "").toLowerCase();
-    const source = String(a.source ?? "").toLowerCase();
-    return (
-      status === "provider_unavailable" ||
-      severity === "unavailable" ||
-      source === "no_live_source"
-    );
-  });
-}
-
-function normalize(payload: unknown): NIArticle[] {
-  if (!payload) return [];
-  if (Array.isArray(payload)) return payload as NIArticle[];
-  if (typeof payload === "object") {
-    const o = payload as Record<string, unknown>;
-    const items = o.items ?? o.articles ?? o.news ?? o.headlines;
-    if (Array.isArray(items)) return items as NIArticle[];
-  }
-  return [];
-}
-
-function cleanSummary(value: string): string {
-  try {
-    const doc = new DOMParser().parseFromString(value, "text/html");
-    const text = doc.body.textContent?.replace(/\s+/g, " ").trim();
-    if (text) return text;
-  } catch {
-    // Fall back to a lightweight strip below.
-  }
-  return value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function truncate(value: string, max: number): string {
-  return value.length > max ? value.slice(0, max) + "…" : value;
-}
-
-function tsLabel(a: NIArticle): string | null {
-  return relativeTimeLabel(articleTimestamp(a));
-}
-
-function articleTimestamp(a: NIArticle): string | null | undefined {
-  return (
-    a.published_at ??
-    a.publishedAt ??
-    a.published_on ??
-    a.published ??
-    a.date ??
-    a.datetime ??
-    a.time ??
-    a.ts
-  );
-}
-
-// ─── styles ────────────────────────────────────────────────────────────
-
-const kpiRibbon: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-  gap: 8,
-  padding: "10px 14px",
-  borderBottom: "1px solid var(--border-subtle)",
-  background: "color-mix(in srgb, var(--surface) 80%, transparent)",
-};
-
-const topicBar: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "minmax(220px, 1fr) auto",
-  gap: 8,
-  alignItems: "end",
-  padding: "0 14px 10px",
-  borderBottom: "1px solid var(--border-subtle)",
-};
-
-const twoColumnLayout: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0, 6fr) minmax(0, 4fr)",
-  gap: 0,
-  height: "100%",
-  minHeight: 0,
-};
-
-const feedColumn: CSSProperties = {
-  minWidth: 0,
-  minHeight: 0,
-  overflow: "auto",
-  padding: "10px 12px",
-  borderRight: "1px solid var(--border-subtle)",
-  display: "flex",
-  flexDirection: "column",
-  gap: 10,
-};
-
-const synthesisColumn: CSSProperties = {
-  minWidth: 0,
-  minHeight: 0,
-  overflow: "auto",
-  padding: "10px 12px",
-  background: "color-mix(in srgb, var(--bg) 70%, transparent)",
-};
-
-const feedRowStyle = (selected: boolean): CSSProperties => ({
-  display: "grid",
-  gridTemplateColumns: "32px minmax(0, 1fr)",
-  gap: 8,
-  padding: "10px 10px 10px 8px",
-  background: selected ? "var(--surface-2)" : "var(--surface-1)",
-  border: "1px solid var(--border-subtle)",
-  borderLeft: selected ? "2px solid var(--accent)" : "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-md)",
-  cursor: "pointer",
-  transition: "background var(--motion-fast), border-color var(--motion-fast)",
-});
-
-const feedRowDot: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  gap: 6,
-  paddingTop: 4,
-};
-
-const feedRowIndex: CSSProperties = {
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
-  letterSpacing: "0.04em",
-};
-
-const articleHead: CSSProperties = {
-  display: "flex",
-  alignItems: "baseline",
-  gap: 6,
-  flexWrap: "wrap",
-  marginBottom: 4,
-};
-
-const articleMeta: CSSProperties = {
-  display: "flex",
-  gap: 6,
-  alignItems: "center",
-  flexWrap: "wrap",
-  marginTop: 4,
-};
-
-const summaryStyle: CSSProperties = {
-  margin: "0 0 4px",
-  fontSize: "var(--font-size-sm)",
-  color: "var(--text-secondary)",
-  lineHeight: 1.5,
-};
-
-const symbolButton: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-2xs)",
-  padding: "1px 6px",
-  height: 18,
-  color: "var(--accent)",
-};
-
-const tinyMute: CSSProperties = {
-  fontSize: "var(--font-size-2xs)",
-  color: "var(--text-mute)",
-};
-
-const selectedSummaryStyle: CSSProperties = {
-  display: "grid",
-  gap: 6,
-  padding: "10px 12px",
-  background: "var(--accent-soft)",
-  border: "1px solid color-mix(in srgb, var(--accent) 38%, transparent)",
-  borderRadius: "var(--radius-md)",
-};
-
-const selectedKickerStyle: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-  color: "var(--accent)",
-};
-
-const selectedTitleStyle: CSSProperties = {
-  fontSize: "var(--font-size-lg)",
-  color: "var(--text-primary)",
-  lineHeight: 1.4,
-};
-
-const selectedExcerptStyle: CSSProperties = {
-  margin: 0,
-  fontSize: "var(--font-size-sm)",
-  lineHeight: 1.5,
-  color: "var(--text-secondary)",
-};
-
-const synthSectionHeader: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 6,
-  marginBottom: 6,
-};
-
-const synthEmpty: CSSProperties = {
-  margin: 0,
-  fontSize: "var(--font-size-sm)",
-  color: "var(--text-mute)",
-  fontStyle: "italic",
-};
-
-const synthUnavailableStyle: CSSProperties = {
-  margin: 0,
-  padding: "6px 8px",
-  border: "1px solid var(--warn-soft)",
-  borderRadius: "var(--radius-sm)",
-  background: "var(--warn-soft)",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-secondary)",
-};
-
-const synthFinbertStyle: CSSProperties = {
-  margin: 0,
-  padding: "6px 8px",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  background: "var(--surface-1)",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-secondary)",
-};
-
-const timelineEmptyText: CSSProperties = {
-  margin: 0,
-  fontSize: "var(--font-size-sm)",
-  color: "var(--text-mute)",
-  fontStyle: "italic",
-};
-
-const synthList: CSSProperties = {
-  margin: 0,
-  padding: 0,
-  display: "flex",
-  flexDirection: "column",
-  gap: 6,
-  listStyle: "none",
-};
-
-const synthListItem: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "auto 1fr",
-  gap: 6,
-  alignItems: "start",
-  fontSize: "var(--font-size-sm)",
-  color: "var(--text-primary)",
-  lineHeight: 1.5,
-};
-
-const citationChipStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  minWidth: 22,
-  height: 16,
-  padding: "0 4px",
-  borderRadius: 3,
-  background: "var(--accent-soft)",
-  color: "var(--accent)",
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  fontWeight: 600,
-};
-
-const timelineWrap: CSSProperties = {
-  display: "grid",
-  gap: 6,
-  padding: "10px 12px",
-  background: "var(--surface-1)",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-md)",
-};
-
-const timelineHeader: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-};
-
-const timelineLabel: CSSProperties = {
-  fontFamily: "JetBrains Mono, monospace",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-mute)",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-};
-
-const timelineBars: CSSProperties = {
-  display: "flex",
-  alignItems: "flex-end",
-  gap: 4,
-  height: 32,
-};
-
-const timelineAxis: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  fontSize: "var(--font-size-xs)",
-  color: "var(--text-mute)",
-  fontFamily: "JetBrains Mono, monospace",
-  letterSpacing: "0.04em",
-};
-
-const providerDownShell: CSSProperties = {
-  display: "grid",
-  placeItems: "center",
-  height: "100%",
-  minHeight: 0,
-  padding: 14,
-};
-
-const newsLoadShell: CSSProperties = {
-  display: "grid",
-  gap: 14,
-  padding: 14,
-  margin: 14,
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-md)",
-  background: "linear-gradient(180deg, var(--scrim-low), transparent)",
-};
-
-const newsLoadHeader: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "20px minmax(0, 1fr)",
-  gap: 12,
-  alignItems: "center",
-};
-
-const newsLoadTitle: CSSProperties = {
-  display: "block",
-  color: "var(--text-primary)",
-  fontSize: "var(--font-size-xl)",
-  letterSpacing: 0,
-};
-
-const newsLoadText: CSSProperties = {
-  margin: "4px 0 0",
-  color: "var(--text-secondary)",
-  fontSize: "var(--font-size-md)",
-  lineHeight: 1.5,
-};
-
-const newsLoadSkeletonList: CSSProperties = {
-  display: "grid",
-  gap: 10,
-};
-
-const newsLoadSkeletonRow: CSSProperties = {
-  display: "grid",
-  gap: 6,
-  padding: "10px 11px",
-  border: "1px solid var(--border-subtle)",
-  borderRadius: "var(--radius-sm)",
-  background: "var(--surface-1)",
-};

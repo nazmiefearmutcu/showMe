@@ -62,48 +62,27 @@ def av() -> FunctionManifest:
                 label="Media type",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="Filter by media kind; empty = all.",
-                options=["earnings_call", "central_bank_presser", "conference", "podcast", "interview"],
+                description="Filter by media kind: filing (SEC filing document) or podcast (RSS audio episode); empty = all.",
+                options=["filing", "podcast"],
             ),
             InputSpec(
                 name="date_range",
                 label="Date range",
                 control=ControlKind.DATE_RANGE,
                 required=False,
-                description="Restrict to items in this window; empty = last 90 days.",
-            ),
-            InputSpec(
-                name="has_transcript",
-                label="Has transcript",
-                control=ControlKind.BOOLEAN,
-                required=False,
-                description="Only show items with a stored transcript.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Restrict to items in this window: last_Nd (e.g. last_30d, last_365d) or all; empty = last_90d.",
             ),
         ],
         defaults={
             "symbol": "",
             "media_type": [],
             "date_range": "last_90d",
-            "has_transcript": False,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["cached_snapshot"],
+            primary="sec_edgar",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.CACHED_SNAPSHOT,
                 DataMode.NOT_CONFIGURED,
             ],
         ),
@@ -140,26 +119,30 @@ def av() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "AV is backed by the internal media archive (engine/services/media_archive). Each row "
-            "is a real, playable resource: the `play_url` is a verifiable HTTPS link to the "
-            "source audio/video (earnings call replay, Fed presser, conference recording, "
-            "podcast episode); `duration_seconds` is read from the asset's manifest, not "
-            "estimated; `has_transcript` is true only when a stored transcript exists in the "
-            "transcripts_archive (and TRAN can render it). The archive is a playable archive, "
-            "not a placeholder list — empty filter results return items=[] with a warning "
-            "explaining 'no archive entries for these filters', never a synthetic 'coming soon' "
-            "row. When the underlying archive directory is missing, data_mode reports "
-            "'not_configured' and items=[] with a setup-hint warning."
+            "AV is a playable archive built from two keyless public sources. With a symbol, the "
+            "default path reads the issuer's recent SEC EDGAR submissions "
+            "(data.sec.gov/submissions, descriptive User-Agent) and returns its investor-relevant "
+            "filings (8-K, 10-Q, 10-K, 6-K, 20-F, ARS, DEF 14A) as filing rows; event_date is the "
+            "SEC filing date and play_url is the HTTPS filing document. Without a symbol (global "
+            "scope) it reads public finance podcast RSS feeds (NPR Planet Money, The Indicator, "
+            "Up First, a finance interview feed) and returns real audio episodes whose play_url is "
+            "the enclosure URL and duration_seconds comes from the feed's itunes:duration. The "
+            "date_range window (default last_90d) is applied to every row. No transcript store is "
+            "wired, so has_transcript is always false. The archive is not a placeholder list: empty "
+            "filter results return rows=[] with an explanatory reason, and a window with no matches "
+            "returns status='empty', while a genuine network outage returns "
+            "status='provider_unavailable' with next_actions."
         ),
         field_dict={
-            "items[].event_date": FieldDef(unit="iso8601", description="Recording timestamp in UTC.", source="archive"),
-            "items[].symbol": FieldDef(description="Primary ticker tag (optional for macro/podcasts).", source="archive"),
+            "items[].event_date": FieldDef(unit="iso8601", description="SEC filing date (filings) or episode publish date (podcasts).", source="archive"),
+            "items[].period_end": FieldDef(unit="iso8601", description="SEC fiscal period end (filings only).", source="archive"),
+            "items[].symbol": FieldDef(description="Primary ticker tag (filings only; empty for podcasts).", source="archive"),
             "items[].title": FieldDef(description="Display title.", source="archive"),
-            "items[].media_type": FieldDef(description="earnings_call / central_bank_presser / conference / podcast / interview.", source="archive"),
-            "items[].duration_seconds": FieldDef(unit="seconds", description="Asset duration read from the manifest.", source="archive"),
-            "items[].play_url": FieldDef(unit="url", description="Verifiable HTTPS link to play the asset.", source="archive"),
-            "items[].source": FieldDef(description="Source publisher (e.g. ir.apple.com, federalreserve.gov).", source="archive"),
-            "items[].has_transcript": FieldDef(description="True when a stored transcript exists for the item.", source="derived"),
+            "items[].media_type": FieldDef(description="filing (SEC filing document) or podcast (RSS audio episode).", source="archive"),
+            "items[].duration_seconds": FieldDef(unit="seconds", description="Episode duration from the RSS itunes:duration; null for filings.", source="archive"),
+            "items[].play_url": FieldDef(unit="url", description="Verifiable HTTPS link: SEC filing document or audio enclosure.", source="archive"),
+            "items[].source": FieldDef(description="Source publisher (sec.gov or the podcast feed title).", source="archive"),
+            "items[].has_transcript": FieldDef(description="Always false: no stored transcript provider is wired.", source="derived"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -189,15 +172,15 @@ def av() -> FunctionManifest:
             ),
             SemanticTest(
                 name="av_duration_is_real_not_estimated",
-                description="Asserts duration_seconds is read from the asset manifest (integer seconds) and is not a default zero.",
+                description="Asserts duration_seconds comes from the RSS itunes:duration (integer seconds) and is null for filings, never a default zero.",
                 inputs={},
                 assertions=["duration_seconds_is_positive_integer"],
             ),
             SemanticTest(
-                name="av_has_transcript_matches_archive",
-                description="When a transcript exists in transcripts_archive for the item, asserts has_transcript == true; otherwise false.",
+                name="av_has_transcript_is_false_without_store",
+                description="No transcript store is wired, so has_transcript is false on every item.",
                 inputs={},
-                assertions=["has_transcript_matches_transcripts_archive"],
+                assertions=["has_transcript_is_false"],
             ),
         ],
     )

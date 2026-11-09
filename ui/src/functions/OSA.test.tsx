@@ -27,6 +27,8 @@ interface MockFnState {
 }
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
+// Last request params the pane handed to useFunction (what the backend sees).
+const mockCalls: { params?: Record<string, unknown> } = {};
 
 function setMockFn(next: MockFnState) {
   mockFn.state = next.state;
@@ -35,12 +37,15 @@ function setMockFn(next: MockFnState) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args?: { params?: Record<string, unknown> }) => {
+    mockCalls.params = args?.params;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
@@ -108,8 +113,16 @@ function bullCallPayload() {
 
 /* ── harness ───────────────────────────────────────────────────────── */
 
+// The pane starts with no legs (T10). These tests exercise a priced strategy,
+// so they seed the user's entered call spread into storage first.
+const ENTERED_CALL_SPREAD = [
+  { qty: 1, strike: 100, type: "CALL", expiry: 0.25, vol: 0.25 },
+  { qty: -1, strike: 110, type: "CALL", expiry: 0.25, vol: 0.25 },
+];
+
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("showme.osa.legs", JSON.stringify(ENTERED_CALL_SPREAD));
   setMockFn({ state: "idle", data: undefined });
 });
 afterEach(() => {
@@ -230,6 +243,95 @@ describe("OSA pane — ok surface", () => {
   });
 });
 
+describe("OSA pane — spot and underlying (OSA#2)", () => {
+  it("does not send a placeholder spot when none was entered", () => {
+    setMockFn({ state: "ok", ...bullCallPayload() });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    // RED before fix: the pane always sent spot 100 from a persisted default.
+    expect(mockCalls.params).not.toHaveProperty("spot");
+    expect(mockCalls.params).not.toHaveProperty("underlying");
+  });
+
+  it("sends the typed underlying upper-cased so the backend can take its live quote", () => {
+    setMockFn({ state: "ok", ...bullCallPayload() });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    // RED before fix: there was no underlying input at all.
+    const underlying = screen.getByLabelText("Underlying ticker for live spot") as HTMLInputElement;
+    fireEvent.change(underlying, { target: { value: "spy" } });
+    expect(mockCalls.params?.underlying).toBe("SPY");
+  });
+
+  it("sends an entered spot as the spot override", () => {
+    setMockFn({ state: "ok", ...bullCallPayload() });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    fireEvent.change(screen.getByLabelText("Underlying spot price"), { target: { value: "735.29" } });
+    expect(mockCalls.params?.spot).toBe(735.29);
+  });
+
+  it("says where the spot came from in the header", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: { ...(bullCallPayload().data.data as Record<string, unknown>), spot_source: "live_quote", underlying: "SPY" },
+      },
+    });
+    const { container } = render(<OSAPane code="OSA" symbol="SPY" />);
+    const header = container.querySelector(".ds-pane-header");
+    expect(header?.textContent).toMatch(/live quote/);
+  });
+
+  it("titles a missing-input state as inputs needed, with the backend reason", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "needs_input",
+          reason: "Enter a spot price, or an underlying ticker to take its live quote.",
+          curve: [],
+          summary: {},
+        },
+      },
+    });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    // RED before fix: the title was always "Strategy could not be priced".
+    expect(screen.getByText(/Inputs needed/i)).toBeInTheDocument();
+    expect(screen.getByText(/Enter a spot price, or an underlying ticker/i)).toBeInTheDocument();
+  });
+});
+
+describe("OSA pane — extremes are labelled honestly (OSA#3)", () => {
+  function withSummary(extra: Record<string, unknown>) {
+    const fixture = bullCallPayload();
+    const data = fixture.data.data as Record<string, unknown>;
+    data.summary = { ...(data.summary as Record<string, unknown>), ...extra };
+    return fixture;
+  }
+
+  it("shows an unbounded max gain as Unlimited, not the grid edge value", () => {
+    // RED before fix: the KPI showed +6.41 with a grid-range caption.
+    setMockFn({ state: "ok", ...withSummary({ max_gain_state: "unbounded" }) });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    const kpis = within(screen.getByRole("region", { name: "Strategy statistics" }));
+    expect(kpis.getByText("Unlimited")).toBeInTheDocument();
+    expect(kpis.queryByText("+6.41")).toBeNull();
+    expect(kpis.getByText(/rises past range high/i)).toBeInTheDocument();
+  });
+
+  it("labels a best outcome at the grid low edge as possibly extending lower", () => {
+    setMockFn({ state: "ok", ...withSummary({ max_gain_state: "grid_edge" }) });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    const kpis = within(screen.getByRole("region", { name: "Strategy statistics" }));
+    expect(kpis.getByText(/may extend lower/i)).toBeInTheDocument();
+  });
+
+  it("states that a bounded extreme is only the visible grid's", () => {
+    setMockFn({ state: "ok", ...withSummary({ max_gain_state: "bounded", max_loss_state: "bounded" }) });
+    render(<OSAPane code="OSA" symbol="SPY" />);
+    const kpis = within(screen.getByRole("region", { name: "Strategy statistics" }));
+    expect(kpis.getAllByText(/within visible grid/i)).toHaveLength(2);
+  });
+});
+
 describe("OSA pane — interactions", () => {
   it("clicking a strategy preset swaps the legs and persists them", () => {
     setMockFn({ state: "ok", ...bullCallPayload() });
@@ -239,8 +341,9 @@ describe("OSA pane — interactions", () => {
     expect(stored).toHaveLength(2);
     expect(stored[0].type).toBe("CALL");
     expect(stored[1].type).toBe("PUT");
-    expect(stored[0].strike).toBe(100);
-    expect(stored[1].strike).toBe(100);
+    // A preset is leg structure only: the user enters strikes, not the pane (T10).
+    expect(stored[0].strike).toBeNull();
+    expect(stored[1].strike).toBeNull();
   });
 
   it("editing a leg strike persists the strategy", () => {

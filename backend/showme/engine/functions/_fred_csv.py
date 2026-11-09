@@ -173,7 +173,7 @@ class _KeylessFredCSV:
         # always the latest vintage — the keyed adapter's frequency/vintage
         # parameters cannot be honoured here. Say so instead of silently
         # ignoring the caller's request.
-        ignored = [name for name, value in (("frequency", frequency), ("vintage", vintage)) if value]
+        ignored = _unhonoured_request_params(frequency, vintage)
         if ignored:
             LOG.warning(
                 "keyless FRED CSV shim ignores %s for series %r "
@@ -214,6 +214,38 @@ class _KeylessFredCSV:
             except Exception:  # noqa: BLE001 - per-tenor failure stays NaN
                 out[sid] = float("nan")
         return out
+
+
+_NATIVE_REQUEST_VALUES: dict[str, str] = {"frequency": "native", "vintage": "latest"}
+
+
+def _unhonoured_request_params(frequency: str | None, vintage: str | None) -> list[str]:
+    """Names of the requested non-default parameters the keyless CSV cannot serve.
+
+    ``native`` (frequency) and ``latest`` (vintage) are what fredgraph.csv
+    already returns, so they are not a dropped request.
+    """
+    requested = {"frequency": frequency, "vintage": vintage}
+    return [
+        name
+        for name, value in requested.items()
+        if value and str(value).strip().lower() != _NATIVE_REQUEST_VALUES[name]
+    ]
+
+
+def keyless_ignored_request_params(
+    fred: Any, *, frequency: str | None = None, vintage: str | None = None
+) -> list[str]:
+    """Requested frequency/vintage the adapter in use will silently drop.
+
+    Empty for a keyed FRED adapter (it honours both). For the keyless shim it
+    lists the non-default parameters that fredgraph.csv cannot serve, so the
+    caller can label the response instead of returning native data as if the
+    request had been applied.
+    """
+    if not isinstance(fred, _KeylessFredCSV):
+        return []
+    return _unhonoured_request_params(frequency, vintage)
 
 
 def fred_with_keyless_fallback(fred: Any, client: Any = None) -> Any:

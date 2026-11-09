@@ -183,7 +183,7 @@ describe("PFA custom weights editor (G3)", () => {
     expect(apply).toBeDisabled();
   });
 
-  it("Reset returns to the backend sample (params undefined)", () => {
+  it("Clear returns to the input-required state (params undefined)", () => {
     ok(SAMPLE_PAYLOAD);
     render(<PerformanceAttributionPane code="PFA" />);
     fireEvent.click(screen.getByTestId("pfa-editor-toggle"));
@@ -192,7 +192,34 @@ describe("PFA custom weights editor (G3)", () => {
     expect(mockArgs.current?.params).toBeDefined();
     fireEvent.click(screen.getByTestId("pfa-editor-reset"));
     expect(mockArgs.current?.params).toBeUndefined();
-    expect(screen.getByText(/sample runs until applied/i)).toBeInTheDocument();
+    expect(screen.getByText(/enter all four maps and apply/i)).toBeInTheDocument();
+  });
+
+  it("renders input_required as an explicit empty state with no headline", () => {
+    ok({
+      status: "input_required",
+      reason: "Brinson attribution needs portfolio and benchmark weights and returns by sector.",
+      rows: [],
+      totals: {},
+      summary: {},
+    });
+    render(<PerformanceAttributionPane code="PFA" />);
+    expect(screen.getByText("Input required")).toBeInTheDocument();
+    expect(screen.queryByText(/Active return/i)).toBeNull();
+  });
+
+  it("renders input_error with the reconciliation reason and no headline", () => {
+    ok({
+      status: "input_error",
+      reason: "port_weights sum to 65.0000%, not 100%.",
+      rows: [],
+      totals: {},
+      summary: {},
+    });
+    render(<PerformanceAttributionPane code="PFA" />);
+    expect(screen.getByText("Invalid parameters")).toBeInTheDocument();
+    expect(screen.getByText(/sum to 65.0000%/)).toBeInTheDocument();
+    expect(screen.queryByText(/Active return/i)).toBeNull();
   });
 
   it("parseSectorMap skips unparseable fragments and converts percents", () => {

@@ -200,6 +200,44 @@ describe("FSRC pane — data honesty", () => {
   });
 });
 
+describe("FSRC pane — curated values are marked as reference (FSRC#1)", () => {
+  it("marks expense ratio and dividend yield cells as curated reference values", () => {
+    const payload = okPayload();
+    const rows = payload.data.data.rows.map((row) => ({
+      ...row,
+      expense_state: "reference",
+      dividend_state: "reference",
+    }));
+    setMockFn({
+      state: "ok",
+      data: { ...payload.data, data: { ...payload.data.data, rows } },
+    });
+    render(<FSRCPane code="FSRC" />);
+    expect(
+      screen.getAllByLabelText("curated reference value").length,
+    ).toBeGreaterThanOrEqual(rows.length * 2);
+  });
+
+  it("shows AUM and YTD as unserved dashes with no reference mark", () => {
+    const payload = okPayload();
+    const rows = payload.data.data.rows.map((row) => ({
+      ...row,
+      aum_usd: null,
+      ytd_return_pct: null,
+      aum_state: "unavailable",
+      ytd_state: "unavailable",
+      expense_state: undefined,
+      dividend_state: undefined,
+    }));
+    setMockFn({
+      state: "ok",
+      data: { ...payload.data, data: { ...payload.data.data, rows } },
+    });
+    render(<FSRCPane code="FSRC" />);
+    expect(screen.queryAllByLabelText("curated reference value")).toHaveLength(0);
+  });
+});
+
 describe("FSRC pane — filter controls compose the server-side query", () => {
   it("composes a category predicate when a chip is clicked", () => {
     setMockFn({ state: "ok", ...okPayload() });
@@ -242,7 +280,7 @@ describe("FSRC pane — filter controls compose the server-side query", () => {
     // Reset path: ALL chip clears the category clause.
     fireEvent.click(screen.getByTitle("Category ALL"));
     fireEvent.click(screen.getByTitle("Expense ANY"));
-    expect(screen.getAllByText(/aum_usd >= 0/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/expenseRatio >= 0/).length).toBeGreaterThan(0);
   });
 });
 

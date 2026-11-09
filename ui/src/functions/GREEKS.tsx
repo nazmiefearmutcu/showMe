@@ -3,8 +3,13 @@
  *
  * The backend GREEKS function is fully params-driven (`positions` array,
  * no instrument), so the pane owns a persisted option book: a JSON editor
- * (`showme.greeks.book`) with a sample default, applied to the call on
- * demand. Parse errors render honestly and never reach the sidecar.
+ * (`showme.greeks.book`), applied to the call on demand. Parse errors
+ * render honestly and never reach the sidecar.
+ *
+ * 2026-11-07 (strict truth audit): the book used to start pre-filled with a
+ * demo AAPL/SPY book, so the pane showed Greeks for positions nobody held.
+ * It now starts empty; the example lives only in the editor placeholder,
+ * and a stored book identical to the old demo is treated as empty.
  *
  * Body: net summary cards (delta/gamma/vega/theta/rho in trader-readable
  * units), the per-position greeks table with an aggregate NET row, and a
@@ -41,7 +46,8 @@ const BOOK_KEY = "showme.greeks.book";
 
 type PositionInput = Record<string, unknown>;
 
-const DEFAULT_BOOK: PositionInput[] = [
+/** The pre-2026-11-07 demo book: a stored draft equal to it is discarded. */
+const LEGACY_DEMO_BOOK: PositionInput[] = [
   {
     symbol: "AAPL 240C",
     kind: "call",
@@ -65,6 +71,16 @@ const DEFAULT_BOOK: PositionInput[] = [
     r: 0.04,
   },
 ];
+
+const DEFAULT_BOOK: PositionInput[] = [];
+const LEGACY_DEMO_DRAFT = JSON.stringify(LEGACY_DEMO_BOOK, null, 2);
+
+/** Placeholder only — never sent. Uses the advertised field names. */
+const EXAMPLE_DRAFT = JSON.stringify(
+  [{ symbol: "AAPL", type: "call", qty: 10, strike: 240, expiry: "2027-01-15", rate: 0.04 }],
+  null,
+  2,
+);
 
 interface GreeksRow {
   label?: string;
@@ -107,9 +123,10 @@ function parseBook(json: string): { positions?: PositionInput[]; error?: string 
 }
 
 export function GreeksPane({ code }: FunctionPaneProps) {
-  const [draft, setDraft] = usePersistentString(
+  const [storedDraft, setDraft] = usePersistentString(
     BOOK_KEY, JSON.stringify(DEFAULT_BOOK, null, 2),
   );
+  const draft = storedDraft === LEGACY_DEMO_DRAFT ? "[]" : storedDraft;
   const [book, setBook] = useState<PositionInput[]>(() => {
     if (draft.trim() === "") return DEFAULT_BOOK;
     const parsed = parseBook(draft);
@@ -207,13 +224,18 @@ export function GreeksPane({ code }: FunctionPaneProps) {
         <NetCard label="Net rho" value={totals?.rho} unit={payload?.units?.rho} />
       </section>
       <BookTable rows={rows} n={payload?.n} />
-      <BookEditor
-        draft={draft}
-        parseError={parseError}
-        onDraftChange={setDraft}
-        onApply={applyBook}
-      />
     </div>
+  );
+  // The editor is always available: an empty book (the default) or an
+  // input_error asks the user to edit it, so it must not live only in the
+  // success branch.
+  const editor = (
+    <BookEditor
+      draft={draft}
+      parseError={parseError}
+      onDraftChange={setDraft}
+      onApply={applyBook}
+    />
   );
 
   return (
@@ -237,7 +259,12 @@ export function GreeksPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <PaneBody>{body}</PaneBody>
+        <PaneBody>
+          <div className="u-grid-gap-14">
+            {body}
+            {editor}
+          </div>
+        </PaneBody>
         <PaneFooter>
           <StatusSection label="source" value={data?.sources?.join(", ") || "—"} />
           <StatusDivider />
@@ -408,6 +435,7 @@ function BookEditor({
       <textarea
         aria-label="Option book JSON"
         value={draft}
+        placeholder={EXAMPLE_DRAFT}
         onChange={(e) => onDraftChange(e.target.value)}
         rows={7}
         spellCheck={false}
@@ -415,7 +443,7 @@ function BookEditor({
       />
       <div style={editorRowStyle}>
         <span style={editorHintStyle}>
-          fields: symbol, kind (call|put), quantity, contract_size, spot, strike, vol, T (years), r
+          fields: symbol, type (call|put), qty, strike, expiry (date or years); optional: spot, vol, rate, contract_size — missing spot/vol use the symbol's last close and 30d realized vol
         </span>
         <button type="button" className="btn" onClick={onApply}>
           Apply book

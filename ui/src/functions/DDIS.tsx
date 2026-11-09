@@ -48,7 +48,12 @@ interface DDISData {
   summary?: {
     issuer?: string;
     cik?: string;
+    /** Sum of scheduled maturities (principal). Not balance-sheet debt. */
+    scheduled_principal_usd_bn?: number;
+    /** Legacy alias of scheduled_principal_usd_bn kept for older payloads. */
     total_debt_usd_bn?: number;
+    balance_sheet_long_term_debt_usd_bn?: number | null;
+    balance_sheet_as_of?: string | null;
     currency?: string;
     source_mode?: string;
   };
@@ -173,9 +178,16 @@ export function DDISPane({ code, symbol }: FunctionPaneProps) {
     <div className="u-grid-gap-14">
       <section style={kpiGridStyle} aria-label="DDIS issuer headline">
         <StatCard
-          label="Total debt"
-          value={`$${fmtBn(summary?.total_debt_usd_bn)}bn`}
-          caption={`${summary?.issuer ?? effectiveSymbol ?? "—"}${summary?.cik ? ` · CIK ${summary.cik}` : ""}`}
+          label="Scheduled principal"
+          value={`$${fmtBn(summary?.scheduled_principal_usd_bn ?? summary?.total_debt_usd_bn)}bn`}
+          caption={[
+            `${summary?.issuer ?? effectiveSymbol ?? "—"}${summary?.cik ? ` · CIK ${summary.cik}` : ""}`,
+            summary?.balance_sheet_long_term_debt_usd_bn != null
+              ? `Balance-sheet LT debt $${fmtBn(summary.balance_sheet_long_term_debt_usd_bn)}bn${summary.balance_sheet_as_of ? ` (${summary.balance_sheet_as_of})` : ""}`
+              : summary?.source_mode === "sec_edgar"
+                ? "Balance-sheet LT debt not filed"
+                : null,
+          ].filter(Boolean).join(" · ")}
           tone="neutral"
         />
         <StatCard

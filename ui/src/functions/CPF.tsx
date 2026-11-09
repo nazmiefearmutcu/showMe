@@ -56,6 +56,8 @@ interface CPFData {
   as_of?: string;
   data_mode?: string;
   next_actions?: string[];
+  proxy_symbol?: string;
+  series_note?: string;
 }
 
 const SERIES_OPTIONS = [
@@ -107,7 +109,9 @@ export function CPFPane({ code, symbol }: FunctionPaneProps) {
 
   const status = payload?.status ?? "—";
   const dataMode = payload?.data_mode ?? "—";
-  const isLive = dataMode === "live_official";
+  // CPF#2: the actual leg is a futures proxy and the forecast is a trend, so
+  // the pane never shows a "live actual" / official pill for this data.
+  const isProxy = dataMode === "futures_proxy_trend";
   const latestActual = actual.length ? (actual[actual.length - 1].value as number) : null;
   const endpointForecast = forecast.length
     ? (forecast[forecast.length - 1].value as number)
@@ -206,8 +210,11 @@ export function CPFPane({ code, symbol }: FunctionPaneProps) {
     <div className="u-grid-gap-14">
       <div role="note" style={noticeStyle}>
         <strong>Trend model.</strong> The forecast leg is a clamped trend
-        extrapolation of the live actual series (vintage{" "}
+        extrapolation of the futures-proxy actual series (vintage{" "}
         {payload?.forecast_vintage ?? "—"}) — NOT analyst consensus.
+        {payload?.series_note ? (
+          <div style={{ marginTop: 4 }}>{payload.series_note}</div>
+        ) : null}
       </div>
       <section style={kpiGridStyle} aria-label="CPF forecast cards">
         <StatCard
@@ -268,12 +275,8 @@ export function CPFPane({ code, symbol }: FunctionPaneProps) {
           subtitle={`${seriesId} · ${actual.length}+${forecast.length} pts`}
           trailing={
             <FunctionControlGroup>
-              <Pill
-                tone={isLive ? "positive" : "warn"}
-                variant="soft"
-                withDot={isLive}
-              >
-                {isLive ? "live actual" : dataMode}
+              <Pill tone="warn" variant="soft" withDot={false}>
+                {isProxy ? "futures proxy" : dataMode}
               </Pill>
               <Pill tone="muted" variant="soft" withDot={false}>
                 trend model

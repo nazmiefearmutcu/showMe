@@ -8,7 +8,7 @@
  * That keeps the pane within the "do not execute trades" guardrail while
  * still demonstrating that the backend round-trip works.
  */
-import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   Empty,
   Pane,
@@ -45,6 +45,7 @@ interface TSOXPayload {
   tif?: string;
   price?: number;
   next_actions?: string[];
+  analytics?: { status?: string; reason?: string; not_computed?: string[] };
 }
 
 const TENOR_PRESETS = [
@@ -55,15 +56,37 @@ const TENOR_PRESETS = [
 ] as const;
 
 export function TSOXPane({ code, symbol }: FunctionPaneProps) {
-  const [ticketSymbol, setTicketSymbol] = useState(symbol || "ZN=F");
+  // No placeholder instrument or price: an unlinked ticket stays blank until the user enters values.
+  const [ticketSymbol, setTicketSymbol] = useState(symbol || "");
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<OrderType>("LIMIT");
   const [tif, setTif] = useState<Tif>("GTC");
-  const [quantity, setQuantity] = useState("1");
-  const [price, setPrice] = useState("100.0625");
+  // No placeholder quantity either: the user enters contracts before a preview is possible.
+  const [quantity, setQuantity] = useState("");
+  const [price, setPrice] = useState("");
   const [state, setState] = useState<"idle" | "loading" | "ok" | "error">("idle");
   const [result, setResult] = useState<FunctionCallResult<unknown> | null>(null);
   const [error, setError] = useState<Error | null>(null);
+
+  // Follow the linked symbol: the ticket must not keep the first symbol it saw.
+  useEffect(() => {
+    if (symbol) setTicketSymbol(symbol);
+  }, [symbol]);
+
+  // Number('') is 0 and finite, so a blank field used to reach the sidecar as
+  // quantity 0 / price 0. Only a real positive number counts as entered.
+  const qtyNumber = useMemo(() => {
+    const n = Number(quantity);
+    return quantity.trim() !== "" && Number.isFinite(n) && n > 0 ? n : null;
+  }, [quantity]);
+  const priceNumber = useMemo(() => {
+    const n = Number(price);
+    return price.trim() !== "" && Number.isFinite(n) && n > 0 ? n : null;
+  }, [price]);
+  const ticketReady =
+    !!ticketSymbol.trim() &&
+    qtyNumber != null &&
+    (orderType === "MARKET" || priceNumber != null);
 
   const payload = useMemo<TSOXPayload>(() => {
     const d = result?.data;
@@ -71,21 +94,20 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
   }, [result]);
 
   const preview = useCallback(async () => {
+    if (!ticketReady || qtyNumber == null) return;
     setState("loading");
     setError(null);
     try {
-      const qty = Number(quantity);
-      const limitPrice = orderType === "LIMIT" ? Number(price) : undefined;
       const params: Record<string, unknown> = {
         side,
-        quantity: Number.isFinite(qty) ? qty : 0,
+        quantity: qtyNumber,
         order_type: orderType,
         tif,
         submit: false,
       };
-      if (limitPrice != null && Number.isFinite(limitPrice)) params.price = limitPrice;
+      if (orderType === "LIMIT" && priceNumber != null) params.price = priceNumber;
       const res = await runFunction(code, {
-        symbol: ticketSymbol,
+        symbol: ticketSymbol.trim(),
         asset_class: "BOND",
         params,
       });
@@ -95,10 +117,13 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
       setError(e instanceof Error ? e : new Error(String(e)));
       setState("error");
     }
-  }, [code, side, orderType, tif, quantity, price, ticketSymbol]);
+  }, [code, side, orderType, tif, qtyNumber, priceNumber, ticketReady, ticketSymbol]);
 
   const inputRequired = payload.status === "input_required";
-  const previewOk = payload.status === "preview" || (payload.broker === "paper" && !inputRequired);
+  // WB1-G16 TSOX#4: an invalid ticket is input_error and must never read as a valid preview.
+  const inputError = payload.status === "input_error";
+  const previewOk =
+    payload.status === "preview" || (payload.broker === "paper" && !inputRequired && !inputError);
 
   return (
     <div className="u-pane-host">
@@ -115,7 +140,7 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
               <button
                 type="button"
                 onClick={preview}
-                disabled={state === "loading" || !quantity.trim()}
+                disabled={state === "loading" || !ticketReady}
                 style={primaryActionStyle}
               >
                 {state === "loading" ? "Sending…" : "Preview ticket"}
@@ -251,11 +276,14 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
                 title="No ticket previewed yet"
                 body="Set the ticket fields and press Preview to round-trip through the sidecar."
               />
-            ) : inputRequired ? (
+            ) : inputRequired || inputError ? (
               <div style={warningBox}>
-                <strong className="u-text-warn">Input required</strong>
+                <strong className="u-text-warn">{inputError ? "Input error" : "Input required"}</strong>
                 <span className="u-text-secondary">
-                  {payload.reason ?? "Trade ticket needs a positive quantity."}
+                  {payload.reason ??
+                    (inputError
+                      ? "The ticket has an invalid field. Nothing was sent to a broker."
+                      : "Trade ticket needs a positive quantity.")}
                 </span>
               </div>
             ) : (
@@ -286,6 +314,12 @@ export function TSOXPane({ code, symbol }: FunctionPaneProps) {
                     tone="neutral"
                   />
                 </section>
+                {payload.analytics?.status === "not_computed" ? (
+                  <div style={hintBox}>
+                    <strong className="u-text-secondary">Bond analytics not computed</strong>
+                    <span className="u-text-mute">{payload.analytics.reason}</span>
+                  </div>
+                ) : null}
                 {payload.next_actions?.length ? (
                   <div style={hintBox}>
                     <strong className="u-text-secondary">Next actions</strong>

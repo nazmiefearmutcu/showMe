@@ -1,8 +1,8 @@
 """TAUC — Treasury Auction Calendar.
 
 Upcoming and recently completed US Treasury auctions (Bills, Notes,
-Bonds, TIPS, FRNs) pulled from TreasuryDirect when ``live_auctions=true``;
-otherwise a labelled template is returned. The chart grammar is ``none``
+Bonds, TIPS, FRNs) pulled from TreasuryDirect by default (``live_auctions``
+defaults to true); ``live_auctions=false`` returns a labelled template. The chart grammar is ``none``
 because the deliverable is a calendar table rather than a plot.
 """
 from __future__ import annotations
@@ -85,7 +85,7 @@ def tauc() -> FunctionManifest:
                 label="Live TreasuryDirect",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="When true, pull live from TreasuryDirect; otherwise return a labelled template.",
+                description="Default true: pull live from TreasuryDirect. Set false for the labelled template.",
             ),
             InputSpec(
                 name="provider_mode",
@@ -105,7 +105,7 @@ def tauc() -> FunctionManifest:
             "horizon_days": 30,
             "security_type": "",
             "limit": 50,
-            "live_auctions": False,
+            "live_auctions": True,
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
@@ -151,7 +151,7 @@ def tauc() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "TAUC fetches the US Treasury auction calendar from TreasuryDirect when ``live_auctions=true``."
+            "TAUC fetches the US Treasury auction calendar from TreasuryDirect by default (``live_auctions=true``)."
             " For ``action=upcoming`` the engine asks for ``horizon_days`` forward; for ``action=recent``"
             " it asks for the same window backward. The chain wraps the call with a configurable"
             " ``auction_timeout`` (default 6 s) and falls back to a labelled template on adapter timeout"

@@ -1,0 +1,212 @@
+{
+  "_doc": "Data tables for the strict function truth audit (backend/showme/audit/truth.py). Spec: docs/superpowers/specs/2026-11-07-foundation-and-function-audit-design.md section 2.",
+  "max_age_days": {
+    "intraday": 4,
+    "daily": 6,
+    "weekly": 21,
+    "monthly": 100,
+    "quarterly": 200,
+    "annual": 800,
+    "finra_ats_weekly": 42
+  },
+  "cadence_by_category": {
+    "chart": "daily",
+    "equity": "daily",
+    "derivative": "daily",
+    "bond": "daily",
+    "fx": "daily",
+    "commodity": "daily",
+    "news": "intraday",
+    "comm": "intraday",
+    "macro": "monthly"
+  },
+  "cadence_overrides": {
+    "VCAP": "annual",
+    "DARK": "finra_ats_weekly",
+    "DPF": "finra_ats_weekly"
+  },
+  "calendar_codes": [
+    "BTMM",
+    "CACT",
+    "CPF",
+    "DVD",
+    "ECFC",
+    "ECO",
+    "EE",
+    "ERN",
+    "EVTS",
+    "FXFC",
+    "IPO",
+    "MEET",
+    "NALRT",
+    "TAUC",
+    "TRDH",
+    "WETR",
+    "WIRP"
+  ],
+  "latency_budget_s": {
+    "cold": 12.0,
+    "warm": 3.0
+  },
+  "latency_overrides": {
+    "BRIEF": {
+      "cold": 30.0,
+      "warm": 6.0
+    },
+    "SPLC": {
+      "cold": 30.0,
+      "warm": 6.0
+    },
+    "ICX": {
+      "cold": 30.0,
+      "warm": 6.0
+    },
+    "MEET": {
+      "cold": 20.0,
+      "warm": 6.0
+    }
+  },
+  "fake_source_names": [
+    "NONE"
+  ],
+  "fake_source_substrings": [
+    "demo",
+    "mock",
+    "fixture",
+    "placeholder",
+    "sample",
+    "dummy",
+    "synthetic",
+    "fake"
+  ],
+  "computed_source_names": [
+    "black_scholes",
+    "greeks",
+    "order_history",
+    "paper_ticket",
+    "portfolio_state",
+    "position_sizing_model"
+  ],
+  "placeholder_values": [
+    {
+      "key": "^(account|account_size|account_value|equity|capital|balance|cash|nav)$",
+      "values": [
+        10000,
+        100000
+      ],
+      "why": "demo account size"
+    },
+    {
+      "key": "^(entry|entry_price|spot|underlying|underlying_price)$",
+      "values": [
+        100
+      ],
+      "why": "demo price"
+    },
+    {
+      "key": "^(strike)$",
+      "values": [
+        105,
+        110
+      ],
+      "why": "demo strike",
+      "scope": [
+        "source"
+      ]
+    },
+    {
+      "key": "^(quantity|qty)$",
+      "values": [
+        0
+      ],
+      "why": "zero-quantity ticket",
+      "scope": [
+        "source"
+      ]
+    },
+    {
+      "key": "^(id|order_id|exec_id|ticket_id)$",
+      "values": [
+        "smoke-1"
+      ],
+      "why": "smoke id"
+    }
+  ],
+  "crypto_demo_universe": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT"
+  ],
+  "template_help_patterns": [
+    "^\\s*$",
+    "^[\\w &/'().,-]+ function\\.$",
+    "run the function",
+    "inspect/rerun",
+    "\\d+ position\\(s\\) function"
+  ],
+  "input_pairs": {
+    "EQUITY": [
+      "AAPL",
+      "MSFT"
+    ],
+    "ETF": [
+      "SPY",
+      "QQQ"
+    ],
+    "CRYPTO": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "FX": [
+      "EURUSD",
+      "USDJPY"
+    ],
+    "COMMODITY": [
+      "GC=F",
+      "CL=F"
+    ],
+    "INDEX": [
+      "^GSPC",
+      "^NDX"
+    ],
+    "BOND": [
+      "US10Y",
+      "US2Y"
+    ],
+    "GLOBAL": [
+      "US",
+      "DE"
+    ]
+  },
+  "_placeholder_doc": "Matching is key-scoped (key regex + exact value), so ordinary constants such as 252 or 365 never match and no separate literal allow-list is needed. scope: where a rule applies (source = AST defaults, response = served values); default both.",
+  "canary": {
+    "code": "DAPI",
+    "max_seconds": 5.0,
+    "_doc": "Network-free, instant function used to tell a stalled sidecar from a slow function."
+  },
+  "_calendar_doc": "Calendar/forecast functions: future dates are legitimate and freshness is not judged.",
+  "placeholder_allow": {
+    "BTFW": [
+      "equity"
+    ],
+    "BTUNE": [
+      "equity"
+    ],
+    "BMTX": [
+      "equity"
+    ],
+    "_doc": "Per-function keys where a matching value is a documented convention (backtest initial capital normalised to 10,000)."
+  },
+  "t3_skip": {
+    "DCF": "audit supplies explicit cash-flow inputs; output is independent of the symbol by design",
+    "DDM": "audit supplies explicit dividend inputs; output is independent of the symbol by design",
+    "BBGT": "ticket preview echoes the supplied quantity/price",
+    "EMSX": "ticket preview echoes the supplied quantity/price",
+    "FXGO": "ticket preview echoes the supplied quantity/price",
+    "TSOX": "ticket preview echoes the supplied quantity/price"
+  },
+  "_notes": {
+    "finra_ats_weekly": "FINRA OTC Transparency publishes weekly ATS data with a 2-week (Tier 1 NMS) or 4-week (other) delay, so the newest week is up to ~5-6 weeks old by rule."
+  }
+}

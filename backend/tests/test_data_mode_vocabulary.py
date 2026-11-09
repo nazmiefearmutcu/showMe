@@ -60,8 +60,22 @@ SANCTIONED_DATA_MODES = frozenset({
     "delayed_reference",
     "reference",
     "cached_snapshot",
+    # VCAP (2026-10-31): versioned local releases. ``official`` = a stored
+    # release fetched from an official publisher (OECD/NCSES/...);
+    # ``imported`` = a user-owned dataset imported from a local file.
+    "official",
+    "imported",
     # computed / model states
     "modeled",
+    # EXEC (2026-11-08): an execution schedule replayed on real historical
+    # bars - neither live nor synthetic.
+    "historical_replay",
+    # CPF (2026-11-08): actual leg = Yahoo futures proxy, forecast = trend
+    # extrapolation; neither official, so not live_official.
+    "futures_proxy_trend",
+    # MARS (2026-11-08): some legs live, others not available; labelled so
+    # the factor fit is not read as fully live.
+    "partial_live",
     "user_input",
     "user_supplied",
     # honest failure / absence states
@@ -118,6 +132,7 @@ DYNAMICALLY_EMITTED_MODES = frozenset({
     "live_ecb_reference",       # fx spot keyed ECB tier
     "live_exchangerate_host",   # WCRS cross-matrix keyed tier
     "reference_cross_rate_matrix",  # WCRS labelled reference matrix
+    "official",                 # VCAP rows: ``"imported" if origin == "imported" else "official"``
 })
 
 

@@ -4,7 +4,6 @@ import {
   CardHeader,
   DataGrid,
   type DataGridColumn,
-  DeltaChip,
   Empty,
   HeatCell,
   intensityToken,
@@ -137,7 +136,9 @@ interface PairRow {
 interface PairDetail extends PairRow {
   left_volatility?: number | null;
   right_volatility?: number | null;
-  annualization_factor?: number;
+  // CORR#2: each side is annualized on its own realized calendar.
+  left_annualized_volatility?: number | null;
+  right_annualized_volatility?: number | null;
   overlap_sample?: OverlapRow[];
 }
 
@@ -186,7 +187,9 @@ export function CORRPane({ code }: FunctionPaneProps) {
   const [draftFrequency, setDraftFrequency] = useState<Frequency>("daily");
   const [draftMissingPolicy, setDraftMissingPolicy] =
     useState<MissingPolicy>("pairwise");
-  const [draftLive, setDraftLive] = useState(true);
+  // Correlations run on live close series only: the old Ref mode generated
+  // synthetic price paths and is gone (data policy), so there is no SRC switch.
+  const draftLive = true;
   const [runId, setRunId] = useState(1);
   const [query, setQuery] = useState({
     symbols: DEFAULT_SYMBOLS,
@@ -301,8 +304,23 @@ export function CORRPane({ code }: FunctionPaneProps) {
     return count;
   }, [matrix]);
 
-  const liveSourceMode =
-    state === "ok" && (data as { cached?: boolean } | undefined)?.cached !== true;
+  // CORR#3: the source pill reflects what the backend actually served, never the
+  // request state. A Ref (model) run or an outage envelope must not read "live".
+  const cachedRun = (data as { cached?: boolean } | undefined)?.cached === true;
+  const servedLive =
+    state === "ok" &&
+    !!impact &&
+    !cachedRun &&
+    (data?.metadata as { live?: unknown } | undefined)?.live === true;
+  const servedLabel = servedLive
+    ? "live"
+    : cachedRun
+      ? "cached"
+      : state === "ok" && impact
+        ? "model"
+        : state === "ok"
+          ? "unavailable"
+          : state;
 
   const run = (overrideWindow?: WindowChoice) => {
     // Double-submit guard: ignore re-entrant Run/window clicks while a request
@@ -391,6 +409,7 @@ export function CORRPane({ code }: FunctionPaneProps) {
         <SyntheticWarning
           symbols={Array.from(syntheticSymbols)}
           metricLabel={METRIC_LABELS[activeMetric]}
+          referenceMode={impact.options?.source_mode === "computed_reference"}
         />
 
         <LowNWarning count={lowNPairCount} threshold={LOW_N_THRESHOLD} />
@@ -570,15 +589,11 @@ export function CORRPane({ code }: FunctionPaneProps) {
             Watchlist ({symbols.length})
           </Pill>
           <Pill
-            tone={liveSourceMode ? "positive" : "warn"}
+            tone={servedLive ? "positive" : "warn"}
             variant="soft"
             withDot
           >
-            {liveSourceMode
-              ? "live"
-              : (data as { cached?: boolean } | undefined)?.cached
-                ? "cached"
-                : state}
+            {servedLabel}
           </Pill>
           {data?.elapsed_ms != null && (
             <Pill tone="muted" variant="soft" withDot={false}>
@@ -605,15 +620,6 @@ export function CORRPane({ code }: FunctionPaneProps) {
           </label>
           <div className="corr-grid-end">
             <FunctionControlGroup>
-              <SegmentedControl
-                label="SRC"
-                value={draftLive ? "live" : "ref"}
-                options={[
-                  { value: "live", label: "Live" },
-                  { value: "ref", label: "Ref" },
-                ]}
-                onChange={(value) => setDraftLive(value === "live")}
-              />
               <SegmentedControl
                 label="RET"
                 value={draftReturnMethod}
@@ -965,7 +971,7 @@ function MatrixHeatmap({
                     >
                       <div title={cellTitle}>
                         <HeatCell
-                          value={value ?? 0}
+                          value={value ?? null}
                           size={32}
                           fractionDigits={2}
                           ariaLabel={ariaLabel}
@@ -1001,12 +1007,33 @@ function SyntheticMark() {
 function SyntheticWarning({
   symbols,
   metricLabel,
+  referenceMode,
 }: {
   symbols: string[];
   metricLabel: string;
+  referenceMode: boolean;
 }) {
   if (!symbols.length) return null;
   const names = symbols.join(", ");
+  if (referenceMode) {
+    // CORR#9: Ref mode never attempts a live fetch, so the banner must not say one failed.
+    return (
+      <div
+        data-testid="corr-synthetic-warning"
+        role="status"
+        style={syntheticWarningStyle}
+      >
+        <strong style={syntheticWarningTitleStyle}>
+          ⚠ Reference series used (Ref mode) — synthetic, not real market data
+        </strong>
+        <span style={syntheticWarningBodyStyle}>
+          Ref mode does not fetch live prices. These symbols use a deterministic
+          reference model: <strong>{names}</strong>. All {metricLabel}{" "}
+          correlations involving them describe that model, not market prices.
+        </span>
+      </div>
+    );
+  }
   return (
     <div
       data-testid="corr-synthetic-warning"
@@ -1115,8 +1142,8 @@ function CompactPairList({
   return (
     <div className="u-grid u-p-8 u-gap-4">
       {rows.map((row, idx) => {
-        const value = row.correlation ?? 0;
-        const delta = pseudoDelta(`${row.left}-${row.right}-${idx}`);
+        // UI-15: a missing coefficient stays null (neutral swatch, "—"), never 0.
+        const value = row.correlation ?? null;
         return (
           <div key={idx} style={pairRowStyle}>
             <HeatCell value={value} size={26} fractionDigits={2} />
@@ -1139,7 +1166,6 @@ function CompactPairList({
               >
                 {formatNum(value, 3)}
               </span>
-              <DeltaChip value={delta} format="raw" fractionDigits={3} />
             </div>
           </div>
         );
@@ -1180,8 +1206,12 @@ function PairDetailCard({
         />
         <PairKv label="obs" value={String(detail.observations ?? 0)} />
         <PairKv
-          label="ann fac"
-          value={formatNum(detail.annualization_factor ?? null, 3)}
+          label="left ann vol"
+          value={formatNum(detail.left_annualized_volatility ?? null, 6)}
+        />
+        <PairKv
+          label="right ann vol"
+          value={formatNum(detail.right_annualized_volatility ?? null, 6)}
         />
       </div>
     </div>
@@ -1365,7 +1395,8 @@ function detailForPair(
     covariance: cell.covariance,
     observations: cell.observations,
     overlap_sample: fallback?.overlap_sample ?? [],
-    annualization_factor: fallback?.annualization_factor,
+    left_annualized_volatility: fallback?.left_annualized_volatility,
+    right_annualized_volatility: fallback?.right_annualized_volatility,
     left_volatility: fallback?.left_volatility,
     right_volatility: fallback?.right_volatility,
   };
@@ -1425,14 +1456,6 @@ function formatNum(value?: number | null, digits = 4) {
 
 function formatPct(value?: number | null) {
   return formatPercent(value, { fromFraction: true, digits: 1 });
-}
-
-// Stable seeded pseudo-delta for "Δ vs prev window" indicator on top pairs.
-function pseudoDelta(seed: string): number {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
-  const v = ((h % 200) - 100) / 1000; // ~ -0.1..0.1
-  return Number(v.toFixed(3));
 }
 
 // A coverage row is "synthetic" when the backend could not fetch the symbol

@@ -1,12 +1,12 @@
-"""TRQA — Earnings Call Transcript Q&A.
+"""TRQA — Earnings Q&A over a transcript or earnings document.
 
-Real, KEYLESS implementation. The claim is: answer questions over an
-earnings-call transcript. We obtain a REAL transcript several ways (in order):
+Real, KEYLESS implementation. We obtain REAL source text several ways (in order):
 
-  1. an explicit ``transcript`` / ``text`` param (user-pasted text),
-  2. Whisper transcription of an ``audio_url`` / ``audio_path``,
-  3. the most recent SEC 8-K Exhibit 99.1 earnings document for the symbol,
-     reusing the keyless EDGAR helpers shipped in ``news.tran``.
+  1. an explicit ``transcript`` / ``text`` param (user-pasted text, a transcript),
+  2. Whisper transcription of an ``audio_url`` / ``audio_path`` (a transcript),
+  3. the most recent SEC 8-K Exhibit 99.1 earnings PRESS RELEASE for the symbol,
+     reusing the keyless EDGAR helpers shipped in ``news.tran``. This is not a
+     call transcript; the response labels it ``document_type='press_release'``.
 
 We then answer with keyless extractive retrieval (passage ranking by query-term
 overlap) and, when an LLM router is wired (``showme.engine.agents.llm_router``),
@@ -86,10 +86,13 @@ async def _fetch_transcript_text(
 @FunctionRegistry.register
 class TRQAFunction(BaseFunction):
     code = "TRQA"
-    name = "Transcript Q&A"
+    name = "Transcript & Press Release Q&A"
     asset_classes = (AssetClass.EQUITY,)
     category = "news"
-    description = "Run a list of questions against an earnings call transcript / audio."
+    description = (
+        "Run a list of questions against an earnings transcript, an audio transcript, or the latest "
+        "8-K earnings press release (labelled by document_type)."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         sym = (getattr(instrument, "symbol", None) or params.get("symbol") or "AAPL").upper()
@@ -132,7 +135,7 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "whisper_audio"
             except Exception as exc:  # noqa: BLE001
-                transcribe_errors.append(f"transcribe_url: {exc}")
+                transcribe_errors.append(f"transcribe_url: {str(exc) or type(exc).__name__}")
 
         if not transcript and params.get("audio_path"):
             try:
@@ -149,7 +152,7 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "whisper_audio"
             except Exception as exc:  # noqa: BLE001
-                transcribe_errors.append(f"transcribe: {exc}")
+                transcribe_errors.append(f"transcribe: {str(exc) or type(exc).__name__}")
 
         # 2) keyless SEC 8-K Exhibit 99.1 fallback when nothing else produced text
         #    and no audio path was requested (audio requests stay on their own
@@ -160,14 +163,17 @@ class TRQAFunction(BaseFunction):
                 if transcript:
                     source_mode = "sec_8k_ex99"
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"sec: {exc}")
+                warnings.append(f"sec: {str(exc) or type(exc).__name__}")
 
         # ---- honest "no transcript" envelope --------------------------------
         if not transcript:
             reason = (
-                "Transcript Q&A could not transcribe the provided audio; check provider_errors."
+                "The provided audio could not be transcribed; check provider_errors."
                 if attempted_transcribe and transcribe_errors
-                else f"No earnings transcript found for {sym} via SEC 8-K and none was pasted."
+                else (
+                    f"No earnings transcript or 8-K earnings press release was found for {sym}, "
+                    "and no text was pasted."
+                )
             )
             return FunctionResult(
                 code=self.code,
@@ -237,7 +243,12 @@ class TRQAFunction(BaseFunction):
 
         primary = answers[0] if answers else {"a": "", "evidence": ""}
         primary_answer = str(primary.get("a") or "")
-        evidence_rows = _evidence_rows(transcript, questions[0] if questions else "")
+        # TRQA#1: a not-stated answer has no supporting evidence. Passages that
+        # merely share one word with the question must not be shown as proof.
+        if primary.get("stated") is False:
+            evidence_rows: list[dict[str, Any]] = []
+        else:
+            evidence_rows = _evidence_rows(transcript, questions[0] if questions else "")
 
         return FunctionResult(
             code=self.code,
@@ -256,6 +267,7 @@ class TRQAFunction(BaseFunction):
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICT,
                 "source": source_mode,
+                "document_type": _DOCUMENT_TYPE.get(source_mode, "unknown"),
                 "sec_recent_filings": [source_doc] if source_doc else [],
             },
             sources=[source_mode, "extractive_qa"]
@@ -269,6 +281,15 @@ class TRQAFunction(BaseFunction):
                 "provider_errors": transcribe_errors,
             },
         )
+
+
+# TRQA#1: the SEC fallback is an 8-K Exhibit 99.1 press release, never a call
+# transcript; the label travels with every successful answer.
+_DOCUMENT_TYPE = {
+    "user_transcript": "transcript",
+    "whisper_audio": "transcript",
+    "sec_8k_ex99": "press_release",
+}
 
 
 def _first_question(params: dict[str, Any]) -> str:
@@ -316,7 +337,7 @@ async def _answer_questions(
                     "transcript when possible. If unknown, say 'not stated'."
                 ),
                 user=f"TRANSCRIPT:\n{text[:30000]}\n\nQUESTION: {q}",
-                max_tokens=500,
+                max_tokens=_max_tokens_per_answer(params),
                 temperature=0.1,
                 expected_complexity="med",
             )
@@ -337,6 +358,7 @@ async def _answer_questions(
             return {
                 "q": q,
                 "a": text_answer,
+                "stated": not _is_not_stated_answer(text_answer),
                 "model": model,
                 "cost_usd": getattr(r, "cost_usd", 0),
                 "tokens": getattr(r, "tokens_in", 0) + getattr(r, "tokens_out", 0),
@@ -353,6 +375,49 @@ async def _answer_questions(
     return list(await asyncio.gather(*(_answer(q) for q in questions)))
 
 
+_NOT_STATED_PATTERNS = (
+    re.compile(r"\b(?:does|do|did)\s+not\s+(?:\w+\s+){0,3}?(?:mention|state|say|specify|disclose|discuss|provide|address|include|cover|contain)\b"),
+    re.compile(r"\b(?:doesn't|don't|didn't)\s+(?:\w+\s+){0,3}?(?:mention|state|say|specify|disclose|discuss|provide|address|include|cover|contain)\b"),
+    re.compile(r"\bno\s+(?:mention|information|reference|statement|disclosure)\b"),
+    re.compile(r"\bnot\s+(?:mentioned|stated|disclosed|discussed|specified|provided|addressed|included|covered)\b"),
+)
+
+
+def _is_not_stated_answer(text: str) -> bool:
+    """True when an LLM answer says the document does not support the question.
+
+    Only the first sentence is inspected, so a supported answer that merely
+    mentions a missing detail later on is not reclassified.
+    """
+    cleaned = (text or "").strip().lower()
+    if not cleaned:
+        return False
+    first = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0]
+    if first.startswith("not stated"):
+        return True
+    return any(pattern.search(first) for pattern in _NOT_STATED_PATTERNS)
+
+
+_DEFAULT_MAX_TOKENS_PER_ANSWER = 512
+_MIN_MAX_TOKENS_PER_ANSWER = 64
+_MAX_MAX_TOKENS_PER_ANSWER = 2048
+
+
+def _max_tokens_per_answer(params: dict[str, Any]) -> int:
+    """LLM answer-length cap from the declared input, clamped to its 64..2048 range.
+
+    An absent or unparseable value falls back to the seed default (512).
+    """
+    raw = params.get("max_tokens_per_answer")
+    if raw is None or raw == "":
+        return _DEFAULT_MAX_TOKENS_PER_ANSWER
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_TOKENS_PER_ANSWER
+    return max(_MIN_MAX_TOKENS_PER_ANSWER, min(_MAX_MAX_TOKENS_PER_ANSWER, value))
+
+
 def _coerce_questions(value: Any, query: Any = None) -> list[str]:
     if isinstance(value, str):
         parts = [part.strip() for part in re.split(r"[\n;]+", value) if part.strip()]
@@ -366,19 +431,23 @@ def _coerce_questions(value: Any, query: Any = None) -> list[str]:
 
 
 _METHODOLOGY = (
-    "TRQA answers questions over a REAL earnings-call transcript. The transcript is taken from a pasted "
-    "input when provided, otherwise Whisper-transcribed audio, otherwise the most recent SEC 8-K Exhibit "
-    "99.1 earnings document fetched via the keyless EDGAR API. Each question is answered by ranking "
-    "transcript passages on query-term overlap (extractive retrieval); when an LLM router is configured an "
-    "abstractive answer is generated strictly from those retrieved passages, falling back to the best "
-    "extractive passage when the model returns nothing. Every answer is backed by quoted evidence passages "
-    "from the real document."
+    "TRQA answers questions over REAL text. The text is taken from a pasted transcript when provided, "
+    "otherwise Whisper-transcribed audio, otherwise the most recent SEC 8-K Exhibit 99.1 earnings press "
+    "release fetched via the keyless EDGAR API (document_type 'press_release': it is not an earnings-call "
+    "transcript). Each question is answered by ranking passages on query-term overlap (extractive "
+    "retrieval); when an LLM router is configured an abstractive answer is generated strictly from those "
+    "passages. The extractive answer is 'not stated in the document' when the best passage covers less than "
+    "half of the question's terms, so unsupported questions are never answered with an unrelated sentence. "
+    "Every answer is backed by quoted evidence passages from the real document."
 )
 
 _FIELD_DICT = {
     "answer": "Primary answer grounded in the transcript (abstractive if an LLM is wired, else the best-matching passage).",
     "answers": "Per-question answers; model='local_extractive' marks the keyless fallback.",
-    "evidence": "Transcript passages ranked by relevance to the question.",
+    "evidence": (
+        "Passages from the source document (transcript, audio transcript or 8-K press release) "
+        "ranked by relevance to the question."
+    ),
     "score": "Fraction of query terms matched in the passage.",
 }
 
@@ -439,31 +508,54 @@ def _extractive_confidence(
     return round(min(0.95, score), 2)
 
 
+NOT_STATED_ANSWER = "not stated in the document"
+
+# TRQA#1: the best sentence must contain at least this share of the question's
+# content terms. Below it the document does not support the question, and the
+# honest answer is "not stated" instead of the nearest unrelated sentence.
+_MIN_TERM_COVERAGE = 0.5
+
+
 def _extractive_answer(text: str, question: str) -> dict[str, Any]:
     """Pick the best evidence sentence for a question via cheap heuristics.
 
-    Honest confidence: None when no real signal exists, else derived from real
-    term-match ratio + domain-keyword hits + evidence length.
+    Returns ``stated=False`` with the explicit "not stated in the document"
+    answer when no sentence covers at least ``_MIN_TERM_COVERAGE`` of the
+    question's terms. Honest confidence: None when no real signal exists, else
+    derived from real term-match ratio + domain-keyword hits + evidence length.
     """
     sentences = _sentences(text)
     terms = _question_terms(question)
     if not sentences:
-        return {"a": "Transcript text was empty after parsing.", "evidence": "", "confidence": None}
+        return {"a": "Transcript text was empty after parsing.", "evidence": "", "confidence": None, "stated": False}
     domain_tokens = ("guidance", "outlook", "expect", "risk", "headwind", "revenue", "eps", "margin")
     scored: list[tuple[int, int, int, str]] = []
     for sentence in sentences:
         low = sentence.lower()
         term_hits = sum(1 for term in terms if term in low)
         domain_hits = sum(1 for token in domain_tokens if token in low)
-        scored.append((term_hits + (1 if domain_hits else 0), term_hits, domain_hits, sentence))
+        scored.append((term_hits, term_hits + (1 if domain_hits else 0), domain_hits, sentence))
     scored.sort(key=lambda item: (item[0], item[1], len(item[3])), reverse=True)
-    best_total, best_terms, best_domain, best_sentence = scored[0]
-    if best_total <= 0:
-        best_sentence = sentences[0]
+    best_terms, _best_total, best_domain, best_sentence = scored[0]
+    coverage = (best_terms / len(terms)) if terms else 0.0
+    if best_terms <= 0 or coverage < _MIN_TERM_COVERAGE:
+        return {
+            "a": NOT_STATED_ANSWER,
+            "evidence": "",
+            "confidence": None,
+            "stated": False,
+            "term_coverage": round(coverage, 3),
+        }
     confidence = _extractive_confidence(
         term_hits=best_terms,
         domain_hits=best_domain,
         question_terms=len(terms),
         evidence_chars=len(best_sentence or ""),
     )
-    return {"a": best_sentence, "evidence": best_sentence, "confidence": confidence}
+    return {
+        "a": best_sentence,
+        "evidence": best_sentence,
+        "confidence": confidence,
+        "stated": True,
+        "term_coverage": round(coverage, 3),
+    }

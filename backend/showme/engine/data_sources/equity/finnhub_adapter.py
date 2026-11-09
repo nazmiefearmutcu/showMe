@@ -24,6 +24,7 @@ from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
 from showme.engine.utils.throttle import throttle
+from showme.providers.base import get_redacted
 
 # B5: Finnhub's date filters (/company-news) and intraday candle ranges are
 # anchored to America/New_York exchange time. Internal datetimes always live
@@ -78,8 +79,9 @@ class FinnhubAdapter(BaseDataSource):
         if not self.api_key:
             raise DataSourceError("FINNHUB_API_KEY not set")
         client = await self._client_()
-        r = await client.get(endpoint, params={**params, "token": self.api_key})
-        r.raise_for_status()
+        r = await get_redacted(
+            client, endpoint, params={**params, "token": self.api_key}, secrets=(self.api_key,),
+        )
         return r.json()
 
     async def fetch(self, request: DataRequest) -> Any:
@@ -128,8 +130,10 @@ class FinnhubAdapter(BaseDataSource):
                 symbol=sym, name=data.get("name"), exchange=data.get("exchange"),
                 country=data.get("country"), currency=data.get("currency"),
                 industry=data.get("finnhubIndustry"),
-                market_cap=(data.get("marketCapitalization") or 0) * 1_000_000,
-                shares_outstanding=(data.get("shareOutstanding") or 0) * 1_000_000,
+                # Missing (or zero) means unknown, never a zero-sized company: an
+                # empty profile for an unknown symbol must not read as data (DES#2).
+                market_cap=_millions(data.get("marketCapitalization")),
+                shares_outstanding=_millions(data.get("shareOutstanding")),
                 website=data.get("weburl"),
                 ipo_date=pd.to_datetime(data.get("ipo")) if data.get("ipo") else None,
                 source=self.name, fetched_at=utcnow(),
@@ -192,3 +196,11 @@ class FinnhubAdapter(BaseDataSource):
             })
         return mapped_events
 
+
+def _millions(value):
+    """Finnhub reports market cap / shares in millions; None for missing or zero."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number * 1_000_000 if number > 0 else None

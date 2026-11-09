@@ -2,7 +2,7 @@
  * PCAS — specialized PCA Stress pane tests.
  *
  * Pins the four render states, the PC/k-σ controls mapped to real backend
- * params, and the MODEL disclosure path for template returns.
+ * params, and that returns are always live yfinance history (no MODEL toggle).
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -46,8 +46,12 @@ afterEach(() => {
   recordedCalls.length = 0;
 });
 
+// Mirrors the real backend success payload (pcas.py): data_mode is
+// "delayed_reference" because yfinance daily bars are not real-time.
 const LIVE_PAYLOAD = {
   status: "ok",
+  data_mode: "delayed_reference",
+  as_of: "2026-09-14",
   pc_index: 0,
   k_sigma: 3,
   explained_variance_ratio: [0.52, 0.18, 0.09, 0.05, 0.03],
@@ -97,10 +101,13 @@ describe("PCAS PCA Stress pane", () => {
     expect(screen.getAllByText("AAPL").length).toBeGreaterThan(0);
     // Shock table + loading table.
     expect(container.querySelectorAll("table").length).toBe(2);
-    expect(screen.queryByTestId("portx-data-badge")).toBeNull();
+    // delayed_reference is partial-live: the shared badge must say so.
+    const badge = screen.getByTestId("portx-data-badge");
+    expect(badge.getAttribute("data-mode")).toBe("degraded");
+    expect(badge.textContent).toContain("PARTIAL LIVE DATA");
   });
 
-  it("discloses template returns via the shared badge", () => {
+  it("still renders the shared data badge when the envelope names a template source", () => {
     ok(LIVE_PAYLOAD, { sources: ["portfolio_state_template_returns"] });
     render(<PcaStressPane code="PCAS" />);
     expect(screen.getByTestId("portx-data-badge")).toBeInTheDocument();
@@ -113,6 +120,22 @@ describe("PCAS PCA Stress pane", () => {
     expect(pc2).not.toBeDisabled();
     fireEvent.click(pc2);
     expect(screen.getByRole("button", { name: "PC2" })).toBeDisabled();
+  });
+});
+
+describe("PCAS return-source label follows the payload", () => {
+  it("shows no return-source pill when the payload declares no data_mode", () => {
+    const { data_mode: _omit, ...withoutMode } = LIVE_PAYLOAD;
+    ok(withoutMode);
+    render(<PcaStressPane code="PCAS" />);
+    expect(screen.queryByText(/yfinance daily/)).toBeNull();
+    expect(screen.queryByText(/^LIVE/)).toBeNull();
+  });
+
+  it("never labels a non-delayed payload as delayed", () => {
+    ok({ ...LIVE_PAYLOAD, data_mode: "modeled" });
+    render(<PcaStressPane code="PCAS" />);
+    expect(screen.queryByText("DELAYED · yfinance daily")).toBeNull();
   });
 });
 
@@ -169,19 +192,20 @@ describe("PCAS cumulative variance curve (real derivation)", () => {
     );
   });
 
-  it("omits live_prices on the MODEL path so the backend serves template returns", () => {
+  it("offers no template-returns toggle and always requests live yfinance history", () => {
     ok(LIVE_PAYLOAD);
     render(<PcaStressPane code="PCAS" />);
-    fireEvent.click(screen.getByRole("button", { name: "LIVE" }));
-    const latest = recordedCalls[recordedCalls.length - 1].params ?? {};
-    expect("live_prices" in latest).toBe(false);
-    expect(latest.live).toBe(true);
-    expect(screen.getByRole("button", { name: "MODEL" })).toBeInTheDocument();
-  });
-
-  it("keeps live_prices=true on the LIVE path", () => {
-    ok(LIVE_PAYLOAD);
-    render(<PcaStressPane code="PCAS" />);
-    expect(recordedCalls.some((call) => call.params?.live_prices === true)).toBe(true);
+    // PCAS#4 follow-up: the backend serves no template returns, so the pane must not
+    // offer a MODEL path that comes back as delayed live data under a template label.
+    expect(screen.queryByRole("button", { name: "MODEL" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "LIVE" })).toBeNull();
+    // The return-source pill follows the payload: a delayed payload must not
+    // be painted as LIVE next to the PARTIAL LIVE DATA badge.
+    expect(screen.getByText("DELAYED · yfinance daily")).toBeInTheDocument();
+    expect(screen.queryByText(/^LIVE · yfinance/)).toBeNull();
+    for (const call of recordedCalls) {
+      expect(call.params?.live).toBe(true);
+      expect(call.params?.live_prices).toBe(true);
+    }
   });
 });

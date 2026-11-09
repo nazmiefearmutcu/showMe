@@ -75,6 +75,8 @@ interface SATRow {
   aoi?: string;
   layer?: string;
   cloud_pct?: number;
+  /** SAT#4: who produced `cloud_pct` (an Open-Meteo model value, not the image). */
+  cloud_label?: string | null;
   tile_url?: string;
   value?: string | number;
   detail?: string;
@@ -96,6 +98,8 @@ interface SATPayload {
   layer?: string;
   bbox_label?: string;
   capture_date?: string;
+  requested_date?: string;
+  capture_lag_days?: number;
   tile_url?: string;
   true_color_tile?: SATTrueColorTile;
   conditions?: SATConditions;
@@ -120,6 +124,17 @@ const AOIS = [
   { id: "iowa_corn_belt", label: "Iowa Corn" },
 ] as const;
 const AOI_IDS = AOIS.map((a) => a.id);
+
+// SAT#3: the GIBS layers the backend serves (`sat.py: _GIBS_LAYERS`). Each one
+// is a distinct product; the pane used to hard-code true_color.
+const LAYERS = [
+  { id: "true_color", label: "True colour" },
+  { id: "ndvi", label: "NDVI" },
+  { id: "moisture", label: "Moisture" },
+  { id: "thermal", label: "Thermal" },
+  { id: "swir", label: "SWIR" },
+] as const;
+const LAYER_IDS = LAYERS.map((l) => l.id);
 
 const REFRESH_MS = 60_000;
 
@@ -262,6 +277,11 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
     AOI_IDS,
     "cushing_ok",
   );
+  const [layer, setLayer] = usePersistentOption<string>(
+    "showme.sat-layer",
+    LAYER_IDS,
+    "true_color",
+  );
   // Bundle D / PERF-04. Visibility-aware poll (weather updates slowly).
   const tick = useVisibilityTick(REFRESH_MS);
 
@@ -271,7 +291,7 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
     symbol,
-    params: { aoi, layer: "true_color" },
+    params: { aoi, layer },
   });
   useEffect(() => {
     if (tick === 0) return; // initial mount handled by useFunction's own load
@@ -289,7 +309,16 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
   const isLive = dataMode.toLowerCase() === "live";
   const isNotConfigured = dataMode.toLowerCase() === "not_configured";
   const degraded = isNotConfigured || payload.status === "partial";
-  const degradeReason = payload.degraded_reason ?? payload.reason ?? null;
+  // GIBS had no processed imagery for the requested day: the card shows the
+  // newest real tile and says how far back it is.
+  const captureLag = typeof payload.capture_lag_days === "number" ? payload.capture_lag_days : 0;
+  const lagNote =
+    captureLag > 0 && payload.capture_date && payload.requested_date
+      ? `No GIBS imagery for ${payload.requested_date}; newest processed tile is ${payload.capture_date} (${captureLag} day(s) earlier).`
+      : null;
+  const degradeReason = payload.degraded_reason ?? payload.reason ?? lagNote;
+  // status "empty": every candidate tile was blank. No tile and no date are shown.
+  const isEmpty = payload.status === "empty";
   const warningsList = Array.isArray(data?.warnings) ? data?.warnings : [];
 
   const rows = useMemo<SATRow[]>(
@@ -329,7 +358,7 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
   }, [choiceIds, aoi, setAoi]);
 
   const locationName = payload.aoi_label ?? payload.aoi ?? effectiveAoi;
-  const captureDateLabel = payload.capture_date ?? payload.as_of;
+  const captureDateLabel = isEmpty ? undefined : (payload.capture_date ?? payload.as_of);
   // Conditions: every rendered value maps to a real `conditions.*` key.
   const tempC = num(conditions.current_temp_c);
   const tempMax = num(conditions.daily_temp_max_c);
@@ -374,7 +403,7 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
         header: "Detail",
         render: (r) => (
           <span className="u-text-secondary">
-            {r.detail ?? r.source ?? r.layer ?? "—"}
+            {r.detail ?? r.cloud_label ?? r.source ?? r.layer ?? "—"}
           </span>
         ),
       },
@@ -417,6 +446,14 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
             items={locationChoices.map((l) => ({ id: l.id, label: l.label }))}
             active={effectiveAoi}
             onChange={(id) => setAoi(id)}
+          />
+        </div>
+        <div style={tabBarStyle}>
+          <Tabs
+            variant="segmented"
+            items={LAYERS.map((l) => ({ id: l.id, label: l.label }))}
+            active={layer}
+            onChange={(id) => setLayer(id)}
           />
         </div>
         <PaneBody>
@@ -503,6 +540,14 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
                     {cloudDay !== null ? (
                       <span style={metaText}>{fmt(cloudDay, 0)}% cloud</span>
                     ) : null}
+                    {cloudDay !== null ? (
+                      <span
+                        style={metaText}
+                        title="Open-Meteo daily mean cloud cover for the AOI centroid: a model value, not read from the satellite image."
+                      >
+                        model value (Open-Meteo)
+                      </span>
+                    ) : null}
                     {!hasConditions ? (
                       <span style={metaText}>conditions unavailable</span>
                     ) : null}
@@ -545,7 +590,12 @@ export function SATPane({ code, symbol }: FunctionPaneProps) {
                 </section>
               </div>
 
-              {rows.length ? (
+              {isEmpty ? (
+                <Empty
+                  title="No processed imagery"
+                  body={payload.reason ?? "GIBS has no processed imagery for this window."}
+                />
+              ) : rows.length ? (
                 <DataGrid
                   columns={cols}
                   rows={rows}

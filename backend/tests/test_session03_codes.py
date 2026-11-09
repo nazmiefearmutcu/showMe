@@ -61,8 +61,9 @@ def test_btune_live_fallback_emits_warning_and_status(deps, equity):
     `status="computed_fallback"` + a warning."""
     fn = BTUNEFunction(deps)
     res = _run(fn.execute(instrument=equity, live_backtest=True, days=120))
-    assert res.data["status"] == "computed_fallback"
-    assert res.sources == ["local_backtest_model"]
+    # 2026-11-08 truth fix: no synthetic-history backtest is substituted.
+    assert res.data["status"] == "provider_unavailable"
+    assert res.sources == []
     assert any("yfinance" in w or "live OHLCV" in w for w in (res.warnings or []))
     assert res.metadata.get("live") is False
 
@@ -70,8 +71,8 @@ def test_btune_live_fallback_emits_warning_and_status(deps, equity):
 def test_btune_no_live_uses_reference_model(deps, equity):
     fn = BTUNEFunction(deps)
     res = _run(fn.execute(instrument=equity))
-    assert res.sources == ["local_backtest_model"]
-    assert res.data["status"] == "reference"
+    assert res.sources == []
+    assert res.data["status"] == "needs_input"
 
 
 def test_btune_requires_instrument(deps):
@@ -83,8 +84,9 @@ def test_btune_requires_instrument(deps):
 # ── CACT / LITM / APPL / CHGS — instrument error messages ────────────
 
 def test_cact_requires_instrument(deps):
-    with pytest.raises(ValueError, match="CACT requires an instrument symbol"):
-        _run(CACTFunction(deps).execute(instrument=None))
+    # CACT is Awareness-backed now: a missing symbol is an honest input_required envelope, not a raise.
+    result = _run(CACTFunction(deps).execute(instrument=None))
+    assert result.data["status"] == "input_required"
 
 
 def test_chgs_requires_instrument(deps):
@@ -121,11 +123,12 @@ def test_crpr_default_payload_reference_baseline(deps):
     (``source_mode='sovereign_reference'``) with a warning saying the SEC model
     is not applicable — never a silent fake-data table tagged plain ``ok``."""
     res = _run(CRPRFunction(deps).execute(instrument=None))
-    assert res.data["status"] == "ok"
-    assert res.data["summary"]["source_mode"] == "sovereign_reference"
-    # The label must honestly disclose it is a reference / non-model profile.
-    assert any("reference sovereign profile" in w or "not applicable" in w
-               for w in (res.warnings or [])), res.warnings
+    # CRPR#2 (G1): the sovereign default is no longer a constant AA+ row; it is
+    # an honest empty state that says the SEC model does not apply.
+    assert res.data["status"] == "empty"
+    assert res.data["rows"] == []
+    assert res.data["summary"]["source_mode"] == "sovereign_not_applicable"
+    assert any("does not apply" in w for w in (res.warnings or [])), res.warnings
 
 
 def test_crpr_user_input_overrides_status(deps):
@@ -142,18 +145,22 @@ def test_crpr_user_input_overrides_status(deps):
 
 # ── CRVF country + source honesty ────────────────────────────────────
 
-def test_crvf_non_us_live_admits_fallback(deps):
+def test_crvf_non_us_live_is_unavailable_not_us_fixture(deps):
+    """p2a-g04 CRVF#1: a non-US request must not receive the US fixture under
+    its own country label. It gets an explicit provider_unavailable state."""
     res = _run(CRVFFunction(deps).execute(country="DE", live=True))
-    assert res.sources == ["computed_model"]
-    assert res.data["summary"]["source_mode"] == "computed_model"
-    assert any("DE" in w or "computed_model" in w for w in res.warnings)
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["rows"] == []
+    assert res.sources == []
+    assert any("DE" in w for w in res.warnings)
 
 
-def test_crvf_us_live_without_fred_admits_fallback(deps):
-    """Keyless-CSV era: without a keyed adapter CRVF still ATTEMPTS live via
-    fredgraph.csv; when that fetch fails the failure is admitted with a
-    warning and the computed_model fallback (offline-deterministic via the
-    ``_http_client`` injection seam)."""
+def test_crvf_us_live_failure_is_honest_unavailable_not_fixture(deps):
+    """p2a-g04 policy: without a keyed adapter CRVF still ATTEMPTS live via
+    fredgraph.csv; when that fetch fails the request is reported as
+    provider_unavailable with the FRED reason. The static computed_model
+    curve is served only on an explicit live_curve=false / reference=true
+    opt-out (offline via the ``_http_client`` injection seam)."""
     fn = CRVFFunction(deps)
 
     class _BoomClient:
@@ -162,7 +169,9 @@ def test_crvf_us_live_without_fred_admits_fallback(deps):
 
     fn._http_client = _BoomClient()
     res = _run(fn.execute(country="US", live=True))
-    assert res.sources == ["computed_model"]
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["rows"] == []
+    assert res.sources == []
     assert any("fred" in w.lower() for w in res.warnings)
 
 
@@ -227,3 +236,16 @@ def test_coun_known_country_no_baseline_warning(deps):
     assert res.metadata.get("country_known") is True
     # No baseline warning for a known country (live=False path).
     assert not any("no curated profile" in w for w in (res.warnings or []))
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

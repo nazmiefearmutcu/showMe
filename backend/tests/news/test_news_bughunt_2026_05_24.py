@@ -22,12 +22,9 @@ sys.path.insert(0, str(ROOT))
 from showme.engine.core.base_function import FunctionDeps  # noqa: E402
 from showme.engine.core.instrument import AssetClass, Instrument  # noqa: E402
 from showme.engine.functions.news.av import _matches_query  # noqa: E402
-from showme.engine.functions.news.evts import _date_value, _scalar_value  # noqa: E402
-from showme.engine.functions.news.ni import (  # noqa: E402
-    NIFunction,
-    _coerce_float,
-    _coerce_int,
-)
+from showme.engine.functions.calendar._common import _date_value, _scalar_value  # noqa: E402
+from showme.engine.data_sources.awareness import AwarenessClient, AwarenessResponse  # noqa: E402
+from showme.engine.functions.news.ni import NIFunction  # noqa: E402
 from showme.engine.functions.news.read import READFunction, _parse_symbol_list  # noqa: E402
 from showme.engine.functions.news.tldr import TLDRFunction  # noqa: E402
 from showme.engine.functions.news.tran import TRANFunction  # noqa: E402
@@ -193,47 +190,38 @@ def test_tran_no_synthetic_path_remains() -> None:
 # ── Bug #4: NI — topic mode TypeError on string limit ──────────────────────
 
 
-def test_ni_coerce_int_string_limit_returns_int() -> None:
-    """The root cause: NI used to forward ``params.get("limit", 50)`` raw
-    to ``DataRequest(limit=...)`` which crashed the RSS adapter with
-    ``TypeError: slice indices must be integers or None`` when the value
-    arrived as a string from the URL query."""
-    assert _coerce_int("50", default=50, min_value=1, max_value=500) == 50
-    assert _coerce_int(75, default=50, min_value=1, max_value=500) == 75
-    assert _coerce_int(None, default=50, min_value=1, max_value=500) == 50
-    assert _coerce_int("", default=50, min_value=1, max_value=500) == 50
-    assert _coerce_int("not-a-number", default=50, min_value=1, max_value=500) == 50
-    # Clamp to range
-    assert _coerce_int("9999", default=50, min_value=1, max_value=500) == 500
-    assert _coerce_int("-5", default=50, min_value=1, max_value=500) == 1
-    # Float-shaped input still safely lands as int
-    assert _coerce_int("12.7", default=50, min_value=1, max_value=500) == 12
+class _EmptyAwareness(AwarenessClient):
+    """Awareness client stub: every ``/news`` call answers an empty, healthy envelope."""
 
+    def __init__(self) -> None:
+        super().__init__("http://aw.test", autostart=False)
+        self.paths: list[str] = []
 
-def test_ni_coerce_float_handles_bad_input() -> None:
-    assert _coerce_float("5.5", default=5.0, min_value=0.5, max_value=30.0) == pytest.approx(5.5)
-    assert _coerce_float(None, default=5.0, min_value=0.5, max_value=30.0) == 5.0
-    assert _coerce_float("xyz", default=5.0, min_value=0.5, max_value=30.0) == 5.0
+    async def get(self, path, params=None):  # type: ignore[override]
+        self.paths.append(path)
+        return AwarenessResponse(data=[], meta={"providers": [], "notes": []})
 
 
 def test_ni_topic_mode_does_not_crash_with_diverse_string_args() -> None:
-    """Smoke: NI must complete without TypeError when topic mode is hit
-    with the exact param shapes the UI used to send (all strings)."""
+    """Smoke: NI completes with the all-string param shapes the UI used to send
+    (limit="25", hours="48"), maps the preset, and never surfaces a TypeError."""
     fn = NIFunction(deps=FunctionDeps())
+    fn._awareness = _EmptyAwareness()  # type: ignore[attr-defined]
     result = _run(
         fn.execute(
             None,
             topic="BANKS",
             limit="25",
+            hours="48",
             threshold="60",
             news_timeout="2",
             live=False,
         )
     )
     assert result.code == "NI"
-    # No TypeError surfaced as a provider_error.
-    errors = result.metadata.get("provider_errors") or []
-    assert not any("slice indices" in str(err) for err in errors), errors
+    assert result.data["status"] == "empty"
+    assert result.data["filters"]["limit"] == 25
+    assert "slice indices" not in str(result.metadata.get("provider_errors") or [])
 
 
 # ── Bug #5: CN — UI/localStorage leak (out of scope here) ──────────────────
@@ -333,7 +321,15 @@ def test_trqa_extractive_confidence_real_signal_yields_real_number() -> None:
         "Management raised full-year guidance citing strong demand. "
         "Margins expanded by 80 basis points."
     )
-    result = _extractive_answer(text, "What was the revenue growth and guidance change?")
+    # TRQA#1: the text never mentions "growth" or "change", so this question is
+    # not supported (best sentence covers 1 of 4 terms, below the 50% bar). It
+    # must be reported as not stated, not given a confident-looking answer.
+    unsupported = _extractive_answer(text, "What was the revenue growth and guidance change?")
+    assert unsupported["stated"] is False
+    assert unsupported["confidence"] is None
+    # A question the text does support must still yield a real confidence.
+    result = _extractive_answer(text, "Did management raise full-year guidance?")
+    assert result["stated"] is True
     assert isinstance(result["confidence"], float)
     assert 0.0 < result["confidence"] <= 0.95
     # It must NOT be the legacy fake constant 0.59.

@@ -9,50 +9,185 @@ describe("function pane registry", () => {
   // as AV/BGAS/FXGO passed CI silently). Wave-6 must extend this list.
   const EXPECTED_PANE_CODES = [
     // A
-    "ACCT", "AGENT", "AIM", "ALLQ", "ALRT", "ANR", "APPL", "ASK", "AV",
+    "ACCT",
+    "AGENT",
+    "AIM",
+    "ALLQ",
+    "ALRT",
+    "ANR",
+    "APPL",
+    "ASK",
+    "AV",
     // B
-    "BBGT", "BDA", "BETA", "BGAS", "BIO", "BLAK", "BMC", "BMTX", "BOIL",
-    "BOT", "BOTS", "BQL", "BQUANT", "BRIEF", "BTFW", "BTMM", "BTUNE",
+    "BBGT",
+    "BDA",
+    "BETA",
+    "BGAS",
+    "BIO",
+    "BLAK",
+    "BMC",
+    "BMTX",
+    "BOIL",
+    "BOT",
+    "BOTS",
+    "BQL",
+    "BQUANT",
+    "BRIEF",
+    "BTFW",
+    "BTMM",
+    "BTUNE",
     // C
-    "CACT", "CDE", "CHGS", "CN", "CONN", "CORR", "COUN", "CPF", "CRPR",
-    "CRVF", "CSRC",
+    "CACT",
+    "CDE",
+    "CHGS",
+    "CN",
+    "CONN",
+    "CORR",
+    "COUN",
+    "CPF",
+    "CRPR",
+    "CRVF",
+    "CSRC",
     // D
-    "DAPI", "DARK", "DCF", "DCFS", "DDM", "DDIS", "DEBT", "DINE", "DES",
-    "DPF", "DVD",
+    "DAPI",
+    "DARK",
+    "DCF",
+    "DCFS",
+    "DDM",
+    "DDIS",
+    "DEBT",
+    "DINE",
+    "DES",
+    "DPF",
+    "DVD",
     // E
-    "ECFC", "ECST", "ECO", "EE", "EMSX", "EQS", "EREV", "ESG", "EVTS",
+    "ECFC",
+    "ECST",
+    "ECO",
+    "EE",
+    "EMSX",
+    "EQS",
+    "EREV",
+    "ERN",
+    "ESG",
+    "EVTS",
     "EXEC",
     // F
-    "FA", "FLDS", "FLW", "FLY", "FORM4", "FRD", "FRH", "FTS", "FSRC",
-    "FXFC", "FXGO", "FXH", "FXIP",
+    "FA",
+    "FLDS",
+    "FLW",
+    "FLY",
+    "FORM4",
+    "FRD",
+    "FRH",
+    "FTS",
+    "FSRC",
+    "FXFC",
+    "FXGO",
+    "FXH",
+    "FXIP",
     // G
-    "GC3D", "GEX", "GLCO", "GMM", "GP", "GRAB", "GREEKS",
+    "GC3D",
+    "GEX",
+    "GLCO",
+    "GMM",
+    "GP",
+    "GRAB",
+    "GREEKS",
     // H
-    "HDS", "HFS", "HP", "HVT",
+    "HDS",
+    "HFS",
+    "HP",
+    "HVT",
     // I
-    "ICX", "INDX", "INSTANT", "ISIN", "IVOL",
+    "ICX",
+    "INDX",
+    "INSTANT",
+    "IPO",
+    "ISIN",
+    "IVOL",
     // L
-    "LANG", "LITM", "LOTS",
+    "LANG",
+    "LITM",
+    "LOTS",
     // M
-    "MAP", "MARS", "MEET", "MGN", "MICRO", "MIS", "MLSIG", "MOSS", "MOST",
+    "MAP",
+    "MARS",
+    "MEET",
+    "MGN",
+    "MICRO",
+    "MIS",
+    "MLSIG",
+    "MOSS",
+    "MOST",
+    "MSENT",
     // N
-    "NALRT", "NGAS", "NI", "NSE",
+    "NALRT",
+    "NGAS",
+    "NI",
+    "NSE",
     // O
-    "OMON", "ONCH", "OSA", "OVME", "OVDV",
+    "OMON",
+    "ONCH",
+    "OSA",
+    "OVME",
+    "OVDV",
     // P
-    "PCAS", "PEOP", "PERF", "PFA", "PIB", "POLY", "PORT", "PORT_OPT",
-    "PORT_WHATIF", "PSC", "PVAR",
+    "PCAS",
+    "PEOP",
+    "PERF",
+    "PFA",
+    "PIB",
+    "POLY",
+    "PORT",
+    "PORT_OPT",
+    "PORT_WHATIF",
+    "PSC",
+    "PVAR",
     // R
-    "READ", "REBA", "REGM", "RPAR", "RV",
+    "READ",
+    "REBA",
+    "REGM",
+    "RPAR",
+    "RV",
     // S
-    "SAT", "SCAN", "SECF", "SECT", "SPLC", "SOSC", "SRSK", "SRCH", "STRA",
+    "SAT",
+    "SCAN",
+    "SECF",
+    "SECT",
+    "SPLC",
+    "SOSC",
+    "SRSK",
+    "SRCH",
+    "STRA",
     "STRS",
     // T
-    "TAUC", "TCA", "TECH", "TLDR", "TLH", "TMPL", "TOP", "TRA", "TRAN",
-    "TRDH", "TRQA", "TSAR", "TSOX", "TXNS",
-    // W / X / Y
-    "WACC", "WATCH", "WB", "WCRS", "WEI", "WETR", "WHAL", "WIRP",
-    "XSEN", "YAS",
+    "TAUC",
+    "TCA",
+    "TECH",
+    "TLDR",
+    "TLH",
+    "TMPL",
+    "TOP",
+    "TRA",
+    "TRAN",
+    "TRDH",
+    "TRQA",
+    "TSAR",
+    "TSOX",
+    "TXNS",
+    // V / W / X / Y
+    "VCAP",
+    "WACC",
+    "WATCH",
+    "WB",
+    "WCRS",
+    "WEI",
+    "WETR",
+    "WHAL",
+    "WIRP",
+    "XSEN",
+    "YAS",
   ];
 
   it("registers the COMPLETE native pane set (exact pin — deletions fail CI)", () => {
@@ -121,11 +256,11 @@ describe("function pane registry", () => {
   });
 });
 
-describe("157-function merged catalog invariant", () => {
-  // The static index ships 142 codes from the backend catalog; the native
+describe("158-function merged catalog invariant", () => {
+  // The static index ships 143 codes from the backend catalog; the native
   // registry contributes 15 codes not in the static index (AGENT, ASK,
   // BDA, BOT, BOTS, CONN, INDX, INSTANT, MIS, PERF, STRA, TMPL, WATCH,
-  // XSEN, TXNS — CN and FLW overlap and are dedup'd). Total 157. This is
+  // XSEN, TXNS — CN and FLW overlap and are dedup'd). Total 158. This is
   // the contract the sidebar, command palette, and FunctionStub fallback
   // all depend on. CONN was added in T9 of the multi-exchange portfolio foundation;
   // INDX was added in F4 of the indicator-depot sub-system; STRA was
@@ -136,14 +271,30 @@ describe("157-function merged catalog invariant", () => {
   // was added in J1 of the NL-assistant sub-system; TXNS was added to clear
   // collision with TRAN; FLW (FlowMap depth heatmap) joined the static
   // index as a native pane. All are native panes with no backend-side stub fallback.
-  const NATIVE_ONLY = ["AGENT", "ASK", "BDA", "BOT", "BOTS", "CONN", "INDX", "INSTANT", "MIS", "PERF", "STRA", "TMPL", "WATCH", "XSEN", "TXNS"];
+  const NATIVE_ONLY = [
+    "AGENT",
+    "ASK",
+    "BDA",
+    "BOT",
+    "BOTS",
+    "CONN",
+    "INDX",
+    "INSTANT",
+    "MIS",
+    "PERF",
+    "STRA",
+    "TMPL",
+    "WATCH",
+    "XSEN",
+    "TXNS",
+  ];
 
-  it("static index is exactly 142 entries", () => {
-    expect(STATIC_FUNCTION_INDEX).toHaveLength(142);
+  it("static index is exactly 146 entries", () => {
+    expect(STATIC_FUNCTION_INDEX).toHaveLength(146);
   });
 
-  it("merged catalog is exactly 157 entries", () => {
-    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(157);
+  it("merged catalog is exactly 161 entries", () => {
+    expect(mergeNativeFunctionIndex(STATIC_FUNCTION_INDEX)).toHaveLength(161);
   });
 
   it("every native-only entry is appended after merge", () => {

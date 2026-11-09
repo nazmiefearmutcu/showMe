@@ -13,8 +13,7 @@ import type { FunctionEntry } from "@/lib/sidecar";
 import type { FunctionPaneProps } from "./registry-types";
 
 type PaneComponent =
-  | ComponentType<FunctionPaneProps>
-  | LazyExoticComponent<ComponentType<FunctionPaneProps>>;
+  ComponentType<FunctionPaneProps> | LazyExoticComponent<ComponentType<FunctionPaneProps>>;
 
 // Each lazy-loaded pane chunk is named via the `webpackChunkName`-style hint
 // in the import path; Vite's manualChunks splits by `/src/functions/` already.
@@ -28,19 +27,41 @@ const PortfolioAnalyticsPane = lazy(() =>
   import("./PortfolioAnalytics").then((m) => ({ default: m.PortfolioAnalyticsPane })),
 );
 // L8 portfolio family — purpose-built panes (campaign 2026-09-11).
-const AcctPane = lazy(() => import("./portfolio/AccountOverview").then((m) => ({ default: m.AccountOverviewPane })));
-const TotalReturnPane = lazy(() => import("./portfolio/TotalReturn").then((m) => ({ default: m.TotalReturnPane })));
-const PerformanceAttributionPane = lazy(() => import("./portfolio/PerformanceAttribution").then((m) => ({ default: m.PerformanceAttributionPane })));
-const PositionVarPane = lazy(() => import("./portfolio/PositionVar").then((m) => ({ default: m.PositionVarPane })));
-const PcaStressPane = lazy(() => import("./portfolio/PcaStress").then((m) => ({ default: m.PcaStressPane })));
-const PortfolioOptimizerPane = lazy(() => import("./portfolio/PortfolioOptimizer").then((m) => ({ default: m.PortfolioOptimizerPane })));
-const MultiAssetRiskPane = lazy(() => import("./portfolio/MultiAssetRisk").then((m) => ({ default: m.MultiAssetRiskPane })));
-const TaxLossHarvestPane = lazy(() => import("./portfolio/TaxLossHarvest").then((m) => ({ default: m.TaxLossHarvestPane })));
+const AcctPane = lazy(() =>
+  import("./portfolio/AccountOverview").then((m) => ({ default: m.AccountOverviewPane })),
+);
+const TotalReturnPane = lazy(() =>
+  import("./portfolio/TotalReturn").then((m) => ({ default: m.TotalReturnPane })),
+);
+const PerformanceAttributionPane = lazy(() =>
+  import("./portfolio/PerformanceAttribution").then((m) => ({
+    default: m.PerformanceAttributionPane,
+  })),
+);
+const PositionVarPane = lazy(() =>
+  import("./portfolio/PositionVar").then((m) => ({ default: m.PositionVarPane })),
+);
+const PcaStressPane = lazy(() =>
+  import("./portfolio/PcaStress").then((m) => ({ default: m.PcaStressPane })),
+);
+const PortfolioOptimizerPane = lazy(() =>
+  import("./portfolio/PortfolioOptimizer").then((m) => ({
+    default: m.PortfolioOptimizerPane,
+  })),
+);
+const MultiAssetRiskPane = lazy(() =>
+  import("./portfolio/MultiAssetRisk").then((m) => ({ default: m.MultiAssetRiskPane })),
+);
+const TaxLossHarvestPane = lazy(() =>
+  import("./portfolio/TaxLossHarvest").then((m) => ({ default: m.TaxLossHarvestPane })),
+);
 const SCANPane = lazy(() => import("./SCAN").then((m) => ({ default: m.SCANPane })));
 const MISPane = lazy(() => import("./MIS").then((m) => ({ default: m.MISPane })));
 const ASKPane = lazy(() => import("./ASK").then((m) => ({ default: m.ASKPane })));
 const TOPPane = lazy(() => import("./TOP").then((m) => ({ default: m.TOPPane })));
 const ECOPane = lazy(() => import("./ECO").then((m) => ({ default: m.ECOPane })));
+const ERNPane = lazy(() => import("./ERN").then((m) => ({ default: m.ERNPane })));
+const IPOPane = lazy(() => import("./IPO").then((m) => ({ default: m.IPOPane })));
 const WATCHPane = lazy(() => import("./WATCH").then((m) => ({ default: m.WATCHPane })));
 const ALRTPane = lazy(() => import("./ALRT").then((m) => ({ default: m.ALRTPane })));
 const NIPane = lazy(() => import("./NI").then((m) => ({ default: m.NIPane })));
@@ -57,7 +78,9 @@ const GEXPane = lazy(() => import("./GEX").then((m) => ({ default: m.GEXPane }))
 const MarketHeatmapPane = lazy(() =>
   import("./MarketHeatmap").then((m) => ({ default: m.MarketHeatmapPane })),
 );
-const INSTANTPane = lazy(() => import("./INSTANT").then((m) => ({ default: m.INSTANTPane })));
+const INSTANTPane = lazy(() =>
+  import("./INSTANT").then((m) => ({ default: m.INSTANTPane })),
+);
 const CORRPane = lazy(() => import("./CORR").then((m) => ({ default: m.CORRPane })));
 const XSENPane = lazy(() => import("./XSEN").then((m) => ({ default: m.XSENPane })));
 const DPFPane = lazy(() => import("./DPF").then((m) => ({ default: m.DPFPane })));
@@ -71,6 +94,7 @@ const ESGPane = lazy(() => import("./ESG").then((m) => ({ default: m.ESGPane }))
 const TRQAPane = lazy(() => import("./TRQA").then((m) => ({ default: m.TRQAPane })));
 const TSARPane = lazy(() => import("./TSAR").then((m) => ({ default: m.TSARPane })));
 const TSOXPane = lazy(() => import("./TSOX").then((m) => ({ default: m.TSOXPane })));
+const VCAPPane = lazy(() => import("./VCAP").then((m) => ({ default: m.VCAPPane })));
 const WACCPane = lazy(() => import("./WACC").then((m) => ({ default: m.WACCPane })));
 const WBPane = lazy(() => import("./WB").then((m) => ({ default: m.WBPane })));
 const WETRPane = lazy(() => import("./WETR").then((m) => ({ default: m.WETRPane })));
@@ -178,6 +202,7 @@ const SOSCPane = lazy(() => import("./SOSC").then((m) => ({ default: m.SOSCPane 
 const EVTSPane = lazy(() => import("./EVTS").then((m) => ({ default: m.EVTSPane })));
 const PEOPPane = lazy(() => import("./PEOP").then((m) => ({ default: m.PEOPPane })));
 const MEETPane = lazy(() => import("./MEET").then((m) => ({ default: m.MEETPane })));
+const MSENTPane = lazy(() => import("./MSENT").then((m) => ({ default: m.MSENTPane })));
 const AVPane = lazy(() => import("./AV").then((m) => ({ default: m.AVPane })));
 const BMCPane = lazy(() => import("./BMC").then((m) => ({ default: m.BMCPane })));
 // FN-WAVE wave-5 commodity/chart lane.
@@ -220,10 +245,12 @@ const PANES: Record<string, PaneComponent> = {
   ASK: ASKPane,
   TOP: TOPPane,
   ECO: ECOPane,
+  ERN: ERNPane,
+  IPO: IPOPane,
   WATCH: WATCHPane,
   ALRT: ALRTPane,
   NI: NIPane,
-  CN: NIPane,             // CN alias — ShowMe ships either NI or CN.
+  CN: NIPane, // CN alias — ShowMe ships either NI or CN.
   MOST: MOSTPane,
   PERF: PERFPane,
   WEI: WEIPane,
@@ -257,6 +284,7 @@ const PANES: Record<string, PaneComponent> = {
   TRQA: TRQAPane,
   TSAR: TSARPane,
   TSOX: TSOXPane,
+  VCAP: VCAPPane,
   WACC: WACCPane,
   WB: WBPane,
   WETR: WETRPane,
@@ -336,6 +364,7 @@ const PANES: Record<string, PaneComponent> = {
   EVTS: EVTSPane,
   PEOP: PEOPPane,
   MEET: MEETPane,
+  MSENT: MSENTPane,
   AV: AVPane,
   BMC: BMCPane,
   BGAS: BGASPane,
@@ -375,7 +404,7 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     name: "Bot Dev Assistant",
     category: "screen",
     description:
-      "Sub-system J: rule-based NL → strategy spec parser + saved-strategy explainer. Type a request like \"RSI below 30, above 70, BTC/USDT 1h\" and get a draft StrategySpec (optionally persisted); below, pick any saved strategy for a plain-English rule-based explanation. KAOS Multibot — the default engine — runs without a rule spec; BDA is for the classic rule engine.",
+      'Sub-system J: rule-based NL → strategy spec parser + saved-strategy explainer. Type a request like "RSI below 30, above 70, BTC/USDT 1h" and get a draft StrategySpec (optionally persisted); below, pick any saved strategy for a plain-English rule-based explanation. KAOS Multibot — the default engine — runs without a rule spec; BDA is for the classic rule engine.',
   },
   {
     code: "BOT",
@@ -415,7 +444,8 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     code: "WATCH",
     name: "Live Watchlist",
     category: "portfolio",
-    description: "User-managed watchlist with live last price, change, source, and removal controls.",
+    description:
+      "User-managed watchlist with live last price, change, source, and removal controls.",
   },
   {
     code: "MIS",
@@ -435,7 +465,8 @@ const NATIVE_FUNCTION_ENTRIES: FunctionEntry[] = [
     code: "INSTANT",
     name: "Instant Squawk Line",
     category: "news",
-    description: "Secondary LiveSquawk-style official-source news, calendar, latency, and audio line.",
+    description:
+      "Secondary LiveSquawk-style official-source news, calendar, latency, and audio line.",
   },
   {
     code: "PERF",

@@ -19,6 +19,21 @@ from showme.engine.core.base_data_source import (
 )
 
 
+def _auction_date(d: dict[str, Any]) -> str | None:
+    """Return the YYYY-MM-DD auction date of a TreasuryDirect row.
+
+    The live feed leaves ``auctionDate`` null and carries the auction day in
+    ``competitiveAuctionCloseDate`` (checked 2026-11-08: 250/250 rows). An
+    explicit ``auctionDate`` still wins when present. Rows with neither field
+    return None and are excluded from the calendar, never given a guessed date.
+    """
+    for key in ("auctionDate", "competitiveAuctionCloseDate"):
+        value = d.get(key)
+        if value:
+            return str(value)[:10]
+    return None
+
+
 class TreasuryAuctionsAdapter(BaseDataSource):
     """Public no-key adapter for US Treasury auctions."""
 
@@ -39,7 +54,7 @@ class TreasuryAuctionsAdapter(BaseDataSource):
             r.raise_for_status()
             data = r.json()
         return [{
-            "auction_date": d.get("auctionDate"),
+            "auction_date": _auction_date(d),
             "issue_date": d.get("issueDate"),
             "maturity_date": d.get("maturityDate"),
             "security_type": d.get("securityType") or d.get("securityTermDayMonth"),

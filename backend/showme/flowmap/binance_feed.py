@@ -345,7 +345,7 @@ class BinanceBookFeed:
             try:
                 data = json.loads(raw)
             except (TypeError, ValueError) as exc:
-                raise ConnectionError(f"unparsable stream frame: {exc}") from exc
+                raise ConnectionError(f"unparsable stream frame: {str(exc) or type(exc).__name__}") from exc
             stream = str(data.get("stream", ""))
             payload = data.get("data", data)
             event = str(payload.get("e", ""))

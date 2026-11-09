@@ -5,6 +5,10 @@
  * Round 23 keeps it client-side only — the sidecar's ShowMe alert engine
  * stays untouched. Round 24+ may duplex against `/api/fn/ALRT` so a
  * single alert lives in both worlds.
+ *
+ * Current state (ALRT#1): these rows are NOT sent to `/api/fn/ALRT`. The
+ * sidecar keeps its own `alerts.json` store, which no evaluator reads in
+ * this build, so a rule saved here is never armed on the backend.
  */
 import { invoke, isInTauri } from "./tauri";
 import { safeReadLocal, safeWriteLocal } from "./safe-storage";

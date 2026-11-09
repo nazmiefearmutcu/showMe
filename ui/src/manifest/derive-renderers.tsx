@@ -598,7 +598,9 @@ function renderValueForKind(value: unknown, kind: ColumnKind, format: string | n
   }
   if (kind === "percent") {
     if (numberValue == null) return formatMissing;
-    return formatPercent(numberValue, { digits: digits ?? 2, signed: false });
+    // unit "ratio" declares a decimal fraction (0.0123 = 1.23%), as the backend
+    // FieldDef contract says; any other percent column is already in percent points.
+    return formatPercent(numberValue, { digits: digits ?? 2, signed: false, fromFraction: unit === "ratio" });
   }
   if (kind === "currency") {
     if (numberValue == null) return formatMissing;

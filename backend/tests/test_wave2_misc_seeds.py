@@ -79,7 +79,12 @@ def test_misc_seed_is_registered(code: str) -> None:
     )
 
 
-@pytest.mark.parametrize("code", MISC_CODES)
+# FLY is a live external feed (OpenSky) with primary=opensky, so it is checked
+# against its own provider contract in test_fly_honest_inputs.py, not here.
+MISC_SHAPE_CODES = tuple(code for code in MISC_CODES if code != "FLY")
+
+
+@pytest.mark.parametrize("code", MISC_SHAPE_CODES)
 def test_misc_seed_shape(code: str) -> None:
     """Shape floor: MISC category, internal-friendly chain, real methodology, ≥1 test."""
     entry = MISC_ENTRIES[code]
@@ -87,7 +92,10 @@ def test_misc_seed_shape(code: str) -> None:
         f"{code}: must declare Category.MISC (got {entry.category!r})"
     )
     assert entry.inputs, f"{code}: at least one input control required"
-    assert entry.provider_chain.primary in ALLOWED_PRIMARY_PROVIDERS, (
+    # DINE is the one MISC pane whose data comes from a real public provider
+    # (OpenStreetMap Nominatim); its seed must say so rather than claim internal.
+    allowed_primary = ALLOWED_PRIMARY_PROVIDERS | ({"openstreetmap_nominatim"} if code == "DINE" else set())
+    assert entry.provider_chain.primary in allowed_primary, (
         f"{code}: provider_chain.primary={entry.provider_chain.primary!r} "
         f"not in {ALLOWED_PRIMARY_PROVIDERS} — MISC panes must be honest about "
         f"having no first-class external provider."
@@ -164,9 +172,12 @@ def test_sat_methodology_mentions_real_or_unavailable() -> None:
     assert "never" in text and ("pretend" in text or "synthetic" in text)
 
 
-@pytest.mark.parametrize("code", ("DINE", "FLY", "GRAB"))
+# FLY is no longer in this list: its seed was rewritten from the travel-picks
+# utility to the OpenSky flight feed it actually serves (FLY#4), so it is not
+# an auxiliary travel list any more.
+@pytest.mark.parametrize("code", ("DINE", "GRAB"))
 def test_non_core_utility_methodology_admits_auxiliary_status(code: str) -> None:
-    """DINE/FLY/GRAB must say they're auxiliary / low nav weight in finance-first cockpit."""
+    """DINE/GRAB must say they're auxiliary / low nav weight in finance-first cockpit."""
     entry = MISC_ENTRIES[code]
     text = entry.methodology.lower()
     assert "auxiliary" in text, (

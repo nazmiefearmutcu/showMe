@@ -1,18 +1,13 @@
 """GEX data-honesty regressions.
 
-The GEX function silently falls back to a synthetic 3-strike reference
-model (hardcoded OI, constant IV) whenever the live yfinance options
-chain is unavailable. Pre-fix it labelled that payload ``source_mode``
-``"reference"`` / ``"reference_chain"`` with no machine-readable flag,
-so the UI could not tell synthetic data apart from real dealer
-positioning.
+The GEX function used to fall back to a synthetic 3-strike reference
+model (hardcoded OI, constant IV) when the live yfinance options chain
+was unavailable, and served it with status "ok".
 
-These tests pin the honest contract:
+These tests pin the honest contract that replaced it (wc1-g06):
 
-* the no-live ``_model_gex`` path is flagged ``synthetic`` + carries a
-  ``warning`` and an explicit ``source_mode``;
-* the live-but-empty-chain fallback inside ``execute`` is *also* flagged
-  synthetic (this is the dangerous path — it looks live but isn't);
+* no modeled grid is ever served; a missing chain is an explicit
+  non-ok state with no rows;
 * a genuinely live chain is NOT flagged synthetic and keeps a clean
   ``live_chain`` ``source_mode`` with no warning.
 """
@@ -20,35 +15,31 @@ These tests pin the honest contract:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from showme.engine.core.base_data_source import DataKind
 from showme.engine.core.base_function import FunctionDeps
-from showme.engine.functions.derivative.gex import GEXFunction, _model_gex
+from showme.engine.functions.derivative.gex import GEXFunction
 
 
 def _summary(payload: dict) -> dict:
     return payload.get("summary") or {}
 
 
-def test_model_gex_is_flagged_synthetic() -> None:
-    payload = _model_gex("SPY", spot=100.0, rate=0.04)
-    summary = _summary(payload)
-    assert summary.get("synthetic") is True
-    assert summary.get("source_mode") == "synthetic_reference"
-    # A human-readable warning must accompany the flag so the UI can
-    # surface it verbatim.
-    assert isinstance(payload.get("warning"), str) and payload["warning"]
-    assert "synthetic" in payload["warning"].lower()
+# wc1-g06 (GEX#5): the synthetic 3-strike reference model is gone. Its fixed OI
+# and IV were invented numbers served with status "ok". These tests now pin the
+# honest replacement: no modeled grid, an explicit non-ok status and no rows.
 
 
-def test_no_live_options_path_returns_synthetic() -> None:
-    """live_options not requested → synthetic reference model, flagged."""
+def test_no_live_options_path_is_honest_not_synthetic() -> None:
+    """live_options not requested -> needs_input, no modeled strike grid."""
     fn = GEXFunction(deps=FunctionDeps(yfinance=None))
     result = asyncio.run(fn.execute(symbol="SPY", spot=100.0))
+    assert result.data["status"] == "needs_input"
+    assert result.data["rows"] == []
     summary = _summary(result.data)
-    assert summary.get("synthetic") is True
-    assert summary.get("source_mode") == "synthetic_reference"
-    assert "synthetic" in (result.data.get("warning") or "").lower()
+    assert summary.get("synthetic") is False
+    assert summary.get("net_gex") is None
 
 
 class _EmptyChainYf:
@@ -65,17 +56,18 @@ class _EmptyChainYf:
         return None
 
 
-def test_live_path_empty_chain_falls_back_to_flagged_synthetic() -> None:
+def test_live_path_empty_chain_is_unavailable_not_synthetic() -> None:
     fn = GEXFunction(deps=FunctionDeps(yfinance=_EmptyChainYf()))
     result = asyncio.run(
         fn.execute(symbol="SPY", spot=100.0, live_options=True)
     )
+    # Previously this ran the live code, found no chain and served an invented
+    # 3-strike grid with status "ok". It must now be an explicit unavailable state.
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["rows"] == []
     summary = _summary(result.data)
-    # This is the deceptive path: it ran the live code but had no real
-    # chain. It MUST be flagged synthetic, not paraded as live.
-    assert summary.get("synthetic") is True
-    assert summary.get("source_mode") == "synthetic_reference_chain"
-    assert "synthetic" in (result.data.get("warning") or "").lower()
+    assert summary.get("synthetic") is False
+    assert summary.get("source_mode") == "unavailable"
     assert "live_chain" not in summary.get("source_mode", "")
 
 
@@ -88,7 +80,9 @@ class _LiveChainYf:
         import pandas as pd
 
         if request.extra.get("expiry") is None:
-            return {"expiries": ["2026-07-17"]}
+            # wc3-g15 (GEX#4): an expiry whose close has passed is excluded, so this
+            # live-chain fixture uses a future expiry rather than the stale 2026-07-17.
+            return {"expiries": ["2099-12-31"]}
         df_calls = pd.DataFrame(
             [
                 {"strike": 95.0, "openInterest": 1200, "impliedVolatility": 0.31},
@@ -103,6 +97,11 @@ class _LiveChainYf:
                 {"strike": 105.0, "openInterest": 600, "impliedVolatility": 0.36},
             ]
         )
+        # Stamp the rows with today's trade time so this is a genuinely live
+        # chain (wc1-g06 GEX#6: an unstamped chain is not claimed as live).
+        now_stamp = pd.Timestamp(datetime.now(timezone.utc))
+        df_calls["lastTradeDate"] = now_stamp
+        df_puts["lastTradeDate"] = now_stamp
         return {"calls": df_calls, "puts": df_puts}
 
 

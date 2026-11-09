@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -70,7 +71,7 @@ def validate_envelope(payload: dict) -> FunctionEnvelope:
         return FunctionEnvelope.model_validate(payload)
     except ValidationError as exc:
         raise ValueError(
-            f"function envelope validation failed for code={payload.get('code')!r}: {exc}"
+            f"function envelope validation failed for code={payload.get('code')!r}: {str(exc) or type(exc).__name__}"
         ) from exc
 
 ERROR_STATUSES = {
@@ -175,8 +176,31 @@ def normalize_function_contract(
     data = _attach_data_status(data, status, reason, next_action)
     payload["data"] = data
     payload["status"] = status
-    payload["asOf"] = payload.get("fetched_at") or _utcnow()
-    payload["inputEcho"] = _clean_input(params)
+    # asOf is the observation date of the data, never the compute time: a
+    # monthly CPI print must not read as current because it was served today.
+    # The retrieval time is kept separately as retrievedAt.
+    payload["retrievedAt"] = payload.get("fetched_at") or _utcnow()
+    payload["asOf"] = _observation_as_of(metadata, data, rows, _parse_observation(payload["retrievedAt"]))
+    echo = _clean_input(params)
+    # Keys the /api/fn route filled in (never sent by the caller) are reported
+    # as routeDefaults, not echoed as if the caller had asked for them.
+    route_defaults = params.get("__route_defaults")
+    if isinstance(route_defaults, (list, tuple)):
+        injected = {key: echo.pop(key) for key in route_defaults if key in echo}
+        if injected:
+            payload["routeDefaults"] = injected
+    payload["inputEcho"] = echo
+    # The router injects a default symbol when the caller chose none and flags
+    # it __explicit_symbol=False. That default must never be silent: say so in
+    # the envelope (defaultedInputs) and in the visible warnings (XCON-5).
+    if params.get("__explicit_symbol") is False and params.get("symbol"):
+        default_symbol = str(params["symbol"])
+        payload["defaultedInputs"] = {"symbol": default_symbol}
+        note = (f"No symbol was given, so this ran on the default symbol {default_symbol}; "
+                "pass symbol to choose the instrument.")
+        current = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+        if note not in current:
+            payload["warnings"] = [*current, note]
     payload["payload"] = _contract_payload(data)
     payload["rows"] = rows
     payload["series"] = series
@@ -202,6 +226,29 @@ def normalize_function_contract(
     return payload
 
 
+def _status_family(data_status: str) -> str:
+    """Map a function's own ``data.status`` onto the envelope family.
+
+    Functions use many specific statuses (``no_price_history``,
+    ``archive_unavailable``, ``unsupported_location`` ...). An unknown one used
+    to fall through to ``ok``, so an empty or failed payload was published as
+    ok/live (offline audit T10, 2026-11-08). Negative shapes are classified by
+    prefix/suffix; anything else keeps the old behaviour.
+    """
+    s = data_status
+    if s in {PROVIDER_UNAVAILABLE, "not_configured", "unavailable"} or s.endswith("_unavailable"):
+        return PROVIDER_UNAVAILABLE
+    if s in {"unsupported_asset", INPUT_ERROR, INPUT_REQUIRED, "needs_input"} or s.startswith(
+        ("unsupported_", "not_applicable")
+    ):
+        return INPUT_ERROR
+    if s == CALC_ERROR or (s.endswith("_error") and s != INPUT_ERROR):
+        return CALC_ERROR
+    if s in {EMPTY, "empty_portfolio", "ready_no_positions", "insufficient_history"} or s.startswith("no_"):
+        return EMPTY
+    return ""
+
+
 def _derive_status(
     code: str,
     data: Any,
@@ -214,23 +261,21 @@ def _derive_status(
     data_status = _data_status(data)
     reason = _data_reason(data)
     actions = _data_actions(data)
+    family = _status_family(data_status)
 
-    if metadata.get("fallback") or data_status in {
-        PROVIDER_UNAVAILABLE,
-        "not_configured",
-    }:
+    if metadata.get("fallback") or family == PROVIDER_UNAVAILABLE:
         return (
             PROVIDER_UNAVAILABLE,
             reason or _first(metadata.get("provider_errors")) or "provider unavailable",
             _first(actions) or "Connect the required provider and rerun the function.",
         )
-    if data_status in {"unsupported_asset", INPUT_ERROR, INPUT_REQUIRED}:
+    if family == INPUT_ERROR:
         return (
             INPUT_ERROR,
             reason or "input is not compatible with this function",
             _first(actions) or "Change the function input to a supported symbol or asset class.",
         )
-    if data_status in {CALC_ERROR}:
+    if family == CALC_ERROR:
         return (
             CALC_ERROR,
             reason or "calculation failed",
@@ -255,7 +300,7 @@ def _derive_status(
                 _first(actions) or "Refresh fundamentals or connect a statement provider with ratio inputs.",
             )
 
-    if data_status in {EMPTY, "empty_portfolio", "ready_no_positions"}:
+    if family == EMPTY:
         return (
             EMPTY,
             reason or "no records returned for the current input",
@@ -349,7 +394,7 @@ def _extract_cards(data: Any) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for key in CARD_KEYS:
         value = data.get(key)
-        if isinstance(value, dict) and value:
+        if isinstance(value, dict) and value and not _is_blank_value(value):
             cards.append({"section": key, **value})
         elif isinstance(value, list):
             cards.extend(_objectify(row) for row in value if isinstance(row, dict))
@@ -360,7 +405,10 @@ def _extract_cards(data: Any) -> list[dict[str, Any]]:
         for key, value in data.items()
         if not isinstance(value, (dict, list)) and value not in (None, "")
     }
-    return [scalar_items] if scalar_items else []
+    # A card made only of echoed input / method / provenance fields is not data.
+    if not any(key not in _NON_DATA_KEYS for key in scalar_items):
+        return []
+    return [scalar_items]
 
 
 def _objectify(value: Any) -> dict[str, Any]:
@@ -422,15 +470,20 @@ def _is_effectively_empty(
     if isinstance(data, list):
         return len(data) == 0
     if isinstance(data, dict):
-        useful = {
-            key: value
-            for key, value in data.items()
-            if key not in {"status", "reason", "nextAction", "next_actions", "requested"}
-        }
-        if not useful:
-            return True
-        return all(_is_blank_value(value) for value in useful.values())
+        return _is_blank_value(data)
     return False
+
+
+# Keys that echo the request, describe the method or carry provenance: they
+# are present even when the provider returned nothing, so they never make a
+# payload "useful" on their own (a DES answer with only symbol/asset_class
+# filled, or a TECH answer whose only content is {"symbol", "days"}).
+_NON_DATA_KEYS = frozenset({
+    "status", "reason", "nextAction", "next_actions", "requested", "symbol", "ticker", "asset_class",
+    "code", "query", "interval", "days", "range", "period", "params", "input", "inputs", "methodology",
+    "field_dictionary", "disclaimer", "as_of", "asOf", "fetched_at", "generated_at", "source", "sources",
+    "provider",
+})
 
 
 def _is_blank_value(value: Any) -> bool:
@@ -439,7 +492,8 @@ def _is_blank_value(value: Any) -> bool:
     if isinstance(value, list):
         return len(value) == 0
     if isinstance(value, dict):
-        return not value or all(_is_blank_value(child) for child in value.values())
+        useful = [child for key, child in value.items() if key not in _NON_DATA_KEYS]
+        return all(_is_blank_value(child) for child in useful)
     return False
 
 
@@ -451,7 +505,93 @@ def _clean_input(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _source_details(sources: list[Any], as_of: str, status: FnStatus) -> list[dict[str, Any]]:
+_OBSERVATION_KEYS = ("as_of", "asOf", "observation_date", "last_observation", "last_updated", "lastUpdated")
+_ROW_OBSERVATION_KEYS = ("as_of", "asOf", "observation_date", "date", "timestamp", "time")
+
+
+def _parse_observation(value: Any) -> datetime | None:
+    """A UTC datetime for an observation stamp (ISO text, datetime or epoch seconds)."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, bool):
+        return None
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    elif isinstance(value, (int, float)) and value > 0:
+        try:
+            parsed = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# A row stamp this close to the retrieval moment is the compute/serve time, not
+# an observation (producers stamp now() per row), so it is not used as asOf.
+_RETRIEVAL_MARGIN = timedelta(seconds=60)
+
+
+def _declared_observation_date(value: Any) -> datetime | None:
+    """A top-level or metadata as-of value, only when it is a plain observation date.
+
+    Producers routinely write ``datetime.now()`` into ``as_of``/``last_updated``
+    keys, so a full timestamp there cannot be told apart from the compute time.
+    Only a date-granular value (YYYY-MM-DD) is accepted as a declared observation.
+    """
+    if not isinstance(value, str) or not _DATE_ONLY.match(value.strip()):
+        return None
+    return _parse_observation(value.strip())
+
+
+def _observation_as_of(
+    metadata: dict[str, Any],
+    data: Any,
+    rows: list[dict] | None,
+    retrieved: datetime | None = None,
+) -> str | None:
+    """Latest observation date the payload declares, or None when it declares none.
+
+    Declared top-level and metadata keys count only when they are date-granular.
+    Row date-like fields count only when they are not in the future and not the
+    retrieval moment itself (future values are event dates; retrieval-moment values
+    are compute stamps). Falls back to None rather than the compute time.
+    """
+    if retrieved is None:
+        retrieved = datetime.now(timezone.utc)
+    latest_row_ok = retrieved - _RETRIEVAL_MARGIN
+    found: list[datetime] = []
+    for holder in (metadata, data if isinstance(data, dict) else None):
+        if not isinstance(holder, dict):
+            continue
+        for key in _OBSERVATION_KEYS:
+            parsed = _declared_observation_date(holder.get(key))
+            if parsed is not None:
+                found.append(parsed)
+                break
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        for key in _ROW_OBSERVATION_KEYS:
+            parsed = _parse_observation(row.get(key))
+            if parsed is not None and parsed <= latest_row_ok:
+                found.append(parsed)
+                break
+    if not found:
+        return None
+    return max(found).isoformat()
+
+
+def _source_details(sources: list[Any], as_of: str | None, status: FnStatus) -> list[dict[str, Any]]:
     if not sources:
         return [{"name": "none", "asOf": as_of, "status": "missing"}]
     source_status = "ok" if status == OK else status

@@ -232,7 +232,7 @@ export function PortfolioOptimizerPane({ code }: FunctionPaneProps) {
                   label: `${entry.label} Vol`,
                   value: fmtPct(entry.result?.vol, { fromFraction: true }),
                 },
-              ]).slice(0, 6)}
+              ])}
             />
           </section>
 
@@ -344,7 +344,11 @@ export function PortfolioOptimizerPane({ code }: FunctionPaneProps) {
                 className={`btn btn--ghost portfolio-analytics-live${live ? " portfolio-analytics-live--on" : ""}`}
                 onClick={() => setLive((value) => !value)}
                 aria-pressed={live}
-                title="Toggle live yfinance returns vs the labelled template returns"
+                title={
+                  live
+                    ? "LIVE: optimise on yfinance daily returns. Turning it off computes no weights."
+                    : "MODEL: no weights are computed without live yfinance returns. Turn LIVE on to optimise."
+                }
               >
                 {live ? "LIVE" : "MODEL"}
               </button>

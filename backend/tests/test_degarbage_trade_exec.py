@@ -47,6 +47,48 @@ def fn():
     return EXECFunction()
 
 
+class _ClosedHistory:
+    def __init__(self, rows, source):
+        self.rows = rows
+        self.source = source
+        self.warnings = []
+        self.metadata = {}
+
+
+@pytest.fixture
+def closed_feed(monkeypatch):
+    """Offline stand-in for both intraday feeds: closed bars ending days ago, so
+    the live-branch assertions run without any network access."""
+    import time as _time
+
+    import showme.chart_history as ch
+
+    anchor = (int(_time.time()) // 300) * 300 - 3 * 86400
+
+    def _rows(interval: str) -> list[dict]:
+        step = 60 if interval == "1m" else 300
+        return [
+            {
+                "time": anchor + i * step,
+                "open": 300.0 + i * 0.2,
+                "high": 300.5 + i * 0.2,
+                "low": 299.5 + i * 0.2,
+                "close": 300.3 + i * 0.2,
+                "volume": 1000.0 + (i % 17) * 10.0,
+            }
+            for i in range(400)
+        ]
+
+    async def _yahoo(**kwargs):
+        return _ClosedHistory(_rows(kwargs["interval"])[-int(kwargs["bars"]):], "yahoo_chart")
+
+    async def _binance(**kwargs):
+        return _ClosedHistory(_rows(kwargs["interval"])[-int(kwargs["bars"]):], "binance_spot")
+
+    monkeypatch.setattr(ch, "fetch_yahoo_history", _yahoo, raising=True)
+    monkeypatch.setattr(ch, "fetch_binance_history", _binance, raising=True)
+
+
 def _is_live_ok(data: dict) -> bool:
     return data.get("status") == "ok"
 
@@ -61,7 +103,7 @@ def _assert_plan_contract(data: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_plan_crypto_returns_real_slices_or_graceful_outage(fn):
+async def test_plan_crypto_returns_real_slices_or_graceful_outage(fn, closed_feed):
     """action=plan against BTCUSDT drives a real TWAP schedule on live klines."""
     try:
         res = await fn.execute(
@@ -91,13 +133,15 @@ async def test_plan_crypto_returns_real_slices_or_graceful_outage(fn):
         # Benchmark + slippage are computed from real bars.
         assert any(r["benchmark_px"] is not None for r in rows)
         assert any(r["slip_bps"] is not None for r in rows)
-        # Pace is monotonic non-decreasing and ends near 100%.
-        paces = [r["pace_pct"] for r in rows]
+        # Schedule progress (EXEC#8: a plan reports schedule_pct, not pace_pct)
+        # is monotonic non-decreasing and ends near 100%.
+        paces = [r["schedule_pct"] for r in rows]
         assert paces == sorted(paces)
         assert paces[-1] == pytest.approx(100.0, abs=0.5)
         # Series + cards shipped for the chart grammar.
         assert "price" in data["series"] and data["series"]["price"]
-        assert data["cards"]["data_mode"] == "live_exchange"
+        # EXEC#1: a replay over stored bars is labelled historical, never live.
+        assert data["cards"]["data_mode"] == "historical_replay"
     else:
         # Outage path: honest provider_unavailable, no fabricated rows.
         assert data["status"] == "provider_unavailable"
@@ -106,7 +150,7 @@ async def test_plan_crypto_returns_real_slices_or_graceful_outage(fn):
 
 
 @pytest.mark.asyncio
-async def test_plan_equity_vwap_uses_yahoo(fn):
+async def test_plan_equity_vwap_uses_yahoo(fn, closed_feed):
     """VWAP equity plan slices follow the real volume profile via Yahoo."""
     try:
         res = await fn.execute(
@@ -126,13 +170,14 @@ async def test_plan_equity_vwap_uses_yahoo(fn):
         # VWAP weights are non-uniform → slice qty should vary across slices.
         qtys = [r["qty"] for r in rows]
         assert len(set(round(q, 6) for q in qtys)) > 1
-        assert data["cards"]["open_parents"] == 1
+        # EXEC#4: the store is empty in this fixture, so no parent is claimed.
+        assert data["cards"]["open_parents"] == 0
     else:
         assert data["status"] == "provider_unavailable"
 
 
 @pytest.mark.asyncio
-async def test_default_list_with_symbol_routes_to_live_plan(fn):
+async def test_default_list_with_symbol_routes_to_live_plan(fn, closed_feed):
     """With an empty store but a symbol hint, the default route returns a live
     plan instead of the dead status=empty placeholder."""
     try:

@@ -246,7 +246,7 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
       out.push({
         label: "Interest coverage",
         value: formatRatio(summary.interest_coverage_x),
-        caption: "EBITDA ÷ interest expense",
+        caption: "EBIT ÷ interest expense",
         tone: coverageTone(summary.interest_coverage_x),
       });
       out.push({
@@ -532,7 +532,10 @@ export function CRPRPane({ code, symbol }: FunctionPaneProps) {
               {hasIssuer ? (
                 <Empty
                   title="No rating data"
-                  body="The credit model returned no implied bucket for this issuer."
+                  body={
+                    payload.reason ||
+                    "The credit model returned no implied bucket for this issuer."
+                  }
                 />
               ) : (
                 <Empty

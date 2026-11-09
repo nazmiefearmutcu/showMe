@@ -76,10 +76,10 @@ class WHALFunction(BaseFunction):
         if market == "CRYPTO":
             payload, sources, warnings = await _crypto_whales(
                 symbol=symbol,
-                chain=chain,
                 threshold_usd=threshold_usd,
                 row_limit=limit,
                 trade_limit=trade_limit,
+                lookback_hours=lookback_hours,
                 timeout=timeout,
             )
         else:
@@ -132,14 +132,36 @@ class WHALFunction(BaseFunction):
 async def _crypto_whales(
     *,
     symbol: str,
-    chain: str,
     threshold_usd: float,
     row_limit: int,
     trade_limit: int,
+    lookback_hours: int,
     timeout: float,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
-    pair = _binance_pair(symbol, chain)
+    pair = _binance_pair(symbol)
     warnings: list[str] = []
+    if pair is None:
+        return (
+            {
+                # WHAL#5 follow-up: an unrecognised symbol is an input error. No provider
+                # was called, so it must not read as a provider outage.
+                "status": "input_error",
+                "reason": f"{symbol} is not a recognised Binance spot or USD-M pair; no provider was queried.",
+                "provider": "binance_public",
+                "provider_symbol": None,
+                "rows": [],
+                "history": [],
+                "cards": [
+                    {"label": "Provider", "value": "Binance public"},
+                    {"label": "Rows", "value": 0},
+                    {"label": "Threshold hits", "value": 0},
+                ],
+                "summary": f"{symbol} is not a recognised Binance spot or USD-M pair, so no trades were requested.",
+                "next_actions": ["Pass the full Binance pair, for example PEPEUSDT or BTCUSDT."],
+            },
+            ["binance_public"],
+            [f"{symbol} is not a recognised Binance pair"],
+        )
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
         for venue, base, trades_path, kline_path, ticker_path in (
             ("spot", BINANCE_SPOT, "/api/v3/aggTrades", "/api/v3/klines", "/api/v3/ticker/24hr"),
@@ -159,7 +181,28 @@ async def _crypto_whales(
                 warnings.append(str(exc))
                 continue
 
-            rows = _shape_binance_trades(trades, pair, venue, threshold_usd, row_limit)
+            # Binance returns only the latest `trade_limit` trades, which can be
+            # minutes of flow. Keep only trades inside the requested lookback and
+            # report what they really cover, instead of implying the full window.
+            cutoff_ms = (time.time() - lookback_hours * 3600.0) * 1000.0
+            in_window = [
+                item for item in (trades if isinstance(trades, list) else [])
+                if isinstance(item, dict) and (_to_float(item.get("T"), 0.0) or 0.0) >= cutoff_ms
+            ]
+            window = _trade_window(in_window, lookback_hours)
+            covered = window["covered_hours"]
+            # WHAL#2 follow-up: a fixed one-hour allowance made the check dead for a 1h
+            # lookback (covered < 0). The allowance is one hour, capped at half the lookback,
+            # so 6h/24h/72h keep their one-hour tolerance and 1h still reports a shortfall.
+            tolerance_hours = min(1.0, lookback_hours / 2.0)
+            if covered is None or covered < lookback_hours - tolerance_hours:
+                covered_text = f"{covered:.1f}h" if covered is not None else "0h"
+                warnings.append(
+                    f"Binance returns the latest {trade_limit} aggregate trades per venue, which "
+                    f"cover {covered_text} of the {lookback_hours}h lookback; earlier trades in the "
+                    "window are not checked against the threshold."
+                )
+            rows = _shape_binance_trades(in_window, pair, venue, threshold_usd, row_limit)
             history = _shape_binance_klines(klines, pair, venue)
             if rows or history:
                 threshold_hits = sum(1 for row in rows if row.get("threshold_crossed"))
@@ -171,6 +214,7 @@ async def _crypto_whales(
                         "provider_symbol": pair,
                         "rows": rows,
                         "history": history,
+                        "window": window,
                         "cards": [
                             {"label": "Provider", "value": f"Binance {venue}"},
                             {"label": "Rows", "value": len(rows)},
@@ -184,6 +228,9 @@ async def _crypto_whales(
                         "summary": (
                             f"{pair} latest Binance {venue} aggregate trades. "
                             f"{threshold_hits} trade(s) crossed ${threshold_usd:,.0f}."
+                            if threshold_usd > 0
+                            else f"{pair} latest Binance {venue} aggregate trades, largest first. "
+                            "No USD threshold was set, so no trade was tested against one."
                         ),
                     },
                     [f"binance_{venue}_public"],
@@ -236,12 +283,12 @@ async def _market_flow_proxy(
             bars = await chart_task
         except Exception as exc:
             bars = []
-            warnings.append(f"yahoo_chart: {exc}")
+            warnings.append(f"yahoo_chart: {str(exc) or type(exc).__name__}")
         try:
             sec_rows = await sec_task if sec_task else []
         except Exception as exc:
             sec_rows = []
-            warnings.append(f"sec_edgar: {exc}")
+            warnings.append(f"sec_edgar: {str(exc) or type(exc).__name__}")
 
     flow_rows, history = _shape_market_bars(
         bars=bars,
@@ -257,6 +304,13 @@ async def _market_flow_proxy(
     sources = ["yahoo_chart_public"]
     if sec_rows:
         sources.append("sec_edgar_public")
+    window = _covered_window(bars, lookback_hours)
+    if window["covered_hours"] is not None and window["covered_hours"] < lookback_hours - 1:
+        warnings.append(
+            f"Only {window['covered_hours']:.1f}h of trading bars fall inside the "
+            f"{lookback_hours}h window (the market was closed for the rest); "
+            "the window is anchored on the last session."
+        )
     return (
         {
             "status": status,
@@ -265,6 +319,7 @@ async def _market_flow_proxy(
             "provider_symbol": yahoo_symbol,
             "rows": rows,
             "history": history,
+            "window": window,
             "cards": [
                 {"label": "Provider", "value": "Yahoo chart + SEC" if sec_rows else "Yahoo chart"},
                 {"label": "Rows", "value": len(rows)},
@@ -301,10 +356,16 @@ def _shape_binance_trades(
             continue
         value = price * qty
         ts = _epoch_ms_to_iso(item.get("T"))
-        threshold_crossed = value >= threshold_usd if threshold_usd else True
+        if threshold_usd > 0:
+            threshold_crossed: bool | None = value >= threshold_usd
+            alert_type = "crypto_large_trade" if threshold_crossed else "crypto_top_trade"
+        else:
+            # No USD floor: nothing is tested, so no trade is "large" or "crossed".
+            threshold_crossed = None
+            alert_type = "crypto_trade"
         parsed.append(
             {
-                "alert_type": "crypto_large_trade" if threshold_crossed else "crypto_top_trade",
+                "alert_type": alert_type,
                 "market": "CRYPTO",
                 "symbol": pair,
                 "venue": f"binance_{venue}",
@@ -350,60 +411,130 @@ def _shape_binance_klines(klines: Any, pair: str, venue: str) -> list[dict[str, 
     return rows
 
 
+async def _chart_bars(
+    client: httpx.AsyncClient,
+    yahoo_symbol: str,
+    range_value: str,
+    interval_value: str,
+) -> list[dict[str, Any]]:
+    response = await client.get(
+        f"{YAHOO_CHART}/{yahoo_symbol}",
+        params={
+            "range": range_value,
+            "interval": interval_value,
+            "includePrePost": "true",
+            "events": "div,splits",
+        },
+    )
+    response.raise_for_status()
+    result = (((response.json() or {}).get("chart") or {}).get("result") or [None])[0]
+    if not isinstance(result, dict):
+        return []
+    timestamps = result.get("timestamp") or []
+    quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
+    bars: list[dict[str, Any]] = []
+    for idx, ts in enumerate(timestamps):
+        close = _nth_float(quote.get("close"), idx)
+        if close is None:
+            continue
+        bars.append(
+            {
+                "timestamp": datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat(),
+                "open": _nth_float(quote.get("open"), idx),
+                "high": _nth_float(quote.get("high"), idx),
+                "low": _nth_float(quote.get("low"), idx),
+                "close": close,
+                "volume": _nth_float(quote.get("volume"), idx),
+                "interval": interval_value,
+                "range": range_value,
+            }
+        )
+    return bars
+
+
+def _span_seconds(bars: list[dict[str, Any]]) -> float:
+    stamps = [_iso_timestamp(row.get("timestamp")) for row in bars]
+    return (max(stamps) - min(stamps)) if stamps else 0.0
+
+
+def _covered_window(bars: list[dict[str, Any]], lookback_hours: int) -> dict[str, Any]:
+    """The span the returned bars really cover, reported next to the requested lookback."""
+    if not bars:
+        return {"lookback_hours": lookback_hours, "covered_from": None,
+                "covered_to": None, "covered_hours": None}
+    stamps = [_iso_timestamp(row.get("timestamp")) for row in bars]
+    first, last = min(stamps), max(stamps)
+    return {
+        "lookback_hours": lookback_hours,
+        "covered_from": datetime.fromtimestamp(first, tz=timezone.utc).isoformat(),
+        "covered_to": datetime.fromtimestamp(last, tz=timezone.utc).isoformat(),
+        "covered_hours": round((last - first) / 3600.0, 2),
+    }
+
+
+def _trade_window(trades: list[dict[str, Any]], lookback_hours: int) -> dict[str, Any]:
+    """Span covered by Binance aggregate trades (``T`` in epoch ms), next to the lookback."""
+    stamps = [
+        ts / 1000.0
+        for ts in (_to_float(item.get("T")) for item in trades if isinstance(item, dict))
+        if ts is not None
+    ]
+    if not stamps:
+        return {"lookback_hours": lookback_hours, "covered_from": None,
+                "covered_to": None, "covered_hours": None}
+    first, last = min(stamps), max(stamps)
+    return {
+        "lookback_hours": lookback_hours,
+        "covered_from": datetime.fromtimestamp(first, tz=timezone.utc).isoformat(),
+        "covered_to": datetime.fromtimestamp(last, tz=timezone.utc).isoformat(),
+        "covered_hours": round((last - first) / 3600.0, 2),
+    }
+
+
+def _anchored_window(bars: list[dict[str, Any]], lookback_hours: int) -> list[dict[str, Any]]:
+    """Bars in the last ``lookback_hours``, anchored at the newest bar.
+
+    Anchoring on the newest bar rather than on wall-clock now keeps the window on
+    the last trading session when the market is closed (weekends, holidays).
+    """
+    newest = max(_iso_timestamp(row.get("timestamp")) for row in bars)
+    cutoff = newest - lookback_hours * 3600
+    return [row for row in bars if _iso_timestamp(row.get("timestamp")) >= cutoff]
+
+
 async def _fetch_yahoo_bars(
     client: httpx.AsyncClient,
     yahoo_symbol: str,
     interval: str,
     lookback_hours: int,
 ) -> list[dict[str, Any]]:
-    ranges = ["1d", "5d"] if lookback_hours <= 24 else ["5d", "1mo"]
+    # 1d returns only the newest session, which on a weekend ends too long ago
+    # for a 24h window to hold it. Use 5d history and take the first range whose
+    # bars span the whole lookback; otherwise keep the widest one returned.
+    ranges = ["5d", "1mo"]
     intervals = [interval, "5m", "15m", "1d"]
     last_error: Exception | None = None
+    widest: list[dict[str, Any]] = []
+    widest_span = -1.0
     for range_value in ranges:
+        bars: list[dict[str, Any]] = []
         for interval_value in intervals:
             try:
-                response = await client.get(
-                    f"{YAHOO_CHART}/{yahoo_symbol}",
-                    params={
-                        "range": range_value,
-                        "interval": interval_value,
-                        "includePrePost": "true",
-                        "events": "div,splits",
-                    },
-                )
-                response.raise_for_status()
-                result = (((response.json() or {}).get("chart") or {}).get("result") or [None])[0]
-                if not isinstance(result, dict):
-                    continue
-                timestamps = result.get("timestamp") or []
-                quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
-                bars: list[dict[str, Any]] = []
-                for idx, ts in enumerate(timestamps):
-                    close = _nth_float(quote.get("close"), idx)
-                    if close is None:
-                        continue
-                    bars.append(
-                        {
-                            "timestamp": datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat(),
-                            "open": _nth_float(quote.get("open"), idx),
-                            "high": _nth_float(quote.get("high"), idx),
-                            "low": _nth_float(quote.get("low"), idx),
-                            "close": close,
-                            "volume": _nth_float(quote.get("volume"), idx),
-                            "interval": interval_value,
-                            "range": range_value,
-                        }
-                    )
-                if bars:
-                    cutoff = time.time() - lookback_hours * 3600
-                    fresh = [
-                        row for row in bars
-                        if _iso_timestamp(row.get("timestamp")) >= cutoff
-                    ]
-                    return fresh or bars[-120:]
+                bars = await _chart_bars(client, yahoo_symbol, range_value, interval_value)
             except Exception as exc:
                 last_error = exc
                 continue
+            if bars:
+                break
+        if not bars:
+            continue
+        span = _span_seconds(bars)
+        if span >= lookback_hours * 3600:
+            return _anchored_window(bars, lookback_hours)
+        if span > widest_span:
+            widest, widest_span = bars, span
+    if widest:
+        return _anchored_window(widest, lookback_hours)
     if last_error:
         raise last_error
     return []
@@ -446,7 +577,7 @@ def _shape_market_bars(
         ret_pct = _to_float(row.get("return_pct"))
         notional_ratio = (notional / baseline_notional) if (notional and baseline_notional) else None
         impulse_ratio = (abs(ret_pct) / baseline_return) if (ret_pct is not None and baseline_return) else None
-        threshold_crossed = bool(notional is not None and notional >= threshold_usd)
+        threshold_crossed = _threshold_test(notional, threshold_usd)
         anomaly = (
             threshold_crossed
             or (notional_ratio is not None and notional_ratio >= 2.0)
@@ -468,10 +599,11 @@ def _shape_market_bars(
                 "threshold_usd": threshold_usd,
                 "threshold_crossed": threshold_crossed,
                 "notional_vs_median": round(notional_ratio, 2) if notional_ratio is not None else None,
+                # Only a real USD notional can be tested against a USD floor; None = not tested.
                 "impulse_vs_median": round(impulse_ratio, 2) if impulse_ratio is not None else None,
                 "return_pct": round(ret_pct, 4) if ret_pct is not None else None,
                 "direction": "up" if (ret_pct or 0) > 0 else "down" if (ret_pct or 0) < 0 else "flat",
-                "severity": _severity(notional or (abs(ret_pct or 0) * 1_000_000), threshold_usd),
+                "severity": _row_severity(notional, threshold_usd, impulse_ratio),
                 "source_mode": source_mode,
                 "explanation": (
                     "Public chart proxy. This is not a broker tape print; it flags unusually large "
@@ -480,7 +612,9 @@ def _shape_market_bars(
             }
         )
     if not rows:
-        rows = _top_market_rows(enriched, symbol, yahoo_symbol, market, threshold_usd, row_limit)
+        rows = _top_market_rows(
+            enriched, symbol, yahoo_symbol, market, threshold_usd, row_limit, baseline_return
+        )
     # Min-USD contract for the proxy path: a row whose known notional is
     # below the requested threshold must never render — including the
     # "top window" fallback. Rows with no USD value at all (SEC filings,
@@ -520,6 +654,7 @@ def _top_market_rows(
     market: str,
     threshold_usd: float,
     row_limit: int,
+    baseline_return: float | None = None,
 ) -> list[dict[str, Any]]:
     ordered = sorted(
         enriched,
@@ -530,6 +665,7 @@ def _top_market_rows(
     for row in ordered[:row_limit]:
         notional = _to_float(row.get("notional_usd"))
         ret_pct = _to_float(row.get("return_pct"))
+        impulse_ratio = (abs(ret_pct) / baseline_return) if (ret_pct is not None and baseline_return) else None
         rows.append(
             {
                 "alert_type": "top_volume_window" if notional is not None else "top_impulse_window",
@@ -541,10 +677,10 @@ def _top_market_rows(
                 "volume": row.get("volume"),
                 "usd_value": round(notional, 2) if notional is not None else None,
                 "threshold_usd": threshold_usd,
-                "threshold_crossed": bool(notional is not None and notional >= threshold_usd),
+                "threshold_crossed": _threshold_test(notional, threshold_usd),
                 "return_pct": round(ret_pct, 4) if ret_pct is not None else None,
                 "direction": "up" if (ret_pct or 0) > 0 else "down" if (ret_pct or 0) < 0 else "flat",
-                "severity": _severity(notional or (abs(ret_pct or 0) * 1_000_000), threshold_usd),
+                "severity": _row_severity(notional, threshold_usd, impulse_ratio),
                 "source_mode": "yahoo_chart_top_window",
                 "explanation": "Largest public chart window observed; no threshold-crossing flow was found.",
             }
@@ -630,7 +766,8 @@ async def _fetch_sec_filing_rows(
                 "timestamp": _nth(filing_dates, idx),
                 "form": form,
                 "threshold_usd": None,
-                "threshold_crossed": False,
+                # A filing has no USD value, so the Min USD test does not apply.
+                "threshold_crossed": None,
                 "severity": "high" if form in {"SC 13D", "SC 13G", "13D", "13G"} else "medium",
                 "source_mode": "sec_edgar_submissions",
                 "url": url,
@@ -691,15 +828,20 @@ def _chain_from_symbol(symbol: str) -> str:
     return "BTC"
 
 
-def _binance_pair(symbol: str, chain: str) -> str:
+def _binance_pair(symbol: str) -> str | None:
+    """Binance pair for a symbol, or None when it is not a recognised quote pair.
+
+    An unknown base must not fall back to another instrument's pair (the old
+    chain-based fallback turned FOOBAR into BTCUSDT).
+    """
     clean = symbol.upper().replace("/", "").replace("-", "")
     if clean.endswith("USD") and not clean.endswith("USDT"):
         clean = f"{clean[:-3]}USDT"
     if clean in {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA"}:
         return f"{clean}USDT"
-    if clean in {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"} or clean.endswith(("USDT", "USDC", "FDUSD")):
+    if clean.endswith(("USDT", "USDC", "FDUSD")) and len(clean) > 4:
         return clean
-    return f"{chain.upper()}USDT"
+    return None
 
 
 def _quote_currency(pair: str) -> str | None:
@@ -756,7 +898,9 @@ def _methodology(market: str) -> str:
     if market == "CRYPTO":
         return (
             "WHAL uses Binance public aggregate trades and 1-minute klines for crypto symbols. "
-            "A row is a large exchange trade or the largest observed trade if the USD threshold was not crossed. "
+            "Binance returns the latest 1000 trades per venue, so the window covers only the span those trades "
+            "reach (window.covered_hours). With a USD threshold a row is a trade at or above it; with a threshold "
+            "of 0 the rows are the largest trades and none is tested. "
             "It is not a wallet-labelled Whale Alert transfer unless a native transfer feed is separately configured."
         )
     return (
@@ -779,12 +923,38 @@ def _field_dictionary() -> dict[str, str]:
     }
 
 
+def _threshold_test(usd_value: float | None, threshold_usd: float) -> bool | None:
+    """True/False only when both a USD value and a positive threshold exist; otherwise None (not tested)."""
+    if usd_value is None or threshold_usd <= 0:
+        return None
+    return usd_value >= threshold_usd
+
+
 def _market_summary(symbol: str, market: str, rows: list[dict[str, Any]], hits: int, threshold: float) -> str:
+    """Say which rows were actually tested against the USD floor, and which had no USD basis."""
     if not rows:
         return f"No public WHAL proxy rows were returned for {symbol} ({market})."
-    if hits:
-        return f"{symbol} has {hits} public row(s) above ${threshold:,.0f}."
-    return f"{symbol} returned {len(rows)} public WHAL proxy row(s), but none crossed ${threshold:,.0f}."
+    usd_rows = [row for row in rows if row.get("usd_value") is not None]
+    filings = [row for row in rows if row.get("alert_type") == "sec_ownership_filing"]
+    impulses = [
+        row for row in rows
+        if row.get("usd_value") is None and row.get("alert_type") != "sec_ownership_filing"
+    ]
+    parts: list[str] = []
+    if threshold <= 0:
+        parts.append("no USD threshold was set, so no row was tested against one")
+    elif usd_rows:
+        if hits:
+            parts.append(f"{hits} of {len(usd_rows)} USD-valued row(s) reached ${threshold:,.0f}")
+        else:
+            parts.append(f"{len(usd_rows)} USD-valued row(s) were tested and none reached ${threshold:,.0f}")
+    else:
+        parts.append(f"no row has a USD value, so ${threshold:,.0f} could not be tested")
+    if impulses:
+        parts.append(f"{len(impulses)} price-impulse row(s) have no USD value")
+    if filings:
+        parts.append(f"{len(filings)} SEC filing(s) are listed without a USD value")
+    return f"{symbol} ({market}): " + "; ".join(parts) + "."
 
 
 def _proxy_mode(market: str, bars: list[dict[str, Any]]) -> str:
@@ -795,11 +965,30 @@ def _proxy_mode(market: str, bars: list[dict[str, Any]]) -> str:
     return "price_impulse"
 
 
+def _row_severity(notional: float | None, threshold_usd: float, impulse_ratio: float | None) -> str:
+    """USD-based rating when a notional exists; otherwise the impulse versus the recent median."""
+    if notional is not None:
+        return _severity(notional, threshold_usd)
+    return _impulse_severity(impulse_ratio)
+
+
+def _impulse_severity(impulse_ratio: float | None) -> str:
+    """Rating for rows with no USD value, from the move versus the recent median move."""
+    if impulse_ratio is None:
+        return "unrated"
+    if impulse_ratio >= 5.0:
+        return "high"
+    if impulse_ratio >= 2.5:
+        return "medium"
+    return "low"
+
+
 def _severity(value: float | None, threshold_usd: float) -> str:
     if value is None:
         return "medium"
     if threshold_usd <= 0:
-        return "high"
+        # Without a USD floor there is nothing to rate against.
+        return "unrated"
     if value >= threshold_usd * 5:
         return "critical"
     if value >= threshold_usd:

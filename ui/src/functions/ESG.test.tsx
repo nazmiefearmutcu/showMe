@@ -42,11 +42,11 @@ import { ESGPane } from "./ESG";
 
 function vendorData(score: number) {
   const rows = [
-    { pillar: "total", score, scale: "vendor risk scale (lower=better)", source_mode: "live_yfinance" },
-    { pillar: "environment", score: score - 5, scale: "vendor risk scale (lower=better)", source_mode: "live_yfinance" },
-    { pillar: "social", score: score - 8, scale: "vendor risk scale (lower=better)", source_mode: "live_yfinance" },
-    { pillar: "governance", score: score - 3, scale: "vendor risk scale (lower=better)", source_mode: "live_yfinance" },
-    { pillar: "controversy", score: 1, scale: "level 1-5", source_mode: "live_yfinance" },
+    { pillar: "total", score, scale: "vendor risk scale (lower=better)", source_mode: "delayed_reference" },
+    { pillar: "environment", score: score - 5, scale: "vendor risk scale (lower=better)", source_mode: "delayed_reference" },
+    { pillar: "social", score: score - 8, scale: "vendor risk scale (lower=better)", source_mode: "delayed_reference" },
+    { pillar: "governance", score: score - 3, scale: "vendor risk scale (lower=better)", source_mode: "delayed_reference" },
+    { pillar: "controversy", score: 1, scale: "level 1-5", source_mode: "delayed_reference" },
   ];
   return {
     status: "ok",
@@ -78,7 +78,7 @@ function proxyData() {
       socialScore: 5,
       governanceScore: 7,
       controversyLevel: null,
-      data_mode: "cached_snapshot",
+      data_mode: "live_official",
       rows: [
         { pillar: "total", score: 15, scale: "filing mentions (proxy)", source_mode: "sec_text_proxy" },
         { pillar: "environment", score: 3, scale: "filing mentions (proxy)", source_mode: "sec_text_proxy" },

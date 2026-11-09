@@ -68,14 +68,20 @@ def gp() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Lookback window.",
-                options=["1D", "5D", "1M", "3M", "6M", "YTD", "1Y", "5Y", "MAX"],
+                # Mirrors the pane's RANGES (ui/src/functions/GP.tsx); the
+                # manifest is the contract, so no option the pane cannot send.
+                options=["1M", "3M", "6M", "1Y", "5Y", "MAX"],
             ),
             InputSpec(
                 name="interval",
                 label="Interval",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Bar interval (validated against range).",
+                description=(
+                    "Bar interval. Not validated against the range: a window the provider "
+                    "cannot fill at this bar size is returned as a shorter span, with a warning "
+                    "and the real first/last bar."
+                ),
                 options=["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"],
                 depends_on=["range"],
             ),
@@ -197,11 +203,13 @@ def gp() -> FunctionManifest:
         ),
         methodology=(
             "GP fetches OHLCV bars from the primary provider for the chosen interval and range. "
-            "Overlays are computed from the returned candle series by the price-history alias and shipped "
-            "as `indicators` (SMA 20/50, EMA 20, Bollinger 20±2 are O(n) deterministic); the pane draws "
-            "them and lists them in the INDICATORS legend. Sub-pane studies share the same series (RSI uses "
+            "Overlays are computed by the price-history alias on the series that includes a warm-up before "
+            "the window (200 bars), then clipped to the window and shipped as `indicators` (SMA 20/50, EMA 20, "
+            "Bollinger 20±2 are O(n) deterministic); the pane draws them and lists them in the INDICATORS legend. "
+            "Sub-pane studies are computed on the same warm-up series (RSI uses "
             "Wilder's smoothing; "
-            "MACD uses 12/26/9 EMA; ATR uses Wilder; STOCH uses %K=14 %D=3 SMA; ADX uses 14-period DMI; "
+            "MACD uses 12/26/9 EMA seeded on the first bar (pandas ewm adjust=False, the same convention as "
+            "TECH); ATR uses Wilder; STOCH uses %K=14 %D=3 SMA; ADX uses 14-period DMI; "
             "OBV uses signed-volume cumsum). Compare mode normalizes both series to 100 at the first "
             "visible candle. The pane respects user pan/zoom across data refresh (first-seed-focus pattern). "
             "Live mode listens on the provider's WS stream and patches the last candle on tick."
@@ -281,7 +289,7 @@ def gp() -> FunctionManifest:
             SemanticTest(
                 name="gp_btcusdt_1d_5m_uses_binance",
                 description="GP for crypto routes to binance with live_exchange mode and ≥250 5m bars.",
-                inputs={"symbol": "BTCUSDT", "range": "1D", "interval": "5m"},
+                inputs={"symbol": "BTCUSDT", "range": "1M", "interval": "5m"},
                 assertions=[
                     "provider_equals_binance",
                     "data_mode_equals_live_exchange",
@@ -289,10 +297,10 @@ def gp() -> FunctionManifest:
                 ],
             ),
             SemanticTest(
-                name="gp_invalid_interval_for_range_rejected",
-                description="GP rejects nonsensical interval/range combos rather than silently succeed.",
-                inputs={"symbol": "AAPL", "range": "1D", "interval": "1d"},
-                assertions=["http_422_or_degraded_with_warning"],
+                name="gp_short_intraday_span_reported_with_warning",
+                description="GP does not reject a 1M window at 1m bars: the span actually returned is reported (span_days) and a warning is added when it is shorter than the window.",
+                inputs={"symbol": "AAPL", "range": "1M", "interval": "1m"},
+                assertions=["span_days_reported", "short_span_warning_present"],
             ),
             SemanticTest(
                 name="gp_compare_overlay_normalized",

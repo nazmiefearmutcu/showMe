@@ -5,10 +5,12 @@
  * bracket / rate metrics, the wash-sale window callout (with the backend's
  * §1091 note), and the candidate table (basis, last, unrealized loss, holding
  * period, tax rate applied, estimated savings, replacement ETF, wash window).
- * LIVE reads real positions; MODEL serves the labelled single-row baseline
- * (`tax_loss_model`) which the shared data-quality badge discloses.
+ * It always reads the real local portfolio (2026-11-07, strict truth
+ * audit: the LIVE/MODEL toggle selected an invented single-row baseline —
+ * cost 100, price 92 — which the backend no longer has, so the toggle is
+ * gone). An empty book shows the backend's empty state.
  */
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -51,6 +53,8 @@ interface TlhPayload {
   rows?: Row[];
   total_estimated_tax_savings?: number | null;
   n_loss_positions?: number;
+  /** Positions with no quote; they were NOT evaluated for a loss. */
+  unpriced_symbols?: string[];
   tax_bracket_used?: number;
   lt_cap_rate_used?: number;
   methodology?: string;
@@ -225,14 +229,38 @@ const CANDIDATE_COLUMNS: DataGridColumn<Row>[] = [
             {label}
           </Pill>
           <span className="portfolio-analytics-num">→ {read.close}</span>
+          {washCheckPill(row)}
         </span>
       );
     },
   },
 ];
 
+/**
+ * Per-row wash-sale check result from the backend. A blocked row is a real
+ * finding (its open date sits inside the window). A not-checked row is
+ * labelled as such: the window above is an observation, not a clearance.
+ * A row without a status field renders nothing rather than a guessed label.
+ */
+function washCheckPill(row: Row) {
+  if (row.wash_sale_status === "blocked_open_date_in_window") {
+    return (
+      <Pill tone="warn" variant="soft" withDot={false}>
+        BLOCKED
+      </Pill>
+    );
+  }
+  if (row.wash_sale_status === "not_checked") {
+    return (
+      <Pill tone="muted" variant="soft" withDot={false}>
+        NOT CHECKED
+      </Pill>
+    );
+  }
+  return null;
+}
+
 export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
-  const [live, setLive] = useState(true);
   // User-controlled tax assumptions (persisted). These were previously
   // hardcoded and presented as authoritative; now the operator sets the
   // bracket / LT rate in PERCENT and they are sent to the backend as
@@ -247,12 +275,11 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
   );
   const params = useMemo(
     () => ({
-      live_tax: live,
       include_legacy: true,
       tax_bracket: clampPct(bracketPct) / 100,
       lt_cap_rate: clampPct(ltRatePct) / 100,
     }),
-    [live, bracketPct, ltRatePct],
+    [bracketPct, ltRatePct],
   );
   const { state, data, error, refetch } = useFunction<TlhPayload>({ code, params });
   const payload = data?.data;
@@ -273,6 +300,17 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
     : null;
   const windowText = firstWindow ? `${firstWindow.open} → ${firstWindow.close}` : "—";
   const note = typeof data?.metadata?.note === "string" ? data.metadata.note : null;
+  // The total is either netted against supplied realized gains or a gross
+  // upper bound; the hero label says which one, never a bare "savings".
+  const savingsLabel =
+    payload?.savings_basis === "netted_against_supplied_realized_gains"
+      ? "Estimated tax savings (netted)"
+      : payload?.savings_basis === "gross_upper_bound_no_gains_supplied"
+        ? "Estimated tax savings (gross, not netted)"
+        : "Estimated tax savings";
+  // The buy-history wash-sale check is not run by the backend; say so next
+  // to the window, so an observation window is never read as clearance.
+  const washNotChecked = payload?.wash_sale_checked === false;
 
   const badge = (
     <DataQualityBadge
@@ -282,22 +320,36 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
     />
   );
   const empty = emptyCopy(payload as Row | undefined);
-  const emptyTitle = empty.title === "No data available" && live ? "No harvest candidates" : empty.title;
-  const emptyBody =
-    empty.title === "No data available" && live
+  const unpricedSymbols = Array.isArray(payload?.unpriced_symbols)
+    ? payload.unpriced_symbols.filter((s): s is string => typeof s === "string" && s.length > 0)
+    : [];
+  // Unpriced positions were never checked for a loss: say so instead of
+  // claiming "nothing to harvest" (provider_unavailable keeps its own reason).
+  const hasUnpriced = unpricedSymbols.length > 0 && status !== "provider_unavailable";
+  const emptyTitle = hasUnpriced
+    ? "Loss status unknown for some positions"
+    : empty.title === "No data available"
+      ? "No harvest candidates"
+      : empty.title;
+  const emptyBody = hasUnpriced
+    ? `No current quote for ${unpricedSymbols.join(", ")}, so those positions could not be checked for a loss. Nothing is reported as harvestable for them until a quote is available.`
+    : empty.title === "No data available"
       ? "No position is currently below its cost basis, so there is nothing to harvest."
       : empty.body;
 
   const body = (
     <PaneGate state={state} error={error} refetch={refetch}>
       {isEmpty ? (
-        <PortfolioEmpty badge={badge} title={emptyTitle} body={emptyBody} />
+        <>
+          <WarningStrip warnings={warnings} />
+          <PortfolioEmpty badge={badge} title={emptyTitle} body={emptyBody} />
+        </>
       ) : (
         <div className="portfolio-analytics-view">
           {badge}
           <section className="portfolio-analytics-summary">
             <div className="portfolio-analytics-summary__hero">
-              <span className="portfolio-analytics-label">Estimated tax savings</span>
+              <span className="portfolio-analytics-label">{savingsLabel}</span>
               <strong className="u-text-positive">{fmtMoney(totalSavings)}</strong>
               <span>
                 {payload?.n_loss_positions ?? candidates.length} loss position(s) · assumed bracket{" "}
@@ -340,13 +392,22 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
                 {note ??
                   "US wash-sale rule (§1091): repurchasing a substantially identical security within 30 days before or after the sale disallows the loss. Replacement ETFs are similar, not identical."}
               </p>
+              {washNotChecked ? (
+                <p className="u-mt-4" style={{ margin: 0 }}>
+                  Wash-sale check not run against broker buy history. Only a position opened inside the
+                  window is BLOCKED; other rows are NOT CHECKED and may still have a repurchase inside the window.
+                </p>
+              ) : null}
             </section>
           ) : null}
 
           <WarningStrip warnings={warnings} />
 
           <section className="portfolio-table-panel">
-            <SectionHead title="Harvest candidates" meta={`${candidates.length} row(s) · est. savings descending`} />
+            <SectionHead
+              title="Harvest candidates"
+              meta={`${candidates.length} position(s) · gross saving descending · not tax lots`}
+            />
             <DataGrid
               columns={CANDIDATE_COLUMNS}
               rows={candidates}
@@ -376,15 +437,6 @@ export function TaxLossHarvestPane({ code }: FunctionPaneProps) {
           subtitle="Harvest candidates and wash-sale risk"
           trailing={
             <FunctionControlGroup>
-              <button
-                type="button"
-                className={`btn btn--ghost portfolio-analytics-live${live ? " portfolio-analytics-live--on" : ""}`}
-                onClick={() => setLive((value) => !value)}
-                aria-pressed={live}
-                title="Toggle real positions vs the labelled single-row baseline"
-              >
-                {live ? "LIVE" : "MODEL"}
-              </button>
               <label
                 style={assumptionStyle}
                 title="Assumed marginal tax bracket on short-term losses (percent)"

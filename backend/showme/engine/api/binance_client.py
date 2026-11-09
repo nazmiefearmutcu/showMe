@@ -4,14 +4,37 @@ Provides a clean interface for market data retrieval and order execution.
 Supports both spot and futures (architecture-ready), paper and live modes.
 """
 
+from __future__ import annotations
+
 import os
 from typing import Any, Optional
 
-from binance.client import Client
-from binance.exceptions import BinanceAPIException, BinanceRequestException
-
 from showme.engine.utils.logger import get_logger
 from showme.engine.utils.helpers import retry_with_backoff
+
+# python-binance is an optional extra: it is only needed to talk to Binance.
+# Importing it unconditionally used to make market_data / execution_engine /
+# bot_service unimportable on any install without it. Without the package the
+# module still imports; ``BinanceClient.initialize`` raises a typed error.
+try:
+    from binance.client import Client
+    from binance.exceptions import BinanceAPIException, BinanceRequestException
+
+    BINANCE_AVAILABLE = True
+except ImportError:
+    Client = None  # type: ignore[assignment,misc]
+    BINANCE_AVAILABLE = False
+
+    class BinanceAPIException(Exception):  # type: ignore[no-redef]
+        """Stand-in so ``except BinanceAPIException`` stays valid without the package."""
+
+    class BinanceRequestException(Exception):  # type: ignore[no-redef]
+        """Stand-in so ``except BinanceRequestException`` stays valid without the package."""
+
+
+class BinanceUnavailableError(RuntimeError):
+    """Raised when a Binance connection is requested but python-binance is not installed."""
+
 
 logger = get_logger("api.binance_client")
 
@@ -28,6 +51,11 @@ class BinanceClient:
 
     def initialize(self) -> None:
         """Initialize the Binance client connection."""
+        if not BINANCE_AVAILABLE:
+            raise BinanceUnavailableError(
+                "python-binance is not installed; run `uv sync --extra binance` in backend/ "
+                "to enable the Binance bot/scanner client"
+            )
         if self.mode == "paper":
             api_key = os.getenv("BINANCE_API_KEY", "")
             api_secret = os.getenv("BINANCE_API_SECRET", "")

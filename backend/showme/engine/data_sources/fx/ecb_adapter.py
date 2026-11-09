@@ -17,6 +17,40 @@ import pandas as pd
 from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
+from showme.engine.core.quote import Quote, utcnow
+
+
+def _fixing_timestamp(index_value: Any) -> datetime | None:
+    """UTC timestamp of one ECB fixing from its date index (day precision).
+
+    Returns None when the index does not carry a date, so the caller can
+    refuse to stamp a value of unknown age (ASOF-5).
+    """
+    if not isinstance(index_value, (datetime, pd.Timestamp)):
+        return None
+    ts = pd.Timestamp(index_value)
+    if pd.isna(ts):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return ts.to_pydatetime()
+
+
+def _fixing_quote(symbol: str, df: pd.DataFrame, source: str) -> Quote:
+    """Last ECB fixing as a Quote dated by the fixing's own date.
+
+    The ECB daily reference rate is dated by the CSV TIME_PERIOD, which is
+    the DataFrame index. A Saturday/Sunday call therefore still reports the
+    Friday fixing as Friday, not as the wall-clock time of the request.
+    """
+    if df is None or df.empty:
+        return Quote(symbol=symbol, timestamp=utcnow(), last=None, source=source)
+    stamp = _fixing_timestamp(df.index[-1])
+    last = float(df["value"].iloc[-1])
+    if stamp is None:
+        # Value without a date: keep it out of the quote rather than age it.
+        return Quote(symbol=symbol, timestamp=utcnow(), last=None, source=source)
+    return Quote(symbol=symbol, timestamp=stamp, last=last, source=source)
 
 
 class ECBAdapter(BaseDataSource):
@@ -56,7 +90,7 @@ class ECBAdapter(BaseDataSource):
             from io import StringIO
             df = pd.read_csv(StringIO(r.text))
         except Exception as e:
-            raise DataSourceError(f"ECB CSV parse failed: {e}")
+            raise DataSourceError(f"ECB CSV parse failed: {str(e) or type(e).__name__}")
         if "TIME_PERIOD" in df.columns and "OBS_VALUE" in df.columns:
             df = df.rename(columns={"TIME_PERIOD": "date", "OBS_VALUE": "value"})
             df["date"] = pd.to_datetime(df["date"])
@@ -88,13 +122,7 @@ class ECBAdapter(BaseDataSource):
                 # Tag it so consumers never read these as real candles.
                 candles.attrs["data_mode"] = "modeled"
                 return candles
-            from showme.engine.core.quote import Quote, utcnow
-            return Quote(
-                symbol=sym,
-                timestamp=utcnow(),
-                last=float(df["value"].iloc[-1]) if not df.empty else None,
-                source=self.name,
-            )
+            return _fixing_quote(sym, df, self.name)
         if request.kind in (DataKind.ECON_SERIES, DataKind.OHLCV):
             if not sym:
                 raise DataSourceError("ECB needs a currency symbol")
@@ -109,12 +137,10 @@ class ECBAdapter(BaseDataSource):
                 kind=DataKind.ECON_SERIES,
                 instrument=request.instrument, symbols=request.symbols,
             ))
-            from showme.engine.core.quote import Quote, utcnow
-            return Quote(
-                symbol=request.symbols[0] if request.symbols else (request.instrument.symbol if request.instrument else ""),
-                timestamp=utcnow(),
-                last=float(df["value"].iloc[-1]) if not df.empty else None,
-                source=self.name,
+            return _fixing_quote(
+                request.symbols[0] if request.symbols else (request.instrument.symbol if request.instrument else ""),
+                df,
+                self.name,
             )
         raise DataSourceError(f"unsupported kind {request.kind}")
 

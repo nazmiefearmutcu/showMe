@@ -244,6 +244,20 @@ describe("PORTX generic renderer shape fixes (F3)", () => {
     expect(text).not.toContain("1.74B");
   });
 
+  it("describes LOTS as the local ledger, not a harvest-candidate list (LOTS#6)", () => {
+    mockOk({ status: "ok", rows: [] });
+    const { container } = render(<PortfolioAnalyticsPane code="LOTS" symbol="" />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Local tax-lot ledger");
+    expect(text).not.toMatch(/harvest candidates/i);
+  });
+
+  it("never forwards the linked dock symbol to LOTS (review of LOTS#1: it would filter the ledger)", () => {
+    mockOk({ status: "ok", rows: [] });
+    render(<PortfolioAnalyticsPane code="LOTS" symbol="AAPL" />);
+    expect(mockArgs.current?.symbol).toBeUndefined();
+  });
+
   it("prefers portfolio_vol over a leading symbol count in the hero KPI", () => {
     mockOk({
       status: "ok",
@@ -270,10 +284,21 @@ describe("PORTX generic renderer shape fixes (F3)", () => {
     expect(text).not.toContain("3.50%");
   });
 
-  it("defaults PORT_WHATIF to a 100-share ticket, not 10,000", () => {
-    mockOk({ status: "ok", rows: [{ metric: "cost", before: 0, after: 10000 }] });
+  it("leaves PORT_WHATIF quantity blank until the user types one (no 100-share placeholder)", () => {
+    mockOk({ status: "needs_input", rows: [] });
     render(<PortfolioAnalyticsPane code="PORT_WHATIF" symbol="" />);
-    expect(mockArgs.current?.params?.quantity).toBe(100);
+    expect(screen.getByLabelText("Quantity")).toHaveValue("");
+    expect(mockArgs.current?.params?.quantity).toBeUndefined();
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "25" } });
+    expect(mockArgs.current?.params?.quantity).toBe(25);
+  });
+
+  it("sends no placeholder cost for PORT_WHATIF until the user types one", () => {
+    mockOk({ status: "needs_input", rows: [] });
+    render(<PortfolioAnalyticsPane code="PORT_WHATIF" symbol="" />);
+    expect(mockArgs.current?.params?.cost).toBeUndefined();
+    fireEvent.change(screen.getByLabelText("Entry"), { target: { value: "342.37" } });
+    expect(mockArgs.current?.params?.cost).toBe(342.37);
   });
 });
 
@@ -285,6 +310,22 @@ describe("PORTX parameter wiring (F3)", () => {
     fireEvent.change(screen.getByLabelText("Targets"), { target: { value: "SPY:60, QQQ:0" } });
     expect(mockArgs.current?.params?.max_notional).toBe(250000);
     expect(mockArgs.current?.params?.targets).toEqual({ SPY: 0.6, QQQ: 0 });
+  });
+
+  it("shows the REBA provider-unavailable state, not an empty order table (REBA#3)", () => {
+    // The backend withholds the live preview when a held position has no
+    // quote, instead of valuing it at average cost. The pane must say why.
+    mockOk({
+      status: "provider_unavailable",
+      rows: [],
+      orders: [],
+      reason:
+        "No live quote for held position(s) AAPL. Weights need live marks for every holding, so no orders were computed.",
+      next_actions: ["Retry when the quote provider is reachable."],
+    });
+    render(<PortfolioAnalyticsPane code="REBA" symbol="" />);
+    expect(screen.getByText("Provider Unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/No live quote for held position\(s\) AAPL/)).toBeInTheDocument();
   });
 
   it("wires the MLSIG LIVE toggle to live_ml", () => {
@@ -490,6 +531,13 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
     expect(mockArgs.current?.params?.max_notional).toBe(100000);
   });
 
+  it("sends no capital when the field is blank instead of a silent 100000", () => {
+    mockOk({ status: "needs_input", rows: [] });
+    render(<PortfolioAnalyticsPane code="REBA" symbol="" />);
+    fireEvent.change(screen.getByLabelText("Capital"), { target: { value: "" } });
+    expect(mockArgs.current?.params?.max_notional).toBeUndefined();
+  });
+
   it("builds the order-list CSV from the broker-shaped fields", () => {
     const csv = buildRebaOrdersCsv([
       {
@@ -530,5 +578,111 @@ describe("PORTX REBA live book + order CSV (G3)", () => {
     expect(screen.getByLabelText("Entry")).toBeInTheDocument();
     expect(screen.getByLabelText("Stop")).toBeInTheDocument();
     expect(screen.getByLabelText("Target")).toBeInTheDocument();
+  });
+
+  it("PSC never sends a demo trade: blank fields are not sent (strict truth audit)", () => {
+    mockOk({ status: "input_error", rows: [] });
+    render(<PortfolioAnalyticsPane code="PSC" symbol="AAPL" />);
+    expect(mockArgs.current?.params).toEqual({ side: "LONG", risk_pct: 0.01 });
+    expect((screen.getByLabelText("Account") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Stop") as HTMLInputElement).placeholder).toBe("required");
+    fireEvent.change(screen.getByLabelText("Stop"), { target: { value: "260" } });
+    expect(mockArgs.current?.params).toEqual({ side: "LONG", risk_pct: 0.01, stop: 260 });
+    expect(mockArgs.current?.symbol).toBe("AAPL");
+  });
+
+  it("PSC sends the side, risk % and win rate the user sets (SHORT and Kelly reachable)", () => {
+    mockOk({ status: "input_error", rows: [] });
+    render(<PortfolioAnalyticsPane code="PSC" symbol="" />);
+    // Risk is shown in percent (default 1 = 1%) and sent as a fraction.
+    expect((screen.getByLabelText("Risk per trade (%)") as HTMLInputElement).value).toBe("1");
+    // No win rate is invented: the field starts blank and is not sent.
+    expect((screen.getByLabelText("Win rate (%)") as HTMLInputElement).value).toBe("");
+    fireEvent.change(screen.getByLabelText("Side"), { target: { value: "SHORT" } });
+    fireEvent.change(screen.getByLabelText("Risk per trade (%)"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Win rate (%)"), { target: { value: "55" } });
+    fireEvent.change(screen.getByLabelText("Stop"), { target: { value: "105" } });
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "90" } });
+    expect(mockArgs.current?.params).toEqual({
+      side: "SHORT",
+      risk_pct: 0.02,
+      win_rate: 0.55,
+      stop: 105,
+      target: 90,
+    });
+  });
+
+  it("PSC sends a typed but non-numeric risk or win rate as typed, never dropped for a 1% default", () => {
+    mockOk({ status: "input_error", rows: [] });
+    render(<PortfolioAnalyticsPane code="PSC" symbol="" />);
+    // A decimal comma is not a number to the backend: it must be reported, not replaced by 1%.
+    fireEvent.change(screen.getByLabelText("Risk per trade (%)"), { target: { value: "1,5" } });
+    fireEvent.change(screen.getByLabelText("Win rate (%)"), { target: { value: "abc" } });
+    expect(mockArgs.current?.params).toEqual({ side: "LONG", risk_pct: "1,5", win_rate: "abc" });
+  });
+});
+
+describe("PORTX STRS valuation basis is visible (STRS#6)", () => {
+  // The backend states the basis (price_source) but the pane never read it, so a
+  // cost-valued stress run looked identical to a live one. The basis must be on screen.
+  it("states average cost for a default compare run (summary.price_source)", () => {
+    mockOk({
+      status: "ok",
+      comparisons: [{ key: "GFC_2008", scenario: "GFC_2008", total_pnl: -1200 }],
+      summary: { scenarios: 1, positions: 1, price_source: "portfolio_state_cost", worst_total_pnl: -1200 },
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    const basis = screen.getByTestId("strs-price-basis");
+    expect(basis.textContent).toContain("average cost");
+    expect(basis.textContent).not.toContain("live quotes");
+  });
+
+  it("names live quotes when every position was quoted", () => {
+    mockOk({
+      status: "ok",
+      comparisons: [{ key: "GFC_2008", scenario: "GFC_2008", total_pnl: -900 }],
+      summary: { scenarios: 1, positions: 2, price_source: "live_quote", worst_total_pnl: -900 },
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    expect(screen.getByTestId("strs-price-basis").textContent).toContain("live quotes");
+  });
+
+  it("flags a mixed basis when some positions fell back to average cost", () => {
+    mockOk({
+      status: "ok",
+      comparisons: [{ key: "GFC_2008", scenario: "GFC_2008", total_pnl: -900 }],
+      summary: { scenarios: 1, positions: 2, price_source: "mixed", worst_total_pnl: -900 },
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    const basis = screen.getByTestId("strs-price-basis");
+    expect(basis.textContent).toContain("Mixed");
+    expect(basis.textContent).toContain("some positions at average cost");
+  });
+
+  it("reads the top-level price_source of a single-scenario or custom run", () => {
+    mockOk({
+      status: "ok",
+      scenario: "GFC 2008",
+      price_source: "portfolio_state_cost",
+      positions: [{ symbol: "AAPL", shock: -0.4, market_value_post: 600, pnl: -400 }],
+    });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    expect(screen.getByTestId("strs-price-basis").textContent).toContain("average cost");
+  });
+
+  it("shows no valuation strip when the payload carries no price_source", () => {
+    mockOk({ status: "ok", comparisons: [{ key: "GFC_2008", scenario: "GFC_2008", total_pnl: -1 }] });
+    render(<PortfolioAnalyticsPane code="STRS" symbol="" />);
+    expect(screen.queryByTestId("strs-price-basis")).toBeNull();
+  });
+
+  it("does not show the STRS basis strip on other panes", () => {
+    mockOk({
+      status: "ok",
+      price_source: "portfolio_state_cost",
+      rows: LIVE_ROWS,
+    });
+    render(<PortfolioAnalyticsPane code="PORT" symbol="" />);
+    expect(screen.queryByTestId("strs-price-basis")).toBeNull();
   });
 });

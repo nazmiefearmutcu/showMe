@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -23,14 +24,19 @@ class EEFunction(BaseFunction):
             raise ValueError("EE requires instrument")
         history = int(params.get("history", 8))
         # Default-polarity flip (2026-09-08): EE pulls live earnings by
-        # default; ``reference=true`` serves the labelled template.
+        # default. ``reference=true`` used to serve an invented FY-quarter
+        # template; that is never shown as data (DATA POLICY). It now returns
+        # an explicit empty state with no figures.
         if _truthy(params.get("reference")):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_earnings_template(instrument, history),
-                sources=["earnings_calendar_model"],
-                metadata={"live": False, "data_mode": "modeled"},
+                data=_reference_empty(instrument),
+                sources=[],
+                warnings=[
+                    "reference mode ships no earnings figures; nothing was modelled or fabricated"
+                ],
+                metadata={"live": False, "data_mode": "empty"},
             )
         warnings: list[str] = []
         sources: list[str] = []
@@ -41,9 +47,8 @@ class EEFunction(BaseFunction):
                     self.deps.finnhub._get("/stock/earnings", symbol=instrument.symbol),
                     timeout=float(params.get("finnhub_timeout", 8)),
                 )
-                sources.append("finnhub")
         except Exception as e:
-            warnings.append(f"finnhub: {e}")
+            warnings.append(f"finnhub: {str(e) or type(e).__name__}")
         yf_data = None
         try:
             if self.deps.yfinance:
@@ -54,35 +59,49 @@ class EEFunction(BaseFunction):
                     )),
                     timeout=float(params.get("yfinance_timeout", 8)),
                 )
-                sources.append("yfinance")
         except Exception as e:
-            warnings.append(f"yfinance: {e}")
-        placeholder = not finnhub_data and not yf_data
+            warnings.append(f"yfinance: {str(e) or type(e).__name__}")
+        candidate_rows = _earnings_rows(instrument.symbol, finnhub_data, yf_data, history + 4)
+        # Honesty (EE#3/EE#4): the placeholder is decided by whether any real
+        # provider row exists. Provider errors are never cleared, and a
+        # provider is listed in ``sources`` only once it has returned rows.
+        placeholder = all(r.get("source_mode") == _UNAVAILABLE_MODE for r in candidate_rows)
+        # A provider is listed only when it contributed rows. A Finnhub payload
+        # that is not a row list (e.g. a bare object) contributes none.
+        if any(r.get("source_mode") == "finnhub_earnings" for r in candidate_rows):
+            sources.append("finnhub")
+        if _yf_has_data(yf_data):
+            sources.append("yfinance")
+        reported_rows, table_next = _split_upcoming(candidate_rows, date.today())
+        reported_rows = reported_rows[:history]
+        next_report = _reconcile_next_report(
+            instrument.symbol, table_next, yf_data, date.today(), warnings
+        )
         if placeholder:
-            sources.append("earnings_calendar_model")
+            # The placeholder row carries no figures, so no model is named as
+            # a source (provenance: nothing modelled is served as data).
             # Honesty (2026-09-08): never wipe provider errors on the
             # fallback — the placeholder row must be visibly labelled, not
             # passed off as reported figures.
             warnings.append(
-                "No live earnings provider responded; rows are labelled "
+                "No earnings history from any provider; rows are labelled "
                 "unavailable rather than reported figures."
             )
-        elif finnhub_data or yf_data:
-            warnings = []
         metadata = (
-            {"live": False, "fallback": True, "data_mode": "modeled"}
+            {"live": False, "fallback": True, "data_mode": "provider_unavailable"}
             if placeholder
             else {
                 "live": True,
-                "data_mode": "live_official" if finnhub_data else "live_yfinance",
+                "data_mode": "live_official" if "finnhub" in sources else "live_yfinance",
             }
         )
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
-                "status": "ok",
-                "rows": _earnings_rows(instrument.symbol, finnhub_data, yf_data, history),
-                "earnings": (finnhub_data or [])[:history] if isinstance(finnhub_data, list) else finnhub_data,
+                "status": "provider_unavailable" if placeholder else "ok",
+                "rows": reported_rows,
+                "next_report": next_report,
+                "earnings": (finnhub_data or [])[:history] if isinstance(finnhub_data, list) else [],
                 "calendar": (yf_data or {}).get("calendar") if yf_data else None,
                 "earnings_dates": (yf_data or {}).get("earnings_dates") if yf_data else None,
                 "methodology": "EE merges Finnhub historical earnings with Yahoo earnings-date tables. Visible rows show actual EPS, consensus/estimate EPS, surprise percent, and source mode when available.",
@@ -103,40 +122,125 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _earnings_template(instrument: Instrument, history: int) -> dict[str, Any]:
-    symbol = instrument.symbol
-    rows = [
-        {
-            "period": f"FY{2025 - idx}Q{4 - (idx % 4)}",
-            "actual": round(1.25 - idx * 0.03, 2),
-            "estimate": round(1.19 - idx * 0.025, 2),
-            "surprisePercent": round(4.2 - idx * 0.15, 2),
-            "symbol": symbol,
-        }
-        for idx in range(max(1, history))
+def _parse_period_date(period: Any) -> date | None:
+    text = str(period or "")[:10]
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+_UNAVAILABLE_MODE = "earnings_calendar_unavailable"
+
+
+def _yf_has_data(yf_data: Any) -> bool:
+    """True only when the yfinance leg returned a calendar or earnings table."""
+    if not isinstance(yf_data, dict):
+        return False
+    calendar = yf_data.get("calendar")
+    if isinstance(calendar, dict) and calendar:
+        return True
+    return bool(frame_rows(yf_data.get("earnings_dates"), limit=1))
+
+
+def _calendar_next_date(yf_data: Any, today: date) -> date | None:
+    """Earliest forward date in the yfinance calendar's ``Earnings Date``."""
+    if not isinstance(yf_data, dict) or not isinstance(yf_data.get("calendar"), dict):
+        return None
+    raw = yf_data["calendar"].get("Earnings Date")
+    if raw is None:
+        return None
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    upcoming = [
+        when for when in (_parse_period_date(date_label(v)) for v in values)
+        if when is not None and when > today
     ]
-    if instrument.asset_class != AssetClass.EQUITY:
-        rows = [
-            {
-                "period": "not_applicable",
-                "actual": None,
-                "estimate": None,
-                "surprisePercent": None,
-                "symbol": symbol,
-                "asset_class": instrument.asset_class.value,
-            }
-        ]
+    return min(upcoming) if upcoming else None
+
+
+def _reconcile_next_report(
+    symbol: str,
+    table_next: dict[str, Any] | None,
+    yf_data: Any,
+    today: date,
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    """One next-report date, with its source.
+
+    The yfinance calendar's forward ``Earnings Date`` is the reconciled date
+    when present; the earnings-dates or Finnhub upcoming row supplies the
+    estimate only when both name the same day. A disagreement is a warning,
+    never a silently chosen date.
+    """
+    cal_day = _calendar_next_date(yf_data, today)
+    if cal_day is None:
+        return table_next
+    estimate = None
+    if table_next is not None:
+        if table_next.get("date") == cal_day.isoformat():
+            estimate = table_next.get("estimate")
+        else:
+            warnings.append(
+                f"yfinance calendar next report {cal_day.isoformat()} differs from "
+                f"the {table_next.get('source')} date {table_next.get('date')}; "
+                "showing the calendar date."
+            )
     return {
-        "status": "reference_model",
-        "rows": rows[:history],
-        "earnings": rows[:history],
-        "calendar": {
-            "next_report": "template-next-cycle",
-            "time": "post-market",
-            "symbol": symbol,
-        },
-        "earnings_dates": rows[: min(history, 4)],
-        "methodology": "Reference rows preserve the expected actual-vs-estimate shape when live earnings feeds are disabled.",
+        "symbol": symbol,
+        "date": cal_day.isoformat(),
+        "estimate": estimate,
+        "actual": None,
+        "source_mode": "yfinance_calendar",
+        "source": "yfinance_calendar",
+        "status": "scheduled",
+    }
+
+
+def _split_upcoming(rows: list[dict[str, Any]], today: date) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Separate the not-yet-reported quarter from the reported history.
+
+    A row with no actual EPS whose period lies after ``today`` is the next
+    scheduled report: it is surfaced as ``next_report`` and kept out of the
+    reported rows, so "last actual" can never read an unreported quarter.
+    """
+    reported: list[dict[str, Any]] = []
+    upcoming: list[tuple[date, dict[str, Any]]] = []
+    for row in rows:
+        when = _parse_period_date(row.get("period") or row.get("date"))
+        if row.get("actual") is None and when is not None and when > today:
+            upcoming.append((when, row))
+        else:
+            reported.append(row)
+    if not upcoming:
+        return reported, None
+    when, row = min(upcoming, key=lambda item: item[0])
+    next_report = {
+        "symbol": row.get("symbol"),
+        "date": when.isoformat(),
+        "estimate": row.get("estimate"),
+        "actual": None,
+        "source_mode": row.get("source_mode"),
+        "source": row.get("source_mode"),
+        "status": "scheduled",
+    }
+    return reported, next_report
+
+
+def _reference_empty(instrument: Instrument) -> dict[str, Any]:
+    return {
+        "status": "empty",
+        "rows": [],
+        "earnings": [],
+        "calendar": None,
+        "earnings_dates": None,
+        "next_report": None,
+        "methodology": (
+            "Reference mode is kept for layout only and carries no earnings figures. "
+            "Turn MODE to live to see reported EPS, consensus and surprise."
+        ),
+        "reason": "reference_mode_has_no_figures",
+        "symbol": instrument.symbol,
+        "next_actions": ["Switch MODE to live", "Pick another ticker"],
     }
 
 

@@ -299,8 +299,19 @@ def test_most_default_without_provider_is_failure_labelled() -> None:
     assert _body(result)["data_state"] != "live"
 
 
-def test_most_default_with_provider_is_live() -> None:
+def test_most_default_with_provider_is_live(monkeypatch) -> None:
+    import showme.engine.functions.screen._funcs as funcs
     from showme.engine.functions.screen._funcs import MOSTFunction
+
+    # wb1-g17 / MOST#3: stub quotes carry no provider time; pin an open session
+    # so the "live" assertion does not depend on the day the suite runs.
+    monkeypatch.setattr(funcs, "_most_utc_now", lambda: datetime(2026, 11, 9, 15, 0, tzinfo=timezone.utc))
+
+    async def _no_binance_batch(*_args, **_kwargs):
+        # No network in tests: an empty batch sends crypto down the stubbed quote path.
+        return []
+
+    monkeypatch.setattr(funcs, "_binance_top_crypto_rows", _no_binance_batch)
 
     provider = _FakeQuoteProvider()
     result = _run(MOSTFunction(deps=FunctionDeps(yfinance=provider)).execute(sort="volume"))
@@ -328,7 +339,9 @@ def test_wei_default_without_provider_fails_into_labelled_template() -> None:
     data = result.data
     assert data["status"] == "provider_unavailable"
     assert data["source_mode"] == "world_index_template"
-    assert data["rows"] and all(row.get("market_state") == "model" for row in data["rows"])
+    assert data["rows"] and all(
+        row.get("market_state") == "unavailable" and row.get("last") is None for row in data["rows"]
+    )
     assert result.metadata.get("fallback") is True
     assert result.metadata.get("degraded") is True
     assert _body(result)["data_state"] != "live"
@@ -352,7 +365,8 @@ def test_wei_reference_true_skips_provider_and_never_claims_live() -> None:
     provider = _FakeQuoteProvider()
     result = _run(WEIFunction(deps=FunctionDeps(yfinance=provider)).execute(reference=True))
     assert provider.calls == 0
-    assert result.data["status"] == "ok"
+    # WEI#3: a deterministic reference template is status "model", never "ok".
+    assert result.data["status"] == "model"
     assert result.data["source_mode"] == "world_index_template"
     assert result.metadata.get("live") is False
     assert _body(result)["data_state"] != "live"
@@ -471,23 +485,20 @@ def test_dpf_degradation_is_labelled_and_ratio_is_null() -> None:
     result = _run(fn.execute(instrument=Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)))
     data = result.data
     assert data["status"] == "provider_unavailable"
-    assert result.sources == ["dark_pool_model"]
+    assert result.sources == [], result.sources
     assert result.metadata.get("provider_errors")
-    assert data["rows"], "shape rows keep the table structure"
-    assert all(row.get("dark_pool_pct") is None for row in data["rows"])
-    assert all(row.get("estimated_total_volume") is None for row in data["rows"])
-    assert all(
-        row.get("source_mode") in {"labelled_current_shape_model", "finra_ats_weekly_stale"}
-        for row in data["rows"]
-    )
+    # No synthetic shape-model volumes: the table is empty and says why.
+    assert data["rows"] == []
+    assert data["weekly"] == []
+    assert data["reason"]
+    assert data["next_actions"]
 
 
 def test_dpf_timeout_fallback_is_shape_model_not_finra_stale(monkeypatch) -> None:
-    """Fabricated shape rows must never claim a real (stale) FINRA feed.
+    """A timed-out DPF pull is an honest outage, never a shape-model table.
 
-    The timeout path never touched FINRA, so the honest token is
-    ``shape_model_timeout``; ``finra_ats_weekly_stale`` is reserved for real
-    FINRA rows that aged out.
+    The timeout path never received FINRA rows, so it must not show any
+    volume rows (fabricated or stale); it reports the timeout and next actions.
     """
     from showme.engine.functions.equity import dpf as dpf_mod
     from showme.engine.functions.equity.dpf import DPFFunction
@@ -504,14 +515,9 @@ def test_dpf_timeout_fallback_is_shape_model_not_finra_stale(monkeypatch) -> Non
     data = result.data
     assert data["status"] == "provider_unavailable"
     assert "timed out" in data["reason"]
-    assert data["rows"]
-    assert all(row.get("source_mode") == "shape_model_timeout" for row in data["rows"])
-    assert all(row.get("data_warning") == data["reason"] for row in data["rows"])
-    assert all(row.get("dark_pool_pct") is None for row in data["rows"])
-    assert all(row.get("estimated_total_volume") is None for row in data["rows"])
-    assert not any(
-        row.get("source_mode") == "finra_ats_weekly_stale" for row in data["rows"]
-    )
+    assert data["rows"] == []
+    assert data["weekly"] == []
+    assert data["next_actions"]
 
 
 # ─────────────────────────────────────────────────────────────────────────

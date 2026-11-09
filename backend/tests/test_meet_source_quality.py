@@ -70,14 +70,7 @@ class _StalledProvider(_Provider):
 
 @pytest.fixture(autouse=True)
 def _reset_caches():
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
-    meet_mod._FINANCE_CALENDAR_CACHE["fetched_at"] = 0.0
-    meet_mod._FINANCE_CALENDAR_CACHE["rows"] = []
-    meet_mod._FINANCE_CALENDAR_CACHE["attribution"] = None
     yield
 
 
@@ -92,87 +85,6 @@ def _event(title: str, hours: int = 3) -> dict:
         "Previous": "1.1%",
         "Unit": "%",
     }
-
-
-def test_provider_priority_uses_configured_tradingeconomics_and_skips_lower_tiers(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    te = _Provider([_event("Primary release")])
-    finnhub = _Provider([_event("Should not be called")])
-    http = _CalendarHTTP()
-    fn = meet_mod.MEETFunction(FunctionDeps(tradingeconomics=te, finnhub=finnhub))
-    fn._http_client = http
-
-    result = asyncio.run(fn.execute(mode="calendar", days_ahead=30))
-
-    assert te.calls == 1
-    assert finnhub.calls == 0
-    assert "tradingeconomics" in result.sources
-    assert "forex_factory" not in result.sources
-    row = result.data["rows"][0]
-    assert row["title"] == "Primary release"
-    assert row["countries"] == ["US"]
-    assert row["impact"] == "high"
-    assert row["details"]["actual"] == 0
-    assert row["details"]["provider"] == "tradingeconomics"
-
-
-def test_guest_te_is_never_called_and_configured_finnhub_is_next(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    te = _Provider([_event("Forbidden guest")], api_key="guest:guest")
-    finnhub = _Provider([_event("Finnhub release")])
-    fn = meet_mod.MEETFunction(FunctionDeps(tradingeconomics=te, finnhub=finnhub))
-    fn._http_client = _CalendarHTTP()
-
-    result = asyncio.run(fn.execute(mode="calendar"))
-
-    assert te.calls == 0
-    assert finnhub.calls == 1
-    assert result.sources[0] == "finnhub"
-
-
-def test_financecalendar_supplements_future_window_and_primary_overlap_wins(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    same = _event("CPI release", hours=5)
-    future = (NOW + timedelta(days=20)).isoformat()
-    finance = {
-        "events": [
-            {
-                "title": "CPI release",
-                "time_utc": same["Date"],
-                "country": "United States",
-                "importance": 1,
-                "actual": "wrong",
-            },
-            {
-                "title": "Bank of Japan Interest Rate Decision",
-                "time_utc": future,
-                "importance": 3,
-                "forecast": None,
-            },
-        ],
-        "attribution": {
-            "name": "FinanceCalendar.com",
-            "url": "https://www.financecalendar.com/",
-            "text": "Economic calendar data by FinanceCalendar.com",
-        },
-    }
-    te = _Provider([same])
-    fn = meet_mod.MEETFunction(FunctionDeps(tradingeconomics=te))
-    fn._http_client = _CalendarHTTP(finance=finance)
-
-    result = asyncio.run(fn.execute(mode="calendar", days_ahead=30))
-
-    rows = result.data["rows"]
-    assert [r["title"] for r in rows].count("CPI release") == 1
-    cpi = next(r for r in rows if r["title"] == "CPI release")
-    assert cpi["source"] == "tradingeconomics"
-    assert cpi["details"]["actual"] == 0
-    boj = next(r for r in rows if "Japan" in r["title"])
-    assert boj["source"] == "financecalendar"
-    assert boj["countries"] == ["JP"]
-    assert boj["details"]["country_basis"] == "title_inference"
-    assert result.data["attributions"][0]["url"] == "https://www.financecalendar.com/"
-    assert result.data["data_quality"]["duplicate_rows_dropped"] == 1
 
 
 def test_rss_missing_timestamp_remains_undated_with_feed_and_url_provenance():
@@ -218,75 +130,6 @@ def test_quality_metrics_are_observable_counts_not_accuracy_claims():
         "active_source_tiers": ["keyless_fallback", "future_supplement"],
         "measures": "observable_completeness_not_factual_accuracy",
     }
-
-
-def test_wire_mode_skips_hidden_calendar_and_reports_news_failure(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    te = _Provider([_event("Hidden release")])
-    http = _CalendarHTTP(finance={"events": [_event("Hidden supplement")], "attribution": {}})
-    fn = meet_mod.MEETFunction(FunctionDeps(tradingeconomics=te))
-    fn._http_client = http
-    result = asyncio.run(fn.execute(mode="wire"))
-    assert te.calls == 0
-    assert http.urls == []
-    assert result.data["status"] == "provider_unavailable"
-    assert result.data["rows"] == []
-    assert result.sources == ["no_live_source"]
-    assert result.data["data_quality"]["active_source_tiers"] == []
-
-
-def test_stalled_keyed_providers_leave_budget_for_forex_factory(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    te = _StalledProvider([])
-    finnhub = _StalledProvider([])
-    ff = [{"title": "CPI", "country": "USD", "date": (NOW + timedelta(hours=2)).isoformat(), "impact": "High"}]
-    fn = meet_mod.MEETFunction(FunctionDeps(tradingeconomics=te, finnhub=finnhub))
-    fn._http_client = _CalendarHTTP(ff=ff)
-    started = time.monotonic()
-    result = asyncio.run(fn.execute(mode="calendar", news_timeout=3))
-    assert time.monotonic() - started < 4
-    assert result.data["status"] == "ok"
-    assert "forex_factory" in result.sources
-    assert te.calls == finnhub.calls == 1
-
-
-def test_untimed_high_priority_response_falls_through_and_counts_drop(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    te = _Provider([{"Event": "Bad date", "Date": "nonsense", "Country": "US"}])
-    finnhub = _Provider([_event("Valid fallback")])
-    fn = meet_mod.MEETFunction(FunctionDeps(tradingeconomics=te, finnhub=finnhub))
-    fn._http_client = _CalendarHTTP()
-    result = asyncio.run(fn.execute(mode="calendar"))
-    assert result.sources[0] == "finnhub"
-    assert [r["title"] for r in result.data["rows"]] == ["Valid fallback"]
-    assert result.data["dropped_no_time"] >= 1
-    assert any("tradingeconomics" in warning and "untimed" in warning for warning in result.warnings)
-
-
-def test_wire_url_overlap_deduped_and_tier_counted(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    articles = [
-        {"title": "Federal Reserve rate decision", "url": "https://example.test/one", "published_at": NOW.isoformat()},
-        {"title": "Fed rate decision update", "url": "https://example.test/one", "published_at": NOW.isoformat()},
-    ]
-    async def headlines(*, now, timeout):
-        return articles, "rss", None
-    fn = meet_mod.MEETFunction()
-    monkeypatch.setattr(fn, "_world_headlines", headlines)
-    result = asyncio.run(fn.execute(mode="wire"))
-    assert len(result.data["rows"]) == 1
-    assert result.data["data_quality"]["duplicate_rows_dropped"] == 1
-    assert result.data["data_quality"]["active_source_tiers"] == ["wire_rss_fallback"]
-
-
-@pytest.mark.parametrize(("title", "iso"), [
-    ("Riksbank Rate Decision September 2026", "SE"),
-    ("Norges Bank Rate Decision September 2026", "NO"),
-])
-def test_conservative_central_bank_title_country_inference(title, iso):
-    row = meet_mod._normalize_calendar_rows([{"title": title, "time_utc": NOW.isoformat()}], "financecalendar")[0]
-    assert row["country"] == iso
-    assert row["country_basis"] == "title_inference"
 
 
 def test_default_market_rss_gate_removes_unrelated_copy_before_limit():
@@ -341,24 +184,6 @@ def test_market_wire_requires_material_context_and_event(title, expected):
     assert rss_adapter._world_wire_relevant({"title": title}) is expected
 
 
-def test_symbol_window_is_not_prematurely_truncated(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    fn = meet_mod.MEETFunction()
-    async def headlines(*, now, timeout):
-        return [], "", "news: unavailable"
-    async def symbol_articles(symbols, *, now, timeout):
-        return [
-            {"title": f"Bitcoin market update {i}", "url": f"https://x.test/{i}",
-             "published_at": NOW.isoformat()}
-            for i in range(61)
-        ]
-    monkeypatch.setattr(fn, "_world_headlines", headlines)
-    monkeypatch.setattr(fn, "_symbol_articles", symbol_articles)
-    result = asyncio.run(fn.execute(mode="wire", symbols="BTC"))
-    assert len(result.data["rows"]) == 61
-    assert result.data["data_quality"]["duplicate_rows_dropped"] == 0
-
-
 @pytest.mark.parametrize("title", [
     "Military coup in Myanmar as troops seize power",
     "NATO summit opens in Vilnius with Ukraine on agenda",
@@ -391,28 +216,22 @@ def test_world_rows_limit_counts_capped_unique_rows():
     assert stats.get("duplicate_rows_dropped", 0) == 0
 
 
-def test_meet_truncation_counts_capped_not_duplicate(monkeypatch):
-    monkeypatch.setattr(meet_mod, "_utc_now", lambda: NOW)
-    fn = meet_mod.MEETFunction()
-    async def headlines(*, now, timeout):
-        return [], "", "news: unavailable"
-    async def symbol_articles(symbols, *, now, timeout):
-        return [
-            {"title": f"Bitcoin market update {i}", "url": f"https://x.test/{i}",
-             "published_at": NOW.isoformat()}
-            for i in range(61)
-        ]
-    monkeypatch.setattr(fn, "_world_headlines", headlines)
-    monkeypatch.setattr(fn, "_symbol_articles", symbol_articles)
-    result = asyncio.run(fn.execute(mode="wire", symbols="BTC", limit=60))
-    assert len(result.data["rows"]) == 60
-    assert result.data["data_quality"]["rows_capped_at_limit"] == 1
-    assert result.data["data_quality"]["duplicate_rows_dropped"] == 0
-
-
 def test_economic_id_dedupe_counts_duplicate():
     row = {"title": "CPI", "country": "USD", "date": NOW.isoformat(), "impact": "High"}
     stats: dict[str, int] = {}
     rows, _ = we.economic_rows([row, dict(row)], now=NOW, stats=stats)
     assert len(rows) == 1
     assert stats.get("duplicate_rows_dropped") == 1
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

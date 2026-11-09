@@ -15,6 +15,29 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+# FRED constant-maturity Treasury series by tenor (years). A live rate is read
+# from the series whose maturity matches the option's time to expiry (OVME#2).
+_CMT_SERIES: tuple[tuple[float, str], ...] = (
+    (1 / 12, "DGS1MO"),
+    (0.25, "DGS3MO"),
+    (0.5, "DGS6MO"),
+    (1.0, "DGS1"),
+    (2.0, "DGS2"),
+    (3.0, "DGS3"),
+    (5.0, "DGS5"),
+    (7.0, "DGS7"),
+    (10.0, "DGS10"),
+    (20.0, "DGS20"),
+    (30.0, "DGS30"),
+)
+
+
+def _cmt_series_for(T: float) -> tuple[str, float]:
+    """(FRED series id, tenor in years) of the Treasury maturity nearest to T."""
+    tenor, series = min(_CMT_SERIES, key=lambda item: abs(item[0] - T))
+    return series, tenor
+
+
 def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is_call: bool) -> dict[str, float]:
     """Black-Scholes-Merton with continuous dividend yield q.
 
@@ -93,6 +116,75 @@ def _bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float, is
             "d1": d1, "d2": d2}
 
 
+_REQUIRED_INPUTS: tuple[tuple[str, str], ...] = (
+    ("spot", "underlying spot price"),
+    ("strike", "strike"),
+    ("years_to_expiry", "time to expiry in years"),
+    ("vol", "volatility"),
+)
+
+_METHOD = (
+    "Black-Scholes-Merton: price = S*e^(-qT)*N(d1) - K*e^(-rT)*N(d2) for calls; "
+    "puts use put-call parity form. d1 = [ln(S/K) + (r-q+0.5*sigma^2)T] / (sigma*sqrt(T)); d2 = d1 - sigma*sqrt(T)."
+)
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _input_result(
+    instrument: Instrument | None,
+    *,
+    status: str,
+    reason: list[str],
+    missing: list[str],
+    warnings: list[str],
+) -> FunctionResult:
+    """Honest empty envelope: no price, no Greeks, no curve."""
+    if status == "needs_input":
+        next_actions = [
+            "Enter the underlying spot price, the strike, the time to expiry in years and the volatility.",
+        ]
+    else:
+        next_actions = ["Enter spot, strike, expiry and volatility as plain numbers."]
+    return FunctionResult(
+        code="OVME",
+        instrument=instrument,
+        data={
+            "status": status,
+            "reason": "Option valuation needs: " + "; ".join(reason) + ".",
+            "missing_inputs": missing,
+            "next_actions": next_actions,
+            "rows": [],
+            "curve": [],
+            "sensitivity": [],
+            "methodology": _METHOD,
+        },
+        sources=["black_scholes_formula"],
+        warnings=list(warnings),
+    )
+
+
+def _observation_date(df: Any) -> str | None:
+    """Date (YYYY-MM-DD) of the last FRED observation, or None when not dated."""
+    try:
+        if "date" in df.columns:
+            value = df["date"].iloc[-1]
+        elif str(getattr(df.index, "dtype", "")).startswith("datetime"):
+            value = df.index[-1]
+        else:
+            return None
+    except (AttributeError, IndexError, KeyError):
+        return None
+    text = str(value)[:10]
+    return text or None
+
+
 @FunctionRegistry.register
 class OVMEFunction(BaseFunction):
     code = "OVME"
@@ -101,21 +193,54 @@ class OVMEFunction(BaseFunction):
     category = "derivative"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        S = float(params.get("spot", 100))
-        K = float(params.get("strike", 100))
-        T = float(params.get("years_to_expiry", 0.25))
-        sigma = float(params.get("vol", 0.25))
+        # Spot, strike, expiry and volatility are the option itself: nothing
+        # is assumed for them. A missing one is a needs_input state and a
+        # non-numeric one is an input_error, so no demo price is ever priced.
+        missing: list[str] = []
+        bad: list[str] = []
+        numbers: dict[str, float] = {}
+        for key, label in _REQUIRED_INPUTS:
+            raw = params.get(key)
+            if raw in (None, ""):
+                missing.append(key)
+                continue
+            value = _finite(raw)
+            if value is None:
+                bad.append(f"{key} is not a number ({raw!r})")
+            else:
+                numbers[key] = value
+        if bad:
+            return _input_result(instrument, status="input_error", reason=bad, missing=[], warnings=bad)
+        if missing:
+            reason = [f"{key} is not supplied" for key in missing]
+            return _input_result(instrument, status="needs_input", reason=reason, missing=missing, warnings=[])
+        S = numbers["spot"]
+        K = numbers["strike"]
+        T = numbers["years_to_expiry"]
+        sigma = numbers["vol"]
         # D03-2026-05-24 (H11): r used to be hardcoded 0.045; optional FRED
-        # hook lets callers pass `live_rate=true` to pull DGS1 instead.
-        r = float(params.get("rate", 0.045))
-        q = float(params.get("div_yield", 0.0))
+        # hook lets callers pass `live_rate=true` to pull the Treasury yield
+        # matching the option's maturity (OVME#2). A rate that was not supplied
+        # and not read live is the 0.045 default, and is labelled as such.
+        for key in ("rate", "div_yield", "r_domestic", "r_foreign"):
+            if params.get(key) not in (None, "") and _finite(params.get(key)) is None:
+                message = f"{key} is not a number ({params.get(key)!r})"
+                return _input_result(instrument, status="input_error", reason=[message],
+                                     missing=[], warnings=[message])
+        r = float(params["rate"]) if params.get("rate") not in (None, "") else 0.045
+        rate_source = "input" if params.get("rate") not in (None, "") else "default_0.045"
+        rate_as_of: str | None = None
+        q = float(params["div_yield"]) if params.get("div_yield") not in (None, "") else 0.0
         sources_list = ["black_scholes_formula"]
         if _truthy(params.get("live_rate")) and getattr(self.deps, "fred", None) is not None:
+            series_id, _tenor = _cmt_series_for(T)
             try:
-                df = await self.deps.fred.series("DGS1", frequency="d")
+                df = await self.deps.fred.series(series_id, frequency="d")
                 live_r = float(df["value"].iloc[-1]) / 100 if not df.empty else None
                 if live_r is not None and math.isfinite(live_r):
                     r = live_r
+                    rate_source = f"fred_{series_id}"
+                    rate_as_of = _observation_date(df)
                     if "fred" not in sources_list:
                         sources_list.append("fred")
             except Exception:
@@ -129,8 +254,13 @@ class OVMEFunction(BaseFunction):
             r_for = params.get("r_foreign")
             if r_dom is not None:
                 r = float(r_dom)
+                rate_source = "input_r_domestic"
             if r_for is not None:
                 q = float(r_for)
+        # OVME#1: a contract type the caller did not choose (route default or
+        # nothing at all) is an assumption, and is reported as one.
+        route_filled = set(params.get("__route_defaults") or ())
+        type_given = params.get("type") not in (None, "") and "type" not in route_filled
         opt_type = (params.get("type") or "CALL").upper()
         is_call = opt_type == "CALL"
         model = (params.get("model") or "bs").lower()
@@ -163,14 +293,59 @@ class OVMEFunction(BaseFunction):
             {"metric": "d2", "value": result.get("d2"), "unit": "standard deviations"},
         ]
         if model == "heston" and not input_error:
+            # OVME#2: the Heston parameters are echoed with the price. They are
+            # not calibrated to market quotes; the source says whether the
+            # caller supplied them or the handler's illustrative defaults apply.
+            # Provenance is per parameter: a caller who supplies only kappa must
+            # not see the other four labelled as caller-supplied.
+            heston_inputs = {
+                "kappa": ("kappa", 2.0, "fixed_illustrative_default"),
+                "theta": ("theta", sigma * sigma, "derived_from_vol"),
+                "sigma": ("hsigma", 0.4, "fixed_illustrative_default"),
+                "rho": ("rho", -0.6, "fixed_illustrative_default"),
+                "v0": ("v0", sigma * sigma, "derived_from_vol"),
+            }
+            heston_values: dict[str, float] = {}
+            parameter_sources: dict[str, str] = {}
+            heston_bad: list[str] = []
+            for name, (key, _fallback, _default_source) in heston_inputs.items():
+                if params.get(key) not in (None, "") and _finite(params.get(key)) is None:
+                    heston_bad.append(f"{key} is not a number ({params.get(key)!r})")
+            if heston_bad:
+                return _input_result(instrument, status="input_error", reason=heston_bad,
+                                     missing=[], warnings=heston_bad)
+            for name, (key, fallback, default_source) in heston_inputs.items():
+                if params.get(key) not in (None, ""):
+                    heston_values[name] = float(params[key])
+                    parameter_sources[name] = "caller_supplied"
+                else:
+                    heston_values[name] = float(fallback)
+                    parameter_sources[name] = default_source
+            supplied = [n for n, s in parameter_sources.items() if s == "caller_supplied"]
+            defaulted = [n for n, s in parameter_sources.items() if s != "caller_supplied"]
+            summary = []
+            if supplied:
+                summary.append(f"caller_supplied: {', '.join(supplied)}")
+            if defaulted:
+                summary.append(f"handler default: {', '.join(defaulted)}")
+            result["heston_params"] = {
+                "kappa": heston_values["kappa"],
+                "theta": heston_values["theta"],
+                "sigma": heston_values["sigma"],
+                "rho": heston_values["rho"],
+                "v0": heston_values["v0"],
+                "parameter_sources": parameter_sources,
+                "calibrated": False,
+                "source": "; ".join(summary) + ", not calibrated to market quotes",
+            }
             try:
                 from showme.engine.functions.derivative.heston import HestonParams, heston_mc
                 hp = HestonParams(
-                    kappa=float(params.get("kappa", 2.0)),
-                    theta=float(params.get("theta", sigma * sigma)),
-                    sigma=float(params.get("hsigma", 0.4)),
-                    rho=float(params.get("rho", -0.6)),
-                    v0=float(params.get("v0", sigma * sigma)),
+                    kappa=heston_values["kappa"],
+                    theta=heston_values["theta"],
+                    sigma=heston_values["sigma"],
+                    rho=heston_values["rho"],
+                    v0=heston_values["v0"],
                 )
                 hr = heston_mc(S, K, T, r, q, hp, is_call=is_call,
                                 paths=int(params.get("paths", 30_000)),
@@ -189,8 +364,11 @@ class OVMEFunction(BaseFunction):
             "years_to_expiry": T,
             "vol": sigma,
             "rate": r,
+            "rate_source": rate_source,
+            "rate_as_of": rate_as_of,
             "div_yield": q,
             "type": opt_type,
+            "type_source": "input" if type_given else "default",
             "model": model,
             "rows": rows,
             "curve": sensitivity,
@@ -219,9 +397,20 @@ class OVMEFunction(BaseFunction):
         warnings_list: list[str] = []
         if input_error:
             warnings_list.append(input_error)
+        assumed: list[str] = []
+        if not type_given:
+            assumed.append(f"type={opt_type}")
+        if rate_source.startswith("default"):
+            assumed.append(f"rate={r:g}")
+        foreign_rate_given = option_kind in {"fx", "currency"} and params.get("r_foreign") is not None
+        if params.get("div_yield") in (None, "") and not foreign_rate_given:
+            assumed.append("div_yield=0")
+        payload["assumed_defaults"] = assumed
+        if assumed:
+            warnings_list.append("Not given, so assumed: " + ", ".join(assumed) + ".")
         return FunctionResult(
             code=self.code, instrument=instrument,
             data=payload,
-            sources=["black_scholes_formula" if model != "heston" else "black_scholes_formula", "heston_formula"] if model == "heston" else ["black_scholes_formula"],
+            sources=sources_list + (["heston_formula"] if model == "heston" else []),
             warnings=warnings_list,
         )

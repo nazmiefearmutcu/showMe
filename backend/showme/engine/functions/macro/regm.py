@@ -97,42 +97,44 @@ class REGMFunction(BaseFunction):
                 timeout=timeout,
             )
             close = np.asarray(df["close"].values, dtype=float)
+            # An empty frame (Yahoo 404 / unknown quote) is a provider failure,
+            # not a series to classify: an empty close array must not come back
+            # as status ok with a live regime.
+            if np.count_nonzero(np.isfinite(close)) < 2:
+                raise RuntimeError(f"yfinance returned no usable closes for {sym}")
         except Exception as exc:
-            # S12 BugHunt: never masquerade a synthetic sine wave as a live
-            # benchmark series — the UI used to display a "regime model" that
-            # was literally `100 + t*0.04 + sin(t/14)*3`. Now we either return
-            # the deterministic reference series with an explicit
-            # provider_unavailable status, or — if the caller opted in via
-            # `allow_model=true` — return a clearly-labeled fallback.
+            # Data policy: a failed benchmark is never replaced by a synthetic
+            # series (S12 BugHunt: a sine wave once displayed as a live "regime
+            # model"), so the response is always an explicit provider_unavailable
+            # state with no regime label. allow_model is accepted but ignored.
             provider_error = f"{type(exc).__name__}: {exc}"[:200]
-            df = None
-            allow_model = _truthy(params.get("allow_model"))
-            if not allow_model:
-                return FunctionResult(
-                    code=self.code,
-                    instrument=instrument,
-                    data={
-                        "symbol": sym,
-                        "status": "provider_unavailable",
-                        "provider_error": provider_error,
-                        "rows": [],
-                        "history": [],
-                        "current": {},
-                        "cards": [
-                            {"label": "Regime", "value": "—"},
-                            {"label": "Trend", "value": "—"},
-                            {"label": "Vol", "value": "—"},
-                            {"label": "Curve", "value": "—"},
-                        ],
-                    },
-                    sources=sources,
-                    warnings=[f"yfinance benchmark unavailable: {provider_error}"],
-                    metadata={"live": False, "fallback": False, "provider_error": provider_error},
+            warnings = [f"yfinance benchmark unavailable: {provider_error}"]
+            if _truthy(params.get("allow_model")):
+                warnings.append(
+                    "allow_model is ignored: REGM does not classify a synthetic benchmark series."
                 )
-            periods = max(252, min(days, 756))
-            t = np.arange(periods, dtype=float)
-            close = 100 + t * 0.04 + np.sin(t / 14) * 3
-            sources = ["regime_model"]
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "symbol": sym,
+                    "status": "provider_unavailable",
+                    "provider_error": provider_error,
+                    "rows": [],
+                    "history": [],
+                    "current": {},
+                    "cards": [
+                        {"label": "Regime", "value": "—"},
+                        {"label": "Trend", "value": "—"},
+                        {"label": "Vol", "value": "—"},
+                        {"label": "Curve", "value": "—"},
+                    ],
+                },
+                # No provider produced the benchmark, so no source is claimed.
+                sources=[],
+                warnings=warnings,
+                metadata={"live": False, "fallback": False, "provider_error": provider_error},
+            )
         current = rgm.classify(close, spread_2s10s_bp=spread_bp)
         if action == "current":
             history = _regime_history(close, spread_bp, df)
@@ -144,9 +146,11 @@ class REGMFunction(BaseFunction):
                 code=self.code, instrument=instrument,
                 data={
                     "symbol": sym,
+                    "status": "ok",
                     "current": current,
                     "data_state": current.get("data_state", "ok"),
-                    "confidence": current.get("confidence", 0.0),
+                    # REGM#3: share of the 4 components resolved, not a probability.
+                    "input_coverage": current.get("input_coverage", 0.0),
                     "rows": _component_rows(sym, current, sources),
                     "history": history,
                     "cards": [
@@ -178,7 +182,22 @@ class REGMFunction(BaseFunction):
                 warnings=[] if current.get("curve") != "UNKNOWN" else ["FRED curve spread unavailable; curve component is UNKNOWN"],
             )
         # action == "history": classify rolling window + cluster
-        window = int(params.get("window", 60))
+        raw_window = params.get("window", 60)
+        try:
+            window = int(raw_window)
+        except (TypeError, ValueError):
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={
+                    "symbol": sym,
+                    "status": "input_error",
+                    "reason": f"REGM history window {raw_window!r} is not an integer bar count.",
+                    "rows": [],
+                    "next_actions": ["Pass window=<integer bar count>, e.g. window=60."],
+                },
+                sources=sources,
+                warnings=[],
+            )
         labels: list[dict[str, Any]] = []
         feats: list[list[float]] = []
         for i in range(window, len(close)):
@@ -192,7 +211,22 @@ class REGMFunction(BaseFunction):
                           r.get("realized_vol_pct", 0),
                           r.get("drawdown_pct", 0)])
         feats_np = np.asarray(feats)
-        cluster = rgm.kmeans_lite(feats_np, k=int(params.get("k", 4)))
+        # REGM#4: z-score the three features first so volatility (0-50) does not
+        # swamp trend spread and drawdown. Centers are reported back in feature
+        # units, and the scaling used is returned with the cluster.
+        scaled_np, scaling = rgm.standardize_features(feats_np)
+        cluster = rgm.kmeans_lite(scaled_np, k=int(params.get("k", 4)))
+        if scaled_np.size:
+            std_arr = np.asarray(scaling["std"], dtype=float)
+            mean_arr = np.asarray(scaling["mean"], dtype=float)
+            cluster["centers_standardized"] = cluster["centers"]
+            cluster["centers"] = (np.asarray(cluster["centers"], dtype=float) * std_arr + mean_arr).tolist()
+        cluster["feature_scaling"] = {
+            "method": scaling["method"],
+            "features": ["ma50_vs_200_pct", "realized_vol_pct", "drawdown_pct"],
+            "mean": scaling["mean"],
+            "std": scaling["std"],
+        }
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -203,7 +237,9 @@ class REGMFunction(BaseFunction):
                 "rows": _component_rows(sym, current, sources),
                 "methodology": (
                     "History mode rolls the same rule-based classifier through time and adds a pure-numpy "
-                    "k-means cluster label over trend spread, realized volatility, and drawdown."
+                    "k-means cluster label over trend spread, realized volatility, and drawdown. "
+                    "The three features are z-scored before clustering (cluster.feature_scaling); "
+                    "cluster.centers are in feature units and cluster.centers_standardized in z-score units."
                 ),
             },
             sources=sources,

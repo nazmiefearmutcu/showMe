@@ -50,6 +50,110 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _dividends_on_bars(index: pd.DatetimeIndex, events: Any) -> pd.Series:
+    """Place chart dividend events on the bar that carries their date.
+
+    An event goes to the first bar whose UTC date is on or after the event
+    date (a dividend on a non-trading day settles on the next session). An
+    event after the last bar falls outside the frame and is dropped. Bars with
+    no event hold 0.0; the chart was requested with events=div, so a missing
+    events block really means no dividend in the window.
+    """
+    out = pd.Series(0.0, index=index, dtype=float)
+    if len(index) == 0 or not isinstance(events, dict):
+        return out
+    dividends = events.get("dividends")
+    if not isinstance(dividends, dict):
+        return out
+    bar_dates = index.normalize()
+    for raw in dividends.values():
+        if not isinstance(raw, dict):
+            continue
+        amount = _to_float(raw.get("amount"))
+        stamp = _to_float(raw.get("date"))
+        if amount is None or stamp is None or amount <= 0:
+            continue
+        event_date = pd.Timestamp(int(stamp), unit="s", tz="UTC").normalize()
+        pos = int(bar_dates.searchsorted(event_date, side="left"))
+        if pos < len(index):
+            out.iloc[pos] += amount
+    return out
+
+
+_STOOQ_QUOTE_TZ = "America/New_York"
+
+
+def _stooq_quote_time(date_text: Any, time_text: Any) -> datetime | None:
+    """Exchange time of a Stooq quote row (Date/Time columns) as UTC.
+
+    Stooq's US listings are stamped in US Eastern. A row without a usable date
+    or time returns None so the caller can refuse it instead of stamping fetch
+    time on a price that may be a prior session's close (ASOF-4).
+    """
+    day = str(date_text or "").strip()
+    clock = str(time_text or "").strip()
+    if not day or not clock or "N/D" in (day, clock):
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                local = datetime.strptime(f"{day} {clock}", fmt)
+            except ValueError:
+                continue
+            return local.replace(tzinfo=ZoneInfo(_STOOQ_QUOTE_TZ)).astimezone(timezone.utc)
+        return None
+    except Exception:
+        return None
+
+
+def _chart_market_time(value: Any) -> datetime | None:
+    """Epoch seconds from a chart ``meta.regularMarketTime`` as a UTC datetime."""
+    ts = _to_float(value)
+    if ts is None or ts <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+def _splits_on_bars(index: pd.DatetimeIndex, events: Any) -> pd.Series:
+    """Place chart split events as a per-bar ratio (4:1 -> 4.0, 1:10 -> 0.1).
+
+    Same bar rule as the dividends. Bars with no split hold 0.0, matching the
+    ``splits`` column the yfinance ticker path returns. The source already
+    split-adjusts closes and dividends; TRA reads the ratio only to count
+    split events and name unadjusted moves (TRA#2).
+    """
+    out = pd.Series(0.0, index=index, dtype=float)
+    if len(index) == 0 or not isinstance(events, dict):
+        return out
+    splits = events.get("splits")
+    if not isinstance(splits, dict):
+        return out
+    bar_dates = index.normalize()
+    for raw in splits.values():
+        if not isinstance(raw, dict):
+            continue
+        numerator = _to_float(raw.get("numerator"))
+        denominator = _to_float(raw.get("denominator"))
+        if (numerator is None or denominator is None) and isinstance(raw.get("splitRatio"), str):
+            parts = raw["splitRatio"].split(":")
+            if len(parts) == 2:
+                numerator, denominator = _to_float(parts[0]), _to_float(parts[1])
+        stamp = _to_float(raw.get("date"))
+        if numerator is None or denominator is None or stamp is None:
+            continue
+        if numerator <= 0 or denominator <= 0:
+            continue
+        event_date = pd.Timestamp(int(stamp), unit="s", tz="UTC").normalize()
+        pos = int(bar_dates.searchsorted(event_date, side="left"))
+        if pos < len(index):
+            ratio = numerator / denominator
+            out.iloc[pos] = ratio if out.iloc[pos] == 0.0 else out.iloc[pos] * ratio
+    return out
+
+
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -234,32 +338,13 @@ class YFinanceAdapter(BaseDataSource):
                 return raced_quote
         try:
             return await self._fetch_chart_quote(sym)
-        except Exception:
-            pass
-        ticker = await asyncio.to_thread(self._ticker, sym)
-        raw_info = await asyncio.to_thread(getattr, ticker, "fast_info", {}) or {}
-        # FastInfo is not a dict and (version-dependently) may lack .get;
-        # normalize via dict() so every field below reads real values.
-        try:
-            info = dict(raw_info)
-        except Exception:
-            info = {}
-        last = info.get("last_price")
-        if last is None:
-            raise DataSourceError(f"yfinance fast_info has no price for {sym}")
-        return Quote(
-            symbol=sym,
-            timestamp=utcnow(),
-            bid=info.get("bid"),
-            ask=info.get("ask"),
-            last=last,
-            volume_24h=info.get("last_volume"),
-            open_24h=info.get("open"),
-            high_24h=info.get("day_high"),
-            low_24h=info.get("day_low"),
-            close_prev=info.get("previous_close"),
-            source=self.name,
-        )
+        except Exception as exc:
+            # fast_info has no exchange timestamp (yfinance 1.3.0), so it cannot
+            # yield an honest "as of" for the last price. Refuse instead of
+            # stamping fetch time (ASOF-4).
+            raise DataSourceError(
+                f"yfinance chart quote unavailable for {sym}; fast_info has no exchange time"
+            ) from exc
 
     async def _fetch_chart_quote(self, sym: str) -> Quote:
         try:
@@ -268,10 +353,19 @@ class YFinanceAdapter(BaseDataSource):
             response.raise_for_status()
             result = (((response.json() or {}).get("chart") or {}).get("result") or [None])[0] or {}
             meta = result.get("meta") or {}
-            last = meta.get("regularMarketPrice") or meta.get("previousClose")
+            # ``previousClose`` is the prior session's close and is never the
+            # current last. The quote is stamped with the exchange's own market
+            # time, never the fetch time, so a stale price cannot pass as live
+            # (merged ASOF-4 + FXFC: a price without market time is refused,
+            # because consumers other than FXFC read Quote.timestamp directly).
+            last = _to_float(meta.get("regularMarketPrice"))
+            market_time = _chart_market_time(meta.get("regularMarketTime"))
+            if last is None or market_time is None:
+                raise DataSourceError(f"yfinance chart for {sym} has no timed regularMarketPrice")
             return Quote(
                 symbol=sym,
-                timestamp=utcnow(),
+                timestamp=market_time,
+                timestamp_source="upstream_market_time",
                 last=last,
                 volume_24h=meta.get("regularMarketVolume"),
                 open_24h=meta.get("regularMarketOpen"),
@@ -339,9 +433,13 @@ class YFinanceAdapter(BaseDataSource):
             close = _to_float(row.get("Close"))
             if close is None:
                 return None
+            market_time = _stooq_quote_time(row.get("Date"), row.get("Time"))
+            if market_time is None:
+                return None
             return Quote(
                 symbol=symbol.upper(),
-                timestamp=utcnow(),
+                timestamp=market_time,
+                timestamp_source="upstream_market_time",
                 last=close,
                 open_24h=_to_float(row.get("Open")),
                 high_24h=_to_float(row.get("High")),
@@ -459,6 +557,13 @@ class YFinanceAdapter(BaseDataSource):
             index=idx,
         )
         frame = frame.dropna(subset=["close"])
+        # The request asked for events=div,splits. The chart answers with a
+        # ``events.dividends`` map (unix ts -> {amount, date}); keep it as a
+        # dividends column so callers do not read a missing series as zero.
+        frame["dividends"] = _dividends_on_bars(frame.index, result.get("events"))
+        # Split events are kept as a per-bar ratio, like the ticker path's
+        # "splits" column; closes are already split-adjusted by the source (TRA#2).
+        frame["splits"] = _splits_on_bars(frame.index, result.get("events"))
         return frame
 
     async def _fetch_refdata(self, req: DataRequest) -> ReferenceData:

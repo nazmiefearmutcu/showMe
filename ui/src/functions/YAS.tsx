@@ -1,13 +1,18 @@
 /**
  * YAS — Yield & Spread Analytics.
  *
- * Instant closed-form bond analytics: the backend solves YTM (Newton +
- * bisection fallback) and derives Macaulay/modified duration, convexity
- * and spread vs benchmark, plus a ±100bp shock-price ladder. The pane is
- * fully interactive: bond identity, price, coupon %, maturity, benchmark
- * % (persisted under `showme.yas.*`) and coupon frequency drive the
- * model; headline cards + shock ladder re-compute on every change. All
- * numbers are model outputs from user inputs — the footer says so.
+ * Bond analytics: the backend solves YTM (Newton + bisection fallback) and
+ * derives Macaulay/modified duration, convexity and spread vs benchmark,
+ * plus a ±100bp shock-price ladder.
+ *
+ * 2026-11-07 (strict truth audit): the pane used to send a fixed demo bond
+ * (price 99.5, coupon 4.25%, 10y, benchmark 4.45%) on every request, so a
+ * US2Y and a US10Y showed identical numbers. Price / coupon / maturity /
+ * benchmark are now optional overrides (empty = not sent): generic US
+ * Treasury tenors (US1M…US30Y) are analysed from the live FRED
+ * constant-maturity yield, other bonds need their own price, coupon and
+ * maturity, and the inputs stay visible when the backend asks for them.
+ * Overrides reset when the bond changes; only the coupon frequency persists.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
@@ -37,10 +42,7 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
-import {
-  usePersistentNumber,
-  usePersistentOption,
-} from "./function-control-state";
+import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 interface YASMetricRow {
@@ -67,14 +69,18 @@ interface YASSummary {
   frequency?: number;
   benchmark_rate?: number;
   benchmark_pct?: number;
+  benchmark_label?: string;
+  benchmark_series?: string | null;
   ytm?: number;
   ytm_pct?: number;
   spread_vs_benchmark?: number;
   spread_bps?: number;
+  as_of?: string;
 }
 
 interface YASData {
   status?: string;
+  reason?: string;
   rows?: YASMetricRow[];
   curve?: YASShockPoint[];
   summary?: YASSummary;
@@ -88,48 +94,79 @@ const FREQ_OPTIONS = [
 ] as const;
 const FREQ_IDS = FREQ_OPTIONS.map((o) => o.value);
 
-const DEFAULT_PRICE = 99.5;
-const DEFAULT_COUPON_PCT = 4.25;
-const DEFAULT_MATURITY = 10;
-const DEFAULT_BENCHMARK_PCT = 4.45;
 const DEFAULT_BOND = "US10Y";
 
+/** UST curve points the sidecar has a live FRED CMT series for (YAS#2). */
+type BenchTenor = "UST2Y" | "UST5Y" | "UST10Y" | "UST30Y";
+const BENCH_OPTIONS = [
+  { value: "UST2Y", label: "2Y", title: "Spread vs the UST 2Y CMT" },
+  { value: "UST5Y", label: "5Y", title: "Spread vs the UST 5Y CMT" },
+  { value: "UST10Y", label: "10Y", title: "Spread vs the UST 10Y CMT" },
+  { value: "UST30Y", label: "30Y", title: "Spread vs the UST 30Y CMT" },
+] as const;
+
+/** Generic US Treasury tenor the backend prices from the live CMT yield. */
+export function isGenericTreasury(bond: string): boolean {
+  return /^US(1M|3M|6M|1Y|2Y|3Y|5Y|7Y|10Y|20Y|30Y)$/.test(bond);
+}
+
 export function YASPane({ code, symbol }: FunctionPaneProps) {
-  const [price, setPrice] = usePersistentNumber("showme.yas.price", DEFAULT_PRICE);
-  const [couponPct, setCouponPct] = usePersistentNumber(
-    "showme.yas.coupon",
-    DEFAULT_COUPON_PCT,
-  );
-  const [maturity, setMaturity] = usePersistentNumber(
-    "showme.yas.maturity",
-    DEFAULT_MATURITY,
-  );
-  const [benchmarkPct, setBenchmarkPct] = usePersistentNumber(
-    "showme.yas.benchmark",
-    DEFAULT_BENCHMARK_PCT,
-  );
+  const [price, setPrice] = useState<number | null>(null);
+  const [couponPct, setCouponPct] = useState<number | null>(null);
+  const [maturity, setMaturity] = useState<number | null>(null);
+  const [benchmarkPct, setBenchmarkPct] = useState<number | null>(null);
+  // YAS#2: the curve point the spread is measured against. null = the sidecar default
+  // (the 10Y CMT), which the caption then says is the default.
+  const [benchTenor, setBenchTenor] = useState<BenchTenor | null>(null);
   const [freq, setFreq] = usePersistentOption<number>(
     "showme.yas.freq",
     FREQ_IDS,
     2,
   );
-  const [bond, setBond] = useState(() => cleanBond(symbol) ?? DEFAULT_BOND);
+  const [bond, setBondRaw] = useState(() => cleanBond(symbol) ?? DEFAULT_BOND);
+  const setBond = (next: string) => {
+    if (next === bond) return;
+    // Overrides describe one specific bond; never carry them to another.
+    setPrice(null);
+    setCouponPct(null);
+    setMaturity(null);
+    setBenchmarkPct(null);
+    setBenchTenor(null);
+    setBondRaw(next);
+  };
+
+  const params = useMemo(() => {
+    // YAS only ever prices bonds. The pane owns the asset class: without it the
+    // sidecar infers one from the symbol, and a CUSIP-style id falls through to
+    // EQUITY and is refused as unsupported_asset.
+    const out: Record<string, string | number | boolean> = { asset_class: "BOND", freq };
+    if (price != null) out.price = price;
+    if (couponPct != null) out.coupon = pctToDecimal(couponPct);
+    if (maturity != null) out.maturity_years = maturity;
+    if (benchmarkPct != null) out.benchmark_rate = pctToDecimal(benchmarkPct);
+    else if (benchTenor != null) out.benchmark = benchTenor;
+    // The pane always sends its rates as decimals, so it states the unit: the
+    // sidecar would otherwise refuse a 20%-100% decimal as ambiguous (XCON-2).
+    if (couponPct != null || benchmarkPct != null) out.assume_decimal = true;
+    return out;
+  }, [price, couponPct, maturity, benchmarkPct, benchTenor, freq]);
 
   const { state, data, error, refetch } = useFunction<YASData>({
     code,
     symbol: bond,
-    params: {
-      price,
-      coupon: pctToDecimal(couponPct),
-      maturity_years: maturity,
-      freq,
-      benchmark_rate: pctToDecimal(benchmarkPct),
-    },
+    params,
   });
 
   const payload = data?.data;
   const summary = payload?.summary;
   const curve = useMemo(() => payload?.curve ?? [], [payload]);
+  const overridden = price != null || couponPct != null || maturity != null;
+  const liveCmt =
+    !overridden && (data?.sources ?? []).includes("fred") && isGenericTreasury(bond);
+  const blocked =
+    payload?.status === "input_error" ||
+    payload?.status === "provider_unavailable" ||
+    payload?.status === "unsupported_asset";
 
   const stats = useMemo(() => {
     const macaulay = payload?.rows?.find(
@@ -242,6 +279,17 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
           </button>
         }
       />
+    ) : blocked ? (
+      <Empty
+        title={blockedTitle(payload?.status)}
+        body={payload?.reason ?? "—"}
+        icon="!"
+        action={
+          <button onClick={refetch} className="btn">
+            Retry
+          </button>
+        }
+      />
     ) : curve.length === 0 ? (
       <Empty
         title="No analytics returned"
@@ -255,44 +303,6 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
       />
     ) : (
       <div className="u-grid-gap-14">
-        <section
-          style={inputsRowStyle}
-          aria-label="YAS bond inputs"
-        >
-          <BondField value={bond} onCommit={setBond} />
-          <NumField
-            label="PRICE"
-            ariaLabel="Price (per 100 face)"
-            value={price}
-            onCommit={setPrice}
-            step={0.5}
-            min={0.01}
-          />
-          <NumField
-            label="COUPON %"
-            ariaLabel="Coupon percent"
-            value={couponPct}
-            onCommit={setCouponPct}
-            step={0.25}
-            min={0}
-          />
-          <NumField
-            label="MATURITY Y"
-            ariaLabel="Maturity years"
-            value={maturity}
-            onCommit={setMaturity}
-            step={1}
-            min={0.1}
-          />
-          <NumField
-            label="BENCHMARK %"
-            ariaLabel="Benchmark percent"
-            value={benchmarkPct}
-            onCommit={setBenchmarkPct}
-            step={0.25}
-            min={0}
-          />
-        </section>
         <section style={kpiGridStyle} aria-label="YAS KPI ribbon">
           <StatCard
             label="YTM"
@@ -303,7 +313,7 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
           <StatCard
             label="Spread vs bench"
             value={`${fmtSignedFixed(summary?.spread_bps, 1)} bps`}
-            caption={`BENCH ${fmtFixed(summary?.benchmark_pct, 2)}%`}
+            caption={`${summary?.benchmark_label ?? "BENCH"} · ${fmtFixed(summary?.benchmark_pct, 2)}%`}
             tone={spreadTone(summary?.spread_bps)}
           />
           <StatCard
@@ -315,7 +325,7 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
           <StatCard
             label="Convexity"
             value={fmtFixed(stats.convexity, 1)}
-            caption="2ND-ORDER PRICE SENS."
+            caption="2ND-ORDER · YEARS²"
             tone="neutral"
           />
         </section>
@@ -338,11 +348,11 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Yield & Spread — ${summary?.bond ?? bond}`}
-          subtitle={`${summary?.maturity_years ?? maturity}y · coupon ${fmtFixed(summary?.coupon_pct ?? couponPct, 2)}% · ${freq}x/yr`}
+          subtitle={`${summary?.maturity_years ?? maturity ?? "—"}y · coupon ${fmtFixed(summary?.coupon_pct ?? couponPct, 2)}% · ${freq}x/yr${summary?.as_of ? ` · CMT ${summary.as_of}` : ""}`}
           trailing={
             <FunctionControlGroup>
-              <Pill tone="muted" variant="soft" withDot={false}>
-                model
+              <Pill tone={liveCmt ? "positive" : "muted"} variant="soft" withDot={false}>
+                {liveCmt ? "live CMT" : "model"}
               </Pill>
               <SegmentedControl
                 label="FREQ"
@@ -369,7 +379,58 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
-        <PaneBody>{body}</PaneBody>
+        <PaneBody>
+          <div className="u-grid-gap-14">
+            <section style={inputsRowStyle} aria-label="YAS bond inputs">
+              <BondField value={bond} onCommit={setBond} />
+              <NumField
+                label="PRICE"
+                ariaLabel="Price (per 100 face)"
+                value={price}
+                placeholder={summary?.price}
+                onCommit={setPrice}
+                step={0.5}
+                min={0.01}
+              />
+              <NumField
+                label="COUPON %"
+                ariaLabel="Coupon percent"
+                value={couponPct}
+                placeholder={summary?.coupon_pct}
+                onCommit={setCouponPct}
+                step={0.25}
+                min={0}
+              />
+              <NumField
+                label="MATURITY Y"
+                ariaLabel="Maturity years"
+                value={maturity}
+                placeholder={summary?.maturity_years}
+                onCommit={setMaturity}
+                step={1}
+                min={0.1}
+              />
+              <NumField
+                label="BENCHMARK %"
+                ariaLabel="Benchmark percent"
+                value={benchmarkPct}
+                placeholder={summary?.benchmark_pct}
+                onCommit={setBenchmarkPct}
+                step={0.25}
+                min={0}
+              />
+              <SegmentedControl
+                label="BENCH"
+                title="Benchmark curve point"
+                value={benchTenor ?? "UST10Y"}
+                options={BENCH_OPTIONS}
+                onChange={setBenchTenor}
+                disabled={benchmarkPct != null}
+              />
+            </section>
+            {body}
+          </div>
+        </PaneBody>
         <PaneFooter>
           <StatusSection
             label="sources"
@@ -393,6 +454,12 @@ export function YASPane({ code, symbol }: FunctionPaneProps) {
 }
 
 /* ── input fields ──────────────────────────────────────────────────── */
+
+function blockedTitle(status: string | undefined): string {
+  if (status === "input_error") return "Bond inputs needed";
+  if (status === "unsupported_asset") return "Asset not supported";
+  return "Live yield unavailable";
+}
 
 function cleanBond(raw: string | undefined): string | null {
   const value = (raw ?? "").trim().toUpperCase();
@@ -430,25 +497,30 @@ function BondField({
   );
 }
 
+/** Optional override: empty means "not sent" (the backend's live value is
+ * shown as the placeholder). */
 function NumField({
   label,
   ariaLabel,
   value,
+  placeholder,
   onCommit,
   step,
   min,
 }: {
   label: string;
   ariaLabel: string;
-  value: number;
-  onCommit: (next: number) => void;
+  value: number | null;
+  placeholder?: number;
+  onCommit: (next: number | null) => void;
   step: number;
   min: number;
 }) {
-  const [draft, setDraft] = useState(String(value));
+  const text = value == null ? "" : String(value);
+  const [draft, setDraft] = useState(text);
   useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
+    setDraft(text);
+  }, [text]);
   return (
     <label style={fieldRowStyle}>
       <span style={fieldLabelStyle}>{label}</span>
@@ -456,16 +528,25 @@ function NumField({
         type="number"
         aria-label={ariaLabel}
         value={draft}
+        placeholder={
+          placeholder != null && Number.isFinite(placeholder)
+            ? String(Number(placeholder.toFixed(4)))
+            : "—"
+        }
         step={step}
         min={min}
         onChange={(e) => {
           setDraft(e.target.value);
+          if (e.target.value.trim() === "") {
+            onCommit(null);
+            return;
+          }
           const n = Number(e.target.value);
-          if (e.target.value.trim() !== "" && Number.isFinite(n) && n >= min) {
+          if (Number.isFinite(n) && n >= min) {
             onCommit(n);
           }
         }}
-        onBlur={() => setDraft(String(value))}
+        onBlur={() => setDraft(text)}
         style={numInputStyle}
       />
     </label>

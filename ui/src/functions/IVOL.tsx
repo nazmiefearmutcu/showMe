@@ -123,6 +123,9 @@ interface IvolPayload {
   summary?: IvolSummary;
   methodology?: string;
   warnings?: string[];
+  as_of?: string | null;
+  as_of_basis?: string;
+  iv_convention?: string;
 }
 
 /* ── normalization ──────────────────────────────────────────────────── */
@@ -431,7 +434,9 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
         ? "a synthetic spot anchor"
         : spotState === "user_override"
           ? "the user spot override"
-          : "the resolved spot";
+          : spotState === "live_chain"
+            ? "the option-chain underlying price"
+            : "the resolved spot";
   const envelopeStatus = data?.status ?? payload.status;
   const providerReason = payload.reason ?? data?.reason;
   const sources =
@@ -575,7 +580,7 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
                 <StatCard
                   label="ATM IV (front)"
                   value={pct(summary.atm_iv_front)}
-                  caption={`${frontLabel} expiry`}
+                  caption={`${frontLabel} expiry · call/put avg at nearest strike`}
                 />
                 <StatCard
                   label="ATM IV (back)"
@@ -585,7 +590,7 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
                 <StatCard
                   label="Skew (90-110)"
                   value={pct(summary.skew)}
-                  caption={`${frontLabel} expiry · K/S wings`}
+                  caption={`${frontLabel} expiry · put 90% − call 110%`}
                 />
                 <StatCard
                   label="Term slope"
@@ -593,6 +598,21 @@ export function IVOLPane({ code, symbol }: FunctionPaneProps) {
                   caption="back − front"
                 />
               </section>
+
+              {/* Snapshot basis: the provider's snapshot time and IV convention, stated, not implied. */}
+              {payload.as_of !== undefined ? (
+                <p data-testid="ivol-snapshot" className="u-text-mute" style={tinyMeta}>
+                  {payload.as_of
+                    ? `Snapshot as of ${payload.as_of} (newest option trade in the chain). `
+                    : "Snapshot time not supplied by the provider. "}
+                  {payload.iv_convention ?? ""}
+                </p>
+              ) : null}
+              {(payload.warnings ?? []).map((warning) => (
+                <p key={warning} role="status" className="u-text-warn" style={tinyMeta}>
+                  {warning}
+                </p>
+              ))}
 
               {/* Primary visual: real-vol surface heatmap. */}
               {heat.rows.length > 0 && heat.buckets.length > 0 ? (

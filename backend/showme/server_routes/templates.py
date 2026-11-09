@@ -173,7 +173,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
         try:
             spec = StrategySpec(**body)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(400, detail=f"invalid template spec: {exc}")
+            raise HTTPException(400, detail=f"invalid template spec: {str(exc) or type(exc).__name__}")
         # Data-integrity parity with the strategies create/update routes:
         # the instantiated spec must reference only real catalog indicators.
         # Previously this path skipped the catalog check, so a template that

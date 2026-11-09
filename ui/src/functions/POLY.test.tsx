@@ -150,6 +150,17 @@ describe("POLY pane — keyless Gamma honesty", () => {
   });
 });
 
+describe("POLY pane — liquidity is counted once per market", () => {
+  it("a binary market's liquidity is not doubled by its two outcome rows", () => {
+    // Both outcome rows of one market carry the same market liquidity (50k).
+    // The KPI must show 50k, not the 100k a per-row sum would produce.
+    setMockFn(delayedLivePayload());
+    render(<POLYPane code="POLY" />);
+    expect(screen.getByText("$50.0K")).toBeInTheDocument();
+    expect(screen.queryByText("$100.0K")).toBeNull();
+  });
+});
+
 describe("POLY pane — poll contract", () => {
   it("keeps the visibility tick OUT of the fetch params", () => {
     setMockFn(delayedLivePayload());

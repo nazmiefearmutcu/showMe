@@ -9,6 +9,7 @@
  * assessment — NOT a backtested/validated metric. It is disclosed as such next to
  * every place it is shown. `suggested_strategy` is illustrative, not validated.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useEffect, useMemo, useState } from "react";
 import {
   type IndicatorEntry, type IndicatorParam,
@@ -159,13 +160,13 @@ export function INDXPane() {
   useEffect(() => { if (entries.length === 0) loadCatalog(); }, [entries.length, loadCatalog]);
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = foldSearchText(query.trim());
     return entries.filter((e) => {
       if (family !== "all" && e.family !== family) return false;
       if (!q) return true;
-      return e.id.toLowerCase().includes(q)
-          || e.display_name.toLowerCase().includes(q)
-          || e.short_description.toLowerCase().includes(q);
+      return foldSearchText(e.id).includes(q)
+          || foldSearchText(e.display_name).includes(q)
+          || foldSearchText(e.short_description).includes(q);
     });
   }, [entries, query, family]);
 

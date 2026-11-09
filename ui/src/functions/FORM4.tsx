@@ -55,6 +55,7 @@ interface FORM4Row {
   price?: number | null;
   value?: number | null;
   filing_url?: string | null;
+  accession?: string | null;
   source_mode?: string | null;
 }
 
@@ -279,19 +280,28 @@ export function FORM4Pane({ code, symbol }: FunctionPaneProps) {
 
   // Absolute SEC primary-document URL for row i (payload may carry a
   // relative stub like "xslF345X06/form4.xml" — never render that as a link).
-  const absoluteUrls = useMemo(
-    () =>
-      rows.map((r, i) => {
-        for (const candidate of [r.filing_url, filings[i]?.url]) {
-          const raw = typeof candidate === "string" ? candidate.trim() : "";
-          if (raw.startsWith("http://") || raw.startsWith("https://")) {
-            return raw;
-          }
+  // FORM4#7: a row links only to the filing with the same accession number. The
+  // table rows and the filing list are different lists, so pairing by index
+  // attached links to unrelated filings.
+  const absoluteUrls = useMemo(() => {
+    const accessionKey = (a: unknown): string =>
+      typeof a === "string" ? a.replace(/-/g, "").trim() : "";
+    const urlByAccession = new Map<string, string>();
+    for (const f of filings) {
+      const key = accessionKey(f.accession);
+      if (key && typeof f.url === "string") urlByAccession.set(key, f.url);
+    }
+    return rows.map((r) => {
+      const key = accessionKey(r.accession);
+      for (const candidate of [r.filing_url, key ? urlByAccession.get(key) : undefined]) {
+        const raw = typeof candidate === "string" ? candidate.trim() : "";
+        if (raw.startsWith("http://") || raw.startsWith("https://")) {
+          return raw;
         }
-        return null;
-      }),
-    [rows, filings],
-  );
+      }
+      return null;
+    });
+  }, [rows, filings]);
 
   const shown = rows.slice(0, TABLE_CAP);
   const allMetadataOnly =

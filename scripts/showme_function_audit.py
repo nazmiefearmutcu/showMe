@@ -48,9 +48,28 @@ def main() -> int:
     parser.add_argument("--port")
     parser.add_argument("--catalog", default="/api/function-index")
     parser.add_argument("--out", default=str(ROOT / "artifacts" / "showme-function-audit"))
-    parser.add_argument("--timeout", type=float, default=18)
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="per-request timeout (default 18s; --strict: cap, default 30s)")
     parser.add_argument("--freeze-snapshot", action="store_true")
+    parser.add_argument(
+        "--strict", action="store_true",
+        help="Run the T1-T8 truth audit (scripts/truth_audit_runner.py). Without --base/--port "
+             "it boots its own sidecar on an OS-picked port.",
+    )
+    parser.add_argument("--resume", help="--strict: continue a run directory from its ledger.partial.json")
+    parser.add_argument("--out-strict", dest="out_strict", help="--strict output root "
+                        "(default artifacts/showme-truth-audit)")
+    parser.add_argument("--regrade", help="--strict: re-grade a run directory's saved responses "
+                        "with the current rules (no function calls)")
+    parser.add_argument("--only", help="--strict: comma-separated function codes to run/regrade")
     args = parser.parse_args()
+    if args.timeout is None:
+        args.timeout = 30.0 if args.strict else 18.0
+
+    if args.strict:
+        from truth_audit_runner import run_cli
+
+        return run_cli(args)
 
     base = (args.base_url or f"http://127.0.0.1:{args.port}").rstrip("/")
     if not args.base_url and not args.port:

@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRequest, DataSourceError
+from showme.providers.base import get_redacted
 
 
 class FinnhubNewsAdapter(BaseDataSource):
@@ -39,13 +40,12 @@ class FinnhubNewsAdapter(BaseDataSource):
         if sym:
             start = (request.start or (datetime.now(timezone.utc) - timedelta(days=14))).strftime("%Y-%m-%d")
             end = (request.end or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
-            r = await client.get("/company-news", params={
+            r = await get_redacted(client, "/company-news", params={
                 "symbol": sym, "from": start, "to": end, "token": self.api_key,
-            })
+            }, secrets=(self.api_key,))
         else:
-            r = await client.get("/news", params={
+            r = await get_redacted(client, "/news", params={
                 "category": request.extra.get("category", "general"),
                 "token": self.api_key,
-            })
-        r.raise_for_status()
+            }, secrets=(self.api_key,))
         return r.json() or []

@@ -29,7 +29,7 @@ def _run(coro):
 # --------------------------------------------------------------------------- #
 # WIRP — top-level source_mode (pane classification input)
 # --------------------------------------------------------------------------- #
-def test_wirp_live_payload_exposes_top_level_source_mode(monkeypatch):
+def test_wirp_keyless_payload_exposes_top_level_honest_source_mode(monkeypatch):
     import showme.engine.functions.macro.wirp as wirp_mod
 
     async def _fake_fred(url: str, timeout: float = 8.0):
@@ -48,20 +48,20 @@ def test_wirp_live_payload_exposes_top_level_source_mode(monkeypatch):
     result = _run(wirp_mod.WIRPFunction(FunctionDeps()).execute(central_bank="FED", meetings=3))
     data = result.data
 
-    assert data["source_mode"] == "live_fed_funds_futures"
-    assert data["data_mode"] == "live_official"
+    # No CME adapter: no futures-implied probabilities exist, so no live label.
+    assert data["source_mode"] == "provider_unavailable"
+    assert data["data_mode"] == "provider_unavailable"
+    assert data["status"] == "provider_unavailable"
     # The mode fields are data-level values, not field_dictionary entries.
     assert "source_mode" not in data["field_dictionary"]
     assert "data_mode" not in data["field_dictionary"]
     assert "provenance" not in data["field_dictionary"]
-    assert data["provenance"]["sources"]
-    # Per-row source mode matches the live mode the pane classifies on.
-    assert data["rows"], "live path must build forward meeting rows"
-    assert {row["source_mode"] for row in data["rows"]} == {"live_fed_funds_futures"}
+    assert data["provenance"]["sources"] == ["fred", "yfinance"]
+    assert data["rows"] == []
     assert result.sources == ["fred", "yfinance"]
 
 
-def test_wirp_no_irx_fallback_is_still_labelled_live(monkeypatch):
+def test_wirp_no_irx_keyless_is_still_honest_unavailable(monkeypatch):
     import showme.engine.functions.macro.wirp as wirp_mod
 
     async def _fake_fred(url: str, timeout: float = 8.0):
@@ -78,36 +78,42 @@ def test_wirp_no_irx_fallback_is_still_labelled_live(monkeypatch):
     monkeypatch.setattr(wirp_mod, "_fetch_irx_implied_rate", _irx_down)
 
     result = _run(wirp_mod.WIRPFunction(FunctionDeps()).execute(central_bank="FED", meetings=2))
-    # Derived from live FRED, so the pane must NOT label it a reference table.
-    assert result.data["source_mode"] == "live_fred_target_no_irx"
-    assert result.data["rows"]
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["rows"] == []
+    assert result.data["anchor"]["current_target_mid"] == 4.375
+    assert result.data["anchor"]["tbill_13w_pct"] is None
 
 
 # --------------------------------------------------------------------------- #
 # ECST — window tracks the real system date
 # --------------------------------------------------------------------------- #
 def test_ecst_date_range_tracks_system_date(monkeypatch):
+    import pandas as pd
+
     import showme.engine.functions.macro.ecst as ecst_mod
 
-    class _BoomFred:
+    # A live FRED stand-in covering well before the 1Y window, so the trim to
+    # the window (not a synthetic fallback) decides the earliest row.
+    class _LiveFred:
         async def series(self, *args, **kwargs):
-            raise RuntimeError("simulated provider outage")
+            idx = pd.date_range("2015-01-01", date.today(), freq="MS")
+            return pd.DataFrame({"date": idx.strftime("%Y-%m-%d"), "value": 4.0})
 
         async def info(self, *args, **kwargs):
-            raise RuntimeError("simulated provider outage")
+            raise RuntimeError("info unavailable")
 
     monkeypatch.setattr(
         ecst_mod,
         "fred_with_keyless_fallback",
-        lambda fred, client=None: _BoomFred(),
+        lambda fred, client=None: _LiveFred(),
     )
 
     result = _run(
         ecst_mod.ECSTFunction(FunctionDeps()).execute(series_id="DGS10", date_range="1Y")
     )
     rows = result.data["rows"]
-    assert rows, "baseline fallback must still produce rows"
-    assert result.data["source_mode"] == "macro_series_baseline"
+    assert rows, "live FRED rows must survive the window trim"
+    assert result.data["source_mode"] == "fred"
 
     earliest = min(str(row["date"]) for row in rows)
     cutoff = (date.today() - timedelta(days=367)).isoformat()

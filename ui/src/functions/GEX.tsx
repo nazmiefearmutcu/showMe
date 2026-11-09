@@ -74,7 +74,7 @@ interface GEXRow {
 }
 
 interface GEXData {
-  status?: "ok" | "empty" | "input_error" | "provider_unavailable";
+  status?: "ok" | "empty" | "input_error" | "needs_input" | "provider_unavailable";
   reason?: string;
   symbol?: string;
   spot?: number;
@@ -86,9 +86,19 @@ interface GEXData {
   put_wall?: number | { strike?: number; gex?: number } | null;
   gamma_flip?: number | { strike?: number } | null;
   methodology?: string;
+  /** Latest option trade stamp in the chain (ISO), not the request time. */
+  as_of?: string | null;
+  /** live_yfinance | last_session_yfinance | snapshot_time_unknown | unavailable */
+  data_mode?: string;
   /** Human-readable degradation note surfaced verbatim when the synthetic
    * reference model is in use. */
   warning?: string;
+}
+
+/** "2026-11-06T20:59:00+00:00" -> "2026-11-06 20:59 UTC" (empty when unparsable). */
+function formatAsOf(iso: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(iso);
+  return match ? `${match[1]} ${match[2]} UTC` : iso;
 }
 
 /* ── formatting + parsing helpers ─────────────────────────────────── */
@@ -188,6 +198,25 @@ function GexLadder({
     return bestDist < 0.01 ? best : -1;
   }, [rows, spot]);
 
+  // The flip is an interpolated spot level (e.g. 758.08), not a strike, so it
+  // never equals a row strike. Tag the displayed strike nearest to it, and
+  // only when the level lies inside the displayed range.
+  const flipRowStrike = useMemo(() => {
+    if (flipStrike == null || !rows.length) return null;
+    const strikes = rows
+      .map((row) => row.strike)
+      .filter((k): k is number => typeof k === "number" && Number.isFinite(k));
+    if (!strikes.length) return null;
+    const lo = Math.min(...strikes);
+    const hi = Math.max(...strikes);
+    if (flipStrike < lo || flipStrike > hi) return null;
+    let nearest = strikes[0];
+    for (const k of strikes) {
+      if (Math.abs(k - flipStrike) < Math.abs(nearest - flipStrike)) nearest = k;
+    }
+    return nearest;
+  }, [rows, flipStrike]);
+
   // Roving selection: explicit user choice wins; until then the strike that
   // matches spot (or the middle of the ladder) is active so the readout is
   // never empty and Tab lands somewhere meaningful.
@@ -281,7 +310,7 @@ function GexLadder({
     if (putWallStrike != null && activeRow.strike === putWallStrike) {
       activeTags.push("PUT WALL");
     }
-    if (flipStrike != null && activeRow.strike === flipStrike) {
+    if (flipRowStrike != null && activeRow.strike === flipRowStrike) {
       activeTags.push("FLIP");
     }
     if (activeIdx === spotIdx) activeTags.push("SPOT");
@@ -350,7 +379,7 @@ function GexLadder({
               if (putWallStrike != null && row.strike === putWallStrike) {
                 tags.push("PUT WALL");
               }
-              if (flipStrike != null && row.strike === flipStrike) {
+              if (flipRowStrike != null && row.strike === flipRowStrike) {
                 tags.push("FLIP");
               }
               if (index === spotIdx) tags.push("SPOT");
@@ -457,11 +486,11 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
   const { state, data, error, refetch } = useFunction<GEXData>({
     code,
     symbol: effectiveSymbol,
-    // `live_options` switches the backend from the synthetic 3-strike
-    // reference model to the real yfinance options chain + Black-Scholes
-    // gamma path. The model fallback still kicks in when yfinance is
-    // unreachable so the pane never goes blank.
-    params: { live_options: true, max_expiries: 1 },
+    // `live_options` requests the real yfinance options chain + Black-Scholes
+    // gamma path. Without it, or without a live chain, the backend returns an
+    // explicit unavailable state (never a modeled grid). `expiry_filter` is the
+    // manifest default scope (nearest three expiries).
+    params: { live_options: true, expiry_filter: "next_3" },
     enabled: !!effectiveSymbol,
   });
 
@@ -490,8 +519,16 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
     summary?.synthetic === true ||
     summary?.degraded === true ||
     sourceMode.startsWith("synthetic");
-  const isLive = !isSynthetic && sourceMode.includes("live");
+  // Snapshot age from the backend (wc1-g06 GEX#6): a chain whose newest trade
+  // is an earlier session is "last session", and a chain without any trade
+  // stamp is not claimed as live either.
+  const dataMode = payload?.data_mode;
+  const isLastSession = !isSynthetic && dataMode === "last_session_yfinance";
+  const isUnstamped = !isSynthetic && dataMode === "snapshot_time_unknown";
+  const isLive =
+    !isSynthetic && !isLastSession && !isUnstamped && sourceMode.includes("live");
   const providerDown = status === "provider_unavailable";
+  const asOfLabel = payload?.as_of ? formatAsOf(payload.as_of) : null;
   const syntheticNote =
     payload?.warning ??
     payload?.reason ??
@@ -516,12 +553,14 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
 
   const netTone: "neutral" | "positive" | "negative" =
     netGex == null ? "neutral" : netGex >= 0 ? "positive" : "negative";
+  // The backend flip is the spot-grid zero crossing of total GEX (GEX#2),
+  // not a strike-cumulative sign change, so the caption names that method.
   const flipCaption =
     flipStrike != null && spot != null
       ? `${(flipStrike - spot).toFixed(2)} vs spot`
       : flipStrike != null
-        ? "first sign change"
-        : "no sign change in range";
+        ? "spot-grid zero crossing of total GEX"
+        : "no crossing within ±10% of spot";
   const callWallGex = gexOf(payload?.call_wall);
   const putWallGex = gexOf(payload?.put_wall);
 
@@ -532,6 +571,10 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
   ) : isLive ? (
     <Pill tone="positive" variant="soft">
       live chain
+    </Pill>
+  ) : isLastSession ? (
+    <Pill tone="warn" variant="soft">
+      last session
     </Pill>
   ) : payload?.status === "ok" ? (
     <Pill tone="warn" variant="soft">
@@ -569,7 +612,13 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
             state={state}
             error={error}
             empty={providerDown || rows.length === 0}
-            emptyTitle={providerDown ? "Options chain unavailable" : "No options chain"}
+            emptyTitle={
+              status === "needs_input"
+                ? "Input needed"
+                : providerDown
+                  ? "Options chain unavailable"
+                  : "No options chain"
+            }
             emptyBody={
               payload?.reason ??
               "Try a liquid equity symbol such as SPY or NVDA."
@@ -657,6 +706,12 @@ export function GEXPane({ code, symbol }: FunctionPaneProps) {
             value={summary?.n_strikes ?? rows.length}
             tone="accent"
           />
+          {asOfLabel ? (
+            <>
+              <StatusDivider />
+              <StatusSection label="as of" value={asOfLabel} />
+            </>
+          ) : null}
           <StatusDivider />
           <StatusSection
             label="elapsed"

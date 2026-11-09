@@ -1,29 +1,21 @@
 /**
- * ECO pane — data-honesty + a11y + formatting contract tests.
+ * ECO pane — states, honesty and layout contract tests (Awareness-backed).
  *
- * The ECO backend fetches a real economic calendar from TradingEconomics /
- * Finnhub, but when BOTH providers fail it SILENTLY falls back to a hardcoded
- * synthetic calendar (`source_mode: "calendar_feed_model"`). Before the
- * honesty fix the fabricated schedule looked exactly like real prints. These
- * tests pin:
- *
- *  - a SYNTHETIC payload renders a prominent model badge ("SAMPLE CALENDAR")
- *    with role=status, and the footer source label reads the honest
- *    "Sample calendar (not live)" text;
- *  - a LIVE payload does NOT render that badge and shows the raw provider;
- *  - the importance badge carries a non-color cue (▲) + aria-label;
- *  - missing actual → "—" (formatMissing) and surprise "—" (no fake number);
- *  - the freshness "Data" indicator uses the server `as_of`, not client time;
- *  - the DataGrid exposes an aria-label; the error state is role=status.
- *
- * `useFunction` is mocked via mutable shared state so each test drives the
- * pane into a specific branch without the real sidecar transport.
+ * `useFunction` is mocked through shared mutable state so each test drives the
+ * pane into one branch. Payloads follow showme-payload-contract.md (ECO):
+ * `rows` (EconRow), `holidays`, `meta`. Pins:
+ *  - loading shows skeleton, no table;
+ *  - provider_unavailable renders AwarenessUnavailable with the verbatim reason and zero rows;
+ *  - ok rows render the event, sourced surprise glyph/sign and the provenance button;
+ *  - a released print never shows a surprise before release;
+ *  - holidays appear inline on their day; central-bank rows carry the CB badge;
+ *  - an empty window says so and offers relaxers (no sample rows);
+ *  - the removed reference/live toggles are not rendered.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { ECOPane } from "./ECO";
-
-/* ── useFunction mock ──────────────────────────────────────────────── */
+import { LIVE_ECON_ROWS, LIVE_HOLIDAY_ROWS } from "./__fixtures__/awareness-live";
 
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
@@ -48,361 +40,244 @@ vi.mock("@/lib/useFunction", () => ({
   }),
 }));
 
-/* ── fixtures ──────────────────────────────────────────────────────── */
+const HOUR = 3_600_000;
+const future = (hours: number) => new Date(Date.now() + hours * HOUR).toISOString();
+const past = (hours: number) => new Date(Date.now() - hours * HOUR).toISOString();
 
-// A fixed "now" so relative time + window filtering are deterministic.
-const NOW = new Date("2026-06-09T12:00:00.000Z");
-const AS_OF = "2026-06-09T11:55:00.000Z";
+const META = {
+  generated_at: past(0.1),
+  providers: [
+    { provider: "econ.nasdaq", status: "ok", last_ok_at: past(0.1) },
+    { provider: "econ.forexfactory", status: "ok", last_ok_at: past(0.1) },
+  ],
+};
 
-function isoOffset(days: number, hh = 13, mm = 30): string {
-  const d = new Date(NOW);
-  d.setUTCDate(d.getUTCDate() + days);
-  d.setUTCHours(hh, mm, 0, 0);
-  return d.toISOString();
-}
-
-// Mixed events: one printed (actual present), one pending (actual absent).
-const events = [
-  {
-    country: "US",
-    event: "CPI YoY",
-    date: isoOffset(0),
-    importance: "high",
-    forecast: 3.1,
-    actual: 3.2,
-    previous: 3.0,
-    surprise: 0.1,
-    unit: "%",
-  },
-  {
-    country: "US",
-    event: "Initial Jobless Claims",
-    date: isoOffset(2),
-    importance: "low",
-    forecast: 215,
-    actual: null,
-    previous: 220,
-    surprise: null,
-    unit: "K",
-  },
-];
-
-// `data` mirrors the `FunctionCallResult` envelope the pane consumes:
-// `data.data` is the payload, `data.sources` / `data.elapsed_ms` the envelope.
-function syntheticPayload() {
+function okPayload(overrides: Record<string, unknown> = {}) {
   return {
-    data: {
-      data: {
-        events,
-        rows: events,
-        source_mode: "calendar_feed_model",
-        as_of: AS_OF,
+    status: "ok",
+    rows: [
+      {
+        id: "cpi-1",
+        date: past(2),
+        country: "US",
+        currency: "USD",
+        event: "CPI YoY",
+        category: "inflation",
+        importance: 3,
+        actual: "3.2%",
+        forecast: "3.1%",
+        previous: "3.0%",
+        unit: "%",
+        surprise: 0.1,
+        surprise_direction: "above",
+        status: "released",
+        is_central_bank: false,
+        sources: [{ provider: "econ.nasdaq", basis: "consensus", fetched_at: past(0.2) }],
       },
-      sources: ["calendar_feed_model"],
-      elapsed_ms: 12,
-    },
+      {
+        id: "nfp-1",
+        date: future(30),
+        country: "US",
+        currency: "USD",
+        event: "Nonfarm Payrolls",
+        importance: 3,
+        actual: null,
+        forecast: "180K",
+        previous: "150K",
+        unit: "K",
+        surprise: null,
+        surprise_direction: null,
+        status: "scheduled",
+        sources: [{ provider: "econ.forexfactory", basis: "impact" }],
+      },
+      {
+        id: "fed-1",
+        date: future(80),
+        country: "US",
+        event: "FOMC Rate Decision",
+        importance: 3,
+        status: "scheduled",
+        is_central_bank: true,
+        sources: [],
+      },
+    ],
+    holidays: [
+      {
+        date: past(2).slice(0, 10),
+        country: "US",
+        exchange: "NYSE",
+        name: "Veterans Day",
+        kind: "market_closed",
+        source: "exchange_calendars",
+      },
+    ],
+    meta: META,
+    ...overrides,
   };
 }
 
-function livePayload() {
-  return {
-    data: {
-      data: {
-        events,
-        rows: events,
-        source_mode: "tradingeconomics",
-        as_of: AS_OF,
-      },
-      sources: ["tradingeconomics"],
-      elapsed_ms: 12,
-    },
-  };
+function setOk(payload: Record<string, unknown>) {
+  setMockFn({
+    state: "ok",
+    data: { data: payload, sources: ["awareness:econ"], elapsed_ms: 12 },
+  });
 }
-
-/* ── tests ─────────────────────────────────────────────────────────── */
 
 beforeEach(() => {
-  vi.useFakeTimers();
-  vi.setSystemTime(NOW);
-  setMockFn({ state: "idle", data: undefined });
-});
-afterEach(() => {
-  vi.useRealTimers();
-  cleanup();
+  setMockFn({ state: "idle" });
+  window.localStorage.clear();
 });
 
-describe("ECO pane — synthetic-calendar honesty", () => {
-  it("renders the prominent model badge (role=status) for a calendar_feed_model payload", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
-    render(<ECOPane code="ECO" />);
-    const badge = screen.getByTestId("eco-model-badge");
-    expect(badge).toBeInTheDocument();
-    expect(badge).toHaveAttribute("role", "status");
-    expect(within(badge).getByText(/SAMPLE CALENDAR/i)).toBeInTheDocument();
-    // Subtext explains the values are illustrative sample data, not live.
-    expect(badge.textContent ?? "").toMatch(/live/i);
+afterEach(() => cleanup());
+
+describe("ECOPane states", () => {
+  it("shows a skeleton while loading, not a table", () => {
+    setMockFn({ state: "loading" });
+    const { container } = render(<ECOPane code="ECO" />);
+    expect(container.querySelector(".aw-cal__grid")).toBeNull();
+    expect(screen.queryByRole("table", { name: "Economic calendar by day" })).toBeNull();
   });
 
-  it("maps the footer source label to the honest 'Sample calendar (not live)' text", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
-    render(<ECOPane code="ECO" />);
-    expect(screen.getByText(/Sample calendar \(not live\)/i)).toBeInTheDocument();
-    // The raw machine token must not be shown to the user.
-    expect(screen.queryByText(/calendar_feed_model/)).toBeNull();
-  });
-
-  it("still renders the model badge when a synthetic calendar has zero events", () => {
-    // Honesty: even if the synthetic calendar returns/filters to NO rows, the
-    // empty state must keep disclosing that this is the unavailable-providers
-    // sample — not let the user assume there's simply no calendar data.
+  it("renders AwarenessUnavailable with the backend reason and no rows", () => {
     setMockFn({
       state: "ok",
       data: {
         data: {
-          events: [],
+          status: "provider_unavailable",
+          reason: "connection refused on 127.0.0.1:8086",
           rows: [],
-          source_mode: "calendar_feed_model",
-          as_of: AS_OF,
         },
-        sources: ["calendar_feed_model"],
-        elapsed_ms: 12,
+        sources: ["no_live_source"],
       },
     });
     render(<ECOPane code="ECO" />);
-    // The empty state is shown…
-    expect(screen.getByText(/Calendar empty/i)).toBeInTheDocument();
-    // …but the synthetic disclosure badge is still present.
-    const badge = screen.getByTestId("eco-model-badge");
-    expect(badge).toBeInTheDocument();
-    expect(badge).toHaveAttribute("role", "status");
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Awareness service is not running");
+    expect(alert.textContent).toContain("connection refused on 127.0.0.1:8086");
+    expect(document.querySelectorAll("[data-testid='eco-row']")).toHaveLength(0);
   });
 
-  it("does NOT render the model badge for a live (tradingeconomics) payload", () => {
-    setMockFn({ state: "ok", ...livePayload() });
+  it("shows an empty window with relaxer buttons and no sample rows", () => {
+    setOk({ status: "empty", rows: [], holidays: [], meta: META });
     render(<ECOPane code="ECO" />);
-    expect(screen.queryByTestId("eco-model-badge")).toBeNull();
-    // Live source label is shown verbatim.
-    expect(screen.getByText(/tradingeconomics/)).toBeInTheDocument();
+    expect(screen.getByText("No events in this window")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Widen to 14 days" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "All countries" })).toBeTruthy();
+  });
+
+  it("renders the error state with a status role", () => {
+    setMockFn({ state: "error", error: new Error("boom") });
+    render(<ECOPane code="ECO" />);
+    expect(screen.getByText("boom")).toBeTruthy();
+    expect(screen.getByText("Function error")).toBeTruthy();
   });
 });
 
-describe("ECO pane — accessibility", () => {
-  it("exposes a non-color importance cue + aria-label", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
+describe("ECOPane ok payload", () => {
+  it("renders each event with its surprise glyph and provenance button", () => {
+    setOk(okPayload());
     render(<ECOPane code="ECO" />);
-    // "high" importance → label keeps the word and adds a non-color symbol.
-    const high = screen.getAllByLabelText(/importance: high/i);
-    expect(high.length).toBeGreaterThan(0);
-    expect(high[0].textContent ?? "").toMatch(/▲/);
+    expect(screen.getByText("CPI YoY")).toBeTruthy();
+    expect(screen.getByLabelText("Above consensus by +0.10%")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sources for CPI YoY: 1" })).toBeTruthy();
   });
 
-  it("gives the DataGrid an aria-label", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
-    const { container } = render(<ECOPane code="ECO" />);
-    const grid = container.querySelector('[aria-label="Economic calendar"]');
-    expect(grid).not.toBeNull();
+  it("never shows a surprise for an unreleased print", () => {
+    setOk(okPayload());
+    render(<ECOPane code="ECO" />);
+    const rows = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-testid='eco-row']"),
+    );
+    const nfp = rows.find((r) => r.textContent?.includes("Nonfarm Payrolls"));
+    expect(nfp).toBeDefined();
+    expect(
+      nfp!.querySelector(".aw-surprise--above, .aw-surprise--below, .aw-surprise--inline"),
+    ).toBeNull();
   });
 
-  it("wraps the error state in role=status", () => {
-    setMockFn({ state: "error", data: undefined, error: new Error("boom") });
-    const { container } = render(<ECOPane code="ECO" />);
-    const status = container.querySelector('[role="status"]');
-    expect(status).not.toBeNull();
-    expect(status?.textContent ?? "").toMatch(/boom/);
+  it("marks central-bank rows and renders holidays inline on their day", () => {
+    setOk(okPayload());
+    render(<ECOPane code="ECO" />);
+    expect(screen.getByText("CB")).toBeTruthy();
+    expect(screen.getByText(/Veterans Day/)).toBeTruthy();
+    expect(screen.getByText(/NYSE closed: Veterans Day/)).toBeTruthy();
+  });
+
+  it("surfaces the next high-impact countdown from the scheduled high event", () => {
+    setOk(okPayload());
+    render(<ECOPane code="ECO" />);
+    expect(screen.getByText("Next high-impact release")).toBeTruthy();
+    expect(screen.getAllByText(/^in /).length).toBeGreaterThan(0);
+  });
+
+  it("shows the provider health strip and the econ provider list", () => {
+    setOk(okPayload());
+    render(<ECOPane code="ECO" />);
+    expect(screen.getAllByText("econ.nasdaq").length).toBeGreaterThan(0);
+  });
+
+  it("does not render the removed reference or live-calendar toggles", () => {
+    setOk(okPayload());
+    render(<ECOPane code="ECO" />);
+    expect(screen.queryByText(/reference/i)).toBeNull();
+    expect(screen.queryByText(/live calendar/i)).toBeNull();
+    expect(screen.queryByText(/sample/i)).toBeNull();
   });
 });
 
-describe("ECO pane — display honesty", () => {
-  it("shows '—' for a missing actual and '—' surprise (no fabricated number)", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
-    render(<ECOPane code="ECO" />);
-    // The pending row (Initial Jobless Claims) has no actual.
-    const dashes = screen.getAllByText("—");
-    expect(dashes.length).toBeGreaterThan(0);
-    // The printed CPI row shows its real actual value.
-    expect(screen.getByText(/3\.2%/)).toBeInTheDocument();
-  });
-
-  it("derives the freshness 'Veri' indicator from as_of (server time, not client)", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
-    render(<ECOPane code="ECO" />);
-    // as_of = 11:55 UTC; client clock is frozen at 12:00 — must show 11:55.
-    const veri = screen.getByText(/Data:/i);
-    expect(veri.textContent ?? "").toContain("11:55");
-    expect(veri.textContent ?? "").not.toContain("12:00");
-  });
-
-  it("labels the event timezone as UTC", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
-    render(<ECOPane code="ECO" />);
-    expect(screen.getByText(/Times UTC/i)).toBeInTheDocument();
-  });
-
-  it("C3 — derives the actual-vs-forecast bar from the fixture's real values", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
-    render(<ECOPane code="ECO" />);
-    // Only the printed CPI row (forecast 3.1, actual 3.2) carries both values.
-    const bars = screen.getAllByTestId("eco-afbar");
-    expect(bars).toHaveLength(1);
-    // Scaled against max(|3.1|, |3.2|) = 3.2 on a 44px track.
-    expect(screen.getByTestId("eco-afbar-forecast").style.width).toBe("43px");
-    expect(screen.getByTestId("eco-afbar-actual").style.width).toBe("44px");
-    // Beat ⇒ positive tone (inline style, palette-var based); the label
-    // carries the real numbers + unit for AT readers.
-    expect(screen.getByTestId("eco-afbar-actual").getAttribute("style")).toContain(
-      "var(--positive)",
-    );
-    expect(bars[0].getAttribute("role")).toBe("img");
-    expect(bars[0].getAttribute("aria-label")).toBe("forecast 3.1% vs actual 3.2%");
-  });
-
-  it("C3 — tones the bar by the surprise sign and scales against the larger leg", () => {
-    const miss = {
-      country: "US",
-      event: "GDP Growth Rate QoQ",
-      date: isoOffset(0),
-      importance: "high",
-      forecast: 4,
-      actual: 2,
-      previous: 3,
-      surprise: -2,
-      unit: "%",
-    };
-    setMockFn({
-      state: "ok",
-      data: {
-        data: {
-          events: [miss],
-          rows: [miss],
-          source_mode: "tradingeconomics",
-          as_of: AS_OF,
-        },
-        sources: ["tradingeconomics"],
-        elapsed_ms: 5,
-      },
-    });
-    render(<ECOPane code="ECO" />);
-    expect(screen.getByTestId("eco-afbar-forecast").style.width).toBe("44px");
-    expect(screen.getByTestId("eco-afbar-actual").style.width).toBe("22px");
-    expect(screen.getByTestId("eco-afbar-actual").getAttribute("style")).toContain(
-      "var(--negative)",
-    );
-    expect(screen.getByTestId("eco-afbar").getAttribute("aria-label")).toBe(
-      "forecast 4% vs actual 2%",
-    );
-  });
-
-  it("C3 — renders NO bar when the actual print is missing (honest pending state)", () => {
-    const pending = events[1]; // forecast 215, actual null
-    setMockFn({
-      state: "ok",
-      data: {
-        data: {
-          events: [pending],
-          rows: [pending],
-          source_mode: "tradingeconomics",
-          as_of: AS_OF,
-        },
-        sources: ["tradingeconomics"],
-        elapsed_ms: 9,
-      },
-    });
-    render(<ECOPane code="ECO" />);
-    expect(screen.queryByTestId("eco-afbar")).toBeNull();
-    // The numeric actual cell keeps the honest em-dash.
-    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
-  });
-
-  it("HNT-03 — surprise KPIs aggregate only %-unit prints (no K/M unit mixing)", () => {
-    // CPI YoY (%: surprise +0.1) next to a printed NFP row (K: surprise +30).
-    // Averaging across units would show "+15.05"; the K print must stay out.
-    const cpi = events[0];
-    const nfp = {
-      country: "US",
-      event: "Non Farm Payrolls",
-      date: isoOffset(0),
-      importance: "high",
-      forecast: 180,
-      actual: 210,
-      previous: 175,
-      surprise: 30,
-      unit: "K",
-    };
-    setMockFn({
-      state: "ok",
-      data: {
-        data: {
-          events: [cpi, nfp],
-          rows: [cpi, nfp],
-          source_mode: "tradingeconomics",
-          as_of: AS_OF,
-        },
-        sources: ["tradingeconomics"],
-        elapsed_ms: 5,
-      },
-    });
-    render(<ECOPane code="ECO" />);
-    // Avg surprise comes from the CPI % print only.
-    const avgCard = screen.getByText("Avg surprise").closest(".stat-card") as HTMLElement;
-    expect(avgCard).toBeTruthy();
-    expect(within(avgCard).getByText("+0.10")).toBeInTheDocument();
-    // Scope is disclosed in the caption.
-    expect(within(avgCard).getByText(/% PRINTS ONLY/i)).toBeInTheDocument();
-    // Largest surprise is the CPI print, not the numerically larger NFP.
-    const maxCard = screen.getByText("Largest surprise").closest(".stat-card") as HTMLElement;
-    expect(within(maxCard).getByText("+0.10")).toBeInTheDocument();
-    expect(within(maxCard).getByText("CPI YoY")).toBeInTheDocument();
-    // The unit-mixed average / K-scaled max never render.
-    expect(screen.queryByText("+15.05")).toBeNull();
-    expect(screen.queryByText("+30.00")).toBeNull();
-  });
-
-  it("HNT-03 — shows '—' for Avg surprise when no %-unit print exists", () => {
-    const nfpOnly = {
-      country: "US",
-      event: "Non Farm Payrolls",
-      date: isoOffset(0),
-      importance: "high",
-      forecast: 180,
-      actual: 210,
-      previous: 175,
-      surprise: 30,
-      unit: "K",
-    };
-    setMockFn({
-      state: "ok",
-      data: {
-        data: {
-          events: [nfpOnly],
-          rows: [nfpOnly],
-          source_mode: "tradingeconomics",
-          as_of: AS_OF,
-        },
-        sources: ["tradingeconomics"],
-        elapsed_ms: 5,
-      },
-    });
-    render(<ECOPane code="ECO" />);
-    const avgCard = screen.getByText("Avg surprise").closest(".stat-card") as HTMLElement;
-    expect(within(avgCard).getByText("—")).toBeInTheDocument();
-    expect(screen.queryByText("+30.00")).toBeNull();
-  });
-
-  it("advances the Next prints rail as the clock passes a release (AUDIT A10 [L])", () => {
-    setMockFn({ state: "ok", ...syntheticPayload() });
+describe("ECO live-shaped payloads (F2 C1)", () => {
+  it("renders a live holiday whose source is a ProviderRef object as the provider name", () => {
+    const holidays = LIVE_HOLIDAY_ROWS.map((h) => ({ ...h, date: past(2).slice(0, 10) }));
+    setOk(okPayload({ holidays }));
     const { container } = render(<ECOPane code="ECO" />);
-    const rail = container.querySelector('[aria-label="Upcoming prints"]');
-    expect(rail).not.toBeNull();
-    // Both fixtures are in the future at NOW (12:00): CPI today 13:30, claims +2d.
-    expect(within(rail as HTMLElement).getByText(/CPI YoY/)).toBeInTheDocument();
-    expect(within(rail as HTMLElement).getByText(/Initial Jobless Claims/)).toBeInTheDocument();
-    // Advance past the CPI release — the visibility minute-tick must recompute
-    // "upcoming" without a refetch and drop the now-past print.
-    act(() => {
-      vi.advanceTimersByTime(121 * 60_000);
+    expect(screen.getAllByText(/· nager/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/· exchange_calendars/).length).toBeGreaterThan(0);
+    expect(container.textContent).not.toContain("[object Object]");
+  });
+
+  it("renders a live economic row set alongside live holidays", () => {
+    const rows = LIVE_ECON_ROWS.map((r, i) => ({
+      id: `live-${i}`,
+      date: future(2 + i),
+      country: r.country,
+      event: r.title,
+      importance: r.importance,
+      status: r.status,
+      actual: null,
+      forecast: null,
+      previous: r.previous,
+      surprise_direction: null,
+      is_central_bank: false,
+      sources: [],
+    }));
+    setOk(okPayload({ rows, holidays: [...LIVE_HOLIDAY_ROWS.slice(0, 1)] }));
+    render(<ECOPane code="ECO" />);
+    expect(screen.getAllByText(/nager/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("ECO holiday degradation (F6 m6)", () => {
+  it("says holidays were not checked when the holiday call failed, not that there are none", () => {
+    setOk(okPayload({ holidays: [], holidays_status: "unavailable", degraded: true }));
+    render(<ECOPane code="ECO" />);
+    expect(screen.getByText(/Holidays not checked/)).toBeTruthy();
+  });
+
+  it("shows no holidays banner when the holiday call answered", () => {
+    setOk(okPayload({ holidays: [], holidays_status: "ok", degraded: false }));
+    render(<ECOPane code="ECO" />);
+    expect(screen.queryByText(/Holidays not checked/)).toBeNull();
+  });
+
+  it("keeps the not-checked notice on an empty window", () => {
+    setOk({
+      status: "empty",
+      rows: [],
+      holidays: [],
+      holidays_status: "unavailable",
+      meta: META,
     });
-    const railAfter = container.querySelector('[aria-label="Upcoming prints"]');
-    expect(within(railAfter as HTMLElement).queryByText(/CPI YoY/)).toBeNull();
-    expect(within(railAfter as HTMLElement).getByText(/Initial Jobless Claims/)).toBeInTheDocument();
+    render(<ECOPane code="ECO" />);
+    expect(screen.getByText(/Holidays not checked/)).toBeTruthy();
   });
 });

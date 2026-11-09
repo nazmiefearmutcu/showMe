@@ -1,9 +1,8 @@
-"""SOSC — Social Sentiment Composite.
+"""SOSC — Entity Sentiment.
 
-Composite social-sentiment surface that combines XSEN (X / Twitter
-RoBERTa) and FinBERT-classified Reddit / StockTwits feeds into a single
-per-symbol score. Every payload lists the contributing sources so the
-analyst can see exactly which signals fed the composite.
+Per-symbol sentiment read entirely from Awareness: FinBERT scores of Awareness-collected
+news (series, headlines), the ApeWisdom social-buzz rank when the ticker is listed, and
+the GDELT DOC tone series Awareness stored for the entity.
 """
 from __future__ import annotations
 
@@ -16,8 +15,6 @@ from ..enums import (
 from ..registry import manifest
 from ..spec import (
     CachingPolicy,
-    CardSchema,
-    CardSlot,
     ColumnSpec,
     FieldDef,
     Formula,
@@ -35,18 +32,16 @@ from ..spec import (
 def sosc() -> FunctionManifest:
     return FunctionManifest(
         code="SOSC",
-        name="Social Sentiment Composite",
+        name="Social Sentiment",
         category=Category.NEWS_INTEL,
         intent=(
-            "Composite social-sentiment surface combining XSEN (X / Twitter RoBERTa) and "
-            "FinBERT-classified Reddit / StockTwits feeds into a single per-symbol score. "
-            "Every payload lists the contributing sources so the analyst can see exactly "
-            "which signals fed the composite — no opaque black box."
+            "Per-symbol news sentiment from Awareness: FinBERT item scores over a 1d, 7d or 30d "
+            "window with the headlines behind them, the ApeWisdom social-buzz rank when listed, "
+            "and the GDELT tone series for the entity. Every figure is sourced; nothing is modelled."
         ),
         asset_classes=[
             AssetClass.EQUITY,
             AssetClass.CRYPTO,
-            AssetClass.ETF,
         ],
         inputs=[
             InputSpec(
@@ -54,142 +49,82 @@ def sosc() -> FunctionManifest:
                 label="Symbol",
                 control=ControlKind.SYMBOL_PICKER,
                 required=True,
-                description="Ticker to score. Resolves to (cashtag, name) for the social adapters.",
-            ),
-            InputSpec(
-                name="sources",
-                label="Source set",
-                control=ControlKind.MULTISELECT,
-                required=False,
-                description="Which social adapters to include in the composite. Empty = all configured.",
-                options=["xsen", "stocktwits", "reddit", "finbert_news"],
+                description="Ticker to score. Crypto quote suffixes (BTCUSDT, BTC-USD) are stripped to the base token.",
             ),
             InputSpec(
                 name="window",
                 label="Window",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Lookback window for source rows.",
-                options=["1h", "6h", "24h", "7d"],
-            ),
-            InputSpec(
-                name="min_messages",
-                label="Min messages per source",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Skip sources whose row count falls below this floor (avoids 1-message false signals).",
-                min=1,
-                max=200,
-                step=5,
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.MODELED.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Lookback window: 1d or 7d (hourly buckets) or 30d (daily buckets).",
+                options=["1d", "7d", "30d"],
             ),
         ],
         defaults={
             "symbol": "AAPL",
-            "sources": [],
-            "window": "24h",
-            "min_messages": 5,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
+            "window": "7d",
         },
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["cached_snapshot"],
+            primary="awareness",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.MODELED,
                 DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=120, scope="per_input", persist=False),
+        caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["symbol", "composite_score", "composite_sources", "data_mode"],
+            must_have=["symbol", "news", "headlines", "gdelt_tone", "methodology"],
             rows=True,
             series=True,
-            cards=True,
+            cards=False,
             warnings=True,
             next_actions=True,
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="source", label="Source", kind="tag"),
-                ColumnSpec(key="messages_count", label="Msgs", kind="number", format="%d"),
-                ColumnSpec(key="bullish_pct", label="Bull%", kind="percent", format="%.1f"),
-                ColumnSpec(key="bearish_pct", label="Bear%", kind="percent", format="%.1f"),
-                ColumnSpec(key="net_score", label="Net", kind="number", format="%.2f"),
-                ColumnSpec(key="weight", label="Weight", kind="number", format="%.2f"),
-                ColumnSpec(key="as_of", label="As of", kind="datetime", format="rel-time"),
+                ColumnSpec(key="platform", label="Source", kind="tag"),
+                ColumnSpec(key="mentions", label="Mentions", kind="number", format="%d"),
+                ColumnSpec(key="sentiment", label="Sentiment", kind="number", format="%.2f"),
+                ColumnSpec(key="rank", label="Rank", kind="number", format="%d"),
+                ColumnSpec(key="trend", label="Trend", kind="tag"),
             ],
             sortable=True,
-            filterable=True,
-        ),
-        card_schema=CardSchema(
-            slots=[
-                CardSlot(key="symbol", label="Symbol", kind="badge"),
-                CardSlot(key="composite_score", label="Composite", kind="big_number"),
-                CardSlot(key="composite_label", label="Bias", kind="badge"),
-                CardSlot(key="sources_count", label="Sources", kind="kpi"),
-                CardSlot(key="messages_total", label="Messages", kind="kpi"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
-            ],
+            filterable=False,
         ),
         methodology=(
-            "SOSC composes a per-symbol sentiment score from up to four social adapters. (1) "
-            "XSEN runs the bundled RoBERTa over the auth-free X/Twitter Brave→syndication scrape "
-            "and returns a (bullish_pct, bearish_pct, messages_count) triple. (2) StockTwits is "
-            "queried via the cashtag stream and the bullish/bearish counts are read straight "
-            "from the platform's own labels. (3) Reddit pulls the symbol's subreddit + cashtag "
-            "and FinBERT scores each post body. (4) FinBERT_news is the FinBERT pass over the "
-            "CN feed for the same window. Each source's net_score is (bullish_pct - bearish_pct)"
-            " / 100 in [-1, +1]. Sources below min_messages are dropped (with a warning naming "
-            "the dropped source). The composite is a message-weighted mean of the surviving "
-            "per-source scores: composite = sum(net_score_i * messages_i) / sum(messages_i). "
-            "The contributing source list (composite_sources) is ALWAYS surfaced in the payload "
-            "so a downstream caller can see exactly which adapters contributed. When zero "
-            "sources clear min_messages, composite_score is null, composite_sources=[], and a "
-            "warning explains the empty composite — never a fabricated score."
+            "SOSC reports Awareness entity sentiment for the symbol over the chosen window. Each "
+            "Awareness-collected news item carries a FinBERT label and score in [-1, +1]; news.mean "
+            "is the arithmetic mean of those scores, news.weighted_mean weights each item by its "
+            "FinBERT confidence times its source-quality score (computed by Awareness), and the "
+            "positive and negative shares are label fractions. The series is bucketed hourly for "
+            "1d and 7d windows and daily for 30d. headlines are the newest items behind the score. "
+            "social is the ApeWisdom rank and mention change for the ticker when it appears on the "
+            "ranked list, otherwise null. gdelt_tone is the GDELT DOC tone series stored by "
+            "Awareness, shown in GDELT's native scale without rescaling. When Awareness is down the "
+            "function returns provider_unavailable; when the window has no items it returns empty. "
+            "No sentiment value is ever estimated or defaulted."
         ),
         formula_dict={
-            "source_net_score": Formula(
-                expression=r"net_{i} = \frac{bullish\_pct_{i} - bearish\_pct_{i}}{100}",
+            "news_mean": Formula(
+                expression=r"\bar{s} = \frac{1}{n}\sum_{i=1}^{n} s_i",
                 variables={
-                    "bullish_pct_i": "Bullish share for source i (0..100)",
-                    "bearish_pct_i": "Bearish share for source i (0..100)",
+                    "s_i": "FinBERT item score in [-1, +1] for news item i",
+                    "n": "Number of news items in the window (news.count)",
                 },
-                notes="Per-source net score in [-1, +1].",
-            ),
-            "composite_score": Formula(
-                expression=r"composite = \frac{\sum_{i} net_{i} \cdot msgs_{i}}{\sum_{i} msgs_{i}}",
-                variables={
-                    "net_i": "Per-source net score",
-                    "msgs_i": "Messages count for source i (post min_messages floor)",
-                },
-                notes="Message-weighted mean across surviving sources.",
+                notes="Unweighted mean as reported by Awareness; weighted_mean uses confidence x quality.",
             ),
         },
         field_dict={
-            "symbol": FieldDef(description="Echoed input symbol (uppercased).", source="input"),
-            "composite_score": FieldDef(unit="[-1,+1]", description="Message-weighted mean of surviving per-source net scores. Null when no source clears min_messages.", source="computed"),
-            "composite_label": FieldDef(description="bullish / bearish / neutral derived from composite_score.", source="derived"),
-            "composite_sources": FieldDef(description="List of source ids that contributed to the composite — surfaced for transparency.", source="derived"),
-            "rows[].source": FieldDef(description="Source id (xsen / stocktwits / reddit / finbert_news).", source="adapter"),
-            "rows[].messages_count": FieldDef(unit="count", description="Number of messages from the source in the window.", source="adapter"),
-            "rows[].bullish_pct": FieldDef(unit="%", description="Bullish share of messages.", source="adapter"),
-            "rows[].bearish_pct": FieldDef(unit="%", description="Bearish share of messages.", source="adapter"),
-            "rows[].net_score": FieldDef(unit="[-1,+1]", description="Per-source net score.", source="computed"),
-            "rows[].weight": FieldDef(description="Share of total messages this source contributed to the composite.", source="computed"),
+            "symbol": FieldDef(description="Base symbol scored (uppercased, quote suffix removed).", source="input"),
+            "news.mean": FieldDef(unit="[-1,+1]", description="Mean FinBERT item score for the window.", source="awareness"),
+            "news.weighted_mean": FieldDef(unit="[-1,+1]", description="Confidence and quality weighted mean.", source="awareness"),
+            "news.series": FieldDef(description="Bucketed count, mean and label counts.", source="awareness"),
+            "headlines": FieldDef(description="Newest news items behind the score, with item label and score.", source="awareness"),
+            "social": FieldDef(description="ApeWisdom rank and mention change for the ticker, or null.", source="awareness"),
+            "gdelt_tone": FieldDef(description="GDELT DOC tone series for the entity (native scale).", source="awareness"),
+            "rows[].mentions": FieldDef(unit="count", description="News item count or ApeWisdom mentions.", source="awareness"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -200,36 +135,33 @@ def sosc() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="sosc_composite_sources_listed_in_payload",
-                description="Asserts composite_sources is a non-empty array of source ids whenever composite_score is non-null — the composite never hides its inputs.",
+                description=(
+                    "Asserts the sources feeding the payload (awareness:sentiment and the "
+                    "providers listed in metadata.providers) are named on every ok response."
+                ),
                 inputs={"symbol": "AAPL"},
                 assertions=[
-                    "composite_sources_is_array",
-                    "composite_sources_non_empty_when_score_non_null",
+                    "sources_is_array",
+                    "providers_listed_in_metadata",
                 ],
             ),
             SemanticTest(
-                name="sosc_below_min_messages_source_is_dropped",
-                description="With min_messages=50 and a source returning 5 messages, asserts that source is excluded from composite_sources AND a warning names the dropped source.",
-                inputs={"symbol": "AAPL", "min_messages": 50, "_mock": "low_message_source"},
-                assertions=[
-                    "low_message_source_not_in_composite_sources",
-                    "warning_names_dropped_source",
-                ],
+                name="sosc_no_news_returns_empty_not_score",
+                description="When the window holds no items, asserts status is empty and news.mean is null.",
+                inputs={"symbol": "ZZZZ"},
+                assertions=["status_empty", "news_mean_is_null"],
             ),
             SemanticTest(
-                name="sosc_no_sources_returns_null_score_not_fake",
-                description="When zero sources clear min_messages, asserts composite_score is null and composite_sources=[].",
-                inputs={"symbol": "ZZZZ", "_mock": "all_sources_empty"},
-                assertions=[
-                    "composite_score_is_null",
-                    "composite_sources_empty_array",
-                ],
+                name="sosc_awareness_down_is_provider_unavailable",
+                description="When awareness cannot answer, asserts provider_unavailable with no rows and no score.",
+                inputs={"symbol": "AAPL", "_mock": "awareness_down"},
+                assertions=["status_provider_unavailable", "rows_empty", "news_is_absent"],
             ),
             SemanticTest(
-                name="sosc_composite_matches_weighted_mean",
-                description="Asserts composite_score equals the message-weighted mean of per-source net_scores within 1e-6.",
-                inputs={},
-                assertions=["composite_score_matches_formula_within_1e-6"],
+                name="sosc_window_maps_to_bucket",
+                description="Asserts 1d and 7d request hourly buckets and 30d requests daily buckets.",
+                inputs={"symbol": "AAPL", "window": "30d"},
+                assertions=["bucket_is_1d_for_30d"],
             ),
         ],
     )

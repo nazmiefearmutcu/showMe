@@ -8,11 +8,11 @@ Tests every seed registers via load_seeds(), passes the shared
 shape-quality bar, and honours the spec's per-code semantic invariants:
 
   * ECFC must declare a `vintage_visible_in_payload` semantic test.
-  * GMM must render as a bar_ladder chart and use FRED as primary.
+  * GMM must render as a bar_ladder chart and use World Bank as primary.
   * REGM must lead with the internal model and expose at least one
     `model_assumption` control input.
-  * TRDH must declare no chart grammar (table-only) and use `internal`
-    as primary (curated calendar).
+  * TRDH must declare no chart grammar (table-only) and use `awareness`
+    as primary (Awareness exchange sessions and closures).
   * AV methodology must mention "playable archive" — not a placeholder list.
   * BRIEF must declare an `evidence_links_present` semantic test.
   * NI must declare an `impact_is_a_tag` style test asserting impact is
@@ -135,10 +135,11 @@ def test_gmm_chart_is_bar_ladder() -> None:
     )
 
 
-def test_gmm_primary_provider_is_fred() -> None:
+def test_gmm_primary_provider_is_worldbank() -> None:
+    # GMM serves the World Bank matrix; FRED release surprises were never produced.
     gmm = REGISTRY.get("GMM")
-    assert gmm.provider_chain.primary == "fred", (
-        f"GMM primary provider must be 'fred', got {gmm.provider_chain.primary!r}"
+    assert gmm.provider_chain.primary == "worldbank", (
+        f"GMM primary provider must be 'worldbank', got {gmm.provider_chain.primary!r}"
     )
 
 
@@ -161,14 +162,14 @@ def test_regm_primary_provider_is_internal_with_model_assumption_input() -> None
     )
 
 
-def test_trdh_is_table_only_and_internal() -> None:
-    """TRDH is a curated calendar; no chart, primary is internal."""
+def test_trdh_is_table_only_and_awareness() -> None:
+    """TRDH is a table-only calendar; no chart, and its sessions/closures come from Awareness."""
     trdh = REGISTRY.get("TRDH")
     assert trdh.chart_grammar is None, (
         "TRDH must declare no chart_grammar (table-only)"
     )
-    assert trdh.provider_chain.primary == "internal", (
-        f"TRDH primary must be 'internal' (curated calendar), "
+    assert trdh.provider_chain.primary == "awareness", (
+        f"TRDH primary must be 'awareness' (Awareness exchange calendar), "
         f"got {trdh.provider_chain.primary!r}"
     )
 
@@ -197,27 +198,27 @@ def test_brief_evidence_links_present_test_declared() -> None:
     )
 
 
-def test_ni_impact_is_a_tag_not_float() -> None:
-    """NI's `impact` field must be tag-bucketed (low/medium/high), not a float."""
+def test_ni_importance_is_a_0_100_score_not_a_tag() -> None:
+    """NI's `importance` is the awareness 0-100 numeric score (rows, not a tag bucket)."""
     ni = REGISTRY.get("NI")
     test_names = [t.name for t in ni.semantic_tests]
-    assert any("impact_is_a_tag" in name for name in test_names), (
+    assert any("importance_is_score_0_100" in name for name in test_names), (
         "NI must declare a semantic_test whose name contains "
-        f"'impact_is_a_tag'; got {test_names!r}"
+        f"'importance_is_score_0_100'; got {test_names!r}"
     )
 
 
-def test_ni_impact_field_dict_declares_tag_not_float() -> None:
-    """NI field_dict must describe `impact` as a tag, not a numeric score."""
+def test_ni_importance_field_dict_declares_numeric_score() -> None:
+    """NI field_dict must describe `importance` as the 0-100 numeric score."""
     ni = REGISTRY.get("NI")
-    impact_field = ni.field_dict.get("items[].impact")
-    assert impact_field is not None, (
-        "NI.field_dict must declare items[].impact (the tag bucket)"
+    importance_field = ni.field_dict.get("rows[].importance")
+    assert importance_field is not None, (
+        "NI.field_dict must declare rows[].importance (the awareness score)"
     )
-    desc_blob = (impact_field.description or "").lower()
-    assert any(token in desc_blob for token in ("tag", "low", "medium", "high")), (
-        f"NI items[].impact description must describe it as a tag bucket; "
-        f"got {impact_field.description!r}"
+    desc_blob = (importance_field.description or "").lower()
+    assert "score" in desc_blob, (
+        f"NI rows[].importance description must describe a score; "
+        f"got {importance_field.description!r}"
     )
 
 

@@ -99,30 +99,15 @@ describe("S04-R · TOP header live-state pill is honest", () => {
     );
   });
 
-  it("FeedStatePill helper exists and is invoked from the header", () => {
-    expect(TOP_SRC).toMatch(/function FeedStatePill/);
-    expect(TOP_SRC).toMatch(/<FeedStatePill[\s\S]{0,200}state=\{state\}/);
-    expect(TOP_SRC).toMatch(/hasArticles=\{articles\.length > 0\}/);
-  });
-
-  it("FeedStatePill differentiates OFFLINE / LOADING / SNAPSHOT / EMPTY / LIVE", () => {
-    // All five honest states must appear as label literals.
-    expect(TOP_SRC).toMatch(/OFFLINE/);
-    expect(TOP_SRC).toMatch(/LOADING/);
-    expect(TOP_SRC).toMatch(/SNAPSHOT · refreshing/);
-    expect(TOP_SRC).toMatch(/EMPTY · /);
-    expect(TOP_SRC).toMatch(/LIVE · /);
-  });
-
-  it("Error state renders the OFFLINE pill with a negative tone and no dot", () => {
-    // Read the FeedStatePill body — error branch must not be the green
-    // LIVE pill or the user keeps trusting a dead feed.
-    const errorBranch = TOP_SRC.match(
-      /if \(state === "error"\) \{[\s\S]{0,200}<Pill[\s\S]{0,120}<\/Pill>/,
-    );
-    expect(errorBranch).not.toBeNull();
-    expect(errorBranch?.[0]).toMatch(/tone="negative"/);
-    expect(errorBranch?.[0]).toMatch(/withDot=\{false\}/);
+  it("State honesty now comes from the Awareness states, not a local pill", () => {
+    // 2026-11-08: TOP was rebuilt on the Awareness story list. The data-mode pill lives in
+    // PaneChrome (from the function contract); the pane itself must render the honest
+    // service-down state and the provider-health strip instead of any hand-made LIVE pill.
+    expect(TOP_SRC).toMatch(/NewsFrame/);
+    const frame = readFileSync(resolve(ROOT, "ui/src/functions/awareness/NewsFrame.tsx"), "utf8");
+    expect(frame).toMatch(/AwarenessUnavailable/);
+    expect(frame).toMatch(/ProviderHealthStrip/);
+    expect(TOP_SRC).not.toMatch(/withDot>\s*LIVE/);
   });
 });
 
@@ -133,20 +118,9 @@ describe("S04-R · TOP sort indicator is not falsely interactive", () => {
     expect(TOP_SRC).not.toMatch(/BY RECENT ↓/);
   });
 
-  it("Replaced with an unambiguous passive label", () => {
-    // Honesty upgrade (AUDIT A1 [M], fixed in the function-audit campaign):
-    // the pipeline and pane both order by published_at DESC — importance
-    // scores are display-only — so the earlier "IMPORTANCE → NEWEST" claim
-    // was inaccurate. The pill stays passive (no arrow, no click) and now
-    // reads "NEWEST FIRST" with a tooltip on the wrapping <span>.
+  it("No fake sort toggle is rendered", () => {
+    // The Awareness list is ordered newest-first by the backend; no decorative sort control.
     expect(TOP_SRC).not.toMatch(/RECENT FIRST/);
-    // The old label may still be named in the explanatory comment — assert on
-    // the rendered pill only.
     expect(TOP_SRC).not.toMatch(/<Pill[^>]*>\s*IMPORTANCE/);
-    expect(TOP_SRC).toMatch(
-      /<Pill\s+tone="muted"\s+variant="soft"\s+withDot=\{false\}>\s*NEWEST FIRST\s*<\/Pill>/,
-    );
-    // Still passive — the sort label carries no click handler.
-    expect(TOP_SRC).not.toMatch(/top-sort-label[\s\S]{0,120}onClick/);
   });
 });

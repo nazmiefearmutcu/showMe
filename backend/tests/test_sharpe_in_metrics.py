@@ -25,11 +25,11 @@ def _t(pnl: float, net: float | None = None) -> Trade:
 
 def test_empty_returns_zero_for_all_new_fields():
     m = compute_metrics([])
-    for key in ("sharpe", "sortino", "profit_factor", "expectancy",
+    for key in ("t_stat_per_trade", "sortino_t_stat_per_trade", "profit_factor", "expectancy",
                 "max_consecutive_losses", "net_pnl"):
         assert key in m
-    assert m["sharpe"] == 0.0
-    assert m["sortino"] == 0.0
+    assert m["t_stat_per_trade"] == 0.0
+    assert m["sortino_t_stat_per_trade"] == 0.0
     assert m["profit_factor"] == 0.0
     assert m["max_consecutive_losses"] == 0
 
@@ -60,8 +60,8 @@ def test_sharpe_nonzero_on_winning_trades():
     trades = [_t(10), _t(15), _t(20), _t(12)]
     m = compute_metrics(trades)
     # All winners, std > 0 → Sharpe > 0.
-    assert isinstance(m["sharpe"], float)
-    assert m["sharpe"] > 0
+    assert isinstance(m["t_stat_per_trade"], float)
+    assert m["t_stat_per_trade"] > 0
 
 
 def test_expectancy_negative_when_avg_loss_dominates():
@@ -84,4 +84,4 @@ def test_single_trade_returns_zero_sharpe():
     # Single trade → std undefined → Sharpe 0.
     trades = [_t(10)]
     m = compute_metrics(trades)
-    assert m["sharpe"] == 0.0
+    assert m["t_stat_per_trade"] == 0.0

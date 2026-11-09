@@ -1,9 +1,9 @@
 """BMTX — Backtest Matrix.
 
-Run a single strategy across a universe under multiple walk-forward
-windows, producing a (strategy × symbol × window) grid of Sharpe / CAGR /
-max drawdown. Paper-safe by definition — backtests never touch live
-order routing.
+Run each selected registered strategy across a symbol universe on live daily
+OHLCV history, producing a (strategy × symbol) grid of in-sample Sharpe, total
+return and max drawdown, plus a final-slice holdout score. Paper-safe by
+definition — backtests never touch live order routing.
 """
 from __future__ import annotations
 
@@ -41,10 +41,11 @@ def bmtx() -> FunctionManifest:
         name="Backtest Matrix",
         category=Category.PORTFOLIO,
         intent=(
-            "Run a chosen strategy across a universe under multiple walk-"
-            "forward windows, producing a (symbol × window) grid of "
-            "Sharpe, CAGR, max drawdown, and hit rate. Result is a "
-            "research artifact — paper-safe by construction."
+            "Run each selected strategy across a universe on live daily "
+            "OHLCV history, producing a (strategy × symbol) grid of Sharpe, "
+            "total return, max drawdown and trades, with a final-slice "
+            "holdout score. The ranking is in-sample. Result is a research "
+            "artifact — paper-safe by construction."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -57,36 +58,11 @@ def bmtx() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="strategy_id",
-                label="Strategy",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Strategy spec to backtest (from STRA store).",
-            ),
-            InputSpec(
                 name="universe",
                 label="Universe",
                 control=ControlKind.MULTISELECT,
                 required=True,
                 description="Symbols to evaluate.",
-            ),
-            InputSpec(
-                name="walk_forward_windows",
-                label="WF windows",
-                control=ControlKind.CONSTRAINT_SET,
-                required=True,
-                description=(
-                    "Ordered list of (train_start, train_end, test_start, "
-                    "test_end) tuples. Each is one matrix column."
-                ),
-            ),
-            InputSpec(
-                name="frequency",
-                label="Bar frequency",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Bar size for OHLCV + signal evaluation.",
-                options=["1m", "5m", "15m", "1h", "4h", "1d", "1wk"],
             ),
             InputSpec(
                 name="initial_equity",
@@ -121,32 +97,16 @@ def bmtx() -> FunctionManifest:
                 step=0.1,
                 unit="bps",
             ),
-            InputSpec(
-                name="paper_mode",
-                label="Paper mode (safe)",
-                control=ControlKind.BOOLEAN,
-                required=True,
-                description="Always true here — backtest cannot wire to live.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for OHLCV history.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
+        # paper_mode is not a control: the handler never reads it, and
+        # backtests cannot reach live routing. It stays as a default invariant.
+        # provider_mode is not a control either: OHLCV always comes from the
+        # yfinance source, which the result's sources state.
         defaults={
-            "frequency": "1d",
             "initial_equity": 100000,
             "commission_bps": 5.0,
             "slippage_bps": 2.0,
             "paper_mode": True,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
@@ -160,11 +120,14 @@ def bmtx() -> FunctionManifest:
         caching=CachingPolicy(ttl_seconds=3600, scope="per_input", persist=True),
         output_contract=OutputContract(
             must_have=[
-                "as_of",
-                "strategy_id",
-                "matrix",
-                "window_summary",
-                "data_mode",
+                "status",
+                "strategies",
+                "cells",
+                "surface",
+                "best_per_symbol",
+                "rank_basis",
+                "oos_windows",
+                "methodology",
             ],
             rows=True,
             series=False,
@@ -174,7 +137,7 @@ def bmtx() -> FunctionManifest:
         ),
         chart_grammar=ChartGrammar(
             kind=ChartKind.HEATMAP,
-            x_axis=AxisSpec(type="category", unit="", label="Window"),
+            x_axis=AxisSpec(type="category", unit="", label="Strategy"),
             y_axis=AxisSpec(type="category", unit="", label="Symbol"),
             panes=[],
             overlay_support=False,
@@ -183,11 +146,11 @@ def bmtx() -> FunctionManifest:
         table_schema=TableSchema(
             columns=[
                 ColumnSpec(key="symbol", label="Symbol", kind="text"),
-                ColumnSpec(key="window", label="Window", kind="text"),
-                ColumnSpec(key="sharpe", label="Sharpe", kind="number", format="%.2f"),
-                ColumnSpec(key="cagr", label="CAGR", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="strategy", label="Strategy", kind="text"),
+                ColumnSpec(key="sharpe", label="Sharpe (in-sample)", kind="number", format="%.2f"),
+                ColumnSpec(key="total_return", label="Total return", kind="percent", unit="%", format="%.2f"),
                 ColumnSpec(key="max_drawdown", label="Max DD", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="hit_rate", label="Hit %", kind="percent", unit="%", format="%.1f"),
+                ColumnSpec(key="oos_sharpe", label="Sharpe (holdout)", kind="number", format="%.2f"),
                 ColumnSpec(key="trades", label="Trades", kind="number", format="%d"),
             ],
             sortable=True,
@@ -198,7 +161,6 @@ def bmtx() -> FunctionManifest:
                 CardSlot(key="avg_sharpe", label="Avg Sharpe", kind="big_number"),
                 CardSlot(key="best_cell", label="Best", kind="badge"),
                 CardSlot(key="worst_cell", label="Worst", kind="badge"),
-                CardSlot(key="windows_count", label="Windows", kind="kpi"),
                 CardSlot(key="universe_size", label="Symbols", kind="kpi"),
                 CardSlot(key="paper_mode", label="Mode", kind="badge"),
                 CardSlot(key="data_mode", label="Data", kind="mode_pill"),
@@ -206,16 +168,14 @@ def bmtx() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "BMTX iterates every (symbol, window) cell of the matrix. For "
-            "each cell: fetch OHLCV at the chosen frequency, run the "
-            "strategy_id compute engine on the train slice to fit any "
-            "fittable parameters, then evaluate signals on the test "
-            "slice. Returns are gross-of-commission-and-slippage; per-"
-            "trade costs are deducted at fill time. Equity curve per cell "
-            "is reconstructed; sharpe = mean / std × √F (annualized), "
-            "cagr = (final/initial)^(1/years) − 1, max_drawdown = max "
-            "trough-to-peak loss, hit_rate = #wins/#trades. The window "
-            "summary aggregates by window across symbols (mean ± std). "
+            "BMTX runs every selected registered strategy on every symbol's "
+            "daily OHLCV history from live yfinance data. Each run starts at "
+            "initial equity and charges commission plus slippage (bps) per "
+            "unit of turnover. Cells are ranked by in-sample Sharpe. The oos_* "
+            "fields score only the final 30% of bars (oos_windows), using fixed "
+            "default strategy parameters so nothing is fitted on that slice. "
+            "Returns are after costs. Symbols or strategies that cannot run are "
+            "listed with their reason, never filled with substitute values. "
             "Backtest is strictly research; output cannot wire into live "
             "execution from this surface."
         ),
@@ -224,23 +184,15 @@ def bmtx() -> FunctionManifest:
                 expression=r"SR = \bar{r} / \sigma_r \cdot \sqrt{F}",
                 variables={"F": "Periods per year"},
             ),
-            "CAGR": Formula(
-                expression=r"CAGR = (V_T / V_0)^{1/T} - 1",
-                variables={"V_T": "Final equity", "T": "Years"},
-            ),
             "MaxDrawdown": Formula(
                 expression=r"MDD = \min_t (V_t / \max_{s \leq t} V_s - 1)",
                 variables={},
             ),
-            "HitRate": Formula(
-                expression=r"HR = N_{win} / N_{trade}",
-                variables={},
-            ),
         },
         field_dict={
-            "matrix": FieldDef(description="2-D grid keyed by [symbol][window] of metric dicts.", source="computed"),
-            "window_summary": FieldDef(description="Per-window aggregate stats across the universe.", source="computed"),
-            "strategy_id": FieldDef(description="Echo of the chosen strategy spec id.", source="input"),
+            "cells": FieldDef(description="List of (symbol, strategy) run metrics; in-sample and holdout.", source="computed"),
+            "oos_windows": FieldDef(description="Per-symbol train and holdout bar counts and dates.", source="computed"),
+            "strategies": FieldDef(description="Echo of the requested strategy names.", source="input"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -256,22 +208,22 @@ def bmtx() -> FunctionManifest:
                 assertions=["defaults.paper_mode == True"],
             ),
             SemanticTest(
-                name="bmtx_matrix_cells_equal_symbols_times_windows",
-                description="Matrix has exactly |universe| × |windows| cells.",
+                name="bmtx_cells_bounded_by_symbols_times_strategies",
+                description="The grid has at most |symbols| × |strategies| cells, one per completed run.",
                 inputs={},
-                assertions=["len(matrix) == universe_size * windows_count"],
+                assertions=["len(cells) <= len(symbols) * len(strategies)"],
             ),
             SemanticTest(
-                name="bmtx_window_summary_uses_only_test_slices",
-                description="Sharpe/CAGR/DD are computed on test slices, never train.",
+                name="bmtx_holdout_uses_only_final_slice",
+                description="oos_* metrics are computed on the final holdout slice only, never on the ranked history.",
                 inputs={},
-                assertions=["metrics computed strictly on test_slice"],
+                assertions=["oos metrics computed strictly on oos_windows test slice"],
             ),
             SemanticTest(
                 name="bmtx_unknown_strategy_returns_actionable_warning",
-                description="Missing strategy_id returns a warning without partial data.",
-                inputs={"strategy_id": "does_not_exist"},
-                assertions=["warnings_non_empty", "matrix_empty_or_absent"],
+                description="An unregistered strategy name returns a warning naming it, with no cells for it.",
+                inputs={"strategies": ["does_not_exist"]},
+                assertions=["warnings_non_empty", "cells_empty_for_unknown_strategy"],
             ),
         ],
     )

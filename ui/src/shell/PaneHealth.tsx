@@ -23,6 +23,7 @@ import { useId, useState } from "react";
 import {
   formatLatencyMs,
   paneAgeMs,
+  paneAsOfIsDateOnly,
   paneHealthTier,
   paneStampedAt,
   usePaneContract,
@@ -63,18 +64,35 @@ export function PaneHealth({ leafId, contract }: PaneHealthProps) {
 
   const now = Date.now();
   const tier = paneHealthTier(snap, now);
-  const age = formatTickAge(paneAgeMs(snap, now));
+  const ageMs = paneAgeMs(snap, now);
+  const stampedMs = paneStampedAt(snap);
+  // ASOF-2 follow-up: an undated or bare-date observation shows what it declares, never a
+  // receipt-time age.
+  const dateOnly = paneAsOfIsDateOnly(snap);
+  const observedDate = typeof snap.asOf === "string" ? snap.asOf.trim() : "";
+  const age =
+    stampedMs == null ? "no date" : dateOnly ? observedDate : formatTickAge(ageMs ?? 0);
   const latency =
     typeof snap.latencyMs === "number" && Number.isFinite(snap.latencyMs)
       ? formatLatencyMs(snap.latencyMs)
       : null;
-  const stampedMs = paneStampedAt(snap);
-  const exactStamp = `${formatDate(stampedMs, { tz })} ${formatTime(stampedMs, { tz, seconds: true })}`;
+  const exactStamp =
+    stampedMs == null
+      ? "not declared by source"
+      : dateOnly
+        ? observedDate
+        : `${formatDate(stampedMs, { tz })} ${formatTime(stampedMs, { tz, seconds: true })}`;
   const mode = typeof snap.dataMode === "string" && snap.dataMode ? snap.dataMode : "—";
   const sources = snap.sources ?? [];
   const warnings = snap.warnings ?? [];
 
-  const summary = `Data ${TIER_LABEL[tier]} · as of ${age} ago${latency ? ` · ${latency}` : ""}`;
+  const when =
+    stampedMs == null
+      ? "no observation date"
+      : dateOnly
+        ? `observed ${observedDate}`
+        : `as of ${age} ago`;
+  const summary = `Data ${TIER_LABEL[tier]} · ${when}${latency ? ` · ${latency}` : ""}`;
 
   return (
     <span className="pane-health" data-testid="pane-health">

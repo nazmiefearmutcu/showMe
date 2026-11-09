@@ -39,17 +39,18 @@ import {
   RefreshButton,
   SegmentedControl,
 } from "./function-controls";
-import { usePersistentNumber } from "./function-control-state";
+import { usePersistentNumber, usePersistentString } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
 
 /* ── model types ───────────────────────────────────────────────────── */
 
 interface OsaLeg {
   qty: number; // signed: positive = long, negative = short
-  strike: number;
+  /** null until the user enters it: never a template or guessed value (T10). */
+  strike: number | null;
   type: "CALL" | "PUT";
-  expiry: number; // years
-  vol: number; // decimal IV
+  expiry: number | null; // years, null until entered
+  vol: number | null; // decimal IV, null until entered
 }
 
 interface OsaLegRow {
@@ -76,13 +77,20 @@ interface OsaSummary {
   net_debit?: number;
   max_gain_visible?: number;
   max_loss_visible?: number;
+  /** bounded | grid_edge | unbounded (OSA#3): how the grid extreme relates to the payoff. */
+  max_gain_state?: "bounded" | "grid_edge" | "unbounded";
+  max_loss_state?: "bounded" | "grid_edge" | "unbounded";
+  grid_low?: number;
+  grid_high?: number;
   breakeven_count_visible?: number;
 }
 
 interface OsaData {
   status?: string;
   reason?: string;
-  spot?: number;
+  spot?: number | null;
+  spot_source?: "user_override" | "live_quote" | null;
+  underlying?: string | null;
   rate?: number;
   div_yield?: number;
   strategy?: string;
@@ -105,84 +113,84 @@ const LEGS_KEY = "showme.osa.legs";
 const PRESET_KEY = "showme.osa.preset";
 const MAX_LEGS = 4;
 
+/**
+ * A leg with a side and quantity only. Strike, expiry and vol stay null until
+ * the user types them, so a preset never puts a template number on the wire.
+ */
+function blankLeg(qty: number, type: OsaLeg["type"]): OsaLeg {
+  return { qty, type, strike: null, expiry: null, vol: null };
+}
+
 const PRESETS: ReadonlyArray<{ id: string; label: string; legs: OsaLeg[] }> = [
   {
     id: "bullCall",
     label: "BULL CALL",
-    legs: [
-      { qty: 1, strike: 100, type: "CALL", expiry: 0.25, vol: 0.25 },
-      { qty: -1, strike: 110, type: "CALL", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "CALL"), blankLeg(-1, "CALL")],
   },
   {
     id: "bearPut",
     label: "BEAR PUT",
-    legs: [
-      { qty: 1, strike: 110, type: "PUT", expiry: 0.25, vol: 0.25 },
-      { qty: -1, strike: 100, type: "PUT", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "PUT"), blankLeg(-1, "PUT")],
   },
   {
     id: "straddle",
     label: "STRADDLE",
-    legs: [
-      { qty: 1, strike: 100, type: "CALL", expiry: 0.25, vol: 0.25 },
-      { qty: 1, strike: 100, type: "PUT", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "CALL"), blankLeg(1, "PUT")],
   },
   {
     id: "strangle",
     label: "STRANGLE",
-    legs: [
-      { qty: 1, strike: 90, type: "PUT", expiry: 0.25, vol: 0.25 },
-      { qty: 1, strike: 110, type: "CALL", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "PUT"), blankLeg(1, "CALL")],
   },
   {
     id: "condor",
     label: "IRON CONDOR",
-    legs: [
-      { qty: 1, strike: 80, type: "PUT", expiry: 0.25, vol: 0.25 },
-      { qty: -1, strike: 90, type: "PUT", expiry: 0.25, vol: 0.25 },
-      { qty: -1, strike: 110, type: "CALL", expiry: 0.25, vol: 0.25 },
-      { qty: 1, strike: 120, type: "CALL", expiry: 0.25, vol: 0.25 },
-    ],
+    legs: [blankLeg(1, "PUT"), blankLeg(-1, "PUT"), blankLeg(-1, "CALL"), blankLeg(1, "CALL")],
   },
 ];
 const PRESET_IDS: readonly string[] = PRESETS.map((p) => p.id);
 
+/** A finite positive number, else null. Never a default (T10). */
+function positiveOrNull(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * A stored leg is kept only when its side and quantity are real. A missing
+ * strike, expiry or vol stays null and shows as an empty input, so the gap is
+ * visible rather than filled with 100 / 0.25.
+ */
 function sanitizeLeg(raw: unknown): OsaLeg | null {
   if (typeof raw !== "object" || raw === null) return null;
   const rec = raw as Record<string, unknown>;
-  const num = (v: unknown, fallback: number): number => {
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) ? n : fallback;
-  };
-  const type = String(rec.type ?? "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
+  const qty = typeof rec.qty === "number" ? rec.qty : Number(rec.qty);
+  const side = String(rec.type ?? "").toUpperCase();
+  const type: OsaLeg["type"] | null = side === "CALL" || side === "PUT" ? side : null;
+  if (!Number.isFinite(qty) || qty === 0 || type === null) return null;
   return {
-    qty: num(rec.qty, 1),
-    strike: num(rec.strike, 100),
+    qty,
+    strike: positiveOrNull(rec.strike),
     type,
-    expiry: Math.max(0.01, num(rec.expiry, 0.25)),
-    vol: Math.max(0.01, num(rec.vol, 0.25)),
+    expiry: positiveOrNull(rec.expiry),
+    vol: positiveOrNull(rec.vol),
   };
 }
 
 function readStoredLegs(key: string): OsaLeg[] {
-  const fallback = PRESETS[0].legs;
-  if (typeof localStorage === "undefined") return fallback;
+  if (typeof localStorage === "undefined") return [];
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
+    if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return fallback;
-    const legs = parsed
+    if (!Array.isArray(parsed)) return [];
+    return parsed
       .slice(0, MAX_LEGS)
       .map(sanitizeLeg)
       .filter((l): l is OsaLeg => l !== null);
-    return legs.length ? legs : fallback;
   } catch {
-    return fallback;
+    return [];
   }
 }
 
@@ -201,17 +209,55 @@ function usePersistentLegs(key: string): [OsaLeg[], (next: OsaLeg[]) => void] {
   return [legs, update];
 }
 
+/**
+ * Spot is optional: blank means use the underlying's live quote. The legacy
+ * showme.osa.spot key defaulted to 100 without the user typing it, so it is
+ * deliberately not read (OSA#2).
+ */
+const SPOT_KEY = "showme.osa.spot_entered";
+
+function readStoredSpot(key: string): number | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null || raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function usePersistentSpot(key: string): [number | null, (next: number | null) => void] {
+  const [value, setValue] = useState<number | null>(() => readStoredSpot(key));
+  const update = (next: number | null) => {
+    setValue(next);
+    try {
+      localStorage.setItem(key, next == null ? "" : String(next));
+    } catch {
+      /* storage unavailable — session-only spot */
+    }
+  };
+  return [value, update];
+}
+
+/** No preset until the user picks one: a first load has no legs, so none is labelled. */
 function readStoredPreset(key: string): string {
-  if (typeof localStorage === "undefined") return PRESETS[0].id;
-  const raw = localStorage.getItem(key);
-  return raw && PRESET_IDS.includes(raw) ? raw : PRESETS[0].id;
+  if (typeof localStorage === "undefined") return "custom";
+  try {
+    const raw = localStorage.getItem(key);
+    return raw && PRESET_IDS.includes(raw) ? raw : "custom";
+  } catch {
+    return "custom";
+  }
 }
 
 /* ── pane ──────────────────────────────────────────────────────────── */
 
 export function OSAPane({ code }: FunctionPaneProps) {
   const [legs, setLegs] = usePersistentLegs(LEGS_KEY);
-  const [spot, setSpot] = usePersistentNumber("showme.osa.spot", 100);
+  const [spot, setSpot] = usePersistentSpot(SPOT_KEY);
+  const [underlying, setUnderlying] = usePersistentString("showme.osa.underlying", "");
   const [rate, setRate] = usePersistentNumber("showme.osa.rate", 4.5); // percent
   const [divPct, setDivPct] = usePersistentNumber("showme.osa.div", 0); // percent
   const [preset, setPreset] = useState<string>(() => readStoredPreset(PRESET_KEY));
@@ -235,12 +281,14 @@ export function OSAPane({ code }: FunctionPaneProps) {
 
   const addLeg = () => {
     if (legs.length >= MAX_LEGS) return;
-    setLegs([...legs, { qty: 1, strike: spot, type: "CALL", expiry: 0.25, vol: 0.25 }]);
+    // The strike anchors on the entered spot, else the last leg's strike. Expiry
+    // and vol are left for the user: nothing is guessed (T10).
+    const anchorStrike = spot ?? legs[legs.length - 1]?.strike ?? null;
+    setLegs([...legs, { qty: 1, strike: anchorStrike, type: "CALL", expiry: null, vol: null }]);
     setPreset("custom");
   };
 
   const removeLeg = (idx: number) => {
-    if (legs.length <= 1) return;
     setLegs(legs.filter((_, i) => i !== idx));
     setPreset("custom");
   };
@@ -249,11 +297,15 @@ export function OSAPane({ code }: FunctionPaneProps) {
   // honest (otherwise the runner's CALL_SPREAD default is echoed even for a
   // straddle / condor).
   const presetLabel = PRESETS.find((p) => p.id === preset)?.label ?? "CUSTOM";
+  const ticker = underlying.trim().toUpperCase();
   const { state, data, error, refetch } = useFunction<OsaData>({
     code,
     params: {
       asset_class: "DERIVATIVE",
-      spot,
+      // Only a value the user typed is sent; otherwise the backend takes the
+      // underlying's live quote or reports an input/provider state.
+      ...(spot != null ? { spot } : {}),
+      ...(ticker ? { underlying: ticker } : {}),
       rate: rate / 100,
       div_yield: divPct / 100,
       strategy: presetLabel,
@@ -263,6 +315,9 @@ export function OSAPane({ code }: FunctionPaneProps) {
 
   const payload = data?.data;
   const isOk = state !== "loading" && state !== "idle" && payload?.status === "ok";
+  // The spot the priced strategy actually used (entered or live), once priced.
+  const shownSpot = isOk ? num(payload?.spot) : null;
+  const spotSource = isOk ? payload?.spot_source : undefined;
   const curve: OsaCurvePoint[] = useMemo(
     () => (payload?.curve && payload.curve.length ? payload.curve : payload?.pnl_curve ?? []),
     [payload],
@@ -273,16 +328,18 @@ export function OSAPane({ code }: FunctionPaneProps) {
   const netDebit = num(summary?.net_debit);
   const maxGain = num(summary?.max_gain_visible);
   const maxLoss = num(summary?.max_loss_visible);
+  const gainState = summary?.max_gain_state;
+  const lossState = summary?.max_loss_state;
 
   const profileRows = useMemo(
     () =>
       keyPriceRows(
         curve,
         breakevens,
-        legs.map((l) => l.strike),
-        spot,
+        legs.flatMap((l) => (l.strike == null ? [] : [l.strike])),
+        shownSpot,
       ),
-    [curve, breakevens, legs, spot],
+    [curve, breakevens, legs, shownSpot],
   );
 
   const gridColumns = useMemo<DataGridColumn<PayoffRow>[]>(
@@ -350,11 +407,18 @@ export function OSAPane({ code }: FunctionPaneProps) {
   const strategyLabel = (strategyEcho ?? presetLabel).replace(/_/g, " ").toUpperCase();
 
   const body = (
+    <>
     <PaneState
       state={state}
       error={error}
       empty={!isOk}
-      emptyTitle="Strategy could not be priced"
+      emptyTitle={
+        payload?.status === "needs_input"
+          ? "Inputs needed"
+          : payload?.status === "provider_unavailable"
+            ? "Live quote unavailable"
+            : "Strategy could not be priced"
+      }
       emptyBody={
         payload?.reason ??
         "Check the legs — every strike, expiry and IV must be positive, and the backend must return at least two curve points."
@@ -372,14 +436,30 @@ export function OSAPane({ code }: FunctionPaneProps) {
           />
           <StatCard
             label="Max gain"
-            value={fmtSigned(maxGain)}
-            caption={maxGain == null ? undefined : "at range high"}
+            value={gainState === "unbounded" ? "Unlimited" : fmtSigned(maxGain)}
+            caption={
+              maxGain == null
+                ? undefined
+                : gainState === "unbounded"
+                  ? "rises past range high"
+                  : gainState === "grid_edge"
+                    ? "best at range low, may extend lower"
+                    : "best within visible grid"
+            }
             tone={maxGain != null && maxGain > 0 ? "positive" : "neutral"}
           />
           <StatCard
             label="Max loss"
-            value={fmtSigned(maxLoss)}
-            caption={maxLoss == null ? undefined : "at range low"}
+            value={lossState === "unbounded" ? "Unlimited" : fmtSigned(maxLoss)}
+            caption={
+              maxLoss == null
+                ? undefined
+                : lossState === "unbounded"
+                  ? "falls past range high"
+                  : lossState === "grid_edge"
+                    ? "worst at range low, may extend lower"
+                    : "worst within visible grid"
+            }
             tone={maxLoss != null && maxLoss < 0 ? "negative" : "neutral"}
           />
           <StatCard
@@ -391,9 +471,13 @@ export function OSAPane({ code }: FunctionPaneProps) {
         </section>
 
         {/* primary visual — expiration P&L profile */}
-        <PayoffChart curve={curve} breakevens={breakevens} spot={spot} />
+        <PayoffChart curve={curve} breakevens={breakevens} spot={shownSpot} />
+      </div>
+    </PaneState>
 
-        {/* compact leg editor — one row set, kit input density */}
+    <div className="u-grid-gap-14">
+        {/* compact leg editor — one row set, kit input density. Rendered outside
+            PaneState so a needs_input state can still be fixed here. */}
         <section aria-label="Strategy legs editor" style={editorWrapStyle}>
           <div style={{ ...editorGridStyle, ...editorHeadStyle }} aria-hidden="true">
             <span>SIDE</span>
@@ -437,6 +521,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
                 />
                 <NumInput
                   value={leg.strike}
+                  allowBlank
                   step={1}
                   min={0.01}
                   ariaLabel={`Leg ${idx + 1} strike`}
@@ -444,6 +529,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
                 />
                 <NumInput
                   value={leg.expiry}
+                  allowBlank
                   step={0.05}
                   min={0.01}
                   ariaLabel={`Leg ${idx + 1} expiry years`}
@@ -451,6 +537,7 @@ export function OSAPane({ code }: FunctionPaneProps) {
                 />
                 <NumInput
                   value={leg.vol}
+                  allowBlank
                   step={0.05}
                   min={0.01}
                   ariaLabel={`Leg ${idx + 1} implied volatility decimal`}
@@ -461,7 +548,9 @@ export function OSAPane({ code }: FunctionPaneProps) {
                   step={1}
                   min={1}
                   ariaLabel={`Leg ${idx + 1} quantity`}
-                  onChange={(v) => patchLeg(idx, { qty: Math.round(v) * (long ? 1 : -1) })}
+                  onChange={(v) => {
+                    if (v != null) patchLeg(idx, { qty: Math.round(v) * (long ? 1 : -1) });
+                  }}
                 />
                 <span style={premiumStyle}>{fmtNum(legRows[idx]?.premium)}</span>
                 <button
@@ -469,7 +558,6 @@ export function OSAPane({ code }: FunctionPaneProps) {
                   className="btn btn--ghost"
                   title={`Remove leg ${idx + 1}`}
                   aria-label={`Remove leg ${idx + 1}`}
-                  disabled={legs.length <= 1}
                   onClick={() => removeLeg(idx)}
                   style={removeBtnStyle}
                 >
@@ -478,6 +566,12 @@ export function OSAPane({ code }: FunctionPaneProps) {
               </div>
             );
           })}
+          {legs.length === 0 && (
+            <div className="u-text-mute" style={noteTextStyle}>
+              No legs yet. Pick a strategy or add a leg. Nothing is priced until each
+              leg&apos;s strike, expiry and vol are entered.
+            </div>
+          )}
           <div style={editorFootStyle}>
             <button
               type="button"
@@ -489,22 +583,27 @@ export function OSAPane({ code }: FunctionPaneProps) {
               + Add leg
             </button>
             <span className="u-text-mute" style={noteTextStyle}>
-              premium = Black-Scholes at current spot · IV per leg is the entered value (default
-              0.25)
+              premium = Black-Scholes at the spot used (entered or live quote) · IV per leg is the
+              entered value; a blank input is reported, never filled
             </span>
           </div>
         </section>
 
         {/* model assumptions — single compact row, kit Field inputs */}
         <section style={assumptionRowStyle} aria-label="Model assumptions">
-          <NumField
-            label="Spot"
+          <SpotField
             value={spot}
-            min={0.01}
-            step={1}
             width={104}
             ariaLabel="Underlying spot price"
             onChange={setSpot}
+          />
+          <Field
+            label="Underlying"
+            type="text"
+            value={underlying}
+            width={96}
+            aria-label="Underlying ticker for live spot"
+            onChange={(e) => setUnderlying(e.target.value)}
           />
           <NumField
             label="Rate %"
@@ -526,25 +625,27 @@ export function OSAPane({ code }: FunctionPaneProps) {
         </section>
 
         {/* secondary table — expiry P&L at the decision-relevant prices */}
-        <section aria-label="Expiry P&L at key prices" style={tableWrapStyle}>
-          <div style={tableHeadStyle}>
-            <span className="u-text-mute" style={noteTextStyle}>
-              key prices · {profileRows.length} rows
-            </span>
-          </div>
-          <DataGrid
-            columns={gridColumns}
-            rows={profileRows}
-            rowKey={(r) => r.spot}
-            density="compact"
-            ariaLabel="Expiry P&L at key prices"
-            defaultSortKey="spot"
-            defaultSortDir="ascending"
-            keyboardNavigable
-          />
-        </section>
-      </div>
-    </PaneState>
+        {isOk && (
+          <section aria-label="Expiry P&L at key prices" style={tableWrapStyle}>
+            <div style={tableHeadStyle}>
+              <span className="u-text-mute" style={noteTextStyle}>
+                key prices · {profileRows.length} rows
+              </span>
+            </div>
+            <DataGrid
+              columns={gridColumns}
+              rows={profileRows}
+              rowKey={(r) => r.spot}
+              density="compact"
+              ariaLabel="Expiry P&L at key prices"
+              defaultSortKey="spot"
+              defaultSortDir="ascending"
+              keyboardNavigable
+            />
+          </section>
+        )}
+    </div>
+    </>
   );
 
   return (
@@ -553,7 +654,9 @@ export function OSAPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Option Strategy Analyzer — ${strategyLabel}`}
-          subtitle={`${legs.length} leg${legs.length === 1 ? "" : "s"} · spot ${fmtNum(spot)}`}
+          subtitle={`${legs.length} leg${legs.length === 1 ? "" : "s"} · spot ${fmtNum(shownSpot)}${
+            spotSource === "live_quote" ? " · live quote" : spotSource === "user_override" ? " · entered" : ""
+          }`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
@@ -615,7 +718,7 @@ function PayoffChart({
 }: {
   curve: OsaCurvePoint[];
   breakevens: number[];
-  spot: number;
+  spot: number | null;
 }) {
   const geom = useMemo(() => {
     const xs: number[] = [];
@@ -656,7 +759,7 @@ function PayoffChart({
     );
   }
 
-  const spotX = spot >= geom.xMin && spot <= geom.xMax ? geom.px(spot) : null;
+  const spotX = spot != null && spot >= geom.xMin && spot <= geom.xMax ? geom.px(spot) : null;
 
   return (
     <section style={chartCardStyle} aria-label="Expiration payoff chart">
@@ -779,22 +882,68 @@ function NumField({
   );
 }
 
+/** Optional spot: blank clears it (the backend then uses the live quote). */
+function SpotField({
+  value,
+  onChange,
+  width,
+  ariaLabel,
+}: {
+  value: number | null;
+  onChange: (v: number | null) => void;
+  width?: number;
+  ariaLabel: string;
+}) {
+  const [text, setText] = useState<string>(() => (value == null ? "" : String(value)));
+  useEffect(() => {
+    setText(value == null ? "" : String(value));
+  }, [value]);
+  return (
+    <Field
+      label="Spot"
+      type="text"
+      inputMode="decimal"
+      value={text}
+      step={1}
+      width={width}
+      aria-label={ariaLabel}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setText(raw);
+        if (raw.trim() === "") {
+          onChange(null);
+          return;
+        }
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0) onChange(n);
+      }}
+      onBlur={() => setText(value == null ? "" : String(value))}
+    />
+  );
+}
+/**
+ * Leg number input. `allowBlank` lets a cleared field report null (the value
+ * the user has not entered); otherwise a blank entry is ignored.
+ */
 function NumInput({
   value,
   onChange,
   step = 1,
   min,
   ariaLabel,
+  allowBlank = false,
 }: {
-  value: number;
-  onChange: (v: number) => void;
+  value: number | null;
+  onChange: (v: number | null) => void;
   step?: number;
   min?: number;
   ariaLabel: string;
+  allowBlank?: boolean;
 }) {
-  const [text, setText] = useState<string>(() => String(value));
+  const toText = (v: number | null) => (v == null ? "" : String(v));
+  const [text, setText] = useState<string>(() => toText(value));
   useEffect(() => {
-    setText(String(value));
+    setText(toText(value));
   }, [value]);
   return (
     <input
@@ -808,13 +957,18 @@ function NumInput({
       min={min}
       aria-label={ariaLabel}
       onChange={(e) => {
-        setText(e.target.value);
-        const n = Number(e.target.value);
-        if (e.target.value.trim() !== "" && Number.isFinite(n) && (min == null || n >= min)) {
+        const raw = e.target.value;
+        setText(raw);
+        if (raw.trim() === "") {
+          if (allowBlank) onChange(null);
+          return;
+        }
+        const n = Number(raw);
+        if (Number.isFinite(n) && (min == null || n >= min)) {
           onChange(n);
         }
       }}
-      onBlur={() => setText(String(value))}
+      onBlur={() => setText(toText(value))}
     />
   );
 }
@@ -887,7 +1041,7 @@ function keyPriceRows(
   curve: OsaCurvePoint[],
   breakevens: number[],
   strikes: number[],
-  spot: number,
+  spot: number | null,
 ): PayoffRow[] {
   const points: PayoffRow[] = [];
   for (const p of curve) {
@@ -896,7 +1050,13 @@ function keyPriceRows(
     points.push({ spot: s, payoff: num(p.payoff), pnl: num(p.pnl) });
   }
   if (points.length < 2) return [];
-  const targets = [points[0].spot, points[points.length - 1].spot, spot, ...strikes, ...breakevens];
+  const targets = [
+    points[0].spot,
+    points[points.length - 1].spot,
+    ...(spot == null ? [] : [spot]),
+    ...strikes,
+    ...breakevens,
+  ];
   const picked = new Set<number>();
   for (const t of targets) {
     let best = 0;

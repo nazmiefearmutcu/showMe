@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import date, datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from showme.engine.core.base_data_source import DataKind, DataRequest
@@ -22,44 +22,77 @@ from showme.engine.core.base_function import (
 )
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.derivative.ovme import _bs_price
+from showme.engine.functions.portfolio.greeks import _risk_free_rate
+from showme.engine.services import greeks as greeks_svc
 
-# Continuously-compounded risk-free rate used for greeks. Kept as a documented
-# constant so the chain stays keyless; OVME uses the same 5% default.
-_RISK_FREE_RATE = 0.05
-_DAYS_PER_YEAR = 365.0
+# Fallback continuously-compounded risk-free rate, used only when the caller gives no
+# ``risk_free``/``rate`` AND the live 3-month T-bill (FRED DGS3MO, as GREEKS uses) is
+# unavailable (XCON-3). Same value as the OVME and OMON manifest defaults (4.5%).
+# The value actually used is echoed as risk_free_rate with its source.
+_RISK_FREE_RATE = 0.045
+# Default dividend yield (0 = none supplied). Echoed as dividend_yield with
+# dividend_yield_source "default_0", so a missing q is never silent.
+_DIVIDEND_YIELD = 0.0
+# One year-length basis for the option path (XCON-10): the greeks service constant.
+_DAYS_PER_YEAR = greeks_svc.DAYS_PER_YEAR
 
-# Defensive spot anchor used only when no explicit param and no live quote are
-# available (e.g. air-gapped tests). Mirrors ``_resolve_ivol_spot`` in
-# ``derivative/_stubs.py`` so the two derivative functions stay in lock-step.
-_DEFAULT_SPOT = 100.0
+
+def _rate_param(
+    params: dict[str, Any], keys: tuple[str, ...], default: float, default_source: str,
+) -> tuple[float, str]:
+    """A finite fraction from the first present key, else the default, with its source."""
+    for key in keys:
+        if params.get(key) is None:
+            continue
+        try:
+            value = float(params[key])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            return value, "param"
+    return default, default_source
+
+# Implied vol below this floor is a failed inversion (yfinance reports e.g. 1e-5
+# for deep-ITM quotes the solver could not invert), not a real vol.
+_IV_FLOOR = 0.001
+
+# The chain is "live" only when its newest option trade is this recent. Older
+# trades are the last trading session or a delayed feed and are labelled so.
+_LIVE_TRADE_WINDOW = timedelta(minutes=60)
+
+def _explicit_spot(params: dict[str, Any]) -> float | None:
+    """The caller's ``spot`` param when it is a finite, positive number, else None."""
+    if "spot" not in params or params.get("spot") is None:
+        return None
+    try:
+        value = float(params["spot"])
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 and math.isfinite(value) else None
 
 
-async def _resolve_spot(
+async def _resolve_spot_with_source(
     deps: Any, instrument: Instrument, params: dict[str, Any],
-) -> float:
-    """Resolve the underlying spot for the option monitor.
+) -> tuple[float | None, str]:
+    """Resolve the underlying spot and say where it came from.
 
     Resolution order:
 
-    1. An explicit, finite, positive ``params["spot"]`` always wins.
+    1. An explicit, finite, positive ``params["spot"]`` always wins
+       (``spot_source`` = ``user_override``).
     2. Otherwise the live spot is pulled from the yfinance QUOTE adapter
-       (``deps.yfinance`` -> :class:`DataKind.QUOTE` -> ``.last``).
-    3. Only when both signals are missing does it fall back to
-       ``_DEFAULT_SPOT`` (100.0) so greeks/moneyness stay finite.
-
-    This keeps the real option-chain anchored on the live underlying price
-    rather than a hardcoded placeholder.
+       (``deps.yfinance`` -> :class:`DataKind.QUOTE` -> ``.last``), labelled
+       ``live_quote``.
+    3. When neither signal yields a price, returns ``(None, "unavailable")``. No
+       placeholder is substituted: moneyness and delta must not be computed
+       around a made-up underlier price (ASOF-1).
     """
-    if "spot" in params and params.get("spot") is not None:
-        try:
-            value = float(params["spot"])
-        except (TypeError, ValueError):
-            value = None
-        if value is not None and value > 0 and math.isfinite(value):
-            return value
+    explicit = _explicit_spot(params)
+    if explicit is not None:
+        return explicit, "user_override"
     yfinance = getattr(deps, "yfinance", None)
     if yfinance is None:
-        return _DEFAULT_SPOT
+        return None, "unavailable"
     try:
         timeout = max(1.0, min(float(params.get("yfinance_timeout", 3)), 4.0))
     except (TypeError, ValueError):
@@ -73,7 +106,7 @@ async def _resolve_spot(
             timeout=timeout + 0.5,
         )
     except Exception:
-        return _DEFAULT_SPOT
+        return None, "unavailable"
     # The QUOTE adapter exposes ``.last`` on its result object; tolerate a
     # dict-shaped quote too so a mock that returns a plain dict still works.
     last: Any = None
@@ -87,10 +120,18 @@ async def _resolve_spot(
     try:
         value = float(last) if last is not None else 0.0
     except (TypeError, ValueError):
-        return _DEFAULT_SPOT
+        return None, "unavailable"
     if value > 0 and math.isfinite(value):
-        return value
-    return _DEFAULT_SPOT
+        return value, "live_quote"
+    return None, "unavailable"
+
+
+async def _resolve_spot(
+    deps: Any, instrument: Instrument, params: dict[str, Any],
+) -> float | None:
+    """Resolve the underlying spot for the option monitor (see ``_resolve_spot_with_source``)."""
+    value, _source = await _resolve_spot_with_source(deps, instrument, params)
+    return value
 
 
 def _num(value: Any) -> float | None:
@@ -116,6 +157,44 @@ def _years_to_expiry(expiry: str) -> float:
     days = (exp - now).total_seconds() / 86400.0
     # Treat expiry day as having a small positive tau so greeks stay finite.
     return max(days, 0.5) / _DAYS_PER_YEAR
+
+
+def _as_utc(value: Any) -> datetime | None:
+    """Coerce a yfinance ``lastTradeDate`` cell (Timestamp/datetime/str) to UTC."""
+    if value is None or value != value:  # NaN / NaT compare unequal to themselves
+        return None
+    dt: Any = value
+    if not isinstance(dt, datetime):
+        to_py = getattr(dt, "to_pydatetime", None)
+        if callable(to_py):
+            try:
+                dt = to_py()
+            except Exception:
+                return None
+        elif isinstance(dt, str):
+            try:
+                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _below_intrinsic(mid: float | None, spot: float | None, strike: float, is_call: bool) -> bool:
+    """True when the quoted mid is under intrinsic value (no-arbitrage violation).
+
+    Intrinsic value is a lower bound for both American and European options, so
+    a mid below it means the implied vol is undefined for that quote.
+    """
+    if mid is None or not spot or spot <= 0:
+        return False
+    intrinsic = max(spot - strike, 0.0) if is_call else max(strike - spot, 0.0)
+    return mid + 1e-6 < intrinsic
 
 
 def _fetch_chain_sync(underlier: str, expiry: str | None) -> dict[str, Any]:
@@ -163,6 +242,7 @@ def _fetch_chain_sync(underlier: str, expiry: str | None) -> dict[str, Any]:
             "volume",
             "impliedVolatility",
             "lastPrice",
+            "lastTradeDate",
         ]
         present = [c for c in cols if c in df.columns]
         return df[present].to_dict(orient="records")
@@ -190,8 +270,9 @@ class OMONFunction(BaseFunction):
         "requested) expiry: strikes, best bid/ask, open interest, traded volume "
         "and implied volatility per side. Delta is computed with Black-Scholes "
         "(same pricer as OVME) using each leg's own implied vol, the live spot, "
-        f"a {int(_RISK_FREE_RATE * 100)}% risk-free rate, and the calendar time "
-        "to expiry."
+        "the risk-free rate r (the live 3-month T-bill, FRED DGS3MO, as GREEKS uses; "
+        "4.5% only as a labelled fallback when that yield is unavailable) and dividend yield q (default 0%, "
+        "echoed in the output with their sources), and the calendar time to expiry."
     )
 
     _FIELD_DICTIONARY = {
@@ -217,6 +298,7 @@ class OMONFunction(BaseFunction):
         underlier: str,
         expiry: str | None,
         reason: str,
+        next_actions: list[str] | None = None,
     ) -> FunctionResult:
         return FunctionResult(
             code=self.code,
@@ -225,12 +307,14 @@ class OMONFunction(BaseFunction):
                 "status": "provider_unavailable",
                 "underlier": underlier,
                 "expiry": expiry,
+                "spot": None,
+                "spot_source": "unavailable",
                 "rows": [],
                 "series": [],
                 "cards": [],
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICTIONARY,
-                "next_actions": [
+                "next_actions": next_actions or [
                     "Verify the underlier ticker has listed options.",
                     "Retry once network access to yfinance is restored.",
                 ],
@@ -260,20 +344,62 @@ class OMONFunction(BaseFunction):
             )
 
         expiry: str = chain["expiry"]
+        # OMON#3: an explicit caller spot beats the chain's own spot (as the
+        # _resolve_spot contract says); the chain spot is used only otherwise.
         spot = _num(chain.get("spot"))
-        if spot is None or spot <= 0:
+        if _explicit_spot(params) is not None:
+            spot, spot_source = _explicit_spot(params), "user_override"
+        elif spot is not None and spot > 0:
+            spot_source = "chain"
+        else:
             # The chain didn't carry a usable underlying price — anchor on the
-            # live quote adapter (or an explicit `spot` param) instead of
-            # leaving greeks/moneyness blank.
+            # live quote adapter instead of leaving greeks/moneyness blank.
             spot_instrument = instrument or Instrument(
                 symbol=underlier, asset_class=AssetClass.EQUITY
             )
-            resolved = await _resolve_spot(self.deps, spot_instrument, params)
+            resolved, spot_source = await _resolve_spot_with_source(
+                self.deps, spot_instrument, params
+            )
             spot = _num(resolved)
+        if spot is not None and spot <= 0:
+            spot = None
+            spot_source = "unavailable"
+        if spot is None:
+            # No spot from any signal: moneyness and deltas cannot be priced honestly,
+            # so report the gap instead of a placeholder.
+            return self._unavailable(
+                instrument,
+                underlier,
+                expiry,
+                "no underlying spot: the chain has none, the yfinance quote is unavailable "
+                "and no spot param was given",
+                next_actions=[
+                    "Pass an explicit spot price for the underlier.",
+                    "Retry once the yfinance quote for the underlier is reachable.",
+                ],
+            )
+        # No real spot: moneyness, ATM IV and delta stay blank rather than being
+        # computed around an invented price, and the chain is not labelled live.
+        spot_unavailable = spot is None
         tau = _years_to_expiry(expiry)
+        # OMON#4: r and q are inputs, not constants; the output echoes each one.
+        risk_free, risk_free_source = _rate_param(
+            params, ("risk_free", "rate"), _RISK_FREE_RATE, "default"
+        )
+        if risk_free_source == "default" and getattr(self.deps, "fred", None) is not None:
+            # XCON-3: the same live DGS3MO yield GREEKS prices with, so the two panes agree.
+            live_rf = await _risk_free_rate(self.deps, client=getattr(self, "_http_client", None))
+            if live_rf is not None:
+                risk_free, risk_free_source = live_rf[0], f"fred_DGS3MO_{live_rf[1]}"
+        div_yield, div_yield_source = _rate_param(
+            params, ("dividend_yield", "div_yield"), _DIVIDEND_YIELD, "default_0"
+        )
 
         # Merge calls and puts on strike.
         merged: dict[float, dict[str, Any]] = {}
+        # Quotes whose IV is undefined (failed inversion or below no-arbitrage
+        # bound). Their IV and delta are null, never 0.0 / -1.0 placeholders.
+        iv_undefined = {"count": 0}
 
         def _ingest(records: list[dict[str, Any]], side: str) -> None:
             is_call = side == "call"
@@ -284,9 +410,19 @@ class OMONFunction(BaseFunction):
                 row = merged.setdefault(strike, {"strike": round(strike, 4)})
                 bid = _num(rec.get("bid"))
                 ask = _num(rec.get("ask"))
-                iv = _num(rec.get("impliedVolatility"))
+                iv_raw = _num(rec.get("impliedVolatility"))
                 oi = _num(rec.get("openInterest"))
                 vol = _num(rec.get("volume"))
+                mid = (bid + ask) / 2.0 if bid is not None and ask is not None and ask > 0 else None
+                has_quote = bid is not None or ask is not None
+                iv_bad = (
+                    iv_raw is None
+                    or iv_raw < _IV_FLOOR
+                    or _below_intrinsic(mid, spot, strike, is_call)
+                )
+                if iv_bad and has_quote:
+                    iv_undefined["count"] += 1
+                iv = None if iv_bad else iv_raw
                 row[f"{side}_bid"] = bid
                 row[f"{side}_ask"] = ask
                 row[f"{side}_oi"] = int(oi) if oi is not None else None
@@ -294,14 +430,24 @@ class OMONFunction(BaseFunction):
                 row[f"{side}_iv"] = round(iv, 4) if iv is not None else None
                 delta = None
                 if spot and iv and iv > 0 and tau > 0 and strike > 0:
-                    # _bs_price(S, K, T, r, sigma, q, is_call) — q=0 dividend yield.
+                    # _bs_price(S, K, T, r, sigma, q, is_call)
                     delta = _bs_price(
-                        spot, strike, tau, _RISK_FREE_RATE, iv, 0.0, is_call
+                        spot, strike, tau, risk_free, iv, div_yield, is_call
                     ).get("delta")
                 row[f"{side}_delta"] = delta
 
         _ingest(chain.get("calls", []), "call")
         _ingest(chain.get("puts", []), "put")
+
+        # Newest option trade across the chain = the chain's real timestamp.
+        trade_times = [
+            ts
+            for rec in list(chain.get("calls", [])) + list(chain.get("puts", []))
+            if (ts := _as_utc(rec.get("lastTradeDate"))) is not None
+        ]
+        last_trade = max(trade_times) if trade_times else None
+        now_utc = datetime.now(timezone.utc)
+        is_live = last_trade is not None and (now_utc - last_trade) <= _LIVE_TRADE_WINDOW
 
         rows: list[dict[str, Any]] = []
         for strike in sorted(merged):
@@ -363,6 +509,37 @@ class OMONFunction(BaseFunction):
         total_call_oi = sum(r["call_oi"] for r in rows if r.get("call_oi"))
         total_put_oi = sum(r["put_oi"] for r in rows if r.get("put_oi"))
 
+        warnings: list[str] = []
+        if risk_free_source == "default":
+            # XCON-3: GREEKS prices with the live 3M T-bill (FRED DGS3MO); OMON's rate is
+            # a fixed assumption, so the same option can differ between the two panes.
+            warnings.append(
+                f"Risk-free rate {risk_free * 100:g}% is a fixed fallback, not a live yield: the live "
+                "3-month T-bill (FRED DGS3MO) was not available, while GREEKS prices with it, so theta "
+                "and rho can differ between the two panes. Pass risk_free (decimal) to set the rate."
+            )
+        if spot_unavailable:
+            warnings.append(
+                "Underlying spot price unavailable (no live quote and no spot "
+                "param); moneyness, ATM IV and delta are not computed."
+            )
+        if iv_undefined["count"]:
+            warnings.append(
+                f"Implied vol undefined for {iv_undefined['count']} quote(s) "
+                "(failed inversion or quote below the no-arbitrage bound); "
+                "shown as blank, delta not computed."
+            )
+        if last_trade is None:
+            warnings.append(
+                "Option chain has no trade timestamps; freshness cannot be verified, "
+                "so the chain is not labelled live."
+            )
+        elif not is_live:
+            warnings.append(
+                f"Not live: newest option trade is {last_trade.isoformat()} UTC "
+                "(last session or delayed feed)."
+            )
+
         cards = [
             {
                 "underlier": underlier,
@@ -383,6 +560,11 @@ class OMONFunction(BaseFunction):
                 "expiry": expiry,
                 "expiries": chain.get("expiries", []),
                 "spot": round(spot, 4) if spot else None,
+                "spot_source": spot_source,
+                "risk_free_rate": risk_free,
+                "risk_free_source": risk_free_source,
+                "dividend_yield": div_yield,
+                "dividend_yield_source": div_yield_source,
                 "rows": rows,
                 "series": series,
                 "cards": cards,
@@ -394,18 +576,31 @@ class OMONFunction(BaseFunction):
                     "total_call_oi": total_call_oi,
                     "total_put_oi": total_put_oi,
                     "strike_count": len(rows),
+                    "iv_undefined_count": iv_undefined["count"],
+                    "last_trade_at": last_trade.isoformat() if last_trade else None,
                 },
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICTIONARY,
             },
             sources=["yfinance"],
-            warnings=[],
+            warnings=warnings,
             metadata={
                 "underlier": underlier,
                 "expiry": expiry,
-                "as_of": date.today().isoformat(),
+                # as_of is the newest option trade date, not the fetch date.
+                "as_of": last_trade.date().isoformat() if last_trade else None,
+                "as_of_timestamp": last_trade.isoformat() if last_trade else None,
+                "fetched_at": now_utc.isoformat(),
                 "strike_count": len(rows),
-                "live": True,
-                "data_mode": "live_yfinance",
+                "live": is_live and not spot_unavailable,
+                "data_mode": (
+                    "spot_unavailable"
+                    if spot_unavailable
+                    else (
+                        "live_yfinance"
+                        if is_live
+                        else ("last_trade_yfinance" if last_trade else "yfinance_no_trade_time")
+                    )
+                ),
             },
         )

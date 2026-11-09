@@ -32,21 +32,23 @@ class TLDRFunction(BaseFunction):
                 return 0.0
             return max(floor, min(float(default), remaining))
 
+        sources: list[str] = []
+        warnings: list[str] = []
+
         symbols = _parse_symbols(params.get("symbols"))
-        # Pull from PortfolioState if no list
+        watchlist_source = "explicit" if symbols else ""
+        # No explicit list: the user's own holdings are the scope. No invented
+        # default watchlist is substituted when there are no holdings.
         if not symbols:
             try:
                 from showme.engine.portfolio.state import PortfolioState
                 p = PortfolioState()
                 p.import_legacy_crypto()
                 symbols = [pos.instrument.symbol for pos in p.positions[:15]]
-            except Exception:
-                pass
-        if not symbols:
-            symbols = ["AAPL", "MSFT", "TSLA", "BTCUSDT", "EURUSD", "DGS10"]
-
-        sources: list[str] = []
-        warnings: list[str] = []
+                watchlist_source = "portfolio" if symbols else "portfolio_empty"
+            except Exception as exc:
+                watchlist_source = "portfolio_unavailable"
+                warnings.append(f"portfolio: {str(exc) or type(exc).__name__}")
 
         # Quotes (best-effort) — BugHunt 2026-05-24:
         # TLDR previously walked deps.yfinance / deps.ccxt_failover with its
@@ -100,10 +102,14 @@ class TLDRFunction(BaseFunction):
         except Exception:
             quotes = [{"symbol": s} for s in symbols]
             warnings.append("quotes: provider timeout")
-        sources.append("yfinance")
+        # Provenance: cite the quote sources that actually answered, not a fixed name.
+        sources += sorted({str(q["quote_source"]) for q in quotes if q.get("quote_source")})
 
-        # Top news
+        # Top news. TOP answers a dict envelope {status, rows, ...} from Awareness.
         news_summary: list[str] = []
+        news_rows: list[dict[str, Any]] = []
+        news_status = "unavailable"
+        news_reason = "no response"
         try:
             news_timeout = _remaining(float(params.get("news_timeout", 3)), floor=0.75)
             if news_timeout <= 0:
@@ -113,13 +119,26 @@ class TLDRFunction(BaseFunction):
                 TOPFunction(self.deps).execute(limit=12),
                 timeout=news_timeout,
             )
-            news_summary = [str(a.get("title", "")) for a in (top.data or [])[:8]]
+            # Awareness TOP answers "rows"; "items" is the legacy key.
+            items, news_reason = _payload_rows(top, "rows", "items")
+            news_rows = items[:8]
+            news_summary = [str(a.get("title", "")) for a in news_rows]
+            if news_reason:
+                news_status = "unavailable"
+                warnings.append(f"top: {news_reason}")
+            else:
+                news_status = "ok" if news_summary else "empty"
             sources += list(top.sources or [])
         except Exception as e:
-            warnings.append(f"top: {e}")
+            news_reason = str(e) or type(e).__name__
+            warnings.append(f"top: {str(e) or type(e).__name__}")
 
-        # Today's economic events
+        # Today's economic events. ECO answers a dict envelope whose rows live
+        # under "rows" (Awareness). A failed call is "unavailable", never a zero count.
         events: list[dict[str, Any]] = []
+        calendar_total = 0
+        calendar_status = "unavailable"
+        calendar_reason = "no response"
         try:
             eco_timeout = _remaining(float(params.get("eco_timeout", 2)), floor=0.75)
             if eco_timeout <= 0:
@@ -129,10 +148,36 @@ class TLDRFunction(BaseFunction):
                 ECOFunction(self.deps).execute(),
                 timeout=eco_timeout,
             )
-            events = ((eco.data or [])[:10])
+            rows, calendar_reason = _payload_rows(eco, "rows", "events")
+            # The count is the real row total; only the listed events are capped.
+            calendar_total = len(rows)
+            events = rows[:10]
+            if calendar_reason:
+                calendar_status = "unavailable"
+                warnings.append(f"eco: {calendar_reason}")
+            else:
+                calendar_status = "ok"
             sources += list(eco.sources or [])
         except Exception as e:
-            warnings.append(f"eco: {e}")
+            calendar_reason = str(e) or type(e).__name__
+            warnings.append(f"eco: {str(e) or type(e).__name__}")
+
+        # Structured bullets, each cited to the evidence rows it was built from.
+        # Built deterministically from the rows above, so they exist with or
+        # without an LLM. A candidate without evidence is omitted, never invented.
+        bullet_limit = _clamp_int(params.get("bullets"), default=5, low=3, high=8)
+        evidence_limit = _clamp_int(params.get("evidence_per_bullet"), default=2, low=1, high=5)
+        bullets = _compose_bullets(
+            symbols=symbols,
+            quotes=quotes,
+            news_rows=news_rows,
+            news_status=news_status,
+            events=events,
+            calendar_total=calendar_total,
+            calendar_status=calendar_status,
+            bullet_limit=bullet_limit,
+            evidence_limit=evidence_limit,
+        )
 
         # LLM summary if available
         prose = ""
@@ -150,7 +195,7 @@ class TLDRFunction(BaseFunction):
                 ) +
                 "\nNews:\n" + "\n".join(f"  - {h}" for h in news_summary[:6]) +
                 "\nUpcoming events:\n" + "\n".join(
-                    f"  - {e.get('Country','')} {e.get('Event','')}" for e in events[:6]
+                    f"  - {e.get('country') or ''} {e.get('event') or ''}" for e in events[:6]
                 )
             )
             req = LLMRequest(
@@ -168,7 +213,7 @@ class TLDRFunction(BaseFunction):
                 summary_model = f"llm:{r.model}"
                 sources.append(summary_model)
         except Exception as e:
-            warnings.append(f"llm: {e}")
+            warnings.append(f"llm: {str(e) or type(e).__name__}")
 
         has_live_content = (
             any(q.get("last") is not None or q.get("change_pct") is not None for q in quotes)
@@ -187,7 +232,12 @@ class TLDRFunction(BaseFunction):
                     "quotes": quotes,
                     "news": news_summary,
                     "events": events,
+                    "bullets": [],
+                    "symbols": symbols,
+                    "news_status": news_status,
+                    "calendar_status": calendar_status,
                     "watchlist": symbols,
+                    "watchlist_source": watchlist_source,
                     "next_actions": [
                         "Retry TLDR after quote/news providers recover.",
                         "Increase timeout/news_timeout/quote_timeout for an interactive summary.",
@@ -203,26 +253,68 @@ class TLDRFunction(BaseFunction):
             movers = [q for q in quotes if q.get("change_pct") is not None]
             ups_line = _format_movers(movers, positive=True)
             downs_line = _format_movers(movers, positive=False)
+            if not symbols:
+                ups_line = downs_line = "no holdings or symbols to rank (pass a symbol list)."
+            if news_summary:
+                news_line = "; ".join(news_summary[:3])
+            elif news_status == "empty":
+                news_line = "no headlines returned."
+            else:
+                news_line = f"unavailable ({news_reason})."
+            if calendar_status == "ok":
+                calendar_line = f"{calendar_total} scheduled."
+            else:
+                calendar_line = f"unavailable ({calendar_reason}); not a zero count."
             prose = (
                 f"# ShowMe TL;DR — {datetime.now(timezone.utc):%Y-%m-%d}\n\n"
                 f"- **Top movers up:** {ups_line}"
                 f"\n- **Top movers down:** {downs_line}"
-                + "\n- **News themes:** " + "; ".join(news_summary[:3])
-                + f"\n- **Calendar items:** {len(events)} scheduled."
+                + "\n- **News themes:** " + news_line
+                + f"\n- **Calendar items:** {calendar_line}"
                 + "\n- **Summary engine:** local deterministic template; no LLM response was available in the latency budget."
-                + "\n- **Action items:** review portfolio positions, scan ALRT log."
             )
 
         return FunctionResult(
             code=self.code, instrument=None,
-            data={"markdown": prose, "quotes": quotes,
+            data={"status": "ok", "markdown": prose, "quotes": quotes,
                    "news": news_summary, "events": events,
-                   "watchlist": symbols, "summary_model": summary_model,
+                   "bullets": bullets, "bullet_limit": bullet_limit,
+                   "evidence_per_bullet": evidence_limit,
+                   "composer_mode": "extractive",
+                   "symbols": symbols,
+                   "calendar_total": calendar_total,
+                   "news_status": news_status, "news_reason": news_reason,
+                   "calendar_status": calendar_status, "calendar_reason": calendar_reason,
+                   "watchlist": symbols, "watchlist_source": watchlist_source,
+                   "summary_model": summary_model,
                    "quote_count": len([q for q in quotes if q.get("last") is not None]),
                    "mover_count": len([q for q in quotes if q.get("change_pct") is not None])},
             sources=list(set(sources)) or ["local_briefing_model"],
             metadata={"format": "markdown", "provider_errors": warnings, "summary_model": summary_model},
         )
+
+
+def _payload_rows(result: Any, *keys: str) -> tuple[list[dict[str, Any]], str]:
+    """Rows from a sibling function result, plus an unavailable reason ("" when usable).
+
+    TOP and ECO return dict envelopes ({status, rows, ...}); a list
+    payload is accepted as-is. A non-ok status is reported, never read as zero rows.
+    """
+    data = getattr(result, "data", None)
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)], ""
+    if not isinstance(data, dict):
+        return [], "unexpected payload"
+    status = str(data.get("status") or "ok")
+    if status not in {"ok", "empty"}:
+        return [], str(data.get("reason") or status)
+    # Awareness-backed TOP and ECO answer ``rows``; the legacy envelopes used
+    # ``items`` / ``events``. The first list present wins.
+    for key in keys:
+        rows = data.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)], ""
+    return [], f"missing '{keys[0] if keys else 'rows'}' rows"
 
 
 def _parse_symbols(value: Any) -> list[str]:
@@ -248,3 +340,125 @@ def _format_movers(quotes: list[dict[str, Any]], *, positive: bool) -> str:
         empty = "No live negative movers returned by quote providers."
     line = ", ".join(f"{q['symbol']} ({q['change_pct']:+.2f}%)" for q in rows)
     return line or empty
+
+
+def _clamp_int(value: Any, *, default: int, low: int, high: int) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(float("inf")) raises it, not ValueError.
+        return default
+    return max(low, min(high, number))
+
+
+def _http_links(*candidates: Any) -> list[str]:
+    links: list[str] = []
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text.lower().startswith(("http://", "https://")) and text not in links:
+            links.append(text)
+    return links
+
+
+def _compose_bullets(
+    *,
+    symbols: list[str],
+    quotes: list[dict[str, Any]],
+    news_rows: list[dict[str, Any]],
+    news_status: str,
+    events: list[dict[str, Any]],
+    calendar_total: int,
+    calendar_status: str,
+    bullet_limit: int,
+    evidence_limit: int,
+) -> list[dict[str, Any]]:
+    """Bullets built only from evidence rows that were actually returned.
+
+    Each bullet lists its ``evidence`` rows, ``evidence_count`` and the HTTP(S)
+    ``evidence_links`` those rows carry. Quote and calendar rows carry no per-row
+    URL today, so their bullets have an empty ``evidence_links``. A candidate with
+    no evidence rows is omitted rather than filled in.
+    """
+    candidates: list[tuple[str, list[dict[str, Any]], list[str], list[str]]] = []
+
+    def _quote_row(q: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "kind": "quote",
+            "symbol": q.get("symbol"),
+            "last": q.get("last"),
+            "change_pct": q.get("change_pct"),
+            "source": q.get("quote_source"),
+            "evidence_links": [],
+        }
+
+    movers = [q for q in quotes if q.get("change_pct") is not None]
+    ups = sorted((q for q in movers if q["change_pct"] > 0), key=lambda q: -q["change_pct"])
+    downs = sorted((q for q in movers if q["change_pct"] < 0), key=lambda q: q["change_pct"])
+    if ups:
+        cited = ups[:evidence_limit]
+        text = "Top movers up: " + ", ".join(f"{q['symbol']} ({q['change_pct']:+.2f}%)" for q in cited)
+        candidates.append((text, [_quote_row(q) for q in cited], [], [q["symbol"] for q in cited]))
+    if downs:
+        cited = downs[:evidence_limit]
+        text = "Top movers down: " + ", ".join(f"{q['symbol']} ({q['change_pct']:+.2f}%)" for q in cited)
+        candidates.append((text, [_quote_row(q) for q in cited], [], [q["symbol"] for q in cited]))
+
+    answered = [q for q in quotes if q.get("last") is not None or q.get("change_pct") is not None]
+    if symbols and answered:
+        answered_symbols = {str(q.get("symbol")) for q in answered}
+        missing = [s for s in symbols if s not in answered_symbols]
+        text = f"Quotes returned for {len(answered)} of {len(symbols)} symbols"
+        if missing:
+            text += "; no quote for " + ", ".join(missing[:5])
+        cited = answered[:evidence_limit]
+        candidates.append((text + ".", [_quote_row(q) for q in cited], [], [str(q["symbol"]) for q in cited]))
+
+    if news_status == "ok" and news_rows:
+        cited_news = news_rows[:evidence_limit]
+        text = "News themes: " + "; ".join(str(a.get("title", "")) for a in cited_news)
+        rows: list[dict[str, Any]] = []
+        links: list[str] = []
+        for a in cited_news:
+            row_links = _http_links(a.get("url"), a.get("link"))
+            links.extend(link for link in row_links if link not in links)
+            rows.append({
+                "kind": "news",
+                "title": str(a.get("title", "")),
+                "source": a.get("source") or a.get("publisher") or None,
+                "evidence_links": row_links,
+            })
+        candidates.append((text, rows, links, []))
+
+    if calendar_status == "ok" and events:
+        cited_events = events[:evidence_limit]
+        names = [
+            " ".join(str(part) for part in (e.get("country") or e.get("Country"), e.get("event") or e.get("Event")) if part)
+            for e in cited_events
+        ]
+        text = f"Calendar items: {calendar_total} scheduled; " + "; ".join(n for n in names if n)
+        rows = [
+            {
+                "kind": "calendar",
+                "country": e.get("country") or e.get("Country"),
+                "event": e.get("event") or e.get("Event"),
+                "evidence_links": [],
+            }
+            for e in cited_events
+        ]
+        candidates.append((text, rows, [], []))
+
+    bullets: list[dict[str, Any]] = []
+    for text, rows, links, bullet_symbols in candidates:
+        if not rows:
+            continue
+        bullets.append({
+            "position": len(bullets) + 1,
+            "bullet_text": text,
+            "symbols": bullet_symbols,
+            "evidence_count": len(rows),
+            "evidence_links": links,
+            "evidence": rows,
+        })
+        if len(bullets) >= bullet_limit:
+            break
+    return bullets

@@ -63,8 +63,8 @@ def aim() -> FunctionManifest:
                 label="Status",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="Filter rows by order status (open / filled / cancelled).",
-                options=["open", "filled", "partially_filled", "cancelled", "rejected"],
+                description="Filter rows by order status (open / submitted / filled / cancelled).",
+                options=["open", "submitted", "filled", "partially_filled", "cancelled", "rejected"],
             ),
             InputSpec(
                 name="limit",
@@ -92,7 +92,7 @@ def aim() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
+                description="cached_snapshot skips live broker polling and shows only the local history tail; live_exchange polls every configured adapter.",
                 options=[
                     DataMode.LIVE_EXCHANGE.value,
                     DataMode.CACHED_SNAPSHOT.value,
@@ -153,14 +153,17 @@ def aim() -> FunctionManifest:
                 # `filled_today` is kept for contract stability).
                 CardSlot(key="filled_today", label="Filled", kind="kpi"),
                 CardSlot(key="brokers_online", label="Brokers", kind="kpi"),
-                CardSlot(key="total_notional", label="Notional", kind="kpi", unit="USD"),
+                # Indicative only: sums qty x price across symbols/quote currencies
+                # without FX conversion; unpriced rows are excluded (see unpriced_count).
+                CardSlot(key="total_notional", label="Notional (indicative)", kind="kpi"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda), calling "
-            "get_open_orders() in parallel and collecting per-broker results. Provider failures are "
+            "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda) one at a time "
+            "(sequential, not parallel), calling get_open_orders() and collecting per-broker results. "
+            "provider_mode=cached_snapshot skips live polling. Provider failures are "
             "recorded as warnings without dropping rows from working brokers. The persisted local "
             "order_history store contributes a configurable tail of recent orders so the user sees a "
             "cross-broker chronological ledger even when individual brokers are momentarily down. "
@@ -173,10 +176,16 @@ def aim() -> FunctionManifest:
             "orders[].side": FieldDef(description="BUY or SELL.", source="broker"),
             "orders[].quantity": FieldDef(unit="base", description="Order size in base units.", source="broker"),
             "orders[].price": FieldDef(unit="quote", description="Limit price; null for market orders.", source="broker"),
-            "orders[].status": FieldDef(description="open / filled / partially_filled / cancelled / rejected.", source="broker"),
+            "orders[].status": FieldDef(description="open / submitted / filled / partially_filled / cancelled / rejected. Local-history rows keep the status written at placement (submitted) and are not updated on fills.", source="broker"),
             "orders[].filled_qty": FieldDef(unit="base", description="Quantity executed so far.", source="broker"),
             "orders[].avg_fill_px": FieldDef(unit="quote", description="Volume-weighted average fill price.", source="broker"),
-            "brokers_checked": FieldDef(description="List of broker adapters AIM polled this refresh.", source="aim"),
+            "brokers_checked": FieldDef(
+                description=(
+                    "Configured broker adapters AIM attempted to poll this refresh (failed polls included; "
+                    "brokers_online lists those that answered). Empty for provider_mode=cached_snapshot."
+                ),
+                source="aim",
+            ),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

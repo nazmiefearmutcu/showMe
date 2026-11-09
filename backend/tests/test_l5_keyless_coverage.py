@@ -110,13 +110,15 @@ def test_open_meteo_to_onecall_translation() -> None:
     payload = {
         "daily": {
             "time": ["2026-09-11", "2026-09-12"],
+            "temperature_2m_mean": [16.5, 15.0],
             "temperature_2m_max": [22.0, 21.0],
             "temperature_2m_min": [14.0, 13.0],
             "precipitation_sum": [0.0, 2.5],
         }
     }
     out = open_meteo_to_onecall(payload)
-    assert out["daily"][0]["temp"]["day"] == 18.0
+    # WETR#2: day is the provider daily mean, not the 18.0 high/low midpoint.
+    assert out["daily"][0]["temp"]["day"] == 16.5
     assert out["daily"][1]["temp"]["min"] == 13.0
     assert out["daily"][1]["precipitation"] == 2.5
 
@@ -162,10 +164,10 @@ def test_wetr_reference_true_skips_provider_and_serves_labelled_model() -> None:
         WETRFunction(FunctionDeps(open_meteo=fake)).execute(reference=True)
     )
     assert fake.calls == 0, "reference=true must not hit the live provider"
-    assert result.data["source_mode"] == "seasonal_model"
-    assert result.sources == ["seasonal_weather_model"]
-    assert result.metadata.get("fallback") is True
-    assert result.metadata.get("data_mode") == "modeled"
+    # No synthetic seasonal model is served: an explicit input_error, no rows.
+    assert result.data["status"] == "input_error"
+    assert result.data["rows"] == []
+    assert result.sources == []
     assert _body(result)["data_state"] != "live"
 
 
@@ -176,7 +178,10 @@ def test_wetr_provider_outage_is_labelled_not_live() -> None:
         WETRFunction(FunctionDeps(open_meteo=_FakeOpenMeteo(fail=True))).execute()
     )
     assert result.data["status"] == "provider_unavailable"
-    assert result.data["source_mode"] == "seasonal_model"
+    # WETR-R1: an outage serves no synthetic model rows, so it no longer
+    # claims the seasonal_model source mode.
+    assert result.data["source_mode"] == "provider_unavailable"
+    assert result.data["rows"] == []
     assert result.metadata.get("fallback") is True
     sanitized = _body(result)
     assert sanitized["data_state"] != "live"
@@ -282,28 +287,32 @@ def test_tauc_reference_true_keeps_labelled_template() -> None:
     assert result.sources == ["treasury_auction_model"]
 
 
-def test_tauc_provider_failure_is_labelled_fallback() -> None:
+def test_tauc_provider_failure_is_unavailable_not_a_template() -> None:
+    # DATA POLICY: a failed live feed must not be replaced by invented rows.
     from showme.engine.functions.bond.tauc import TAUCFunction
 
     result = asyncio.run(
         TAUCFunction(FunctionDeps(treasury_auctions=_FakeTreasuryAuctions(boom=True))).execute()
     )
-    assert result.data["summary"]["source_mode"] == "treasury_auction_fallback"
-    assert result.sources == ["treasury_auction_fallback"]
-    assert result.metadata.get("fallback") is True
+    assert result.data["rows"] == []
+    assert result.data["summary"]["source_mode"] == "treasurydirect_unavailable"
+    assert result.sources == ["treasurydirect"]
+    assert result.metadata.get("live") is False
     assert result.warnings
     sanitized = _body(result)
     assert sanitized["data_state"] != "live"
     assert sanitized["status"] == "provider_unavailable"
 
 
-def test_tauc_without_adapter_stays_labelled_model() -> None:
+def test_tauc_without_adapter_is_unavailable_not_a_template() -> None:
+    # DATA POLICY: no adapter means no rows, not an invented calendar.
     from showme.engine.functions.bond.tauc import TAUCFunction
 
     result = asyncio.run(TAUCFunction(FunctionDeps()).execute())
-    assert result.sources == ["treasury_auction_model"]
-    assert result.metadata.get("fallback") is True
-    assert result.data["summary"]["source_mode"] == "treasury_auction_model"
+    assert result.data["rows"] == []
+    assert result.data["status"] == "provider_unavailable"
+    assert result.sources == ["treasurydirect"]
+    assert result.data["summary"]["source_mode"] == "treasurydirect_unavailable"
     assert _body(result)["data_state"] != "live"
 
 

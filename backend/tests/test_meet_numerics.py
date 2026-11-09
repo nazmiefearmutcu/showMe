@@ -4,6 +4,8 @@ Hermetic (live FF snapshot carries no Actual+Forecast pairs most weeks).
 """
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 
@@ -170,15 +172,14 @@ class _FakeFFClient:
         return _R()
 
 
-def test_surprise_only_needs_computable_surprise():
-    payload = [
-        _row(title="Good", actual="3.3%", forecast="3.2%"),
-        _row(title="Mismatch", actual="3.3%", forecast="3.2"),
-        _row(title="NoPrint", actual="", forecast="3.2%"),
-    ]
-    fn = meet_mod.MEETFunction(deps=FunctionDeps(gdelt=_FakeGDELT()))
-    fn._http_client = _FakeFFClient(payload)
-    result = _run(fn.execute(data_filter="surprise_only", limit=100))
-    titles = [r["title"] for r in result.data["rows"]]
-    assert titles == ["Good"]
-    assert result.data["rows"][0]["details"]["surprise"] == 0.1
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

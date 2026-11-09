@@ -22,7 +22,8 @@ def _db_file():
     return runtime_path("tax_lots.sqlite")
 
 
-_LT_THRESHOLD_DAYS = 365
+# Default long-term cutoff in days; LOTS passes its own value as long_term_days.
+DEFAULT_LONG_TERM_DAYS = 365
 
 
 def _db() -> sqlite3.Connection:
@@ -105,7 +106,8 @@ def _sort_lots(lots: list[dict[str, Any]], method: str) -> list[dict[str, Any]]:
 
 def sell(*, symbol: str, quantity: float, price: float,
          method: str = "FIFO", account: str | None = None,
-         specific_lot_ids: Iterable[str] | None = None) -> dict[str, Any]:
+         specific_lot_ids: Iterable[str] | None = None,
+         long_term_days: int = DEFAULT_LONG_TERM_DAYS) -> dict[str, Any]:
     """Consume open lots. Returns realized P&L breakdown.
 
     method ∈ {FIFO, LIFO, HIFO, LOFO, SPECIFIC}
@@ -143,7 +145,7 @@ def sell(*, symbol: str, quantity: float, price: float,
         proceed = price * take
         pnl = proceed - cost
         days = max(0, (now_ts - lot["opened_at"]) // 86400)
-        term = "long" if days >= _LT_THRESHOLD_DAYS else "short"
+        term = "long" if days >= long_term_days else "short"
         # Update lot closed_qty
         con.execute("UPDATE lots SET closed_qty = closed_qty + ? WHERE lot_id = ?",
                     [take, lot["lot_id"]])
@@ -173,6 +175,7 @@ def sell(*, symbol: str, quantity: float, price: float,
         "cost_basis_total": cost_basis_total,
         "sale_proceeds": sale_proceeds,
         "realized_pnl_total": realized_pnl,
+        "long_term_threshold_days": int(long_term_days),
     }
 
 

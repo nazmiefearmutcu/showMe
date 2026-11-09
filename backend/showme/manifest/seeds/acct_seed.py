@@ -1,9 +1,13 @@
-"""ACCT — Account Truth (balance, margin, equity, buying power).
+"""ACCT — Multi-Account Aggregation (position roll-up across accounts).
 
-Per-broker account-level snapshot sourced directly from each broker's
-``account()`` call. PORT aggregates across many credentials; ACCT
-shows one credential's authoritative numbers without computation, so
-the user can reconcile their own broker UI against the showMe ledger.
+Groups saved or supplied positions by account, marks each one with a live
+last price, and shows per-account and cross-account exposure. Positions
+without a live mark stay visible, carry null market value, and are excluded
+from totals; they are never valued at average cost.
+
+This describes the served handler (engine/functions/portfolio/acct.py). It
+does not read broker account() snapshots: equity, cash, margin and buying
+power are not returned here.
 """
 from __future__ import annotations
 
@@ -15,7 +19,6 @@ from ..enums import (
 )
 from ..registry import manifest
 from ..spec import (
-    AlertingSpec,
     CachingPolicy,
     CardSchema,
     CardSlot,
@@ -34,67 +37,56 @@ from ..spec import (
 def acct() -> FunctionManifest:
     return FunctionManifest(
         code="ACCT",
-        name="Account Truth",
+        name="Multi-Account Aggregation",
         category=Category.PORTFOLIO,
         intent=(
-            "Show one connected broker's authoritative account snapshot — "
-            "equity, cash, margin used, free margin, maintenance level, and "
-            "buying power — exactly as the broker reports it."
+            "Roll up saved or supplied positions by account, mark them at the "
+            "live last price, and show per-account and cross-account exposure. "
+            "Unpriced positions stay visible and are excluded from totals."
         ),
         asset_classes=[
             AssetClass.EQUITY,
+            AssetClass.ETF,
             AssetClass.CRYPTO,
-            AssetClass.FUTURE,
-            AssetClass.OPTION,
         ],
         inputs=[
             InputSpec(
-                name="credential_id",
-                label="Account",
-                control=ControlKind.SELECT,
-                required=True,
-                description="Pick one credential from the exchange vault.",
-            ),
-            InputSpec(
-                name="ccy",
-                label="Display currency",
-                control=ControlKind.SELECT,
+                name="positions",
+                label="Positions (JSON)",
+                control=ControlKind.TEXT,
                 required=False,
                 description=(
-                    "If broker reports in a different currency, convert via "
-                    "the FX adapter. Native ccy is always also shown."
+                    "Optional JSON array of {symbol, asset_class, quantity, avg_cost, last, account}. "
+                    "Used only when no saved portfolio positions exist. A row without last is unpriced."
                 ),
-                options=["native", "USD", "EUR", "GBP", "TRY", "JPY"],
             ),
             InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
+                name="mark_timeout",
+                label="Mark timeout",
+                control=ControlKind.NUMBER,
                 required=False,
-                description="Preferred data mode; chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_EXCHANGE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Per-symbol live mark timeout; clamped to 8-12 s.",
+                min=8,
+                max=12,
+                step=1,
+                unit="s",
             ),
         ],
         defaults={
-            "ccy": "native",
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
+            "mark_timeout": 8,
         },
         provider_chain=ProviderChain(
-            primary="ccxt_broker",
-            fallbacks=["cached_snapshot"],
+            primary="yfinance",
+            fallbacks=[],
             acceptable_modes=[
-                DataMode.LIVE_EXCHANGE,
-                DataMode.CACHED_SNAPSHOT,
-                DataMode.NOT_CONFIGURED,
+                DataMode.DELAYED_REFERENCE,
+                DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=15, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["as_of", "credential_id", "currency", "equity", "cash", "data_mode"],
-            rows=False,
+            must_have=["status", "accounts", "cross", "summary"],
+            rows=True,
             series=False,
             cards=True,
             warnings=True,
@@ -104,80 +96,74 @@ def acct() -> FunctionManifest:
         table_schema=None,
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="equity", label="Equity", kind="big_number", unit="ccy"),
-                CardSlot(key="cash", label="Cash", kind="kpi", unit="ccy"),
-                CardSlot(key="margin_used", label="Margin Used", kind="kpi", unit="ccy"),
-                CardSlot(key="free_margin", label="Free Margin", kind="kpi", unit="ccy"),
-                CardSlot(key="maintenance_level_pct", label="Maint. %", kind="kpi", unit="%"),
-                CardSlot(key="buying_power", label="Buying Power", kind="kpi", unit="ccy"),
-                CardSlot(key="leverage", label="Leverage", kind="kpi"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="total_market_value", label="Market Value", kind="big_number", unit="ccy"),
+                CardSlot(key="accounts_count", label="Accounts", kind="kpi"),
+                CardSlot(key="positions", label="Positions", kind="kpi"),
+                CardSlot(key="unpriced_positions", label="Unpriced", kind="kpi"),
             ],
         ),
         methodology=(
-            "ACCT resolves the chosen credential through the broker factory, "
-            "calls the broker's account() method exactly once per refresh, "
-            "and surfaces the raw numbers without recomputation. Margin and "
-            "maintenance levels come straight from the venue (so the user "
-            "can reconcile against the broker's own UI). Optional display-ccy "
-            "conversion uses the same FX adapter as PORT, with the native "
-            "currency value always preserved alongside. No positions are "
-            "joined here — that is PORT's job."
+            "ACCT groups positions by account and marks each one at its live last price "
+            "(yfinance quote). Market value is quantity times last; unrealized P&L is "
+            "(last minus average cost) times quantity. Positions with no live mark are "
+            "listed with null market value and unrealized P&L, counted in unpriced_positions, "
+            "and excluded from every total. Cross-account exposure sums priced positions by "
+            "asset class and by symbol."
         ),
         formula_dict={
-            "FreeMargin": Formula(
-                expression="free = equity - margin_used",
-                variables={"equity": "Broker-reported equity", "margin_used": "Notional used"},
-            ),
-            "MaintenanceLevel": Formula(
-                expression=r"maint\_pct = margin\_used / equity \times 100",
-                variables={},
-                notes="Below the venue's maintenance threshold triggers a margin call.",
+            "UnrealizedPnL": Formula(
+                expression=r"upnl_i = (p_i - c_i) \times q_i",
+                variables={
+                    "p_i": "Live last price",
+                    "c_i": "Average cost",
+                    "q_i": "Quantity",
+                },
+                notes="Null when the position has no live mark.",
             ),
         },
         field_dict={
-            "equity": FieldDef(unit="ccy", description="Broker equity = cash + unrealized PnL.", source="broker"),
-            "cash": FieldDef(unit="ccy", description="Settled cash balance.", source="broker"),
-            "margin_used": FieldDef(unit="ccy", description="Notional collateral locked by open positions.", source="broker"),
-            "free_margin": FieldDef(unit="ccy", description="equity − margin_used.", source="computed"),
-            "maintenance_level_pct": FieldDef(unit="%", description="Current maintenance margin level.", source="broker"),
-            "buying_power": FieldDef(unit="ccy", description="Available notional for new positions.", source="broker"),
-            "leverage": FieldDef(unit="x", description="Account-wide leverage if exposed by the venue.", source="broker"),
+            "accounts[].positions[].market_value": FieldDef(
+                unit="ccy",
+                description="Quantity times live last price; null when unpriced.",
+                source="computed",
+            ),
+            "accounts[].positions[].unrealized_pnl": FieldDef(
+                unit="ccy",
+                description="(last - avg_cost) times quantity; null when unpriced.",
+                source="computed",
+            ),
+            "cross.unpriced_symbols": FieldDef(
+                description="Symbols with no live mark, excluded from totals.",
+                source="computed",
+            ),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
             require_as_of=True,
             require_latency_ms=True,
         ),
-        alerting=AlertingSpec(
-            conditions=["maintenance_level_below", "free_margin_below", "equity_drawdown_pct"],
-            delivery=["tray", "notification", "log"],
-        ),
+        alerting=None,
         semantic_tests=[
             SemanticTest(
-                name="acct_returns_native_currency_when_ccy_native",
-                description="ccy=native returns broker's native equity, cash, margin without FX conversion.",
-                inputs={"credential_id": "mock_credential_1", "ccy": "native"},
+                name="acct_unpriced_position_never_valued_at_cost",
+                description="A position with no live mark has null market value and is not added to totals.",
+                inputs={"positions": "[{\"symbol\":\"TLT\",\"quantity\":10,\"avg_cost\":90}]"},
                 assertions=[
-                    "currency == broker_native_currency",
-                    "no_fx_conversion_applied",
+                    "accounts[].positions[].market_value is null for unpriced rows",
+                    "cross.total_mv excludes unpriced rows",
                 ],
             ),
             SemanticTest(
-                name="acct_free_margin_equals_equity_minus_margin_used",
-                description="Computed free_margin matches the documented formula exactly.",
-                inputs={"credential_id": "mock_credential_1"},
-                assertions=["free_margin == equity - margin_used"],
+                name="acct_totals_are_sum_of_priced_positions",
+                description="Cross-account total equals the sum of priced market values.",
+                inputs={},
+                assertions=["cross.total_mv == sum(priced market_value)"],
             ),
             SemanticTest(
-                name="acct_missing_credential_returns_not_configured",
-                description="Unknown credential id returns data_mode=not_configured plus an actionable warning.",
-                inputs={"credential_id": "does_not_exist"},
-                assertions=[
-                    "data_mode == 'not_configured'",
-                    "warnings_non_empty",
-                ],
+                name="acct_no_positions_reports_ready_no_positions",
+                description="With no saved or supplied positions the status is ready_no_positions, not a zero portfolio.",
+                inputs={},
+                assertions=["status == 'ready_no_positions'", "accounts == []"],
             ),
         ],
     )

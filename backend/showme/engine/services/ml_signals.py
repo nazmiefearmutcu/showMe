@@ -3,8 +3,9 @@
 Feature stack: returns lags, RSI, MACD, ATR, Bollinger %B, volume z-score,
 day-of-week one-hot. Target: sign of N-day forward return.
 
-Backend chain: LightGBM → XGBoost → sklearn GradientBoosting → logistic.
-Falls through gracefully so the function works on any environment.
+Backend chain: LightGBM → XGBoost → sklearn GradientBoosting → NumPy linear
+probability model (lstsq, thresholded at 0.5). Falls through gracefully so the
+function works on any environment; the backend that ran is always reported.
 """
 
 from __future__ import annotations
@@ -13,6 +14,10 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+
+_NON_FEATURE_COLUMNS = ("target", "fwd_ret_1")
+_SIGNAL_BY_DIRECTION = {"up": "long_bias", "down": "short_bias", "flat": "neutral"}
 
 
 def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -51,6 +56,8 @@ def _bb_pct(close: pd.Series, period: int = 20, std: float = 2.0) -> pd.Series:
 
 
 def make_features(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
+    """Feature matrix plus labels. The newest bars have no forward label yet
+    (``target`` is NaN there) but are kept so the latest bar can be scored."""
     f = pd.DataFrame(index=df.index)
     f["ret_1"] = df["close"].pct_change(1)
     f["ret_3"] = df["close"].pct_change(3)
@@ -69,22 +76,62 @@ def make_features(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
     # Target: sign of forward N-bar return
     fwd = df["close"].pct_change(horizon).shift(-horizon)
     f["target"] = np.sign(fwd)
-    return f.dropna()
+    # Realised return over the NEXT bar (t -> t+1): the P&L of a position
+    # decided at the close of bar t. Kept out of the feature matrix.
+    f["fwd_ret_1"] = df["close"].pct_change().shift(-1)
+    feature_cols = [c for c in f.columns if c not in _NON_FEATURE_COLUMNS]
+    return f.dropna(subset=feature_cols)
+
+
+def _oos_sharpe(positions: np.ndarray, realised_next: pd.Series) -> float:
+    """Annualised Sharpe of out-of-sample positions times next-bar returns."""
+    strat = pd.Series(np.asarray(positions, dtype=float) * realised_next.to_numpy(dtype=float))
+    if len(strat) < 2:
+        return float("nan")
+    sd = float(strat.std())
+    if not np.isfinite(sd) or sd == 0.0:
+        return float("nan")
+    return float(strat.mean() / sd * (252 ** 0.5))
+
+
+def _wilson_interval(successes: int, n: int, z: float = 1.959963984540054) -> list[float] | None:
+    """Wilson score interval for a proportion, clipped to [0, 1]. None when n is 0."""
+    if n <= 0:
+        return None
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return [float(max(0.0, centre - half)), float(min(1.0, centre + half))]
+
+
+def _direction_label(value: float) -> str:
+    if value > 0:
+        return "up"
+    if value < 0:
+        return "down"
+    return "flat"
 
 
 def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
-    """Train a classifier on features (last 30% as test) and report metrics."""
-    y = features["target"]
-    X = features.drop(columns="target")
-    n = len(features)
+    """Train a classifier on the labelled rows (first 70%) and report metrics.
+
+    The latest prediction is made from the newest bar with the same model.
+    The signal is derived from that prediction; accuracy is reported separately.
+    """
+    labelled = features.loc[features["target"].notna()]
+    n = len(labelled)
     if n < 100:
         return {"error": "need at least 100 rows"}
+    y = labelled["target"]
+    X = labelled.drop(columns=list(_NON_FEATURE_COLUMNS))
+    X_latest = features.drop(columns=list(_NON_FEATURE_COLUMNS)).iloc[[-1]]
     split = int(n * 0.7)
     X_train, X_test = X.iloc[:split], X.iloc[split:]
     y_train, y_test = y.iloc[:split], y.iloc[split:]
 
     pred_test = None
-    pred_full = None
+    pred_latest = None
     feat_imp: dict[str, float] = {}
     backend = "logistic"
     try:
@@ -93,7 +140,7 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
                                  learning_rate=0.05, verbose=-1)
         m.fit(X_train, y_train)
         pred_test = m.predict(X_test)
-        pred_full = m.predict(X)
+        pred_latest = m.predict(X_latest)
         feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
         backend = "lightgbm"
     except Exception:
@@ -104,8 +151,9 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
             m = xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05,
                                     use_label_encoder=False, eval_metric="logloss")
             m.fit(X_train, y_train.replace({-1: 0, 0: 0, 1: 1}))
-            pred_test = m.predict(X_test)
-            pred_full = m.predict(X)
+            # xgboost labels were 0/1 (down/not-up vs up): map to a signed position.
+            pred_test = np.where(np.asarray(m.predict(X_test), dtype=float) > 0.5, 1, -1)
+            pred_latest = np.where(np.asarray(m.predict(X_latest), dtype=float) > 0.5, 1, -1)
             feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
             backend = "xgboost"
         except Exception:
@@ -116,23 +164,32 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
             m = GradientBoostingClassifier(n_estimators=200, max_depth=3, learning_rate=0.05)
             m.fit(X_train, y_train.replace({0: 1}))
             pred_test = m.predict(X_test)
-            pred_full = m.predict(X)
+            pred_latest = m.predict(X_latest)
             feat_imp = dict(zip(X.columns, m.feature_importances_.tolist()))
             backend = "sklearn_gb"
         except Exception:
             pass
     if pred_test is None:
-        # Logistic baseline (pure NumPy)
-        Xt = X_train.values
+        # Linear probability baseline (pure NumPy). Features are standardised on
+        # the training slice so |coefficient| is comparable across units; the
+        # affine change leaves OLS predictions unchanged.
+        mu = X_train.mean()
+        sd = X_train.std(ddof=0).replace(0.0, 1.0).fillna(1.0)
+
+        def _standardise(frame: pd.DataFrame) -> np.ndarray:
+            return ((frame - mu) / sd).to_numpy(dtype=float)
+
+        Z_train = _standardise(X_train)
         yt = y_train.replace({-1: 0, 0: 0, 1: 1}).values.astype(float)
-        Xt = np.column_stack([np.ones(len(Xt)), Xt])
+        Zt = np.column_stack([np.ones(len(Z_train)), Z_train])
         try:
-            beta, *_ = np.linalg.lstsq(Xt, yt, rcond=None)
-            Xtest_aug = np.column_stack([np.ones(len(X_test)), X_test.values])
-            pred_test = np.sign(Xtest_aug @ beta - 0.5)
-            pred_full = np.sign(np.column_stack([np.ones(n), X.values]) @ beta - 0.5)
+            beta, *_ = np.linalg.lstsq(Zt, yt, rcond=None)
+            Ztest_aug = np.column_stack([np.ones(len(X_test)), _standardise(X_test)])
+            pred_test = np.where(Ztest_aug @ beta > 0.5, 1, -1)
+            latest_aug = np.column_stack([np.ones(len(X_latest)), _standardise(X_latest)])
+            pred_latest = np.where(latest_aug @ beta > 0.5, 1, -1)
             feat_imp = dict(zip(X.columns, np.abs(beta[1:]).tolist()))
-            backend = "lstsq_logistic"
+            backend = "lstsq_linear_probability"
         except Exception:
             return {"error": "no ML backend available"}
 
@@ -140,21 +197,31 @@ def fit_predict(features: pd.DataFrame) -> dict[str, Any]:
     actual = y_test.values
     # Accuracy ignoring zeros
     mask = actual != 0
-    acc = float((pred_test[mask] == actual[mask]).mean()) if mask.any() else float("nan")
-    # Sharpe of strategy = take pred * next-bar return
-    if pred_full is not None:
-        sig = pd.Series(pred_full, index=X.index)
-        # next-bar realized return
-        # Use 1-step return shift
-        rets = features["target"].astype(float)
-        strat = sig.shift(1) * rets
-        sharpe = float(strat.mean() / (strat.std() + 1e-9)) * (252 ** 0.5)
-    else:
-        sharpe = float("nan")
+    scored = int(mask.sum())
+    correct = int((pred_test[mask] == actual[mask]).sum())
+    acc = float(correct / scored) if scored else float("nan")
+    # Reference points for reading the accuracy: always-long share of up labels
+    # among the scored rows, and a 95% interval (test set is small).
+    baseline_long = float((actual[mask] == 1).mean()) if scored else float("nan")
+    ci95 = _wilson_interval(correct, scored) if scored else None
+    # Strategy: out-of-sample position decided at bar t's close, earning the
+    # realised t -> t+1 return. In-sample fitted values are never used.
+    sharpe = _oos_sharpe(pred_test, labelled["fwd_ret_1"].iloc[split:])
+    latest_value = int(np.sign(float(np.asarray(pred_latest, dtype=float).reshape(-1)[0])))
+    direction = _direction_label(latest_value)
+    last_index = features.index[-1]
     return {
         "backend": backend,
         "test_accuracy": acc,
         "test_samples": int(len(actual)),
+        "scored_samples": scored,
+        "test_baseline_always_long_accuracy": baseline_long,
+        "test_accuracy_ci95": ci95,
         "feature_importance": dict(sorted(feat_imp.items(), key=lambda kv: -kv[1])[:15]),
         "strategy_sharpe": sharpe,
+        "latest_prediction": direction,
+        "latest_prediction_value": latest_value,
+        "latest_bar": last_index.isoformat() if hasattr(last_index, "isoformat") else str(last_index),
+        "signal": _SIGNAL_BY_DIRECTION[direction],
+        "labelled_samples": n,
     }

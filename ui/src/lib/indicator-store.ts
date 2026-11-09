@@ -4,6 +4,7 @@
  */
 import { create } from "zustand";
 import { sidecarFetch } from "./sidecar";
+import { foldSearchText } from "./search-fold";
 
 export interface IndicatorParam {
   name: string;
@@ -65,15 +66,15 @@ export const useIndicatorStore = create<IndicatorStoreShape>((set, get) => ({
   byId: (id) => get().entries.find((e) => e.id === id),
 
   search: (q, family) => {
-    const query = q.trim().toLowerCase();
+    const query = foldSearchText(q.trim());
     return get().entries.filter((e) => {
       if (family && e.family !== family) return false;
       if (!query) return true;
       return (
-        e.id.toLowerCase().includes(query) ||
-        e.display_name.toLowerCase().includes(query) ||
-        e.family.toLowerCase().includes(query) ||
-        e.short_description.toLowerCase().includes(query)
+        foldSearchText(e.id).includes(query) ||
+        foldSearchText(e.display_name).includes(query) ||
+        foldSearchText(e.family).includes(query) ||
+        foldSearchText(e.short_description).includes(query)
       );
     });
   },

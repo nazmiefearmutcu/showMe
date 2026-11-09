@@ -67,7 +67,7 @@ def _norm_ppf(p: float) -> float:
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
-from showme.engine.functions.portfolio.return_series import align_return_series, close_to_daily_returns
+from showme.engine.functions.portfolio.return_series import close_to_daily_returns
 from showme.engine.portfolio.state import PortfolioState
 
 
@@ -80,15 +80,33 @@ class PVARFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         days = int(params.get("days", params.get("lookback_days", 252)))
-        confidence = float(params.get("confidence", params.get("confidence_level", 0.95)))
+        # PVAR#2: the default matches the manifest default (pvar_seed defaults
+        # confidence_level=0.99). An out-of-range value is an explicit input
+        # error, never a silent substitution.
+        raw_confidence = params.get("confidence", params.get("confidence_level", _DEFAULT_CONFIDENCE))
+        try:
+            confidence = float(raw_confidence)
+        except (TypeError, ValueError):
+            confidence = float("nan")
         if not (0.0 < confidence < 1.0):
-            confidence = 0.95
+            return _input_error(
+                self.code, params, instrument,
+                f"confidence must be strictly between 0 and 1 (got {raw_confidence!r}).",
+                "Pass a confidence strictly between 0 and 1, for example 0.95 or 0.99.",
+            )
         horizon_days = _horizon_days(params.get("horizon", "1d"))
-        method = str(params.get("method", "parametric")).strip().lower()
-        if method not in {"parametric", "historical"}:
-            # monte_carlo is not implemented keyless-ly; fall back to the
-            # most honest empirical estimator we can actually compute.
-            method = "historical"
+        # Default matches pvar_seed defaults (method="historical"); no silent estimator choice.
+        method = str(params.get("method", _DEFAULT_METHOD)).strip().lower()
+        if method not in _SUPPORTED_METHODS:
+            # PVAR#3: monte_carlo is not implemented. Substituting another
+            # estimator would present its numbers as the requested method, so
+            # the request is rejected with the reason instead.
+            return _input_error(
+                self.code, params, instrument,
+                f"method {method!r} is not implemented; use one of "
+                f"{', '.join(sorted(_SUPPORTED_METHODS))}.",
+                f"Pass method as one of {', '.join(sorted(_SUPPORTED_METHODS))}.",
+            )
         max_positions = max(1, int(params.get("max_positions", 12)))
         provider_timeout = float(params.get("yfinance_timeout", params.get("quote_timeout", 4)))
         # Live, real-data is now the DEFAULT path. `live_risk=false` only
@@ -103,13 +121,23 @@ class PVARFunction(BaseFunction):
                      if p.instrument.asset_class.value not in ("MACRO", "BOND")]
         if not eligible:
             return _empty_pvar(self.code, confidence, params, instrument, "no eligible portfolio positions")
-        eligible = sorted(
+        # PVAR#1: keep the full eligible book for coverage; only the largest
+        # ``max_positions`` are analysed, and the rest are named in a warning.
+        eligible_book = sorted(
             eligible,
             key=lambda p: abs(float(p.quantity or 0) * float(p.avg_cost or 0)),
             reverse=True,
-        )[:max_positions]
+        )
+        eligible = eligible_book[:max_positions]
+        excluded_symbols = [p.instrument.symbol for p in eligible_book[max_positions:]]
 
         warnings: list[str] = []
+        if excluded_symbols:
+            warnings.append(
+                f"PVAR: max_positions={max_positions} excludes "
+                f"{len(excluded_symbols)} of {len(eligible_book)} eligible positions "
+                f"({', '.join(excluded_symbols)}) from VaR/ES; raise max_positions to cover the full book."
+            )
         last_map = {}
         if live:
             async def _ret(p):
@@ -127,16 +155,26 @@ class PVARFunction(BaseFunction):
                 except Exception:
                     return p.instrument.symbol, pd.Series(dtype=float), None
             rs = await asyncio.gather(*(_ret(p) for p in eligible))
-            # Audit Q3 #7: pairwise covariance for mixed universes.
-            rets_df = align_return_series(
-                ((s, r) for s, r, _ in rs), policy="pairwise"
-            )
-            last_map = {s: px for s, _, px in rs if px is not None}
-            if rets_df.empty:
+            # PVAR#4: one common return calendar. Each symbol's returns span its
+            # own trading days, so they are not comparable on shared dates until
+            # re-based onto the dates every position traded (see
+            # _common_calendar_returns).
+            aligned_input = [(s, r) for s, r, _ in rs]
+            if not any(not r.empty for _, r in aligned_input):
                 # Genuine network/data outage — never fabricate numbers.
                 return _empty_pvar(
                     self.code, confidence, params, instrument,
                     "no live return history (yfinance returned no data)",
+                )
+            rets_df = _common_calendar_returns(aligned_input)
+            last_map = {s: px for s, _, px in rs if px is not None}
+            if len(rets_df) < _MIN_COMMON_SAMPLES:
+                # Too few shared dates for a meaningful covariance; say so rather
+                # than reporting a VaR built on a handful of observations.
+                return _empty_pvar(
+                    self.code, confidence, params, instrument,
+                    f"only {len(rets_df)} common return dates across the price histories "
+                    f"(yfinance); at least {_MIN_COMMON_SAMPLES} are needed",
                 )
             # HNT-15: a symbol whose history failed to download silently
             # left the headline VaR/ES covering only a subset of the book —
@@ -157,9 +195,20 @@ class PVARFunction(BaseFunction):
             warnings.append("live_risk=false: returns are simulated, not market data.")
         # Build current weights from positions × last close
         notional_map = {}
+        cost_basis_fallback: list[str] = []
         for p in eligible:
-            px = last_map.get(p.instrument.symbol) or p.avg_cost
+            px = last_map.get(p.instrument.symbol)
+            if not px:
+                # PVAR#6: without a live close the notional (and so the weight)
+                # is cost-basis. Disclose it rather than present it as market value.
+                px = p.avg_cost
+                cost_basis_fallback.append(p.instrument.symbol)
             notional_map[p.instrument.symbol] = p.quantity * px
+        if cost_basis_fallback:
+            warnings.append(
+                "PVAR: no live close for " + ", ".join(cost_basis_fallback)
+                + "; their notional and weight use avg cost, not market value."
+            )
         total = sum(abs(notional_map.get(s, 0.0)) for s in rets_df.columns) or 1.0
         weights = {s: notional_map.get(s, 0.0) / total for s in rets_df.columns}
         w_vec = np.array([weights[s] for s in rets_df.columns])
@@ -283,15 +332,20 @@ class PVARFunction(BaseFunction):
                 "historical_es_dollar": hist_es_pct * total,
                 "portfolio_total_notional": total,
                 "portfolio_annualized_vol": port_vol,
-                # Legacy fields kept so existing UI bindings keep working
-                # (negative = loss convention here, matches prior contract).
-                "portfolio_daily_var_pct": -param_var_pct,
-                "portfolio_daily_var_dollar": -param_var_pct * total,
+                # Legacy aliases kept for old bindings. PVAR#5: they use the same
+                # sign as the headline (positive = loss) and the parametric VaR
+                # at the requested horizon, despite the historical "daily" name.
+                "portfolio_daily_var_pct": param_var_pct,
+                "portfolio_daily_var_dollar": param_var_pct * total,
                 "samples": int(len(rets_df)),
+                "return_calendar": "common_return_dates",
                 "positions_analyzed": int(len(rets_df.columns)),
-                # HNT-15: analysed share of the eligible book so a subset
-                # VaR is visible at a glance (1.0 = full coverage).
-                "coverage_pct": round(len(rets_df.columns) / len(eligible), 4) if eligible else None,
+                # HNT-15 / PVAR#1: analysed share of the FULL eligible book, so a
+                # subset VaR (from a cap or a failed download) is visible at a glance.
+                "positions_eligible": len(eligible_book),
+                "excluded_symbols": excluded_symbols,
+                "cost_basis_fallback_symbols": cost_basis_fallback,
+                "coverage_pct": round(len(rets_df.columns) / len(eligible_book), 4) if eligible_book else None,
                 "max_positions": max_positions,
                 "rows": rows,
                 "series": series,
@@ -301,12 +355,14 @@ class PVARFunction(BaseFunction):
                     "method": method,
                     "horizon": params.get("horizon", "1d"),
                     "positions_analyzed": int(len(rets_df.columns)),
-                    "coverage_pct": round(len(rets_df.columns) / len(eligible), 4) if eligible else None,
+                    "positions_eligible": len(eligible_book),
+                    "coverage_pct": round(len(rets_df.columns) / len(eligible_book), 4) if eligible_book else None,
                     "var": var_dollar,
                     "expected_shortfall": es_dollar,
                 },
                 "methodology": (
-                    "Position-level VaR/ES from real daily returns. Parametric (variance-"
+                    "Position-level VaR/ES from real daily returns on one common return calendar "
+                    "(dates every position has a return for; see samples). Parametric (variance-"
                     "covariance) path estimates daily covariance Σ from yfinance OHLCV, computes "
                     "portfolio volatility sqrt(w'Σw), and reports VaR = -μΔt + z_α σ √Δt with ES = "
                     "μΔt + σ √Δt φ(z)/(1-α). Historical-simulation path takes the empirical loss "
@@ -319,6 +375,8 @@ class PVARFunction(BaseFunction):
                     "var": "Loss at the requested confidence and horizon; positive = loss, portfolio ccy.",
                     "expected_shortfall": "Conditional expected loss beyond VaR (>= VaR).",
                     "var_pct": "VaR as a fraction of portfolio notional.",
+                    "portfolio_daily_var_pct": "Legacy alias: parametric VaR as a positive fraction of notional at the requested horizon (positive = loss; not 1-day unless horizon=1d).",
+                    "portfolio_daily_var_dollar": "Legacy alias: parametric VaR in ccy at the requested horizon (positive = loss).",
                     "parametric_var_dollar": "Variance-covariance (Gaussian) VaR in ccy.",
                     "historical_var_dollar": "Historical-simulation empirical VaR in ccy.",
                     "component_var": "Per-symbol contribution to total VaR (sums to VaR).",
@@ -326,7 +384,10 @@ class PVARFunction(BaseFunction):
                     "marginal_contribution_to_risk": "Derivative of portfolio volatility wrt symbol weight.",
                     "component_pct_of_portfolio_risk": "Symbol share of portfolio risk contribution.",
                     "notional_usd": "Position notional used for portfolio weights.",
-                    "coverage_pct": "Share of eligible positions whose live return history loaded (1.0 = full book covered).",
+                    "coverage_pct": "Share of the FULL eligible book analysed (max_positions cap and failed history downloads both reduce it; 1.0 = full book covered).",
+                    "positions_eligible": "Eligible positions in the full book before the max_positions cap.",
+                    "excluded_symbols": "Eligible positions dropped by the max_positions cap (not in VaR/ES).",
+                    "cost_basis_fallback_symbols": "Positions whose notional/weight used avg cost because no live close was available.",
                 },
             },
             sources=["yfinance"] if live else ["portfolio_state", "risk_model"],
@@ -341,6 +402,13 @@ class PVARFunction(BaseFunction):
 
 
 _HORIZON_MAP = {"1d": 1, "5d": 5, "10d": 10, "20d": 20}
+# Must equal pvar_seed defaults["confidence_level"].
+_DEFAULT_CONFIDENCE = 0.99
+_SUPPORTED_METHODS = frozenset({"parametric", "historical"})
+# Must equal pvar_seed defaults["method"].
+_DEFAULT_METHOD = "historical"
+# Minimum shared return dates before a covariance-based VaR is reported.
+_MIN_COMMON_SAMPLES = 20
 
 
 def _horizon_days(value: Any) -> int:
@@ -408,6 +476,32 @@ def _download_returns(symbol: str, days: int, timeout: float) -> tuple[pd.Series
         return pd.Series(dtype=float), None
 
 
+def _common_calendar_returns(pairs: list[tuple[str, pd.Series]]) -> pd.DataFrame:
+    """Daily returns for every symbol over the dates all of them traded.
+
+    Each per-symbol return spans that symbol's own previous close. Compounding
+    a symbol's returns gives a price path (up to a constant), and the ratio of
+    that path at two dates is the exact close-to-close move between them. So
+    re-basing each path onto the common dates yields returns that all span the
+    same calendar interval (for example Friday to Monday for both an equity and
+    a crypto asset). The first common date only anchors the path and gives no
+    return.
+    """
+    paths: dict[str, pd.Series] = {}
+    for symbol, series in pairs:
+        if series is None or series.empty:
+            continue
+        clean = pd.to_numeric(series, errors="coerce").dropna()
+        if clean.empty:
+            continue
+        paths[str(symbol)] = (1.0 + clean).cumprod()
+    if not paths:
+        return pd.DataFrame()
+    frame = pd.concat(paths, axis=1, sort=True).sort_index()
+    common = frame.dropna(how="any")
+    return common.pct_change().dropna(how="any")
+
+
 def _yf_symbol(symbol: str) -> str:
     sym = str(symbol or "").upper().strip()
     if sym.endswith("USDT") and len(sym) > 4:
@@ -432,7 +526,7 @@ def _empty_pvar(
             "reason": reason,
             "as_of": _utcnow_iso(),
             "data_mode": "unavailable",
-            "method": str(params.get("method", "parametric")),
+            "method": str(params.get("method", _DEFAULT_METHOD)),
             "horizon": params.get("horizon", "1d"),
             "confidence_level": confidence,
             "confidence": confidence,
@@ -469,6 +563,50 @@ def _empty_pvar(
             "requires_positions": no_positions,
             "live": _truthy(params.get("live_risk", True)),
         },
+    )
+
+
+def _input_error(
+    code: str,
+    params: dict[str, Any],
+    instrument: Instrument | None,
+    reason: str,
+    next_action: str,
+) -> FunctionResult:
+    """Explicit input_error envelope: no numbers, the rejected input is named."""
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": reason,
+            "as_of": _utcnow_iso(),
+            "data_mode": "unavailable",
+            "method": str(params.get("method", _DEFAULT_METHOD)),
+            "horizon": params.get("horizon", "1d"),
+            "confidence_level": None,
+            "confidence": None,
+            "var": None,
+            "expected_shortfall": None,
+            "portfolio_total_notional": 0.0,
+            "portfolio_annualized_vol": None,
+            "portfolio_daily_var_pct": None,
+            "portfolio_daily_var_dollar": None,
+            "rows": [],
+            "series": [],
+            "cards": {},
+            "next_actions": [next_action],
+            "methodology": (
+                "VaR/ES needs an explicit confidence level in (0, 1); none is substituted silently."
+            ),
+            "field_dictionary": {
+                "var": "Loss at the requested confidence; positive number = loss.",
+                "expected_shortfall": "Conditional expected loss beyond VaR.",
+            },
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"empty": False, "requires_positions": False, "live": _truthy(params.get("live_risk", True))},
     )
 
 

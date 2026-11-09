@@ -184,7 +184,7 @@ def register(app: FastAPI, deps: AppDeps) -> None:
             # let the live Stocktwits labels serve ticker queries; free text
             # keeps the legacy 503 so the honest error is not masked.
             x_analysis._note_x_chain_failure(
-                f"model bundle missing: {exc}",
+                f"model bundle missing: {str(exc) or type(exc).__name__}",
                 cooldown=x_analysis.X_MODEL_MISSING_COOLDOWN_SECONDS,
             )
             if ticker_like:

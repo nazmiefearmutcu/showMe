@@ -212,22 +212,48 @@ class SEC13FAdapter(BaseDataSource):
     async def query_holdings_by_security(self, cusip: str | None = None,
                                           issuer: str | None = None,
                                           quarter: str | None = None,
-                                          top_n: int = 20) -> pd.DataFrame:
+                                          top_n: int = 20,
+                                          issuer_normalized: str | None = None) -> pd.DataFrame:
+        """Aggregate 13F holdings per filer for one security.
+
+        ``issuer`` is a substring match on the 13F nameOfIssuer (ILIKE).
+        ``issuer_normalized`` is an exact match on the issuer name with all
+        non-alphanumerics removed and upper-cased (``"Apple Inc."`` and
+        ``"APPLE INC"`` both become ``APPLEINC``), so a company name cannot
+        match a different issuer that merely contains it.
+        """
         try:
             import duckdb  # type: ignore
         except Exception:
             return pd.DataFrame()
         if not _db_path().exists():
             return pd.DataFrame()
-        sql = "SELECT filer_cik, report_date, SUM(value_x1000)*1000 AS value_usd, SUM(shares) AS shares FROM holdings WHERE 1=1"
+        # value_x1000 holds the raw InfoTable <value>, and the unit of that value
+        # is NOT established by this codebase: the older "thousands" reading and
+        # the newer "whole dollars" reading both depend on the filing date, which
+        # the local store does not keep (only report_date). Until a real InfoTable
+        # confirms the unit, no dollar figure is derived: value_usd is NULL, the
+        # raw sum is exposed as value_as_reported, and value_unit says so.
+        sql = (
+            "SELECT filer_cik, report_date, "
+            "CAST(NULL AS DOUBLE) AS value_usd, "
+            "SUM(value_x1000) AS value_as_reported, "
+            "'unresolved' AS value_unit, "
+            "SUM(shares) AS shares FROM holdings WHERE 1=1"
+        )
         params: list[Any] = []
         if cusip:
             sql += " AND cusip = ?"; params.append(cusip)
         if issuer:
             sql += " AND issuer ILIKE ?"; params.append(f"%{issuer}%")
+        if issuer_normalized:
+            sql += " AND regexp_replace(upper(issuer), '[^A-Z0-9]', '', 'g') = ?"
+            params.append(issuer_normalized)
         if quarter:
             sql += " AND report_date LIKE ?"; params.append(f"{quarter}%")
-        sql += " GROUP BY filer_cik, report_date ORDER BY value_usd DESC LIMIT ?"
+        # Ranked by shares: the dollar value is unresolved, and raw values from
+        # differently-scaled periods must not be ranked against each other.
+        sql += " GROUP BY filer_cik, report_date ORDER BY shares DESC NULLS LAST, filer_cik LIMIT ?"
         params.append(top_n)
         return await asyncio.to_thread(self._run_holdings_query, sql, params)
 

@@ -32,6 +32,26 @@ class FAFunction(BaseFunction):
         if instrument is None:
             raise ValueError("FA requires an instrument")
         period = params.get("period", "annual")
+        if period not in SUPPORTED_PERIODS:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "symbol": instrument.symbol,
+                    "status": "input_error",
+                    "period": period,
+                    "income_statement": [],
+                    "balance_sheet": [],
+                    "cash_flow": [],
+                    "ratios": {},
+                    "filing_date": None,
+                    "reason": f"Unsupported period {period!r}; FA supports annual or quarterly.",
+                    "next_actions": ["Set period to annual or quarterly."],
+                },
+                sources=[],
+                warnings=[],
+                metadata={"period": period, "format": "input_error"},
+            )
         warnings: list[str] = []
         sources_used: list[str] = []
 
@@ -39,15 +59,21 @@ class FAFunction(BaseFunction):
         try:
             if self.deps.sec_edgar:
                 sec_data = await asyncio.wait_for(
-                    self.deps.sec_edgar.standard_fundamentals(instrument.symbol),
+                    self.deps.sec_edgar.standard_fundamentals(instrument.symbol, period=period),
                     timeout=float(params.get("sec_timeout", 8)),
                 )
-                sources_used.append("sec_edgar")
         except Exception as e:
-            warnings.append(f"sec_edgar: {e}")
+            warnings.append(f"sec_edgar: {str(e) or type(e).__name__}")
+        # An empty SEC dict (no us-gaap facts, e.g. IFRS/ADR filers) is NOT usable
+        # statement data: it must fall through to yfinance rather than be shown.
+        sec_usable = _has_statement_payload(sec_data)
+        if sec_usable:
+            sources_used.append("sec_edgar")
+        elif sec_data is not None:
+            warnings.append(f"sec_edgar: no us-gaap statement facts for {instrument.symbol}")
 
         yfin_data = None
-        if not sec_data:
+        if not sec_usable:
             try:
                 if self.deps.yfinance:
                     yfin_data = await asyncio.wait_for(
@@ -57,11 +83,13 @@ class FAFunction(BaseFunction):
                         )),
                         timeout=float(params.get("yfinance_timeout", 8)),
                     )
-                    sources_used.append("yfinance")
+                    # Listed only when yfinance actually supplied statements.
+                    if _has_statement_payload(yfin_data):
+                        sources_used.append("yfinance")
             except Exception as e:
-                warnings.append(f"yfinance: {e}")
+                warnings.append(f"yfinance: {str(e) or type(e).__name__}")
 
-        if sec_data is not None and isinstance(sec_data, dict):
+        if sec_usable and isinstance(sec_data, dict):
             data = _normalise_fa_payload(
                 instrument.symbol,
                 period,
@@ -74,16 +102,6 @@ class FAFunction(BaseFunction):
                 sources=sources_used, warnings=[],
                 metadata={"period": period, "format": "canonical_fa"},
             )
-        def _has_statement_payload(payload: Any) -> bool:
-            if not isinstance(payload, dict):
-                return bool(payload)
-            for value in payload.values():
-                if hasattr(value, "empty"):
-                    if not value.empty:
-                        return True
-                elif value:
-                    return True
-            return False
 
         if _has_statement_payload(yfin_data):
             warnings = []
@@ -132,6 +150,43 @@ class FAFunction(BaseFunction):
         return f"<section class='showme-fn fn-fa'><h2>FA — {r.instrument and r.instrument.symbol}</h2>{''.join(rows)}</section>"
 
 
+SUPPORTED_PERIODS = ("annual", "quarterly")
+
+
+def _sec_filed_date_for_period_end(data: dict[str, Any], period_end: str | None) -> str | None:
+    """SEC ``filed`` date of the facts at ``period_end`` (never invented).
+
+    The adapter attaches ``attrs["filed_by_end"]`` (period end -> filed date) to
+    each series. Only the statement period shown is considered, so a later
+    amendment to an older period does not become this period's filing date.
+    Returns ``None`` when no series carries that date for ``period_end``.
+    """
+    if not period_end:
+        return None
+    filed: list[str] = []
+    for value in data.values():
+        attrs = getattr(value, "attrs", None)
+        by_end = attrs.get("filed_by_end") if isinstance(attrs, dict) else None
+        if isinstance(by_end, dict):
+            day = by_end.get(period_end)
+            if day:
+                filed.append(str(day)[:10])
+    return max(filed) if filed else None
+
+
+def _has_statement_payload(payload: Any) -> bool:
+    """True when a provider returned at least one non-empty statement / series."""
+    if not isinstance(payload, dict):
+        return bool(payload)
+    for value in payload.values():
+        if hasattr(value, "empty"):
+            if not value.empty:
+                return True
+        elif value:
+            return True
+    return False
+
+
 def _financial_unavailable_payload(
     symbol: str,
     period: Any,
@@ -167,14 +222,16 @@ def _normalise_fa_payload(
         income_rows = _rows_from_canonical(sec_data, "income")
         balance_rows = _rows_from_canonical(sec_data, "balance")
         cash_rows = _rows_from_canonical(sec_data, "cash_flow")
-        filing_date = _latest_filing_date(sec_data)
+        period_end = _latest_filing_date(sec_data)
+        # The SEC ``filed`` date of the facts at the period end shown; period end is the data date.
+        filing_date = _sec_filed_date_for_period_end(sec_data, period_end)
     else:
         yfin_data = yfin_data or {}
         canonical = _latest_yfinance_values(yfin_data)
         income_rows = _rows_from_frame(yfin_data.get("income"))
         balance_rows = _rows_from_frame(yfin_data.get("balance"))
         cash_rows = _rows_from_frame(yfin_data.get("cashflow"))
-        filing_date = _latest_filing_date(
+        period_end = _latest_filing_date(
             {
                 k: v
                 for k, v in {
@@ -186,15 +243,20 @@ def _normalise_fa_payload(
             },
             from_frames=True,
         )
+        # yfinance frames carry period-end columns only; no filing date is supplied.
+        filing_date = None
 
     ratios = _compute_ratios(canonical)
     status = "ok" if ratios else "calc_error"
+    retrieved_at = datetime.now(timezone.utc).isoformat()
     payload: dict[str, Any] = {
         "symbol": symbol,
         "status": status,
         "period": period,
         "source": source,
-        "asOf": datetime.now(timezone.utc).isoformat(),
+        "asOf": retrieved_at,
+        "retrieved_at": retrieved_at,
+        "period_end": period_end,
         "filing_date": filing_date,
         "income_statement": income_rows,
         "balance_sheet": balance_rows,
@@ -207,12 +269,23 @@ def _normalise_fa_payload(
             "ratios": len(ratios),
         },
         "methodology": "FA normalizes income statement, balance sheet, and cash-flow rows into canonical line items, then computes ratios from latest available values. Ratios tab is only meaningful when the ratios payload is non-empty.",
+        # Flow ratios (margins, ROA, ROE) use the period's own flows: a quarter for
+        # period=quarterly, so they are single-quarter values and not annualized.
+        "ratio_basis": (
+            "single quarter flows over period-end balances; not annualized"
+            if period == "quarterly"
+            else "fiscal-year flows over period-end balances"
+        ),
         "field_dictionary": {
             "gross_margin": "gross_profit / revenue.",
             "net_margin": "net_income / revenue.",
             "roe": "net_income / total_equity.",
+            "debt_to_equity": "long_term_debt / total_equity; omitted when long-term debt is not reported.",
             "current_ratio": "current_assets / current_liabilities.",
             "free_cash_flow": "cash from operations minus capital expenditure when available.",
+            "period_end": "Latest statement period end date (the data date).",
+            "filing_date": "SEC filed date of the facts at period_end; null when not supplied by the source.",
+            "retrieved_at": "Time this payload was built (retrieval time, not data date).",
         },
     }
     if status != "ok":
@@ -385,12 +458,14 @@ def _compute_ratios(values: dict[str, float]) -> dict[str, float]:
     net_income = values.get("net_income")
     total_assets = values.get("total_assets")
     total_equity = values.get("total_equity")
-    total_liabilities = values.get("total_liabilities")
     current_assets = values.get("current_assets")
     current_liabilities = values.get("current_liabilities")
     cfo = values.get("cfo")
     capex = values.get("capex")
-    debt = values.get("long_term_debt") or total_liabilities
+    # debt_to_equity is long-term debt only. No fallback to total liabilities:
+    # a missing long-term debt leaves the ratio absent instead of silently
+    # reporting a different ratio under the same name.
+    debt = values.get("long_term_debt")
 
     ratios = {
         "gross_margin": _safe_div(gross_profit, revenue),

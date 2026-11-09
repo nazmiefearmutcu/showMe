@@ -1,8 +1,9 @@
 /**
  * TECH — Technical Indicators pane.
  *
- * Backend (`backend/showme/engine/functions/chart/`) returns live 60-bar
- * OHLCV plus 7 indicator families (moving averages, RSI, MACD, Bollinger
+ * Backend (`backend/showme/engine/functions/chart/`) returns live OHLCV over
+ * its manifest window (365 days, up to 1000 bars; wc1-g33 TECH#4) plus the
+ * indicator families (moving averages, RSI, MACD, Bollinger
  * Bands, Stochastic, ADX, OBV) with exposed `indicator_params`.
  *
  * Layout: persisted per-family toggle chips (`showme.tech.families`) +
@@ -12,6 +13,11 @@
  * tones (RSI/Stoch overbought-oversold, MACD histogram sign, ADX trend
  * strength). Empty / error / degraded (warnings) states are explicit —
  * never fake numbers.
+ *
+ * No interval or look-back control is exposed on this pane by design (wc1-g33
+ * TECH#5): the embedded chart owns timeframes, and the indicator request keeps
+ * the manifest defaults (interval 1d, 365 days). Callers of /api/fn/TECH can
+ * still pass `interval` and `days`; an unsupported interval is an input_error.
  *
  * Study sub-panes (OPP wave 2026-09-11): the SAME family chips drive two
  * inline sub-panes — RSI(14) on a fixed 0–100 domain (true 70/30 guides) and

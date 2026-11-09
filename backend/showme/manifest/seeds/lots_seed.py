@@ -1,8 +1,9 @@
-"""LOTS — Tax Lot Inventory.
+"""LOTS — Tax Lot Inventory (local ledger).
 
-Per-position tax lot ledger sourced directly from the broker. Shows
-acquisition date, qty, cost basis, holding period, and short/long-term
-status. LOTS is the data backbone TLH consumes.
+Lists, opens, sells and summarises tax lots kept in the local ShowMe tax-lot
+ledger (runtime tax_lots.sqlite). The ledger is user-maintained: it is NOT a
+broker feed, carries no market value and no broker-reported cost basis. TLH
+and other consumers must treat its rows as the ledger's own records.
 """
 from __future__ import annotations
 
@@ -38,9 +39,10 @@ def lots() -> FunctionManifest:
         name="Tax Lot Inventory",
         category=Category.PORTFOLIO,
         intent=(
-            "Per-position tax-lot ledger sourced directly from the broker: "
-            "acquisition date, qty, cost basis, holding period, current "
-            "value, and short-vs-long-term status. Backbone data for TLH."
+            "Local tax-lot ledger: lists open lots with quantity, price, "
+            "closed quantity and remaining quantity, and records opens, sells "
+            "and realized gain/loss summaries. Data comes from the user's local "
+            "ledger, not from a broker."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -51,11 +53,12 @@ def lots() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="credential_id",
-                label="Account",
+                name="action",
+                label="Action",
                 control=ControlKind.SELECT,
-                required=True,
-                description="Broker account to pull lots from.",
+                required=False,
+                description="list (default), open, sell or summary.",
+                options=["list", "open", "sell", "summary"],
             ),
             InputSpec(
                 name="symbol",
@@ -65,67 +68,85 @@ def lots() -> FunctionManifest:
                 description="Filter to one symbol; omit for all open lots.",
             ),
             InputSpec(
-                name="status",
-                label="Lot status",
-                control=ControlKind.SELECT,
+                name="account",
+                label="Account label",
+                control=ControlKind.TEXT,
                 required=False,
-                description="Open lots, closed lots (for realized accounting), or all.",
-                options=["open", "closed", "all"],
+                description="Ledger account label (default 'main').",
             ),
             InputSpec(
-                name="holding_period_filter",
-                label="Holding period",
+                name="quantity",
+                label="Quantity",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Quantity for action=open or action=sell.",
+                min=0,
+            ),
+            InputSpec(
+                name="price",
+                label="Price",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Acquisition price for action=open, sale price for action=sell.",
+                min=0,
+            ),
+            InputSpec(
+                name="acquired_at",
+                label="Acquisition date",
+                control=ControlKind.TEXT,
+                required=False,
+                description=(
+                    "ISO date (YYYY-MM-DD) or datetime the lot was acquired, for action=open. "
+                    "Sets holding period and short/long term; future dates are rejected. "
+                    "Omitted = stamped with the entry time and flagged acquired_at_source=entry_time."
+                ),
+            ),
+            InputSpec(
+                name="method",
+                label="Lot selection",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Short-term, long-term, or both.",
-                options=["short_term", "long_term", "all"],
+                description="Lot selection for action=sell.",
+                options=["FIFO", "LIFO", "HIFO", "LOFO"],
             ),
             InputSpec(
                 name="long_term_threshold_days",
-                label="Long-term threshold",
+                label="Long-term after (days)",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Days of holding to qualify as long-term (US default 365).",
+                description=(
+                    "Holding days at or above which a sold lot is long-term, for action=sell. "
+                    "Default 365."
+                ),
                 min=1,
-                max=730,
                 step=1,
-                unit="days",
             ),
             InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
+                name="year",
+                label="Year",
+                control=ControlKind.NUMBER,
                 required=False,
-                description="Preferred data mode; falls back to last broker snapshot.",
-                options=[
-                    DataMode.LIVE_EXCHANGE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Calendar year (UTC) for action=summary; omit for all years.",
+                min=1970,
+                max=2100,
+                step=1,
             ),
         ],
         defaults={
-            "status": "open",
-            "holding_period_filter": "all",
-            "long_term_threshold_days": 365,
-            "provider_mode": DataMode.LIVE_EXCHANGE.value,
+            "action": "list",
+            "method": "FIFO",
         },
         provider_chain=ProviderChain(
-            primary="ccxt_broker",
-            fallbacks=["cached_snapshot"],
-            acceptable_modes=[
-                DataMode.LIVE_EXCHANGE,
-                DataMode.CACHED_SNAPSHOT,
-                DataMode.NOT_CONFIGURED,
-            ],
+            primary="internal",
+            fallbacks=[],
+            acceptable_modes=[DataMode.CACHED_SNAPSHOT, DataMode.NOT_CONFIGURED],
         ),
-        caching=CachingPolicy(ttl_seconds=300, scope="per_input", persist=True),
+        caching=CachingPolicy(ttl_seconds=0, scope="per_input", persist=False),
         output_contract=OutputContract(
             must_have=[
-                "as_of",
-                "credential_id",
                 "lots",
-                "totals",
-                "data_mode",
+                "count",
+                "methodology",
             ],
             rows=True,
             series=False,
@@ -138,16 +159,11 @@ def lots() -> FunctionManifest:
             columns=[
                 ColumnSpec(key="lot_id", label="Lot", kind="text"),
                 ColumnSpec(key="symbol", label="Symbol", kind="text"),
-                ColumnSpec(key="acquired_at", label="Acquired", kind="date"),
-                ColumnSpec(key="qty", label="Qty", kind="number", format="%.6g"),
-                ColumnSpec(key="cost_basis_per_unit", label="Basis/unit", kind="currency", unit="ccy", format="%.4f"),
-                ColumnSpec(key="cost_basis_total", label="Basis total", kind="currency", unit="ccy", format="%.2f"),
-                ColumnSpec(key="market_value", label="Mkt value", kind="currency", unit="ccy", format="%.2f"),
-                ColumnSpec(key="unrealized", label="Unrealized", kind="currency", unit="ccy", format="%.2f"),
-                ColumnSpec(key="unrealized_pct", label="Unr. %", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="holding_days", label="Held", kind="number", unit="d", format="%d"),
-                ColumnSpec(key="term", label="Term", kind="tag"),
-                ColumnSpec(key="status", label="Status", kind="tag"),
+                ColumnSpec(key="account", label="Account", kind="text"),
+                ColumnSpec(key="quantity", label="Quantity", kind="number", format="%.6g"),
+                ColumnSpec(key="price", label="Price", kind="currency", unit="ccy", format="%.4f"),
+                ColumnSpec(key="closed_qty", label="Closed", kind="number", format="%.6g"),
+                ColumnSpec(key="remaining", label="Remaining", kind="number", format="%.6g"),
             ],
             sortable=True,
             filterable=True,
@@ -155,87 +171,60 @@ def lots() -> FunctionManifest:
         card_schema=CardSchema(
             slots=[
                 CardSlot(key="open_lots", label="Open Lots", kind="kpi"),
-                CardSlot(key="total_basis", label="Total Basis", kind="big_number", unit="ccy"),
-                CardSlot(key="total_mv", label="Total MV", kind="big_number", unit="ccy"),
-                CardSlot(key="total_unrealized", label="Unrealized", kind="trend_pill", unit="ccy"),
-                CardSlot(key="lt_pct", label="Long-term %", kind="kpi", unit="%"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "LOTS pulls the per-lot ledger directly from the broker via "
-            "the broker.lots() call (CCXT-bridged where possible; falls "
-            "back to local audit ledger reconstruction when the broker "
-            "does not expose lot detail). For each open lot, holding_days = "
-            "(today - acquired_at).days, term = 'long_term' if "
-            "holding_days >= long_term_threshold_days else 'short_term'. "
-            "Cost basis is the broker's reported number — no FIFO/LIFO "
-            "imputation is performed (that's the broker's authority). "
-            "Market value uses the same live quote adapter as PORT. "
-            "Closed lots include realization date, proceeds, and the "
-            "broker-determined cost basis (used by TLH to identify "
-            "harvestable losses without re-running matching here)."
+            "LOTS reads the local tax-lot ledger (runtime tax_lots.sqlite). Each lot "
+            "stores symbol, account, acquisition quantity and price, and the quantity "
+            "already closed by sales. remaining = quantity - closed_qty. action=sell "
+            "consumes open lots by FIFO, LIFO, HIFO or LOFO and records realized P&L "
+            "against the ledger's own acquisition price. A sold lot is long-term when its holding "
+            "days reach long_term_threshold_days (default 365). No broker lots, market values "
+            "or unrealized P&L are produced by this function."
         ),
         formula_dict={
-            "Unrealized": Formula(
-                expression=r"u = (p_{last} - basis) \cdot qty",
-                variables={"basis": "Cost basis per unit", "p_last": "Last price"},
-            ),
-            "HoldingDays": Formula(
-                expression=r"d = (today - acquired\_at).days",
-                variables={},
-            ),
-            "Term": Formula(
-                expression=r"term = LT \text{ if } d \geq threshold \text{ else } ST",
-                variables={"threshold": "Jurisdiction long-term cutoff"},
+            "Remaining": Formula(
+                expression=r"r = q - c",
+                variables={"q": "Lot quantity", "c": "Closed quantity"},
             ),
         },
         field_dict={
-            "lots[].lot_id": FieldDef(description="Broker-assigned lot identifier.", source="broker"),
-            "lots[].acquired_at": FieldDef(description="Lot acquisition timestamp.", source="broker"),
-            "lots[].cost_basis_per_unit": FieldDef(unit="quote", description="Per-unit cost basis as reported by broker.", source="broker"),
-            "lots[].qty": FieldDef(description="Remaining (open) or original (closed) lot quantity.", source="broker"),
-            "lots[].term": FieldDef(description="short_term or long_term per holding_days.", source="computed"),
-            "totals.total_basis": FieldDef(unit="ccy", description="Σ cost_basis_total across filtered lots.", source="computed"),
-            "totals.total_unrealized": FieldDef(unit="ccy", description="Σ unrealized across filtered lots.", source="computed"),
+            "lots[].lot_id": FieldDef(description="Ledger lot identifier.", source="local_ledger"),
+            "lots[].symbol": FieldDef(description="Upper-case symbol of the lot.", source="local_ledger"),
+            "lots[].account": FieldDef(description="Ledger account label.", source="local_ledger"),
+            "lots[].quantity": FieldDef(description="Original acquired quantity.", source="local_ledger"),
+            "lots[].price": FieldDef(unit="quote", description="Acquisition price per unit as entered in the ledger.", source="local_ledger"),
+            "lots[].closed_qty": FieldDef(description="Quantity already sold from this lot.", source="local_ledger"),
+            "lots[].remaining": FieldDef(description="quantity - closed_qty (open quantity).", source="computed"),
+            "count": FieldDef(description="Number of open lots returned.", source="computed"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
-            require_as_of=True,
+            require_as_of=False,
             require_latency_ms=True,
         ),
         alerting=AlertingSpec(
-            conditions=["lot_crossing_long_term_threshold"],
-            delivery=["tray", "log"],
+            conditions=[],
+            delivery=["log"],
         ),
         semantic_tests=[
             SemanticTest(
-                name="lots_term_is_long_when_held_above_threshold",
-                description="Lot held 366 days with default threshold returns term='long_term'.",
-                inputs={"long_term_threshold_days": 365},
-                assertions=["lot_held_366d_term == 'long_term'"],
+                name="lots_list_reports_local_ledger_source",
+                description="A list response names the local ledger as its only source.",
+                inputs={"action": "list"},
+                assertions=["sources == ['local_tax_lot_ledger']"],
             ),
             SemanticTest(
-                name="lots_term_is_short_when_held_below_threshold",
-                description="Lot held 364 days returns term='short_term'.",
-                inputs={"long_term_threshold_days": 365},
-                assertions=["lot_held_364d_term == 'short_term'"],
+                name="lots_empty_ledger_returns_status_empty",
+                description="An empty ledger returns status=empty with no lots and a next action.",
+                inputs={"action": "list"},
+                assertions=["status == 'empty'", "lots == []", "next_actions non-empty"],
             ),
             SemanticTest(
-                name="lots_totals_equal_sum_of_filtered_lots",
-                description="totals.total_basis equals sum of cost_basis_total across rows.",
-                inputs={},
-                assertions=["totals.total_basis == sum(lots[].cost_basis_total)"],
-            ),
-            SemanticTest(
-                name="lots_missing_credential_returns_not_configured",
-                description="Unknown credential id returns data_mode=not_configured with warning.",
-                inputs={"credential_id": "does_not_exist"},
-                assertions=[
-                    "data_mode == 'not_configured'",
-                    "warnings_non_empty",
-                ],
+                name="lots_remaining_is_quantity_minus_closed",
+                description="Each returned lot's remaining equals quantity minus closed_qty.",
+                inputs={"action": "list"},
+                assertions=["lots[].remaining == lots[].quantity - lots[].closed_qty"],
             ),
         ],
     )

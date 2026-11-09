@@ -198,11 +198,15 @@ def test_frh_declares_chart_grammar_is_heatmap_test() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_csrc_primary_provider_is_binance() -> None:
-    """CSRC is the crypto screener — primary must be binance for live ticker."""
+def test_csrc_primary_provider_is_yfinance() -> None:
+    """CSRC is the commodity screener (=F futures) — primary must be yfinance.
+
+    wb1-g17 / CSRC#5: this used to assert binance because the served manifest
+    still described the old crypto screener; the function is the futures complex.
+    """
     csrc = REGISTRY.get("CSRC")
-    assert csrc.provider_chain.primary == "binance", (
-        f"CSRC primary provider must be 'binance'; got {csrc.provider_chain.primary!r}"
+    assert csrc.provider_chain.primary == "yfinance", (
+        f"CSRC primary provider must be 'yfinance'; got {csrc.provider_chain.primary!r}"
     )
 
 

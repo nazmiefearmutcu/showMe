@@ -36,6 +36,9 @@ import {
 } from "./function-controls";
 import { usePersistentOption } from "./function-control-state";
 import type { FunctionPaneProps } from "./registry-types";
+import { AwarenessUnavailable } from "./awareness/AwarenessUnavailable";
+import { ProviderHealthStrip } from "./awareness/ProviderHealthStrip";
+import type { AwarenessMeta } from "./awareness/types";
 
 interface CACTRow {
   symbol?: string;
@@ -43,7 +46,8 @@ interface CACTRow {
   event_date?: string | null;
   value?: number | string | null;
   unit?: string;
-  source_mode?: string;
+  /** Provider that produced the row (awareness, yfinance). */
+  source?: string | null;
   accession?: string;
   document?: string;
   reason?: string;
@@ -53,9 +57,14 @@ interface CACTData {
   status?: string;
   reason?: string;
   rows?: CACTRow[];
+  meta?: AwarenessMeta;
   methodology?: string;
   field_dictionary?: Record<string, unknown>;
 }
+
+/** Trailing window the pane asks for; matches the function's defaults. */
+const DAYS_BACK = 365;
+const DAYS_AHEAD = 90;
 
 type TypeFilter = "all" | "dividend" | "split" | "filings";
 type WindowFilter = "all" | "past" | "upcoming";
@@ -75,9 +84,7 @@ const WINDOW_OPTIONS = [
 ] as const satisfies readonly { value: WindowFilter; label: string }[];
 const WINDOW_IDS = WINDOW_OPTIONS.map((o) => o.value);
 
-function classifyAction(
-  actionType: string | undefined,
-): Exclude<TypeFilter, "all"> {
+function classifyAction(actionType: string | undefined): Exclude<TypeFilter, "all"> {
   const t = (actionType ?? "").toLowerCase();
   if (t.startsWith("dividend")) return "dividend";
   if (t.startsWith("split")) return "split";
@@ -105,19 +112,19 @@ export function CACTPane({ code, symbol }: FunctionPaneProps) {
     WINDOW_IDS,
     "all",
   );
-  const effectiveSymbol =
-    symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
+  const effectiveSymbol = symbol || defaultSymbolForFunction(code, ["EQUITY", "ETF"]);
   const { state, data, error, refetch } = useFunction<CACTData>({
     code,
     symbol: effectiveSymbol,
-    params: {},
+    params: { days_back: DAYS_BACK, days_ahead: DAYS_AHEAD },
     enabled: !!effectiveSymbol,
   });
 
   const payload = data?.data;
   const rows: CACTRow[] = useMemo(() => payload?.rows ?? [], [payload]);
   const status = payload?.status ?? "—";
-  const providerDown = state === "ok" && status === "provider_unavailable";
+  const providerDown = status === "provider_unavailable";
+  const meta: AwarenessMeta = payload?.meta ?? {};
 
   const today = todayISO();
   const filtered = useMemo(
@@ -141,11 +148,12 @@ export function CACTPane({ code, symbol }: FunctionPaneProps) {
     () => ({
       dividends: rows.filter((r) => classifyAction(r.action_type) === "dividend").length,
       splits: rows.filter((r) => classifyAction(r.action_type) === "split").length,
-      latest: rows
-        .map((r) => (r.event_date ?? "").slice(0, 10))
-        .filter((d) => /^\d{4}-\d{2}-\d{2}/.test(d))
-        .sort()
-        .at(-1) ?? "—",
+      latest:
+        rows
+          .map((r) => (r.event_date ?? "").slice(0, 10))
+          .filter((d) => /^\d{4}-\d{2}-\d{2}/.test(d))
+          .sort()
+          .at(-1) ?? "—",
     }),
     [rows],
   );
@@ -157,9 +165,7 @@ export function CACTPane({ code, symbol }: FunctionPaneProps) {
         header: "Date",
         width: 124,
         render: (r) => (
-          <span style={monoPrimaryStyle}>
-            {(r.event_date ?? "—").slice(0, 10)}
-          </span>
+          <span style={monoPrimaryStyle}>{(r.event_date ?? "—").slice(0, 10)}</span>
         ),
       },
       {
@@ -192,32 +198,22 @@ export function CACTPane({ code, symbol }: FunctionPaneProps) {
         header: "Amount / value",
         numeric: true,
         width: 150,
-        render: (r) => (
-          <span style={monoStrongStyle}>{fmtValue(r.value)}</span>
-        ),
+        render: (r) => <span style={monoStrongStyle}>{fmtValue(r.value)}</span>,
       },
       {
         key: "notes",
         header: "Notes",
         width: 320,
-        render: (r) => (
-          <span style={notesStyle}>{buildNotes(r)}</span>
-        ),
+        render: (r) => <span style={notesStyle}>{buildNotes(r)}</span>,
       },
       {
-        key: "source_mode",
+        key: "source",
         header: "Source",
         width: 200,
         render: (r) =>
-          r.source_mode ? (
-            <Pill
-              tone={
-                (r.source_mode ?? "").includes("unavailable") ? "warn" : "muted"
-              }
-              variant="soft"
-              withDot={false}
-            >
-              {r.source_mode}
+          r.source ? (
+            <Pill tone="muted" variant="soft" withDot={false}>
+              {r.source}
             </Pill>
           ) : (
             <span className="u-text-mute">—</span>
@@ -247,14 +243,16 @@ export function CACTPane({ code, symbol }: FunctionPaneProps) {
         </button>
       }
     />
-  ) : providerDown || rows.length === 0 ? (
+  ) : providerDown ? (
+    <AwarenessUnavailable
+      reason={payload?.reason ?? null}
+      onRetry={refetch}
+      subject="corporate actions"
+    />
+  ) : rows.length === 0 ? (
     <Empty
       title="No corporate actions returned"
-      body={
-        rows[0]?.reason ??
-        payload?.reason ??
-        "No dividend, split, or dated 8-K corporate-action rows were returned."
-      }
+      body="No dividend, split, or dated 8-K corporate-action rows were returned. Nothing is estimated."
       action={
         <button onClick={refetch} className="btn">
           Retry
@@ -355,12 +353,14 @@ export function CACTPane({ code, symbol }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <ProviderHealthStrip
+          providers={meta.providers}
+          feedHealth={meta.feed_health}
+          generatedAt={meta.generated_at}
+        />
         <PaneBody>{body}</PaneBody>
         <PaneFooter>
-          <StatusSection
-            label="sources"
-            value={data?.sources?.join(", ") || "—"}
-          />
+          <StatusSection label="sources" value={data?.sources?.join(", ") || "—"} />
           <StatusDivider />
           <StatusSection label="status" value={status} />
           <StatusDivider />

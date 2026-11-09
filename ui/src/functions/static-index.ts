@@ -15,7 +15,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "ALLQ",
-    "name": "Dealer Quotes (TRACE proxy)",
+    "name": "Dealer Quotes (indicative, modeled)",
     "category": "bond",
     "description": ""
   },
@@ -209,7 +209,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "code": "DCFS",
     "name": "DCF Sensitivity",
     "category": "equity",
-    "description": "WACC × terminal-growth grid + ±20% input tornado."
+    "description": "Discount-rate (cost of equity by default) × terminal-growth grid + ±20% input tornado."
   },
   {
     "code": "DDIS",
@@ -291,9 +291,15 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "EREV",
-    "name": "Earnings Revisions",
+    "name": "Analyst Recommendation Momentum",
     "category": "equity",
     "description": "Analyst recommendation buckets month-over-month + revision velocity."
+  },
+  {
+    "code": "ERN",
+    "name": "Earnings Calendar",
+    "category": "equity",
+    "description": "Upcoming and recent earnings reports grouped by day, with reporting time, EPS estimate, estimate count and market cap."
   },
   {
     "code": "ESG",
@@ -369,7 +375,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "FXFC",
-    "name": "FX Forecasts",
+    "name": "CIP FX Forward Path",
     "category": "fx",
     "description": ""
   },
@@ -393,7 +399,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "GC3D",
-    "name": "Yield Curve 3D (live FRED)",
+    "name": "Yield Curve Surface (live FRED)",
     "category": "bond",
     "description": ""
   },
@@ -462,6 +468,12 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "name": "Index Constituents",
     "category": "screen",
     "description": "Major equity index constituents (Wikipedia-backed cache)."
+  },
+  {
+    "code": "IPO",
+    "name": "IPO Calendar",
+    "category": "equity",
+    "description": "Priced, upcoming, filed and withdrawn IPOs with price or range, shares offered and deal size."
   },
   {
     "code": "ISIN",
@@ -540,6 +552,12 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "name": "Most Active",
     "category": "screen",
     "description": ""
+  },
+  {
+    "code": "MSENT",
+    "name": "Market Sentiment",
+    "category": "news",
+    "description": "CNN Fear & Greed, crypto Fear & Greed, VIX term structure and social buzz from Awareness."
   },
   {
     "code": "NGAS",
@@ -717,7 +735,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "SRCH",
-    "name": "Bond Screener",
+    "name": "Sovereign Curve Screener",
     "category": "screen",
     "description": ""
   },
@@ -777,7 +795,7 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "TRAN",
-    "name": "Earnings Call Transcripts",
+    "name": "Earnings Transcript or Release",
     "category": "news",
     "description": ""
   },
@@ -789,9 +807,9 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
   },
   {
     "code": "TRQA",
-    "name": "Transcript Q&A",
+    "name": "Transcript & Press Release Q&A",
     "category": "news",
-    "description": "Run a list of questions against an earnings call transcript / audio."
+    "description": "Run a list of questions against an earnings transcript, an audio transcript, or the latest 8-K earnings press release (labelled by document_type)."
   },
   {
     "code": "TSAR",
@@ -804,6 +822,12 @@ export const STATIC_FUNCTION_INDEX: FunctionEntry[] = [
     "name": "Treasury Order Entry",
     "category": "trade",
     "description": ""
+  },
+  {
+    "code": "VCAP",
+    "name": "Venture Capital Research",
+    "category": "macro",
+    "description": "Source-aware global, country, Turkey and crypto investment research, provenance and release history."
   },
   {
     "code": "WACC",

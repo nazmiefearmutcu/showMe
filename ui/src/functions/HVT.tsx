@@ -106,7 +106,10 @@ const DAYS_OPTIONS = [
 ] as const;
 const DAYS_IDS = DAYS_OPTIONS.map((o) => o.value);
 
-const DEFAULT_FORMULA = "stdev(daily close returns) * sqrt(252)";
+// Fallback only: the live payload's methodology names the exact factor used
+// (sqrt(252) for equities/ETFs, sqrt(365) for crypto calendar trading).
+const DEFAULT_FORMULA =
+  "stdev(daily close returns) * sqrt(N): N = 252 for equities/ETFs, 365 for crypto";
 
 /* ── helpers ───────────────────────────────────────────────────────── */
 

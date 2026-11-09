@@ -101,15 +101,15 @@ def test_sat_returns_real_data_or_graceful_unavailable():
         assert result.metadata.get("fallback") is True
 
 
-def test_sat_lowest_cloud_unknown_aoi_falls_back():
+def test_sat_unknown_aoi_is_an_input_error_not_a_silent_default():
+    # Review of SAT#1 (2026-11-08): an unknown AOI/layer used to be normalised
+    # to Cushing / true colour - a default location for an unknown input,
+    # which the data policy forbids. It is now an explicit input error.
     handler = _make_handler()
     result = _run(handler.execute(aoi="does_not_exist", layer="bogus"))
     data = result.data
-    assert data["status"] in OK_SET
-    if data["status"] in {"ok", "partial"}:
-        # Unknown AOI/layer normalised to defaults, never crashes.
-        assert data["aoi"] == "cushing_ok"
-        assert data["layer"] == "true_color"
+    assert data["status"] == "input_error"
+    assert "does_not_exist" in data["reason"] and "bogus" in data["reason"]
 
 
 if __name__ == "__main__":  # pragma: no cover

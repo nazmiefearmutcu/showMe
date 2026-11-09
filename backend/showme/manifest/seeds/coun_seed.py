@@ -3,7 +3,8 @@
 One-page macro view per country: policy rate, inflation, unemployment,
 GDP growth, fiscal balance, debt-to-GDP, 10y yield, currency. Combines a
 curated country reference profile with live FRED series and the BTMM
-policy row for the country's central bank.
+policy row for the country's central bank. Every metric is live or an
+explicit unavailable row with its reason; no reference values are served.
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ def coun() -> FunctionManifest:
         intent=(
             "One-page macro workbook per country — policy rate, inflation, "
             "unemployment, GDP growth, fiscal balance, debt-to-GDP, 10y yield, "
-            "currency — combining a curated reference profile with live FRED "
+            "currency — combining live FRED "
             "series and the BTMM policy row for the country's central bank."
         ),
         asset_classes=[
@@ -53,7 +54,7 @@ def coun() -> FunctionManifest:
                 label="Country",
                 control=ControlKind.SELECT,
                 required=True,
-                description="ISO 3166-1 alpha-2 country code. Unknown codes fall back to a generic reference profile with a warning.",
+                description="ISO 3166-1 alpha-2 country code. Unknown codes get no reference values and an explicit needs_input state.",
                 options=["US", "EU", "GB", "TR", "JP", "CN", "BR", "IN"],
             ),
             InputSpec(
@@ -78,30 +79,17 @@ def coun() -> FunctionManifest:
                 label="Live overlay",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="When true, overlay live FRED + BTMM data on the reference profile.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="When true (default), fetch the live BTMM policy row and FRED series. When false, every metric is an explicit unavailable row.",
             ),
         ],
         defaults={
             "country": "US",
             "metrics": [],
             "live": True,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
             primary="fred",
-            fallbacks=["country_reference_profile", "cached_snapshot"],
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.DELAYED_REFERENCE,
@@ -141,26 +129,26 @@ def coun() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "COUN composes the workbook from three layers. (1) A curated country reference "
-            "profile in showme.engine.functions.macro.coun ships baseline values for US, EU, GB, "
-            "and TR; unknown countries get a generic fallback plus a warning that the profile is "
-            "non-curated. (2) When live=true, BTMM's policy row is fetched for the country's "
-            "central bank and overlays the reference policy_rate. (3) FRED series mapped per "
-            "country (US: GDPC1/CPIAUCSL/UNRATE/DGS10; EU: LRHUTTTTEZQ156S; GB: GBRCPIALLMINMEI; "
-            "TR: TURGDPRQDSMEI) are normalized via ECST and overlay the matching rows. Each row "
-            "carries its actual source_mode so the analyst can see which numbers came from live "
-            "FRED, which from BTMM, and which from the reference profile. Provider errors are "
-            "captured in warnings and do not silently downgrade a row to the reference value."
+            "COUN composes the workbook from live providers only. (1) BTMM's policy row is fetched "
+            "for the country's central bank. (2) FRED series mapped per country (US: GDPC1, CPIAUCSL, "
+            "UNRATE, DGS10; EU: LRHUTTTTEZQ156S, the euro-area aggregate; GB: GBRCPIALLMINMEI; "
+            "TR: NGDPRSAXDCTRQ) are normalized via ECST. Inflation and real GDP growth are computed "
+            "as year-over-year changes from the level series. (3) A metric with no live series, or a "
+            "provider that failed, is an explicit row with value null, source_mode provider_unavailable "
+            "and a reason. An observation older than its series limit is flagged stale, keeps its "
+            "as-of date and is not counted as live. Unknown countries get no reference values, only an "
+            "explicit needs_input state with a reason."
         ),
         field_dict={
             "country": FieldDef(description="Country code echoed back.", source="input"),
             "rows[].section": FieldDef(description="Logical grouping (rates / prices / labor / growth / fiscal).", source="reference"),
             "rows[].metric": FieldDef(description="Human-readable label.", source="reference"),
-            "rows[].value": FieldDef(unit="varies", description="Latest normalized value in the row's unit.", source="fred / btmm / reference"),
+            "rows[].value": FieldDef(unit="varies", description="Latest live value in the row's unit; null when unavailable.", source="fred / btmm"),
             "rows[].as_of": FieldDef(unit="iso8601", description="Provider date when available.", source="fred"),
-            "rows[].source_mode": FieldDef(description="Which layer produced the row (live_fred / btmm / country_reference_profile).", source="derived"),
+            "rows[].source_mode": FieldDef(description="Which provider produced the row (fred / btmm), or provider_unavailable with a reason.", source="derived"),
+            "rows[].stale": FieldDef(description="True when the latest observation is older than its series limit; shown with its as-of date, not live.", source="derived"),
             "source_mode": FieldDef(description="Top-level mode for the workbook payload.", source="derived"),
-            "country_known": FieldDef(description="True when the requested country has a curated reference profile.", source="derived"),
+            "country_known": FieldDef(description="True when the requested country is in the curated country set (US, EU, GB, TR).", source="derived"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -191,7 +179,7 @@ def coun() -> FunctionManifest:
             ),
             SemanticTest(
                 name="coun_live_overlay_uses_real_provider",
-                description="With live=true, asserts source_mode is live_macro when any FRED/BTMM provider returns data; never silently relabels the reference profile as live.",
+                description="With live=true, asserts source_mode is live_macro when any FRED/BTMM provider returns fresh data; never relabels a gap or a stale row as live.",
                 inputs={"country": "US", "live": True},
                 assertions=[
                     "source_mode_reflects_actual_provider",

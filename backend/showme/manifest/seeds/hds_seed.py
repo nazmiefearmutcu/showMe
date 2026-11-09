@@ -1,9 +1,10 @@
 """HDS — Holders / Institutional Holdings.
 
-Surfaces the issuer's institutional and insider holders. Backed by SEC
-EDGAR (10-Q / 10-K direct holdings tables) with yfinance institutional /
-major holders DataFrames as the fast fallback. Renders KPIs (% institutional,
-% insider, holder counts) plus a ranked holder table.
+Surfaces the issuer's institutional and mutual-fund holders. Rows come from
+the yfinance institutional / mutual-fund holder tables when they return any,
+otherwise from the local SEC 13F per-filer aggregate. Renders KPIs (holder
+counts, total % of shares outstanding) plus a ranked holder table. No insider
+holder rows are supplied by any provider.
 """
 from __future__ import annotations
 
@@ -37,8 +38,8 @@ def hds() -> FunctionManifest:
         name="Holders",
         category=Category.EQUITIES,
         intent=(
-            "Show institutional and insider holders for an issuer: % held by institutions / "
-            "insiders, holder counts, and a ranked list of top holders by shares."
+            "Show institutional and mutual-fund holders for an issuer: Yahoo holder tables "
+            "(pct_outstanding from pctHeld) or the local SEC 13F aggregate, ranked by shares."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
@@ -54,7 +55,7 @@ def hds() -> FunctionManifest:
                 label="Holder type",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Restrict the ranked table to a holder subset.",
+                description="Restrict the ranked table to a holder subset. insider reports unavailable: no HDS provider supplies insider holder rows.",
                 options=["all", "institutional", "insider", "mutual_fund"],
             ),
             InputSpec(
@@ -62,7 +63,7 @@ def hds() -> FunctionManifest:
                 label="Live mode",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="When true the handler calls SEC + yfinance live; otherwise a model template.",
+                description="When true the handler queries Yahoo holder tables and the local SEC 13F store; otherwise no rows are returned (needs_input).",
             ),
             InputSpec(
                 name="provider_mode",
@@ -94,7 +95,7 @@ def hds() -> FunctionManifest:
         ),
         caching=CachingPolicy(ttl_seconds=21600, scope="per_input", persist=True),
         output_contract=OutputContract(
-            must_have=["symbol", "status", "holders"],
+            must_have=["status", "rows"],
             rows=True,
             series=False,
             cards=True,
@@ -106,38 +107,38 @@ def hds() -> FunctionManifest:
                 ColumnSpec(key="holder", label="Holder", kind="text"),
                 ColumnSpec(key="holder_type", label="Type", kind="tag"),
                 ColumnSpec(key="shares", label="Shares", kind="number", format="%.0f"),
-                ColumnSpec(key="pct_held", label="% held", kind="percent", format="%.2f"),
-                ColumnSpec(key="value", label="Value", kind="currency", format="%.0f"),
-                ColumnSpec(key="as_of_filing", label="As of", kind="date"),
+                ColumnSpec(key="pct_outstanding", label="% out", kind="percent", format="%.2f"),
+                ColumnSpec(key="market_value", label="Value", kind="currency", format="%.0f"),
+                ColumnSpec(key="date_reported", label="Reported", kind="date"),
+                ColumnSpec(key="quarter", label="Quarter", kind="date"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="pct_institutional", label="% institutional", kind="big_number", unit="%"),
-                CardSlot(key="pct_insider", label="% insider", kind="kpi", unit="%"),
-                CardSlot(key="institutional_count", label="Inst. holders", kind="kpi"),
-                CardSlot(key="float_shares", label="Float", kind="kpi"),
-                CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
-                CardSlot(key="as_of", label="As of", kind="timestamp"),
+                CardSlot(key="holder_type_filter", label="Holder type", kind="kpi"),
+                CardSlot(key="status", label="Status", kind="mode_pill"),
             ],
         ),
         methodology=(
-            "HDS resolves the issuer's CIK via SEC EDGAR, fetches the most-recent 10-Q / 10-K "
-            "holders tables, and joins them with yfinance institutional / major holders for "
-            "broader coverage. Each holder row is typed (institutional / insider / mutual_fund) "
-            "with shares + % of float + notional value. % institutional / insider are computed "
-            "from float shares, not total shares outstanding, so they match the broker convention. "
-            "When live=false the handler returns a template stub for offline panel rendering."
+            "HDS lists one holder source per table. The Yahoo institutional / mutual-fund holder tables "
+            "(yfinance institutional_holders / mutualfund_holders) are the rows when they return any. "
+            "Otherwise the rows are the issuer's per-filer aggregate from the local SEC 13F store (filer CIK, "
+            "shares, report date), and the 13F aggregate is also returned as sec_13f_top when present. "
+            "Each row is typed (institutional / mutual_fund / institutional_13f). pct_outstanding is Yahoo's "
+            "pctHeld: the holder's shares divided by shares outstanding, as a fraction (0.08 = 8%); it is "
+            "blank for 13F rows, which carry no percentage. 13F market value is not shown because the "
+            "InfoTable unit is unresolved. Yahoo major-holder percentages are a summary block, not holder "
+            "rows. When live=false no rows are returned (status needs_input); no synthetic or reference "
+            "rows are served."
         ),
         field_dict={
-            "symbol": FieldDef(description="Equity ticker.", source="instrument"),
-            "holders": FieldDef(description="Ranked list of holders with shares + % held.", source="provider"),
-            "pct_institutional": FieldDef(unit="%", description="Aggregate institutional ownership.", source="computed"),
-            "pct_insider": FieldDef(unit="%", description="Aggregate insider ownership.", source="computed"),
-            "institutional_count": FieldDef(description="Distinct institutional holders in the table.", source="computed"),
-            "float_shares": FieldDef(description="Float-shares baseline used for % calculations.", source="provider"),
+            "rows": FieldDef(description="Ranked holder rows, one source per table, each with shares and holder_type.", source="provider"),
+            "sec_13f_top": FieldDef(description="Local SEC 13F per-filer aggregate for the issuer (filer CIK, shares, report date), when the store holds it.", source="provider"),
+            "pct_outstanding": FieldDef(unit="fraction", description="Fraction from 0 to 1: holder shares divided by shares outstanding (Yahoo pctHeld); blank for 13F rows.", source="provider"),
+            "major_holders_summary": FieldDef(description="Yahoo major-holder summary block (not holder rows).", source="provider"),
+            "holder_type_filter": FieldDef(description="The holder_type filter that was applied to rows.", source="input"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -148,12 +149,12 @@ def hds() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="hds_aapl_returns_top_holders",
-                description="HDS for AAPL returns at least one holder row + non-null % institutional.",
+                description="HDS for AAPL returns at least one holder row; Yahoo rows carry pct_outstanding as a fraction in [0, 1].",
                 inputs={"symbol": "AAPL", "live": True},
                 assertions=[
                     "status_in_ok_set",
-                    "holders_non_empty",
-                    "pct_institutional_between_0_and_100",
+                    "rows_non_empty",
+                    "pct_outstanding_between_0_and_1_when_present",
                 ],
             ),
             SemanticTest(
@@ -168,7 +169,7 @@ def hds() -> FunctionManifest:
                 inputs={"symbol": "ZZZZZZ", "live": True},
                 assertions=[
                     "status_equals_provider_unavailable",
-                    "holders_is_empty_array",
+                    "rows_is_empty_array",
                 ],
             ),
         ],

@@ -304,6 +304,11 @@ def params_for(entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
             "vol": 0.35,
             "rate": 0.04,
         }]
+    elif code == "PSC":
+        # PSC requires a stop (2026-11-07); a fully specified trade exercises
+        # sizing, R multiple and Kelly. Explicit inputs, not placeholders.
+        params.update({"account": 25000, "risk_pct": 0.01, "entry": 200, "stop": 190,
+                       "target": 230, "win_rate": 0.5})
     elif code in {"EMSX", "BBGT", "TSOX", "FXGO"}:
         params.update({"quantity": 1.0, "price": 100.0, "side": "BUY", "submit": True})
     return params

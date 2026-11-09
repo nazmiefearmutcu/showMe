@@ -69,7 +69,9 @@ const SECTOR_OPTIONS = [
   { value: "ALL", label: "ALL", title: "Sector ALL" },
   { value: "Energy", label: "ENERGY", title: "Sector Energy" },
   { value: "Metals", label: "METALS", title: "Sector Metals" },
-  { value: "Agriculture", label: "AGRS", title: "Sector Agriculture" },
+  { value: "Grains", label: "GRAINS", title: "Sector Grains" },
+  { value: "Softs", label: "SOFTS", title: "Sector Softs" },
+  { value: "Livestock", label: "LSTK", title: "Sector Livestock" },
 ] as const;
 
 const SORT_OPTIONS = [
@@ -80,9 +82,11 @@ const SORT_OPTIONS = [
 
 // The backend treats an empty `query` as "use my default" (which would
 // silently restrict the screen to Energy), so the all-sectors filter is
-// expressed as a permissive predicate instead — every reference row has
-// a non-negative volume.
-const MATCH_ALL_QUERY = "volume >= 0";
+// expressed as a permissive predicate instead. It must not test volume: volume
+// is provider session data, so most reference contracts have none, and the DSL
+// evaluates a null volume as no match (CSRC#2 dropped 20 of 29 contracts that
+// way). Every contract carries a sector, so this predicate matches all of them.
+const MATCH_ALL_QUERY = 'sector != "NONE"';
 const LIMIT = 50;
 
 export function CSRCPane({ code }: FunctionPaneProps) {

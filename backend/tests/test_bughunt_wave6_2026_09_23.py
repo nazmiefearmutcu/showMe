@@ -101,7 +101,7 @@ class _RebaPortfolio:
         return 0
 
 
-def test_reba_liquidation_without_quote_is_price_unavailable(monkeypatch) -> None:
+def test_reba_liquidation_without_quote_withholds_preview(monkeypatch) -> None:
     from showme.engine.functions.portfolio import reba as reba_mod
 
     # FunctionDeps() has no yfinance → every quote is unavailable.
@@ -113,25 +113,32 @@ def test_reba_liquidation_without_quote_is_price_unavailable(monkeypatch) -> Non
             targets={"SPY": 1.0}, live_portfolio=True
         )
     )
-    liq = res.data["liquidations"]
-    assert len(liq) == 1
-    row = liq[0]
-    # The old `prices.get(sym) or 1` produced SELL 16250 BTC — never again.
-    assert row["symbol"] == "BTCUSDT"
-    assert row["quantity"] is None
-    assert row["price"] is None
-    assert row["price_unavailable"] is True
-    assert row["notional_delta"] == pytest.approx(-0.25 * 65_000.0)
+    # The old `prices.get(sym) or 1` produced SELL 16250 BTC, and the REBA#3
+    # cost fallback produced a liquidation valued at 65,000 per coin. Neither
+    # may appear: the held position has no live mark, so no liquidation row.
+    assert res.data["status"] == "provider_unavailable"
+    assert res.data["liquidations"] == []
+    assert res.data["orders"] == []
+    assert [p["symbol"] for p in res.data["unpriced_positions"]] == ["BTCUSDT"]
 
 
 def test_reba_target_order_without_quote_is_price_unavailable(monkeypatch) -> None:
     from showme.engine.functions.portfolio import reba as reba_mod
 
+    class _PriceAaplOnly:
+        async def fetch(self, request):
+            if request.instrument.symbol != "AAPL":
+                raise RuntimeError("no quote")
+            return Quote(symbol="AAPL", timestamp=utcnow(), last=110.0)
+
+    # AAPL is held and marked; SPY (the target) has no quote. A target with no
+    # quote is still an honest price_unavailable row (REBA#3 only withholds
+    # when a HELD position is unpriced, since that is what skews the weights).
     monkeypatch.setattr(
         reba_mod, "PortfolioState", lambda: _RebaPortfolio([_RebaPosition("AAPL", 10.0, 100.0)])
     )
     res = _run(
-        reba_mod.REBAFunction(FunctionDeps()).execute(
+        reba_mod.REBAFunction(FunctionDeps(yfinance=_PriceAaplOnly())).execute(
             targets={"SPY": 1.0}, live_portfolio=True
         )
     )
@@ -197,6 +204,16 @@ class _FakeFredCSVClient:
         raise AssertionError(f"unexpected FRED series requested: {url}")
 
 
+class _BenchmarkYahoo:
+    """yfinance-shaped fake: a rising close series so REGM has a real benchmark
+    to classify (the curve leg under test runs alongside it)."""
+
+    async def fetch(self, request):
+        closes = [100.0 + i * 0.5 for i in range(300)]
+        idx = pd.date_range(end="2026-09-20", periods=len(closes), freq="D")
+        return pd.DataFrame({"close": closes}, index=idx)
+
+
 class _FakeKeyedFred:
     """FREDAdapter-shaped fake: keyed fetch returns a date-indexed frame."""
 
@@ -217,7 +234,7 @@ def test_regm_keyed_fred_path_computes_curve() -> None:
     raised AttributeError; it must read the returned DataFrame directly."""
     from showme.engine.functions.macro.regm import REGMFunction
 
-    fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([3.4] * 5, [4.2] * 5)))
+    fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([3.4] * 5, [4.2] * 5), yfinance=_BenchmarkYahoo()))
     out = _run(fn.execute(symbol="SPY", allow_model=True))
     current = out.data["current"]
     assert current.get("curve") == "INVERTED"
@@ -231,9 +248,12 @@ def test_regm_keyless_adapter_falls_through_to_csv_shim(monkeypatch) -> None:
 
     reset_fred_csv_cache()
     try:
-        fn = REGMFunction(FunctionDeps(fred=_FakeKeyedFred([9.9] * 5, [9.9] * 5, api_key="")))
+        fn = REGMFunction(FunctionDeps(
+            fred=_FakeKeyedFred([9.9] * 5, [9.9] * 5, api_key=""),
+            yfinance=_BenchmarkYahoo(),
+        ))
         fn._http_client = _FakeFredCSVClient(dgs10="3.40", dgs2="4.20")
-        out = _run(fn.execute(symbol="SPY", allow_model=True))
+        out = _run(fn.execute(symbol="SPY"))
         current = out.data["current"]
         # The keyed fake would give +570bp; the shim's CSV values give -80bp.
         assert current.get("curve_2s10s_bp") == pytest.approx(-80.0)
@@ -301,13 +321,17 @@ def test_corr_live_total_outage_returns_provider_unavailable_envelope() -> None:
     assert any("no usable price series" in w for w in res.warnings)
 
 
-def test_corr_model_mode_still_serves_reference_series() -> None:
+def test_corr_model_mode_serves_no_synthetic_series() -> None:
+    # Data policy: live=false used to generate Gaussian price paths and publish
+    # their correlation matrix. It is now an explicit input_error, no matrix.
     from showme.engine.functions.portfolio.corr import CORRFunction
 
     fn = CORRFunction(FunctionDeps())
     res = _run(fn.execute(symbols=["SPY", "QQQ"], live_correlation=False, days=90))
     assert res.data["symbols"] == ["SPY", "QQQ"]
-    assert res.data["impactor"]["options"]["source_mode"] == "computed_reference"
+    assert res.data["status"] == "input_error"
+    assert res.data["pearson"] == {} and res.data["rows"] == []
+    assert res.sources == []
 
 
 # ── HNT-05: PORT concurrent quotes ────────────────────────────────────────
@@ -379,24 +403,30 @@ def test_wirp_irx_refinement_capped_at_remaining_budget(monkeypatch) -> None:
 
     # The 2.5s IRX pull must be cancelled at the ~1s remaining budget...
     assert elapsed < 2.2, f"IRX was awaited past the function budget ({elapsed:.2f}s)"
-    # ...and WIRP still returns honest FRED-anchored rows.
-    assert result.data["rows"], "FRED-anchored rows must survive an IRX timeout"
-    assert result.data["source_mode"] == "live_fred_target_no_irx"
+    # The keyless path has no hike/cut source, so no rows are served either way.
+    # The IRX timeout is still reported honestly and the anchor keeps FRED values.
+    assert result.data["rows"] == []
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["anchor"]["current_target_mid"] == 4.375
+    assert result.data["anchor"]["tbill_13w_pct"] is None
     assert any("timed out" in w for w in result.warnings)
 
 
-def test_wirp_fomc_calendar_exhausted_is_honest(monkeypatch) -> None:
+def test_wirp_keyless_serves_no_stale_calendar_dates(monkeypatch) -> None:
+    """The keyless path has no forward-meeting rows, so no past FOMC date can
+    be served as an upcoming decision."""
     import showme.engine.functions.macro.wirp as wirp_mod
 
     _install_wirp_fakes(monkeypatch)
-    monkeypatch.setattr(wirp_mod, "_FOMC_CALENDAR_2026", ["2026-01-28", "2026-03-18"])
 
+    async def _irx():
+        return 4.30, "2026-09-10"
+
+    monkeypatch.setattr(wirp_mod, "_fetch_irx_implied_rate", _irx)
     result = _run(wirp_mod.WIRPFunction(FunctionDeps()).execute(central_bank="FED", meetings=4))
     assert result.data["rows"] == []
-    assert result.data["status"] == "empty"
-    # Past dates must not be served as forward meetings — say why instead.
-    assert any("calendar exhausted" in w.lower() for w in result.warnings)
-    assert any("2026-03-18" in w for w in result.warnings)
+    assert result.data["status"] == "provider_unavailable"
+    assert not any("calendar" in w.lower() and "exhausted" in w.lower() for w in result.warnings)
 
 
 # ── HNT-08: MGN input_error ───────────────────────────────────────────────
@@ -415,49 +445,6 @@ def test_mgn_upsert_and_delete_require_name() -> None:
     assert delete.data["missing_fields"] == ["name"]
 
 
-# ── HNT-09: NALRT budget ──────────────────────────────────────────────────
-
-
-def test_nalrt_skips_deep_gdelt_once_budget_is_exhausted(monkeypatch) -> None:
-    from showme.engine.functions.news import nalrt as nalrt_mod
-
-    class _FakeRss:
-        async def fetch(self, request):
-            return []
-
-        async def probe_feeds(self, request, timeout=None):
-            return []
-
-    class _FakeGdelt:
-        def __init__(self):
-            self.calls = 0
-
-        async def fetch(self, request):
-            self.calls += 1
-            return [{"title": "late", "url": "https://x/late"}]
-
-    gdelt = _FakeGdelt()
-    # Fake clock: every perf_counter call jumps forward 20s, so `started`
-    # lands 20s before the first _remaining() check — the budget reads as
-    # exhausted for every stage from the very first one.
-    clock = {"t": 100.0}
-
-    def _fake_perf_counter() -> float:
-        clock["t"] += 20.0
-        return clock["t"]
-
-    monkeypatch.setattr(
-        nalrt_mod, "time", types.SimpleNamespace(perf_counter=_fake_perf_counter)
-    )
-    deps = FunctionDeps(rss=_FakeRss(), gdelt=gdelt)
-    fn = nalrt_mod.NewsAlertFunction(deps)
-    result = _run(fn.execute(symbol="AAPL", deep=True))
-
-    assert gdelt.calls == 0, "gdelt must not fire once the budget is spent"
-    assert any("gdelt: skipped" in w for w in result.warnings)
-    assert "gdelt" not in result.sources
-
-
 # ── HNT-10 / HNT-11: seed ↔ handler contract ──────────────────────────────
 
 
@@ -468,7 +455,7 @@ def test_gmm_resolves_comma_separated_country_string() -> None:
     assert set(resolved) == {"US", "CN"}
     assert _resolve_countries(" US , cn ") == resolved
     # Single codes and the euro-area proxy keep working.
-    assert set(_resolve_countries("EZ")) == {"DE"}
+    assert set(_resolve_countries("EZ")) == {"EZ"}  # euro area, not Germany
 
 
 def test_gmm_seed_drops_inputs_the_handler_ignores() -> None:
@@ -499,25 +486,6 @@ def test_reba_seed_input_names_match_handler() -> None:
 
 
 # ── HNT-13: ECO country filter ────────────────────────────────────────────
-
-
-def test_eco_country_filter_drops_countryless_rows() -> None:
-    from showme.engine.functions.macro import eco as eco_mod
-
-    d1 = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
-    events = [
-        {"country": "US", "event": "CPI YoY", "date": d1, "importance": "high",
-         "forecast": "3.1%", "previous": "3.0%"},
-        {"country": "", "event": "Mystery Print", "date": d1, "importance": "high"},
-    ]
-    filtered = eco_mod._normalize_events(events, country="US", importance=None, days=7)
-    assert [r["event"] for r in filtered] == ["CPI YoY"]
-
-    unfiltered = eco_mod._normalize_events(events, country=None, importance=None, days=7)
-    assert len(unfiltered) == 2
-    mystery = next(r for r in unfiltered if r["event"] == "Mystery Print")
-    # No fabricated "US" label on a row with no country provenance.
-    assert mystery["country"] == ""
 
 
 # ── HNT-14: calendar holidays ─────────────────────────────────────────────
@@ -665,16 +633,20 @@ def test_port_whatif_uses_unique_temp_path(monkeypatch, tmp_path) -> None:
 
 
 def test_sosc_base_symbol_stripping_is_suffix_anchored(monkeypatch) -> None:
+    import httpx
+
+    from showme.engine.data_sources.awareness import AwarenessClient
     from showme.engine.functions.news import sosc as sosc_mod
 
     captured: list[str] = []
 
-    async def _capture(symbol, timespan, maxrecords):
-        captured.append(symbol)
-        return []
+    def _capture(request: httpx.Request) -> httpx.Response:
+        if "/sentiment/entity/" in request.url.path:
+            captured.append(request.url.path.rsplit("/", 1)[-1])
+        raise httpx.ConnectError("offline", request=request)
 
-    monkeypatch.setattr(sosc_mod, "_gdelt_articles", _capture)
     fn = sosc_mod.SOSCFunction()
+    fn._awareness = AwarenessClient("http://aw.test", transport=httpx.MockTransport(_capture), autostart=False)
     for sym, asset_class in (
         ("BTCUSDT", AssetClass.CRYPTO),
         ("BTC-USD", AssetClass.CRYPTO),
@@ -685,3 +657,16 @@ def test_sosc_base_symbol_stripping_is_suffix_anchored(monkeypatch) -> None:
     # Crypto quote suffixes strip; the FX pair is left intact (the old
     # `.replace("USD", "")` mangled USDJPY into "JPY").
     assert captured == ["BTC", "BTC", "USDJPY"]
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

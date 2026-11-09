@@ -9,8 +9,8 @@ They now fetch REAL keyless public data:
   concepts (corporates) / labelled illustrative fallback otherwise.
 * DEBT  — sovereign debt-to-GDP from the World Bank indicator API
   (GC.DOD.TOTL.GD.ZS), keyless.
-* ALLQ  — indicative dealer ladder anchored to a REAL reference price
-  (US Treasury FiscalData yield -> clean price, or yfinance for a symbol).
+* ALLQ  — indicative dealer ladder anchored to a REAL Treasury par yield
+  (keyless US Treasury curve -> modeled clean price; no other anchor).
 
 Every handler wraps the network in try/except and, on a genuine outage,
 returns ``status="provider_unavailable"`` with an honest warning +
@@ -37,10 +37,6 @@ _SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 _WORLDBANK_URL = "https://api.worldbank.org/v2/country/{iso}/indicator/{code}"
 _WB_DEBT_TO_GDP = "GC.DOD.TOTL.GD.ZS"
-_FISCALDATA_AVG_RATES = (
-    "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/"
-    "v2/accounting/od/avg_interest_rates"
-)
 
 # ALLQ per-tenor anchors from the keyless US Treasury daily par-yield curve
 # (``engine/data_sources/bond/ustreasury_adapter.py``). FiscalData only
@@ -93,6 +89,14 @@ def _as_of() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
+def _obs_year(value: Any) -> int | None:
+    """Calendar year of a World Bank observation date ('2024' or '2024Q1')."""
+    try:
+        return int(str(value).strip()[:4])
+    except (TypeError, ValueError):
+        return None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -106,20 +110,9 @@ def _is_sovereign(token: str) -> bool:
     return any(hint in upper for hint in _SOVEREIGN_HINTS)
 
 
-def _treasury_security_type(symbol: str) -> str | None:
-    """Map a Treasury alias like ``US2Y`` / ``US30Y`` to its FiscalData type.
+def _is_equity_instrument(instrument: Instrument | None) -> bool:
+    return instrument is not None and getattr(instrument, "asset_class", None) == AssetClass.EQUITY
 
-    H-8: notes cover tenors up to 10Y, bonds beyond. Returns ``None`` when
-    no tenor suffix is parseable, leaving the anchor selection unchanged.
-    """
-    match = re.search(r"(\d{1,2})Y\s*$", str(symbol).upper())
-    if not match:
-        return None
-    try:
-        years = float(match.group(1))
-    except ValueError:
-        return None
-    return "Treasury Bonds" if years > 10.0 else "Treasury Notes"
 
 
 async def _sec_lookup_cik(client: Any, ticker: str) -> str | None:
@@ -172,6 +165,80 @@ def _first_fact(facts: dict[str, Any], concepts: tuple[str, ...]) -> tuple[float
 # ---------------------------------------------------------------------------
 
 
+_CRPR_ANNUAL_DAYS = (350, 380)
+
+
+def _crpr_duration_days(item: dict[str, Any]) -> int | None:
+    start, end = item.get("start"), item.get("end")
+    if not start or not end:
+        return None
+    try:
+        return (datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))).days
+    except ValueError:
+        return None
+
+
+def _crpr_pick(
+    facts: dict[str, Any],
+    concepts: tuple[str, ...],
+    *,
+    flow: bool,
+    period_end: str | None = None,
+) -> tuple[float, str, str] | None:
+    """Return ``(value, end, concept)`` for the first concept with a qualifying USD entry.
+
+    ``flow=True`` keeps annual entries only (about 365 days), so a 10-Q year-to-date
+    or single-quarter value is never read as a full-year figure. ``flow=False`` keeps
+    point-in-time balances only (entries with no start date). ``period_end``, when
+    given, restricts to that exact period end so numerator and denominator share a
+    fiscal period. Ties on the end date go to the entry filed most recently.
+    """
+    lo, hi = _CRPR_ANNUAL_DAYS
+    for concept in concepts:
+        units = facts.get("facts", {}).get("us-gaap", {}).get(concept, {}).get("units", {}) or {}
+        items = units.get("USD") or []
+        best: tuple[tuple[str, str], float, str] | None = None
+        for item in items:
+            val, end = item.get("val"), item.get("end")
+            if val is None or end is None:
+                continue
+            if flow:
+                days = _crpr_duration_days(item)
+                if days is None or not (lo <= days <= hi):
+                    continue
+            elif item.get("start"):
+                continue
+            if period_end is not None and str(end) != period_end:
+                continue
+            key = (str(end), str(item.get("filed") or ""))
+            if best is None or key > best[0]:
+                best = (key, float(val), str(end))
+        if best is not None:
+            return (best[1], best[2], concept)
+    return None
+
+
+_SP_BUCKET = {
+    "AAA": "high_grade",
+    "AA": "high_grade",
+    "A": "investment_grade",
+    "BBB": "investment_grade",
+    "BB": "crossover",
+    "B": "high_yield",
+    "CCC": "distressed",
+    "CC": "distressed",
+    "C": "distressed",
+    "D": "distressed",
+}
+
+
+def _bucket_for_sp_rating(rating: Any) -> str:
+    """Map a pinned S&P rating (AA+, BBB-, ...) to the model's bucket scale; "n/a" if unknown."""
+    if not isinstance(rating, str):
+        return "n/a"
+    return _SP_BUCKET.get(rating.strip().upper().rstrip("+-"), "n/a")
+
+
 def _rating_bucket_from_coverage(leverage: float | None, coverage: float | None) -> tuple[str, str, str, str]:
     """Map (debt/EBITDA, interest coverage) to a transparent implied bucket.
 
@@ -198,17 +265,23 @@ def _rating_bucket_from_coverage(leverage: float | None, coverage: float | None)
 class CRPRFunction(BaseFunction):
     code = "CRPR"
     name = "Credit Rating Profile"
-    asset_classes = (AssetClass.BOND,)
+    # Must match crpr_seed.py (BOND + EQUITY): the route's compatibility guard
+    # rejects any instrument class not listed here before execute() runs.
+    asset_classes = (AssetClass.BOND, AssetClass.EQUITY)
     category = "bond"
 
     _METHODOLOGY = (
         "CRPR derives a MODEL-IMPLIED credit profile from the issuer's latest SEC EDGAR "
         "companyfacts (XBRL): gross debt = LongTermDebt(+Current) + ShortTermBorrowings; "
         "EBITDA proxy = OperatingIncomeLoss + DepreciationDepletionAndAmortization; "
-        "interest coverage = EBITDA / InterestExpense. Leverage (debt/EBITDA) and coverage "
+        "interest coverage = EBIT (OperatingIncomeLoss) / InterestExpense. Only annual (about "
+        "365-day) flow facts are used, and interest and D&A must share the EBIT fiscal period. "
+        "A missing input is reported as null with a warning, never as zero, and no rating is "
+        "derived without both leverage and coverage. Leverage (debt/EBITDA) and coverage "
         "are mapped to a coarse, transparent rating bucket (AA..CCC). This is implied from "
         "financials, NOT a paid S&P/Moody's/Fitch feed. If the caller pins a ``rating`` dict "
-        "it is echoed verbatim. Sovereign issuers (no SEC CIK) get a labelled reference profile."
+        "it is echoed verbatim and its implied bucket is taken from the pinned S&P rating "
+        "(n/a when none is pinned). Sovereign issuers (no SEC CIK) get a labelled reference profile."
     )
     _FIELD_DICT = {
         "agency": "Source label for the row (model_implied or user_input).",
@@ -231,14 +304,17 @@ class CRPRFunction(BaseFunction):
                 {"agency": "Moody's", "rating": user_rating.get("moodys"), "outlook": user_rating.get("outlook", "n/a"), "watch": user_rating.get("watch", "none"), "rating_date": _as_of(), "rationale": "Operator-pinned rating override."},
                 {"agency": "Fitch", "rating": user_rating.get("fitch"), "outlook": user_rating.get("outlook", "n/a"), "watch": user_rating.get("watch", "none"), "rating_date": _as_of(), "rationale": "Operator-pinned rating override."},
             ]
+            # The bucket follows the pinned S&P rating. The ``bucket`` input is not
+            # read here: the seed injects its default (high_grade) on every call.
+            pinned_bucket = _bucket_for_sp_rating(user_rating.get("sp"))
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
                     "status": "ok",
                     "rows": rows,
-                    "summary": {"issuer": issuer, "implied_bucket": params.get("bucket", "high_grade"), "agencies": len(rows), "source_mode": "user_input"},
-                    "implied_bucket": params.get("bucket", "high_grade"),
+                    "summary": {"issuer": issuer, "implied_bucket": pinned_bucket, "agencies": len(rows), "source_mode": "user_input"},
+                    "implied_bucket": pinned_bucket,
                     "scale": self._SCALE,
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
@@ -247,26 +323,38 @@ class CRPRFunction(BaseFunction):
                 metadata={"data_mode": "user_input", "as_of": _as_of()},
             )
 
-        # 2) sovereign / non-tickerable issuer -> labelled reference profile
-        if _is_sovereign(issuer):
-            rows = [
-                {"agency": "model_implied", "rating": "AA+", "outlook": "stable", "watch": "none", "rating_date": _as_of(), "rationale": "Sovereign issuer has no SEC CIK; CRPR's financial-derived model does not apply. Reference high-grade sovereign profile shown."},
-            ]
+        # 2) sovereign / non-tickerable issuer -> honest not-applicable state.
+        # CRPR's model is built from SEC financials, which sovereigns do not
+        # file, and no keyless sovereign-rating feed is wired. A constant rating
+        # here would be placeholder data presented as model output, so the
+        # payload carries no rating row at all.
+        # An EQUITY instrument is never a sovereign: the hint list matches by
+        # substring, so an ETF or company symbol such as BOAT or GOVT would
+        # otherwise be labelled a sovereign issuer.
+        if _is_sovereign(issuer) and not _is_equity_instrument(instrument):
+            reason = (
+                f"{issuer!r} is a sovereign issuer: CRPR's SEC-financials model does not apply "
+                "and no keyless sovereign rating feed is wired, so no rating is shown."
+            )
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "ok",
-                    "rows": rows,
-                    "summary": {"issuer": issuer, "implied_bucket": "high_grade", "agencies": len(rows), "source_mode": "sovereign_reference"},
-                    "implied_bucket": "high_grade",
+                    "status": "empty",
+                    "rows": [],
+                    "summary": {"issuer": issuer, "implied_bucket": "n/a", "agencies": 0, "source_mode": "sovereign_not_applicable"},
+                    "reason": reason,
                     "scale": self._SCALE,
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
+                    "next_actions": [
+                        "Pass a ``rating`` override with the sovereign's published agency ratings.",
+                        "Pick a tickerable corporate issuer for a model-implied profile from SEC financials.",
+                    ],
                 },
-                sources=["reference"],
-                warnings=["Sovereign issuer: CRPR's SEC-financials model is not applicable; showing a reference sovereign profile."],
-                metadata={"data_mode": "reference", "as_of": _as_of()},
+                sources=["no_live_source"],
+                warnings=[reason],
+                metadata={"data_mode": "empty", "as_of": _as_of()},
             )
 
         # 3) corporate -> derive from SEC EDGAR companyfacts
@@ -311,25 +399,81 @@ class CRPRFunction(BaseFunction):
                     "next_actions": ["Retry when SEC EDGAR (data.sec.gov) is reachable."],
                 },
                 sources=["sec_edgar"],
-                warnings=[f"SEC EDGAR unreachable: {exc}"],
+                warnings=[f"SEC EDGAR unreachable: {str(exc) or type(exc).__name__}"],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 
         latency_ms = int((time.monotonic() - started) * 1000)
-        lt_debt = _first_fact(facts, ("LongTermDebtNoncurrent", "LongTermDebt"))
-        lt_debt_cur = _first_fact(facts, ("LongTermDebtCurrent", "DebtCurrent"))
-        short_debt = _first_fact(facts, ("ShortTermBorrowings",))
-        op_income = _first_fact(facts, ("OperatingIncomeLoss",))
-        dep_amort = _first_fact(facts, ("DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "DepreciationAmortizationAndAccretionNet"))
-        interest = _first_fact(facts, ("InterestExpense", "InterestExpenseDebt", "InterestAndDebtExpense"))
+        # Flow facts are annual and share the EBIT fiscal period; balances are instants.
+        op_income = _crpr_pick(facts, ("OperatingIncomeLoss",), flow=True)
+        period_end = op_income[1] if op_income else None
+        dep_amort = _crpr_pick(facts, ("DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "DepreciationAmortizationAndAccretionNet"), flow=True, period_end=period_end)
+        interest_concepts = ("InterestExpense", "InterestExpenseDebt", "InterestAndDebtExpense")
+        interest = _crpr_pick(facts, interest_concepts, flow=True, period_end=period_end)
+        lt_debt = _crpr_pick(facts, ("LongTermDebtNoncurrent", "LongTermDebt"), flow=False)
+        lt_debt_cur = _crpr_pick(facts, ("LongTermDebtCurrent", "DebtCurrent"), flow=False)
+        short_debt = _crpr_pick(facts, ("ShortTermBorrowings",), flow=False)
 
-        gross_debt = sum(x[0] for x in (lt_debt, lt_debt_cur, short_debt) if x is not None)
-        ebitda = (op_income[0] if op_income else 0.0) + (dep_amort[0] if dep_amort else 0.0)
-        leverage = round(gross_debt / ebitda, 3) if ebitda > 0 else None
-        coverage = round(ebitda / interest[0], 3) if interest and interest[0] > 0 else None
+        # The LongTermDebt fallback is the total including the current portion
+        # (Apple: 78.114bn = 68.208bn noncurrent + 9.906bn current), so the current
+        # portion is added only when the noncurrent figure or no long-term figure was used.
+        term_debt_parts = [lt_debt[0]] if lt_debt is not None else []
+        # (concept, end) of every debt figure that is summed, so the debt date is labelled.
+        debt_components: list[tuple[str, str]] = [(lt_debt[2], lt_debt[1])] if lt_debt is not None else []
+        if lt_debt_cur is not None and (lt_debt is None or lt_debt[2] != "LongTermDebt"):
+            term_debt_parts.append(lt_debt_cur[0])
+            debt_components.append((lt_debt_cur[2], lt_debt_cur[1]))
+        if short_debt is not None:
+            debt_components.append((short_debt[2], short_debt[1]))
+        # No debt concept at all is a missing input, not zero debt.
+        gross_debt: float | None = None
+        if term_debt_parts or short_debt is not None:
+            gross_debt = sum(term_debt_parts) + (short_debt[0] if short_debt is not None else 0.0)
+        gross_debt_as_of = max((end for _, end in debt_components), default=None)
+
+        # A missing input stays None. It is never read as zero.
+        ebit = op_income[0] if op_income is not None else None
+        ebitda = (ebit + dep_amort[0]) if (ebit is not None and dep_amort is not None) else None
+        leverage = round(gross_debt / ebitda, 3) if gross_debt is not None and ebitda is not None and ebitda > 0 else None
+        # Coverage is EBIT / interest expense, the conventional definition.
+        coverage = round(ebit / interest[0], 3) if ebit is not None and interest is not None and interest[0] > 0 else None
         fin_date = next((x[1] for x in (op_income, lt_debt, interest) if x is not None), _as_of())
+        input_warnings: list[str] = []
+        if op_income is None:
+            input_warnings.append(
+                "No annual OperatingIncomeLoss (EBIT) reported; EBITDA, leverage and interest coverage are not computed."
+            )
+        else:
+            if dep_amort is None:
+                input_warnings.append(
+                    f"No annual D&A for the EBIT period ending {period_end}; EBITDA and leverage are not computed."
+                )
+            if interest is None:
+                latest_interest = _crpr_pick(facts, interest_concepts, flow=True)
+                if latest_interest is not None:
+                    input_warnings.append(
+                        f"Interest expense has no annual entry for the EBIT period ending {period_end} "
+                        f"(latest annual interest ends {latest_interest[1]}); interest coverage is not computed."
+                    )
+                else:
+                    input_warnings.append("No annual interest expense reported; interest coverage is not computed.")
+        if ebitda is not None and ebitda <= 0:
+            input_warnings.append("EBITDA is not positive, so leverage is not meaningful.")
+        if gross_debt is None:
+            input_warnings.append(
+                "No debt concept (LongTermDebt, LongTermDebtNoncurrent or ShortTermBorrowings) reported; "
+                "gross debt and leverage are not computed, so no implied rating is derived."
+            )
+        elif period_end is not None:
+            # Debt is a balance from its own concept, so a component can be older than the EBIT period.
+            for concept, end in debt_components:
+                if end < period_end:
+                    input_warnings.append(
+                        f"{concept} is as of {end}, which predates the EBIT period ending {period_end}; "
+                        "gross debt includes it at that older date."
+                    )
 
-        if gross_debt <= 0 and ebitda <= 0:
+        if (gross_debt or 0.0) <= 0 and (ebitda or 0.0) <= 0:
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -347,9 +491,49 @@ class CRPRFunction(BaseFunction):
                 metadata={"latency_ms": latency_ms, "data_mode": "empty", "as_of": _as_of()},
             )
 
+        interest_fields = {
+            "interest_expense_usd": interest[0] if interest else None,
+            "interest_period_end": interest[1] if interest else None,
+        }
+        if leverage is None or coverage is None:
+            # A null input must not reach the bucket map, which would score it as CCC.
+            reason = "; ".join(input_warnings) or (
+                "Required inputs (EBIT, D&A and interest for one annual period, with positive EBITDA) "
+                "are not all available, so no implied rating is derived from these filings."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "empty",
+                    "rows": [],
+                    "summary": {
+                        "issuer": issuer,
+                        "cik": cik,
+                        "implied_bucket": "n/a",
+                        "agencies": 0,
+                        "leverage_x": leverage,
+                        "interest_coverage_x": None,
+                        "gross_debt_usd": gross_debt,
+                        "gross_debt_as_of": gross_debt_as_of,
+                        "ebitda_proxy_usd": ebitda,
+                        **interest_fields,
+                        "source_mode": "sec_edgar",
+                    },
+                    "reason": reason,
+                    "scale": self._SCALE,
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Provide a ``rating`` override, or retry when the filings report matching annual interest expense."],
+                },
+                sources=["sec_edgar"],
+                warnings=list(input_warnings) or [reason],
+                metadata={"latency_ms": latency_ms, "data_mode": "empty", "as_of": fin_date},
+            )
+
         rating, sp_like, bucket, outlook = _rating_bucket_from_coverage(leverage, coverage)
         rationale = (
-            f"Implied from SEC financials (as of {fin_date}): gross debt ${gross_debt/1e9:.2f}bn, "
+            f"Implied from SEC financials (as of {fin_date}; debt as of {gross_debt_as_of}): gross debt ${gross_debt/1e9:.2f}bn, "
             f"EBITDA proxy ${ebitda/1e9:.2f}bn, leverage {leverage if leverage is not None else 'n/a'}x, "
             f"interest coverage {coverage if coverage is not None else 'n/a'}x."
         )
@@ -370,7 +554,9 @@ class CRPRFunction(BaseFunction):
                     "leverage_x": leverage,
                     "interest_coverage_x": coverage,
                     "gross_debt_usd": gross_debt,
+                    "gross_debt_as_of": gross_debt_as_of,
                     "ebitda_proxy_usd": ebitda,
+                    **interest_fields,
                     "source_mode": "model_implied_from_financials",
                 },
                 "implied_bucket": bucket,
@@ -379,9 +565,26 @@ class CRPRFunction(BaseFunction):
                 "field_dictionary": self._FIELD_DICT,
             },
             sources=["sec_edgar"],
-            warnings=["CRPR rating is MODEL-IMPLIED from SEC financials, not a paid agency rating."],
+            warnings=["CRPR rating is MODEL-IMPLIED from SEC financials, not a paid agency rating.", *input_warnings],
             metadata={"latency_ms": latency_ms, "data_mode": "modeled", "as_of": fin_date},
         )
+
+
+def _balance_sheet_long_term_debt(facts: dict[str, Any]) -> tuple[float | None, str | None]:
+    """Reported balance-sheet long-term debt in USD billions, with its as-of date.
+
+    Uses us-gaap ``LongTermDebt`` (current + noncurrent) when filed, otherwise
+    ``LongTermDebtCurrent`` + ``LongTermDebtNoncurrent`` when both are filed.
+    Returns (None, None) when neither is available; it never estimates.
+    """
+    total = _first_fact(facts, ("LongTermDebt",))
+    if total is not None:
+        return round(total[0] / 1e9, 4), total[1]
+    current = _first_fact(facts, ("LongTermDebtCurrent",))
+    noncurrent = _first_fact(facts, ("LongTermDebtNoncurrent",))
+    if current is not None and noncurrent is not None and current[1] == noncurrent[1]:
+        return round((current[0] + noncurrent[0]) / 1e9, 4), noncurrent[1]
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +604,13 @@ class DDISFunction(BaseFunction):
         "corporates it reads the latest SEC EDGAR companyfacts long-term-debt maturity concepts "
         "(LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths / Year{Two..Five} / "
         "AfterYearFive) and maps them onto the 0-1Y / 1-3Y / 3-5Y / 5Y+ ladder, in USD billions. "
-        "Share % = amount / total x 100. When the caller supplies a ``maturities`` schedule it is "
-        "returned verbatim. With no SEC data and no override the pane stays EMPTY (H-5 fix "
-        "2026-09-08: the old fabricated illustrative ladder was removed) and the payload says why."
+        "Share % = amount / total x 100. summary.scheduled_principal_usd_bn (also returned as the "
+        "legacy total_debt_usd_bn) is the SUM OF SCHEDULED MATURITIES, not balance-sheet debt; "
+        "summary.balance_sheet_long_term_debt_usd_bn is the reported LongTermDebt (null when not "
+        "filed). When the caller supplies a ``maturities`` schedule it is returned verbatim. Amounts "
+        "are USD billions only: a non-USD currency is an input_error, never relabelled. With no SEC "
+        "data and no override the pane stays EMPTY (H-5 fix 2026-09-08: the old fabricated "
+        "illustrative ladder was removed) and the payload says why."
     )
     _FIELD_DICT = {
         "bucket": "Remaining-maturity bucket.",
@@ -432,16 +639,93 @@ class DDISFunction(BaseFunction):
         issuer = str(explicit_issuer or instrument_symbol or "UNSPECIFIED_ISSUER").strip().upper() or "UNSPECIFIED_ISSUER"
         currency = str(params.get("currency") or "USD").upper()
 
+        # 0) amounts are USD billions (amount_usd_bn / SEC USD facts); any other
+        # currency is refused explicitly instead of being echoed as a label.
+        if currency != "USD":
+            reason = (
+                f"DDIS amounts are USD billions; currency={currency} is not supported and no FX "
+                "conversion is applied."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "rows": [],
+                    "summary": {
+                        "issuer": issuer,
+                        "scheduled_principal_usd_bn": 0.0,
+                        "total_debt_usd_bn": 0.0,
+                        "currency": currency,
+                        "source_mode": "input_error",
+                    },
+                    "reason": reason,
+                    "next_actions": [
+                        "Convert the maturity amounts to USD billions and set currency to USD.",
+                    ],
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                },
+                sources=[],
+                warnings=[reason],
+                metadata={"data_mode": "explicit_unavailable", "as_of": _as_of()},
+            )
+
         # 1) user-supplied schedule -> verbatim
         if params.get("maturities") is not None:
-            rows, total = self._finalize_rows(list(params.get("maturities") or []))
+            supplied = list(params.get("maturities") or [])
+            # A row that declares its own non-USD currency would put EUR
+            # principal under a USD-named amount; refuse it the same way.
+            foreign = sorted({
+                str(row.get("currency")).upper()
+                for row in supplied
+                if isinstance(row, dict) and row.get("currency") not in (None, "")
+                and str(row.get("currency")).upper() != "USD"
+            })
+            if foreign:
+                reason = (
+                    f"DDIS amounts are USD billions; row currency {', '.join(foreign)} is not supported "
+                    "and no FX conversion is applied."
+                )
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        "status": "input_error",
+                        "rows": [],
+                        "summary": {
+                            "issuer": issuer,
+                            "scheduled_principal_usd_bn": 0.0,
+                            "total_debt_usd_bn": 0.0,
+                            "currency": currency,
+                            "source_mode": "input_error",
+                        },
+                        "reason": reason,
+                        "next_actions": [
+                            "Convert the maturity amounts to USD billions and set every row currency to USD.",
+                        ],
+                        "methodology": self._METHODOLOGY,
+                        "field_dictionary": self._FIELD_DICT,
+                    },
+                    sources=[],
+                    warnings=[reason],
+                    metadata={"data_mode": "explicit_unavailable", "as_of": _as_of()},
+                )
+            rows, total = self._finalize_rows(supplied)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
                     "status": "ok",
                     "rows": rows,
-                    "summary": {"issuer": issuer, "total_debt_usd_bn": total, "currency": currency, "source_mode": "user_input"},
+                    "summary": {
+                        "issuer": issuer,
+                        "scheduled_principal_usd_bn": total,
+                        "total_debt_usd_bn": total,
+                        "balance_sheet_long_term_debt_usd_bn": None,
+                        "currency": currency,
+                        "source_mode": "user_input",
+                    },
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
                 },
@@ -457,7 +741,7 @@ class DDISFunction(BaseFunction):
             data: dict[str, Any] = {
                 "status": "empty",
                 "rows": [],
-                "summary": {"issuer": issuer, "total_debt_usd_bn": 0.0, "currency": currency, "source_mode": "no_live_source"},
+                "summary": {"issuer": issuer, "scheduled_principal_usd_bn": 0.0, "total_debt_usd_bn": 0.0, "balance_sheet_long_term_debt_usd_bn": None, "currency": currency, "source_mode": "no_live_source"},
                 "reason": reason,
                 "next_actions": next_actions,
                 "methodology": self._METHODOLOGY,
@@ -504,13 +788,13 @@ class DDISFunction(BaseFunction):
                 data={
                     "status": "provider_unavailable",
                     "rows": [],
-                    "summary": {"issuer": issuer, "total_debt_usd_bn": 0.0, "currency": currency, "source_mode": "sec_edgar"},
+                    "summary": {"issuer": issuer, "scheduled_principal_usd_bn": 0.0, "total_debt_usd_bn": 0.0, "balance_sheet_long_term_debt_usd_bn": None, "currency": currency, "source_mode": "sec_edgar"},
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
                     "next_actions": ["Retry when SEC EDGAR (data.sec.gov) is reachable."],
                 },
                 sources=["sec_edgar"],
-                warnings=[f"SEC EDGAR unreachable: {exc}"],
+                warnings=[f"SEC EDGAR unreachable: {str(exc) or type(exc).__name__}"],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 
@@ -546,13 +830,23 @@ class DDISFunction(BaseFunction):
             {"bucket": "5Y+", "tenor_years": 7.0, "amount_usd_bn": b_5p, "currency": currency},
         ])
         fin_date = next((f[1] for f in (y1, y2, beyond) if f is not None), _as_of())
+        bs_total, bs_as_of = _balance_sheet_long_term_debt(facts)
         return FunctionResult(
             code=self.code,
             instrument=instrument,
             data={
                 "status": "ok",
                 "rows": rows,
-                "summary": {"issuer": issuer, "cik": cik, "total_debt_usd_bn": total, "currency": currency, "source_mode": "sec_edgar"},
+                "summary": {
+                    "issuer": issuer,
+                    "cik": cik,
+                    "scheduled_principal_usd_bn": total,
+                    "total_debt_usd_bn": total,
+                    "balance_sheet_long_term_debt_usd_bn": bs_total,
+                    "balance_sheet_as_of": bs_as_of,
+                    "currency": currency,
+                    "source_mode": "sec_edgar",
+                },
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             },
@@ -575,24 +869,24 @@ class DEBTFunction(BaseFunction):
     _METHODOLOGY = (
         "DEBT pulls live general-government debt-to-GDP from the World Bank indicator API "
         f"({_WB_DEBT_TO_GDP}, keyless) for each requested country, taking the most recent "
-        "non-null annual observation. local_currency_share is a published reference where the "
-        "World Bank does not expose a keyless series. portfolio_weight_pct is 0 unless portfolio "
-        "holdings are wired (``summary.portfolio_linked`` reports the state). Supplying "
+        "non-null annual observation that is at most 5 years old. Countries with no observation, "
+        "or only older ones, are excluded from rows and the average and named in warnings and "
+        "``summary.excluded_countries``. The average is an unweighted mean. local_currency_share is "
+        "null for every row: no free keyless sourced series is wired, and no constant is substituted. "
+        "portfolio_weight_pct is 0 unless "
+        "portfolio holdings are wired (``summary.portfolio_linked`` reports the state). Supplying "
         "``exposures`` directly bypasses the World Bank fetch."
     )
     _FIELD_DICT = {
         "country": "ISO-2 country code.",
-        "debt_to_gdp": "General government debt as percent of GDP (World Bank, latest annual).",
-        "local_currency_share": "Reference share of sovereign debt issued in local currency.",
+        "debt_to_gdp": "General government debt as percent of GDP (World Bank, latest annual, at most 5 years old).",
+        "local_currency_share": "Share of sovereign debt in local currency; null because no free sourced series is wired.",
         "portfolio_weight_pct": "Portfolio country weight; zero when no portfolio link.",
         "year": "Year of the World Bank debt-to-GDP observation.",
     }
-    # Reference local-currency shares (broad, stable; labelled as reference).
-    _LOCAL_CCY_REF = {
-        "US": 99.0, "JP": 92.0, "DE": 96.0, "GB": 97.0, "FR": 95.0,
-        "IT": 94.0, "TR": 56.0, "BR": 90.0, "MX": 80.0, "ZA": 89.0,
-        "IN": 96.0, "CN": 98.0, "ES": 95.0, "CA": 98.0, "AU": 97.0,
-    }
+    # A country's latest World Bank value must be at most this many years old.
+    _DEBT_MAX_OBS_AGE_YEARS = 5
+    _AVG_BASIS = "unweighted mean of the listed countries (not GDP-weighted)"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         raw_countries = params.get("countries")
@@ -629,10 +923,37 @@ class DEBTFunction(BaseFunction):
             iso2 = _ISO3_TO_ISO2.get(c, c)
             if iso2 not in normalised:
                 normalised.append(iso2)
+        # Codes with no World Bank mapping are named in the response, never
+        # silently dropped from the requested set.
+        unsupported = [c for c in normalised if c not in _ISO2_TO_ISO3]
+        normalised = [c for c in normalised if c in _ISO2_TO_ISO3]
+        unsupported_warning = (
+            [f"Unsupported country code(s) not fetched: {', '.join(unsupported)}."]
+            if unsupported else []
+        )
+        if not normalised:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"No World Bank debt series for: {', '.join(unsupported)}.",
+                    "rows": [],
+                    "summary": {"countries": 0, "avg_debt_to_gdp": 0.0, "measure": "world_bank", "portfolio_linked": False, "unsupported_countries": unsupported},
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Use ISO-2 codes that the World Bank publishes, such as US, DE, JP or BR."],
+                },
+                sources=[],
+                warnings=unsupported_warning,
+            )
 
         started = time.monotonic()
         rows: list[dict[str, Any]] = []
         any_error: Exception | None = None
+        # Requested countries that yield no current row, each with its reason.
+        excluded: list[dict[str, str]] = []
+        cutoff_year = datetime.now(timezone.utc).year - self._DEBT_MAX_OBS_AGE_YEARS
         import asyncio
         try:
             client = await get_client()
@@ -652,15 +973,26 @@ class DEBTFunction(BaseFunction):
                 except Exception as exc:  # noqa: BLE001 — per-country tolerant
                     nonlocal any_error
                     any_error = exc
+                    excluded.append({"country": iso2, "reason": "World Bank request failed"})
                     return None
                 series = payload[1] if isinstance(payload, list) and len(payload) > 1 and isinstance(payload[1], list) else []
                 latest = next((obs for obs in series if obs.get("value") is not None), None)
                 if latest is None:
+                    excluded.append({"country": iso2, "reason": "no observation in the World Bank series"})
+                    return None
+                observed = _obs_year(latest.get("date"))
+                if observed is None or observed < cutoff_year:
+                    excluded.append({
+                        "country": iso2,
+                        "reason": f"latest observation is {latest.get('date')}, older than {cutoff_year}",
+                    })
                     return None
                 return {
                     "country": iso2,
                     "debt_to_gdp": round(float(latest["value"]), 2),
-                    "local_currency_share": self._LOCAL_CCY_REF.get(iso2, 0.0),
+                    # Always None: no free sourced local-currency series is wired, so
+                    # no value (constant or 0.0) is reported for any country.
+                    "local_currency_share": None,
                     "portfolio_weight_pct": 0.0,
                     "year": latest.get("date"),
                 }
@@ -671,6 +1003,41 @@ class DEBTFunction(BaseFunction):
             any_error = exc
 
         latency_ms = int((time.monotonic() - started) * 1000)
+        excluded.sort(key=lambda e: normalised.index(e["country"]))
+        excluded_warnings = [
+            f"{e['country']}: {e['reason']}; not shown in rows or the average."
+            for e in excluded
+        ]
+
+        if not rows and any_error is None and excluded:
+            # The World Bank answered, but no requested country has a current value.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "empty",
+                    "reason": (
+                        f"No World Bank debt-to-GDP observation from {cutoff_year} onward for: "
+                        + ", ".join(e["country"] for e in excluded) + "."
+                    ),
+                    "rows": [],
+                    "summary": {
+                        "countries": 0,
+                        "avg_debt_to_gdp": None,
+                        "avg_debt_to_gdp_basis": self._AVG_BASIS,
+                        "measure": "world_bank_debt_to_gdp",
+                        "portfolio_linked": False,
+                        "unsupported_countries": unsupported,
+                        "excluded_countries": excluded,
+                    },
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Try other countries, or retry later if the World Bank has not published these years yet."],
+                },
+                sources=["worldbank"],
+                warnings=[*excluded_warnings, *unsupported_warning],
+                metadata={"latency_ms": latency_ms, "data_mode": "live_official", "as_of": _as_of()},
+            )
 
         if not rows:
             return FunctionResult(
@@ -679,18 +1046,22 @@ class DEBTFunction(BaseFunction):
                 data={
                     "status": "provider_unavailable",
                     "rows": [],
-                    "summary": {"countries": 0, "avg_debt_to_gdp": 0.0, "measure": "world_bank", "portfolio_linked": False},
+                    "summary": {"countries": 0, "avg_debt_to_gdp": 0.0, "measure": "world_bank", "portfolio_linked": False, "excluded_countries": excluded},
                     "methodology": self._METHODOLOGY,
                     "field_dictionary": self._FIELD_DICT,
                     "next_actions": ["Retry when the World Bank API (api.worldbank.org) is reachable."],
                 },
                 sources=["worldbank"],
-                warnings=[f"World Bank debt-to-GDP fetch returned no data{f': {any_error}' if any_error else ''}."],
+                warnings=[f"World Bank debt-to-GDP fetch returned no data{f': {any_error}' if any_error else ''}.", *unsupported_warning, *excluded_warnings],
                 metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
             )
 
         avg = round(sum(r["debt_to_gdp"] for r in rows) / len(rows), 2)
-        warnings = ["local_currency_share is a published reference, not a live World Bank series."]
+        warnings = [
+            "local_currency_share is null for every row: no free sourced series is wired, so it is not reported.",
+            *unsupported_warning,
+            *excluded_warnings,
+        ]
         if any_error:
             warnings.append("Some countries were skipped due to World Bank fetch errors.")
         return FunctionResult(
@@ -699,7 +1070,15 @@ class DEBTFunction(BaseFunction):
             data={
                 "status": "ok",
                 "rows": rows,
-                "summary": {"countries": len(rows), "avg_debt_to_gdp": avg, "measure": "world_bank_debt_to_gdp", "portfolio_linked": False},
+                "summary": {
+                    "countries": len(rows),
+                    "avg_debt_to_gdp": avg,
+                    "avg_debt_to_gdp_basis": self._AVG_BASIS,
+                    "measure": "world_bank_debt_to_gdp",
+                    "portfolio_linked": False,
+                    "unsupported_countries": unsupported,
+                    "excluded_countries": excluded,
+                },
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             },
@@ -710,164 +1089,136 @@ class DEBTFunction(BaseFunction):
 
 
 # ---------------------------------------------------------------------------
-# ALLQ — indicative dealer ladder anchored to a REAL reference price
+# ALLQ — indicative dealer ladder anchored to a REAL reference yield
 # ---------------------------------------------------------------------------
+
+# Labelled modelling assumption: the coupon of the reference bond whose clean
+# price is derived from the tenor's par yield. It is disclosed in the summary.
+_ALLQ_REF_COUPON_PCT = 4.0
+# Source marker for the modelled ladder; "_model" classifies rows as model.
+_ALLQ_MODEL_SOURCE = "allq_ladder_model"
+
+
+def _allq_reference_price(yield_pct: float, years: float, coupon_pct: float = _ALLQ_REF_COUPON_PCT) -> float:
+    """Clean price of a reference bond with ``coupon_pct`` discounted at ``yield_pct``.
+
+    Notes/bonds (> 1Y): exact semi-annual cash flows. Bills (<= 1Y): zero-coupon
+    simple discounting. Both use the tenor's own years, so tenors price apart.
+    """
+    if years <= 1.0:
+        return 100.0 / (1.0 + yield_pct / 100.0 * years)
+    freq = 2
+    n = max(1, round(years * freq))
+    r = yield_pct / 100.0 / freq
+    c = coupon_pct / freq
+    if r == 0:
+        return c * n + 100.0
+    return c * (1.0 - (1.0 + r) ** -n) / r + 100.0 * (1.0 + r) ** -n
+
+
+def _allq_ref_coupon_pct(years: float) -> float | None:
+    """Reference-bond coupon disclosed for a tenor; ``None`` for bills (zero-coupon discount)."""
+    return None if years <= 1.0 else _ALLQ_REF_COUPON_PCT
+
+
+def _allq_observation_date(value: Any) -> str:
+    day = value.date() if hasattr(value, "date") else value
+    return day.isoformat() if hasattr(day, "isoformat") else str(day)
 
 
 @FunctionRegistry.register
 class ALLQFunction(BaseFunction):
     code = "ALLQ"
-    name = "Dealer Quotes (TRACE proxy)"
+    name = "Dealer Quotes (indicative, modeled)"
     asset_classes = (AssetClass.BOND,)
     category = "bond"
 
     _METHODOLOGY = (
-        "ALLQ builds an INDICATIVE dealer-quote ladder anchored to a REAL reference price. "
-        "For US Treasury aliases the anchor is derived from the US Treasury FiscalData average "
-        "interest rate (yield -> approximate clean price via 1/(1+y) discounting on a par bond). "
-        "For tickerable instruments the anchor is the latest yfinance price. The ladder spreads a "
-        "realistic bid/ask (composite A: spread/2; composite B: asymmetric ~0.7/0.8; composite C: "
-        "full spread) around that anchor. mid, spread_points and spread_bps_of_price are computed "
-        "as (bid+ask)/2, ask-bid and (spread/mid)*10000. Rows are INDICATIVE, not executable "
-        "dealer prices."
+        "ALLQ builds an INDICATIVE dealer-quote ladder anchored to a REAL reference yield. "
+        "Only US Treasury tenors on the keyless US Treasury daily par-yield curve (US1M to US30Y) "
+        "are anchored: the tenor's latest par yield is discounted to a clean price of a reference "
+        "bond with a labelled 4% coupon (exact semi-annual cash flows; bills up to 1Y use simple "
+        "discounting). Other symbols, including share prices, get no anchor and return "
+        "provider_unavailable. The ladder spreads a bid/ask around that mid: composite A spread/2; "
+        "composite B -0.7/+0.8 spread; composite C full spread. Rows are MODELED from one anchor and "
+        "one spread input, not observed dealer or TRACE quotes, so they are INDICATIVE and not "
+        "executable. mid, spread_points and spread_bps_of_price are (bid+ask)/2, ask-bid and "
+        "(spread/mid)*10000. quote_time is the Treasury observation date (end-of-day curve, no time "
+        "published). An explicit mid input overrides the reference and is labelled user_input."
     )
     _FIELD_DICT = {
         "dealer": "Composite/indicative quote source label.",
-        "bid": "Indicative bid price.",
-        "ask": "Indicative ask price.",
+        "bid": "Indicative bid price (modeled from the reference anchor).",
+        "ask": "Indicative ask price (modeled from the reference anchor).",
         "mid": "Average of bid and ask.",
         "size": "Indicative notional size.",
         "spread_points": "Bid/ask spread in price points.",
         "spread_bps_of_price": "Bid/ask spread in basis points of mid.",
-        "quote_time": "Timestamp the indicative ladder was built.",
+        "synthetic": "Always true: rows are modeled from one reference anchor and one spread input, never observed dealer or TRACE quotes.",
+        "quote_time": "Observation date of the reference yield (end-of-day curve), or the request time for an operator-supplied mid.",
     }
 
-    async def _treasury_anchor(self, symbol: str) -> tuple[float, str, str] | None:
-        """Return (clean_price, source, ref_note) anchored to a real Treasury yield.
+    async def _ustreasury_curve_anchor(self, symbol: str) -> tuple[float, str, str, str] | None:
+        """Per-tenor anchor from the keyless US Treasury par-yield curve.
 
-        H-8 fix (2026-09-08): tenor-aware security selection. FiscalData
-        publishes the AVERAGE interest rate per security TYPE (notes vs
-        bonds), not per tenor, so the anchor now selects the type matching
-        the requested tenor (<=10Y notes, >10Y bonds) and the ref_note
-        explicitly flags that it is a type-average, never a per-tenor
-        yield.
+        Returns ``(clean_price, source, ref_note, as_of_date)`` or ``None``; see
+        ``_ustreasury_curve_anchor_detail`` for the failure reason.
         """
-        client = await get_client()
-        r = await client.get(
-            _FISCALDATA_AVG_RATES,
-            params={
-                "fields": "record_date,security_desc,avg_interest_rate_amt",
-                "filter": "security_desc:in:(Treasury Notes,Treasury Bonds)",
-                "sort": "-record_date",
-                "page[size]": "20",
-            },
-        )
-        r.raise_for_status()
-        payload = r.json()
-        data_rows = payload.get("data", []) if isinstance(payload, dict) else []
-        wanted_type = _treasury_security_type(symbol)
-        if wanted_type:
-            typed = [rec for rec in data_rows if str(rec.get("security_desc") or "") == wanted_type]
-            if typed:
-                data_rows = typed
-        if not data_rows:
-            return None
-        rec = data_rows[0]
-        yld = float(rec.get("avg_interest_rate_amt"))  # percent
-        # Approximate clean price of a par-issued bond at current avg coupon vs a
-        # 10Y discount: price ~ 100 * (coupon/y discounted). Use a simple proxy:
-        # a small premium/discount around par scaled by the yield level.
-        # Par bond at its own coupon prices ~100; deviate by yield delta to 4%.
-        ref_yield = 4.0
-        years = 10.0
-        price = 100.0 * (1.0 + (ref_yield - yld) / 100.0 * years / (1.0 + ref_yield / 100.0))
-        price = round(max(50.0, min(150.0, price)), 4)
-        note = (
-            f"avg {rec.get('security_desc')} coupon {yld:.3f}% on {rec.get('record_date')}"
-            + (" (type-average anchor, not a per-tenor yield)" if wanted_type else "")
-        )
-        return (price, "treasury_fiscaldata", note)
+        anchor, _failure = await self._ustreasury_curve_anchor_detail(symbol)
+        return anchor
 
-    async def _ustreasury_curve_anchor(self, symbol: str) -> tuple[float, str, str] | None:
-        """Per-tenor anchor from the keyless US Treasury par-yield curve CSV.
+    async def _ustreasury_curve_anchor_detail(
+        self, symbol: str
+    ) -> tuple[tuple[float, str, str, str] | None, str | None]:
+        """Per-tenor anchor plus the reason a fetch failed.
 
-        Preferred over the FiscalData security-TYPE average whenever the
-        ``ustreasury`` adapter is wired: the CSV carries the actual per-tenor
-        par yield, discounted to a clean-price proxy with the same formula
-        used by ``_treasury_anchor``. Returns ``None`` when the adapter is
-        absent, the tenor is not on the curve, or the fetch fails — callers
-        keep the existing FiscalData / yfinance anchor chain.
+        Returns ``(anchor, failure)``. ``anchor`` is ``(clean_price, source,
+        ref_note, as_of_date)``: the tenor's latest observed par yield discounted
+        to a reference-bond clean price. ``failure`` names the curve fetch error
+        when the adapter raised, so the caller can report it; it is ``None`` when
+        the adapter is absent, the symbol is not a US curve tenor, or the tenor
+        simply has no observation.
         """
+        import math
+
         provider = getattr(self.deps, "ustreasury", None)
         upper = str(symbol).upper()
         column = _US_TREASURY_TENOR_COLUMNS.get(upper)
         if provider is None or column is None:
-            return None
+            return None, None
         try:
             curve = await provider.yield_curve()
-        except Exception:  # noqa: BLE001 — fallback chain below stays honest
-            return None
-        if hasattr(curve, "empty") and curve.empty:
-            return None
-        latest = (
-            curve.dropna(how="all").iloc[-1]
-            if hasattr(curve, "dropna")
-            else curve.iloc[-1]
-        )
-        value = latest.get(column) if hasattr(latest, "get") else None
+        except Exception as exc:  # noqa: BLE001 — reported by the ALLQ caller, never silent
+            return None, f"Treasury curve fetch failed ({type(exc).__name__}: {exc})"
+        if not hasattr(curve, "columns") or column not in curve.columns:
+            return None, None
+        series = curve[column].dropna()
+        if series.empty:
+            return None, None
         try:
-            yld = float(value)
+            yld = float(series.iloc[-1])
         except (TypeError, ValueError):
-            return None
+            return None, None
+        if not math.isfinite(yld):
+            return None, None
+        as_of = _allq_observation_date(series.index[-1])
         years = float(_US_TREASURY_TENOR_YEARS.get(upper, 10.0))
-        ref_yield = 4.0
-        price = 100.0 * (1.0 + (ref_yield - yld) / 100.0 * years / (1.0 + ref_yield / 100.0))
-        price = round(max(50.0, min(150.0, price)), 4)
-        return (
-            price,
-            "ustreasury",
-            f"Treasury {column} par yield {yld:.3f}% (per-tenor, keyless curve)",
+        price = round(_allq_reference_price(yld, years), 4)
+        basis = (
+            "zero-coupon simple discount"
+            if _allq_ref_coupon_pct(years) is None
+            else f"reference bond {_ALLQ_REF_COUPON_PCT:.0f}% coupon"
         )
+        note = f"Treasury {column} par yield {yld:.3f}% on {as_of} (per-tenor, keyless curve; {basis})"
+        return (price, "ustreasury", note, as_of), None
 
-    async def _treasury_anchor_for(self, symbol: str) -> tuple[float, str, str] | None:
-        """Prefer the per-tenor curve anchor; fall back to the FiscalData type average."""
-        try:
-            got = await self._ustreasury_curve_anchor(symbol)
-        except Exception:  # noqa: BLE001 — anchor fallback chain below stays honest
-            got = None
-        if got is not None:
-            return got
-        return await self._treasury_anchor(symbol)
-
-    async def _yfinance_anchor(self, symbol: str) -> tuple[float, str, str] | None:
-        adapter = getattr(self.deps, "yfinance", None) or getattr(self.deps, "quotes", None)
-        if adapter is not None and hasattr(adapter, "fetch_quote"):
-            quote = await adapter.fetch_quote(symbol)
-            price = quote.get("last_price") or quote.get("previous_close")
-            if price:
-                return (round(float(price), 4), "yfinance", f"yfinance last for {symbol}")
-        # direct fallback
-        def _sync() -> float | None:
-            import yfinance as yf
-
-            t = yf.Ticker(symbol)
-            fast = getattr(t, "fast_info", {}) or {}
-            val = fast.get("last_price") or fast.get("lastPrice") or fast.get("previous_close") or fast.get("previousClose")
-            return float(val) if val is not None else None
-
-        import asyncio
-
-        price = await asyncio.to_thread(_sync)
-        if price:
-            return (round(float(price), 4), "yfinance", f"yfinance last for {symbol}")
-        return None
-
-    def _build_ladder(self, symbol: str, anchor: float, spread: float, size: float, ref_note: str) -> list[dict[str, Any]]:
-        ts = _now_iso()
+    def _build_ladder(
+        self, symbol: str, anchor: float, spread: float, size: float, ref_note: str, quote_time: str
+    ) -> list[dict[str, Any]]:
         quotes = [
-            {"bond": symbol, "dealer": "Composite A", "bid": anchor - spread / 2, "ask": anchor + spread / 2, "size": size, "quote_time": ts},
-            {"bond": symbol, "dealer": "Composite B", "bid": anchor - spread * 0.7, "ask": anchor + spread * 0.8, "size": size * 0.75, "quote_time": ts},
-            {"bond": symbol, "dealer": "Composite C", "bid": anchor - spread, "ask": anchor + spread, "size": size * 0.5, "quote_time": ts},
+            {"bond": symbol, "dealer": "Composite A", "bid": anchor - spread / 2, "ask": anchor + spread / 2, "size": size, "quote_time": quote_time},
+            {"bond": symbol, "dealer": "Composite B", "bid": anchor - spread * 0.7, "ask": anchor + spread * 0.8, "size": size * 0.75, "quote_time": quote_time},
+            {"bond": symbol, "dealer": "Composite C", "bid": anchor - spread, "ask": anchor + spread, "size": size * 0.5, "quote_time": quote_time},
         ]
         for q in quotes:
             q["bid"] = round(float(q["bid"]), 6)
@@ -876,6 +1227,7 @@ class ALLQFunction(BaseFunction):
             q["spread_points"] = round(q["ask"] - q["bid"], 6)
             q["spread_bps_of_price"] = round((q["spread_points"] / q["mid"]) * 10_000, 3) if q["mid"] else 0.0
             q["reference"] = ref_note
+            q["synthetic"] = True
         return quotes
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
@@ -883,59 +1235,87 @@ class ALLQFunction(BaseFunction):
         spread = float(params.get("spread", params.get("spread_points", 0.18)))
         size = float(params.get("size", 1_000_000))
         user_mid = params.get("mid")
+        us_tenor = symbol in _US_TREASURY_TENOR_COLUMNS
 
         started = time.monotonic()
         anchor: float | None = None
-        source = "treasury_fiscaldata"
+        source = "ustreasury"
         ref_note = ""
+        as_of = _as_of()
+        quote_time = _now_iso()
         fetch_error: Exception | None = None
+        curve_failure: str | None = None
         try:
-            if _is_sovereign(symbol):
-                got = await self._treasury_anchor_for(symbol)
-            else:
-                got = await self._yfinance_anchor(symbol)
-                source = "yfinance"
+            got = None
+            if us_tenor:
+                got, curve_failure = await self._ustreasury_curve_anchor_detail(symbol)
             if got is not None:
-                anchor, source, ref_note = got
+                anchor, source, ref_note, as_of = got
+                quote_time = f"{as_of}T00:00:00+00:00"
         except Exception as exc:  # noqa: BLE001
             fetch_error = exc
 
         latency_ms = int((time.monotonic() - started) * 1000)
 
-        # If we couldn't get a real anchor: honour an explicit user mid, else
-        # report provider_unavailable (do NOT silently fabricate a price).
-        if anchor is None:
-            if user_mid is not None:
+        # An explicit operator mid overrides the reference and is labelled as such.
+        if user_mid not in (None, ""):
+            try:
                 anchor = float(user_mid)
-                source = "user_input"
-                ref_note = "operator-supplied mid (no live reference reachable)"
-            else:
+            except (TypeError, ValueError):
                 return FunctionResult(
                     code=self.code,
                     instrument=instrument,
                     data={
-                        "status": "provider_unavailable",
+                        "status": "input_error",
                         "rows": [],
                         "spread_curve": [],
-                        "summary": {"bond": symbol, "source_mode": source},
+                        "summary": {"bond": symbol, "source_mode": "user_input"},
                         "methodology": self._METHODOLOGY,
                         "field_dictionary": self._FIELD_DICT,
-                        "next_actions": ["Retry when the reference price source is reachable, or pass an explicit ``mid``."],
+                        "next_actions": ["Pass ``mid`` as a number, or omit it to use the live reference."],
                     },
-                    sources=[source],
-                    warnings=[f"No live reference price for {symbol!r}{f': {fetch_error}' if fetch_error else ''}."],
-                    metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
+                    sources=[],
+                    warnings=[f"Operator mid {user_mid!r} is not a number."],
+                    metadata={"latency_ms": latency_ms, "data_mode": "explicit_unavailable", "as_of": _as_of()},
                 )
+            reference = f"; overrides {ref_note}" if ref_note else ""
+            source = "user_input"
+            ref_note = f"operator-supplied mid {anchor}{reference}"
+            as_of = _as_of()
+            quote_time = _now_iso()
 
-        quotes = self._build_ladder(symbol, anchor, spread, size, ref_note)
-        warnings = [
-            "ALLQ rows are INDICATIVE composite quotes anchored to a real reference price, not executable dealer prices."
-        ]
-        if "not a per-tenor yield" in ref_note:
-            warnings.append(
-                f"Treasury anchor for {symbol} is the FiscalData security-type average "
-                "(no per-tenor yield in that dataset); it is not a live quote for this specific tenor."
+        # Without a live Treasury observation or an explicit mid: honest unavailable state.
+        if anchor is None:
+            reason = (
+                f"No Treasury curve observation for {symbol!r}"
+                if us_tenor
+                else f"{symbol!r} is not a US Treasury tenor on the keyless curve; no reference yield is anchored"
             )
+            detail = curve_failure or (str(fetch_error) if fetch_error else None)
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "provider_unavailable",
+                    "rows": [],
+                    "spread_curve": [],
+                    "summary": {"bond": symbol, "source_mode": "unavailable"},
+                    "methodology": self._METHODOLOGY,
+                    "field_dictionary": self._FIELD_DICT,
+                    "next_actions": ["Retry when the Treasury curve is reachable, or pass an explicit ``mid``."],
+                },
+                sources=[source] if us_tenor else [],
+                warnings=[f"{reason}{f': {detail}' if detail else ''}."],
+                metadata={"latency_ms": latency_ms, "data_mode": "provider_unavailable", "as_of": _as_of()},
+            )
+
+        quotes = self._build_ladder(symbol, anchor, spread, size, ref_note, quote_time)
+        warnings = [
+            "ALLQ rows are INDICATIVE composite quotes modeled from one reference anchor and one spread input, not executable dealer prices.",
+            f"The {spread:g}-point spread is an input assumption applied to every tenor, not a measured dealer or TRACE spread.",
+        ]
+        if source == "user_input":
+            warnings.append("The mid is the operator-supplied value; it overrides the Treasury reference and is not a market observation.")
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -945,18 +1325,30 @@ class ALLQFunction(BaseFunction):
                 "spread_curve": [{"dealer": q["dealer"], "spread_bps_of_price": q["spread_bps_of_price"]} for q in quotes],
                 "summary": {
                     "bond": symbol,
+                    "synthetic": True,
                     "mid": round(anchor, 6),
                     "best_bid": max(q["bid"] for q in quotes),
                     "best_ask": min(q["ask"] for q in quotes),
                     "reference": ref_note,
-                    "source_mode": "indicative_anchored_to_real_reference",
+                    "reference_coupon_pct": (
+                        _allq_ref_coupon_pct(_US_TREASURY_TENOR_YEARS.get(symbol, 10.0))
+                        if source != "user_input"
+                        else None
+                    ),
+                    "spread_points_input": spread,
+                    "as_of": as_of,
+                    "source_mode": "indicative_anchored_to_real_reference" if source != "user_input" else "indicative_user_mid",
                 },
                 "methodology": self._METHODOLOGY,
                 "field_dictionary": self._FIELD_DICT,
             },
-            sources=[source],
+            sources=[source, _ALLQ_MODEL_SOURCE],
             warnings=warnings,
-            metadata={"latency_ms": latency_ms, "data_mode": "live_official" if source != "user_input" else "user_input", "as_of": _as_of()},
+            metadata={
+                "latency_ms": latency_ms,
+                "data_mode": "user_input" if source == "user_input" else "modeled",
+                "as_of": as_of,
+            },
         )
 
 

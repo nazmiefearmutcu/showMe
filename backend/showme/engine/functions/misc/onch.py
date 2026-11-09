@@ -11,6 +11,7 @@ returns real, live metrics with no key required.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -24,6 +25,9 @@ _COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 _DEFILLAMA_CHAINS = "https://api.llama.fi/v2/chains"
 _BLOCKSCOUT_ETH_STATS = "https://eth.blockscout.com/api/v2/stats"
 _UA = {"User-Agent": "showMe research contact@example.com"}
+# Only Bitcoin is served by the keyless vitals; the pane's chain control also
+# offers ETH, which must be an explicit input error rather than a BTC payload.
+_SUPPORTED_CHAINS = frozenset({"BTC", "BITCOIN"})
 
 # Hardcoded values the legacy stub leaned on / the kind of canned numbers a
 # fake implementation would echo. Kept ONLY so tests can assert we never
@@ -47,7 +51,7 @@ _METHODOLOGY = (
     "when they respond — each row carries its own source and a missing tier "
     "adds nothing (never a fabricated metric). "
     "On a genuine upstream outage the handler returns "
-    "data_mode='not_configured' style status='provider_unavailable' with an "
+    "status='provider_unavailable' and data_mode='provider_unavailable' with an "
     "honest warning and next_actions — it never fabricates address counts, "
     "fee curves, or a synthetic gas trend."
 )
@@ -87,11 +91,16 @@ class ONCHFunction(BaseFunction):
         self, instrument: Instrument | None = None, **params: Any
     ) -> FunctionResult:
         """Return live keyless Bitcoin on-chain network vitals (default path)."""
+        chain = str(params.get("chain") or "BTC").strip().upper()
+        if chain not in _SUPPORTED_CHAINS:
+            return self._input_error(instrument, chain)
         timeout = float(params.get("timeout", 12))
+        as_of = datetime.now(timezone.utc).isoformat()
         try:
             payload = await self._fetch_live(timeout)
         except Exception as exc:  # noqa: BLE001 - network/parse failures handled below
-            return self._unavailable(instrument, exc)
+            return self._unavailable(instrument, exc, as_of)
+        payload["as_of"] = as_of
         return FunctionResult(
             code=self.code,
             instrument=instrument,
@@ -128,12 +137,13 @@ class ONCHFunction(BaseFunction):
             return resp.json()
 
         # mempool.space core (all keyless, all required for a healthy payload)
-        fees, blocks, diff, hashr, tip = await asyncio.gather(
+        fees, blocks, diff, hashr, tip, mempool_info = await asyncio.gather(
             _json(f"{_MEMPOOL_BASE}/v1/fees/recommended"),
             _json(f"{_MEMPOOL_BASE}/v1/fees/mempool-blocks"),
             _json(f"{_MEMPOOL_BASE}/v1/difficulty-adjustment"),
             _json(f"{_MEMPOOL_BASE}/v1/mining/hashrate/3d"),
             _json(f"{_MEMPOOL_BASE}/blocks/tip/height"),
+            _json(f"{_MEMPOOL_BASE}/mempool"),
         )
 
         if not isinstance(blocks, list):
@@ -151,8 +161,16 @@ class ONCHFunction(BaseFunction):
         economy = _as_num(fees.get("economyFee"))
         minimum = _as_num(fees.get("minimumFee"))
 
-        mempool_count = sum(int(b.get("nTx", 0) or 0) for b in blocks)
+        # Mempool-wide backlog is the count /api/mempool reports. The sum over
+        # the projected next blocks is a different (window-capped) quantity and
+        # is kept as its own row.
+        mempool_count: int | None = None
+        if isinstance(mempool_info, dict):
+            raw_count = _as_num(mempool_info.get("count"))
+            mempool_count = int(raw_count) if raw_count is not None else None
+        projected_tx = sum(int(b.get("nTx", 0) or 0) for b in blocks)
         projected_blocks = len(blocks)
+        mempool_label = f"{mempool_count:,}" if mempool_count is not None else "—"
 
         hashrate_hs = _as_num(hashr.get("currentHashrate"))
         hashrate_eh = (hashrate_hs / 1e18) if hashrate_hs is not None else None
@@ -188,8 +206,10 @@ class ONCHFunction(BaseFunction):
             }
 
         rows: list[dict[str, Any]] = [
-            _row("Mempool Backlog", f"{mempool_count:,}", "tx", "mempool",
-                 f"Across {projected_blocks} projected blocks"),
+            _row("Mempool Backlog", mempool_label, "tx", "mempool",
+                 "Unconfirmed transactions in the mempool (mempool-wide)"),
+            _row("Projected Block Txs", f"{projected_tx:,}", "tx", "mempool",
+                 f"Sum over the {projected_blocks} projected next blocks"),
             _row("Fastest Fee", _fmt(fastest), "sat/vB", "mempool", "Next-block inclusion"),
             _row("Half-Hour Fee", _fmt(half_hour), "sat/vB", "mempool", "~30 min confirmation"),
             _row("Hour Fee", _fmt(hour), "sat/vB", "mempool", "~60 min confirmation"),
@@ -263,18 +283,19 @@ class ONCHFunction(BaseFunction):
             for i, b in enumerate(blocks)
         ]
 
+        # Each card's key is the slot key declared in the seed's card_schema.
         cards = [
-            {"label": "Chain", "value": "BTC"},
-            {"label": "Mempool", "value": f"{mempool_count:,} tx"},
-            {"label": "Fastest Fee", "value": f"{_fmt(fastest)} sat/vB"},
-            {"label": "Hashrate",
+            {"key": "chain", "label": "Chain", "value": "BTC"},
+            {"key": "mempool", "label": "Mempool", "value": f"{mempool_label} tx"},
+            {"key": "fastest_fee", "label": "Fastest Fee", "value": f"{_fmt(fastest)} sat/vB"},
+            {"key": "hashrate", "label": "Hashrate",
              "value": f"{_fmt(hashrate_eh, 1)} EH/s" if hashrate_eh is not None else "—"},
-            {"label": "Difficulty",
+            {"key": "difficulty", "label": "Difficulty",
              "value": f"{_fmt(difficulty_t, 2)} T" if difficulty_t is not None else "—"},
         ]
 
         summary = (
-            f"{mempool_count:,} txs in the mempool; next-block fee "
+            f"{mempool_label} txs in the mempool; next-block fee "
             f"{_fmt(fastest)} sat/vB; hashrate {_fmt(hashrate_eh, 1)} EH/s "
             f"at difficulty {_fmt(difficulty_t, 2)} T"
         )
@@ -285,7 +306,10 @@ class ONCHFunction(BaseFunction):
 
         return {
             "status": "ok",
-            "data_mode": "delayed_reference",
+            # Every row above was fetched live in this call (mempool.space,
+            # CoinGecko, and any optional keyless tier that answered), so the
+            # mode is "live", not a delayed reference.
+            "data_mode": "live",
             "chain": "BTC",
             "rows": rows,
             "series": series,
@@ -297,14 +321,17 @@ class ONCHFunction(BaseFunction):
 
     # --------------------------------------------------------------- failure
 
-    def _unavailable(self, instrument: Instrument | None, exc: Exception) -> FunctionResult:
+    def _unavailable(
+        self, instrument: Instrument | None, exc: Exception, as_of: str
+    ) -> FunctionResult:
         """Honest, clearly-labeled fallback on a genuine network/parse failure."""
         return FunctionResult(
             code=self.code,
             instrument=instrument,
             data={
                 "status": "provider_unavailable",
-                "data_mode": "not_configured",
+                "data_mode": "provider_unavailable",
+                "as_of": as_of,
                 "chain": "BTC",
                 "rows": [],
                 "series": [],
@@ -320,6 +347,31 @@ class ONCHFunction(BaseFunction):
             },
             sources=["mempool", "coingecko"],
             metadata={"keyless": True, "error": type(exc).__name__},
+        )
+
+    def _input_error(self, instrument: Instrument | None, chain: str) -> FunctionResult:
+        """Explicit input error for a chain the keyless vitals do not serve."""
+        reason = f"ONCH vitals are Bitcoin-only on the keyless path; chain '{chain}' is not served."
+        return FunctionResult(
+            code=self.code,
+            instrument=instrument,
+            data={
+                "status": "input_error",
+                "data_mode": "explicit_unavailable",
+                "chain": chain,
+                "rows": [],
+                "series": [],
+                "cards": [],
+                "summary": reason,
+                "methodology": _METHODOLOGY,
+                "field_dictionary": _FIELD_DICTIONARY,
+                "warnings": [reason],
+                "next_actions": [
+                    "Select BTC for the Bitcoin network vitals.",
+                ],
+            },
+            sources=[],
+            metadata={"keyless": True, "error": "unsupported_chain"},
         )
 
 

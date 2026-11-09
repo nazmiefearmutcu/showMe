@@ -31,6 +31,10 @@ class PortfolioPosition:
     realized_pnl: float = 0.0
     notes: str = ""
     account: str = "main"           # Multi-account ledger key
+    # True only when opened_at is a recorded open/purchase date. The default
+    # above is the time the row was built, so a False here means the open date
+    # is unknown and must not be read as a purchase date (TLH#2).
+    opened_at_known: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +42,7 @@ class PortfolioPosition:
             "quantity": self.quantity, "avg_cost": self.avg_cost,
             "currency": self.currency,
             "opened_at": self.opened_at.isoformat(),
+            "opened_at_known": self.opened_at_known,
             "realized_pnl": self.realized_pnl, "notes": self.notes,
             "account": self.account,
         }
@@ -52,6 +57,9 @@ class PortfolioPosition:
             realized_pnl=d.get("realized_pnl", 0),
             notes=d.get("notes", ""),
             account=d.get("account", "main"),
+            # Rows written before this flag existed carry a build-time stamp,
+            # not a recorded date, so they load as unknown.
+            opened_at_known=bool(d.get("opened_at_known", False)),
         )
 
 
@@ -93,10 +101,10 @@ class PortfolioState:
                     backup.write_bytes(self.path.read_bytes())
                     backed_up = str(backup)
                 except Exception as copy_exc:
-                    backed_up = f"<backup failed: {copy_exc}>"
+                    backed_up = f"<backup failed: {str(copy_exc) or type(copy_exc).__name__}>"
                 self.degraded = True
                 self.degraded_reason = (
-                    f"portfolio.json failed to load ({exc}); corrupt copy at {backed_up}"
+                    f"portfolio.json failed to load ({str(exc) or type(exc).__name__}); corrupt copy at {backed_up}"
                 )
                 logger.error(
                     "PortfolioState: %s — save() disabled to protect the on-disk book",

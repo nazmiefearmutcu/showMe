@@ -112,7 +112,7 @@ def test_wirp_uses_cme_when_available() -> None:
     assert first["cut_25bp"] == pytest.approx(0.10, abs=1e-6)
     assert first["hold"] == pytest.approx(0.70, abs=1e-6)
     assert first["hike_25bp"] == pytest.approx(0.20, abs=1e-6)
-    # implied_change_bp = -25*0.10 + 25*0.20 = +2.5
+    # implied_change_bp = Σ p·(mid - anchor): -25*0.10 + 25*0.20 = +2.5 (25 bp bins)
     assert first["implied_change_bp"] == pytest.approx(2.5, abs=1e-3)
     assert first["source_mode"] == "cme_fedwatch"
 
@@ -121,6 +121,9 @@ def test_wirp_uses_cme_when_available() -> None:
     assert second["cut_25bp"] == pytest.approx(0.60, abs=1e-6)
     assert second["hold"] == pytest.approx(0.30, abs=1e-6)
     assert second["hike_25bp"] == pytest.approx(0.10, abs=1e-6)
+    # The 3.75-4.00 bin is a 50 bp cut: 0.25*-50 + 0.35*-25 + 0.10*+25 = -18.75,
+    # not the -12.5 a flat 25 bp per bucket would give.
+    assert second["implied_change_bp"] == pytest.approx(-18.75, abs=1e-3)
 
     # Multi-bucket hike collapses to 0.80 (55+25).
     third = rows[2]

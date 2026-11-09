@@ -54,10 +54,60 @@ _ISO2_TO_ISO3: dict[str, str] = {
 }
 
 
+# The pane and seed offer ``EUR`` (a currency code), but the IMF DataMapper has
+# no ``EUR`` key — the euro area is the IMF group code ``EURO``. A request for
+# ``/EUR`` answers 200 with the all-country dataset and no requested key, so
+# every indicator came back "no series for EUR" and the pane was empty although
+# the euro-area forecasts exist under ``EURO`` (verified live 2026-11-08).
+_IMF_GROUP_ALIASES: dict[str, str] = {"EUR": "EURO", "EZ": "EURO"}
+
+# ``EU`` is the European Union (27 members), a different aggregate from the
+# euro area (``EURO``, 20 members). Mapping it to ``EURO`` would answer with
+# another issuer aggregate's forecasts without disclosing it, so ``EU`` gets an
+# explicit needs_input state instead of a fetch.
+_UNMAPPED_AGGREGATES: dict[str, str] = {
+    "EU": (
+        "EU is the European Union (27 members), not the euro area (IMF key EURO, "
+        "20 members). The IMF DataMapper has no EU series in this function, so no "
+        "forecast is substituted from another aggregate."
+    ),
+}
+
+
 def _normalize_country(code: str) -> str:
-    """Alpha-2 -> alpha-3 where known; pass IMF group / alpha-3 codes through."""
+    """Alpha-2 -> alpha-3 where known; currency/group aliases -> IMF group key.
+
+    Anything else (alpha-3 codes, other IMF group codes) passes through.
+    """
     c = (code or "").strip().upper()
+    if c in _IMF_GROUP_ALIASES:
+        return _IMF_GROUP_ALIASES[c]
     return _ISO2_TO_ISO3.get(c, c)
+
+
+def _needs_input(country: str, indicators: list[str], reason: str) -> dict[str, Any]:
+    """Explicit input-error envelope: the request names an aggregate ECFC does not map."""
+    return {
+        "country": country,
+        "rows": [],
+        "series": [],
+        "cards": [],
+        "status": "needs_input",
+        "data_state": "needs_input",
+        "vintage": "imf_weo",
+        "source_mode": "needs_input",
+        "reason": reason,
+        "methodology": (
+            "ECFC does not substitute another aggregate's forecast for this code. "
+            "No IMF request was made."
+        ),
+        "next_actions": [
+            "Use EUR (or EZ) for the euro-area forecast (IMF key EURO).",
+            "Use a country ISO 3166-1 alpha-3 code (USA, GBR, TUR, CHN, ...).",
+        ],
+        "requested_indicators": indicators,
+        "field_dictionary": _FIELD_DICT,
+    }
 
 
 def _provider_unavailable(country: str, indicators: list[str], reason: str) -> dict[str, Any]:
@@ -97,7 +147,8 @@ _FIELD_DICT: dict[str, str] = {
     "year": "Forecast calendar year (integer).",
     "forecast_value": "IMF WEO forecast value in the displayed unit.",
     "unit": "Display unit (% YoY, % of GDP, USD bn, ...).",
-    "vintage": "Forecast vintage label (imf_weo).",
+    "vintage": "Source family 'imf_weo' (IMF WEO via DataMapper). No WEO edition or release date is exposed, so the batch is not pinned.",
+    "as_of": "UTC time the IMF response was retrieved (a fetch time, not a WEO release date).",
     "source_mode": "Provider layer used for the row (imf_weo).",
 }
 
@@ -113,13 +164,21 @@ class ECFCFunction(BaseFunction):
     category = "macro"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        country = _normalize_country(str(params.get("country") or "USA"))
+        raw_country = str(params.get("country") or "USA").strip().upper()
+        country = _normalize_country(raw_country)
         indicators = params.get("indicators") or list(_DEFAULT_INDICATORS)
         if isinstance(indicators, str):
             indicators = [s.strip() for s in indicators.split(",") if s.strip()]
         indicators = [str(i).strip() for i in indicators if str(i).strip()]
         if not indicators:
             indicators = list(_DEFAULT_INDICATORS)
+        if raw_country in _UNMAPPED_AGGREGATES:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data=_needs_input(raw_country, indicators, _UNMAPPED_AGGREGATES[raw_country]),
+                sources=["none"],
+            )
         try:
             years = int(params.get("years") or 5)
         except (TypeError, ValueError):
@@ -233,8 +292,15 @@ class ECFCFunction(BaseFunction):
             "status": "ok",
             "data_state": "live",
             "vintage": "imf_weo",
+            # The DataMapper exposes no WEO edition or release date, so the vintage
+            # names the source family only and as_of is the retrieval time.
+            "vintage_basis": (
+                "IMF WEO projection series from the DataMapper API. The API publishes no "
+                "WEO edition or release date, so the forecast batch is not pinned."
+            ),
             "source_mode": "imf_weo",
             "as_of": datetime.now(timezone.utc).isoformat(),
+            "as_of_basis": "UTC time the IMF response was retrieved (a fetch time, not a WEO release date).",
             "methodology": (
                 "ECFC builds the forecast table from the IMF World Economic Outlook "
                 "via the keyless IMF DataMapper API. For each requested WEO indicator "

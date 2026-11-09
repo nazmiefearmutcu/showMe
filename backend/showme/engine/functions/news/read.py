@@ -22,6 +22,9 @@ from showme.engine.core.base_function import BaseFunction, FunctionRegistry, Fun
 from showme.engine.core.instrument import Instrument
 
 _VALID_STATUSES = ("unread", "in_progress", "read", "archived")
+# Mirrors the manifest default (read_seed.py). Applied only when the caller
+# sends no status at all; an explicit empty list means "all statuses".
+_DEFAULT_STATUS = ("unread", "in_progress")
 
 _FIELD_DICTIONARY: dict[str, str] = {
     "saved_utc": "ISO-8601 timestamp recording when the article was added to the queue.",
@@ -78,8 +81,9 @@ class READFunction(BaseFunction):
         symbols = _parse_list(
             params.get("symbols") if params.get("symbols") is not None else params.get("watchlist")
         )
-        status_filter = [s for s in _parse_list(params.get("status"), upper=False)
-                         if s in _VALID_STATUSES] or None
+        raw_status = params.get("status")
+        requested_status = list(_DEFAULT_STATUS) if raw_status is None else _parse_list(raw_status, upper=False)
+        status_filter = [s for s in requested_status if s in _VALID_STATUSES] or None
         tags_filter = _parse_list(params.get("tags"), upper=False) or None
         limit = _int_param(params.get("limit", 50), default=50, min_value=1, max_value=200)
 

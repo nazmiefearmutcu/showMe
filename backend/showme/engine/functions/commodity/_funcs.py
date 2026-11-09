@@ -167,11 +167,27 @@ LOCATION_PRESETS: dict[str, dict[str, Any]] = {
         "lon": -87.63,
         "commodity_context": "corn, soybeans, and crop weather",
     },
-    "EUROPE_GAS": {
-        "label": "Northwest Europe",
-        "lat": 52.52,
-        "lon": 13.4,
-        "commodity_context": "European gas and heating demand",
+    # EUROPE_GAS was removed: its "Northwest Europe" label carried Berlin
+    # coordinates (52.52, 13.4). EU_NW below is the Rotterdam preset.
+    # WETR#1: the pane and manifest offer these regions; each needs its own
+    # coordinates (they previously fell back to New York weather).
+    "EU_NW": {
+        "label": "Northwest Europe (Rotterdam)",
+        "lat": 51.92,
+        "lon": 4.48,
+        "commodity_context": "European gas, power and heating demand",
+    },
+    "ASIA_EAST": {
+        "label": "East Asia (Shanghai)",
+        "lat": 31.23,
+        "lon": 121.47,
+        "commodity_context": "East Asian power and cooling demand",
+    },
+    "BRAZIL_SE": {
+        "label": "Southeast Brazil (Sao Paulo)",
+        "lat": -23.55,
+        "lon": -46.63,
+        "commodity_context": "coffee and sugar crop weather",
     },
 }
 
@@ -284,7 +300,7 @@ async def _symbol_history(
             timeout=max(timeout + 1.0, 3.0),
         )
     except Exception as exc:  # noqa: BLE001 — history is best-effort
-        return [], [f"{symbol} history: {exc}"]
+        return [], [f"{symbol} history: {str(exc) or type(exc).__name__}"]
     return _history_rows(df, symbol, limit=limit), []
 
 
@@ -470,7 +486,8 @@ async def _contract_snapshot(
                 timeout=timeout + 0.5,
             )
         except Exception as exc:
-            errors.append(f"{symbol} quote: {exc}")
+            # GLCO#1-RQ: a timeout has an empty message; name the exception type.
+            errors.append(f"{symbol} quote: {str(exc) or type(exc).__name__}")
         if include_history:
             history, history_errors = await _symbol_history(
                 yfinance, symbol, days=days, timeout=timeout,
@@ -522,6 +539,24 @@ async def _contract_snapshot(
     }, history, errors
 
 
+class _QuoteStampProbe:
+    """GLCO#2: passes a yfinance-shaped provider through and records, per symbol,
+    whether the quote carried an exchange time. The shared snapshot helper falls
+    back to the fetch time when it does not; GLCO uses this record to refuse
+    that row. The helper itself is left unchanged for BOIL/BGAS/CPF."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.stamped: dict[str, bool] = {}
+
+    async def fetch(self, request: Any) -> Any:
+        quote = await self._inner.fetch(request)
+        symbol = str(getattr(getattr(request, "instrument", None), "symbol", "") or "")
+        stamp = getattr(getattr(quote, "timestamp", None), "isoformat", lambda: None)()
+        self.stamped[symbol] = bool(stamp)
+        return quote
+
+
 def _filter_sector(rows: list[dict[str, Any]], sector: Any) -> list[dict[str, Any]]:
     key = str(sector or "all").strip().lower()
     if key in {"", "all"}:
@@ -540,6 +575,26 @@ def _provider_unavailable_payload(reason: str, next_actions: list[str]) -> dict[
     }
 
 
+_BOIL_EQUAL_VOLUME_FLAG = "equal_to_adjacent_bar"
+
+
+def _flag_repeated_volume(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """BOIL#6: flag both bars of an equal consecutive volume pair; keep values.
+
+    Upstream daily bars sometimes show the same volume on consecutive sessions
+    while the prices differ. The upstream data does not say which bar of the
+    pair is the duplicate, so no value is nulled and neither bar is labelled as
+    the copy; both carry the flag so the pair is visible as unverified.
+    """
+    out = [dict(point) for point in points]
+    for i in range(1, len(out)):
+        volume = out[i].get("volume")
+        if volume is not None and volume > 0 and volume == out[i - 1].get("volume"):
+            out[i - 1]["volume_flag"] = _BOIL_EQUAL_VOLUME_FLAG
+            out[i]["volume_flag"] = _BOIL_EQUAL_VOLUME_FLAG
+    return out
+
+
 @FunctionRegistry.register
 class BOILFunction(BaseFunction):
     """BOIL — WTI / Brent / Dubai oil spot + spread."""
@@ -552,6 +607,8 @@ class BOILFunction(BaseFunction):
         days = _int_param(params, "days", 365, 20, 1095)
         timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
         live = _truthy(params.get("live", True))
+        # BOIL#3: show_spread gates the Brent-WTI envelope (manifest default on).
+        show_spread = _truthy(params.get("show_spread", True))
         selector = str(params.get("benchmark") or params.get("contract") or "").strip().upper()
         requested = (
             instrument.symbol.strip().upper()
@@ -574,6 +631,10 @@ class BOILFunction(BaseFunction):
 
         rows: list[dict[str, Any]] = []
         chart_history: list[dict[str, Any]] = []
+        # BOIL#1: each leg keeps its own series. `history` (first leg with
+        # data) is kept for existing consumers; the pane must read
+        # `history_by_symbol` so a Brent card never shows WTI's closes.
+        history_by_symbol: dict[str, list[dict[str, Any]]] = {}
         provider_errors: list[str] = []
         if live and self.deps.yfinance:
             tasks = [
@@ -587,10 +648,18 @@ class BOILFunction(BaseFunction):
                 for sym in symbols
             ]
             results = await asyncio.gather(*tasks)
-            for row, history, errors in results:
+            for sym, (row, history, errors) in zip(symbols, results):
                 provider_errors.extend(errors)
+                history = _flag_repeated_volume(history)
                 if row:
+                    if row.get("source") == "yfinance_chart" and history:
+                        # Row built from the last history bar: same volume and flag.
+                        last_bar = history[-1]
+                        row["volume"] = last_bar.get("volume")
+                        if "volume_flag" in last_bar:
+                            row["volume_flag"] = last_bar["volume_flag"]
                     rows.append(row)
+                history_by_symbol[sym] = history
                 if not chart_history and history:
                     chart_history = history
 
@@ -620,11 +689,31 @@ class BOILFunction(BaseFunction):
             )
 
         spread = None
-        if len(rows) >= 2 and rows[0].get("last") is not None and rows[1].get("last") is not None:
+        if show_spread and len(rows) >= 2 and rows[0].get("last") is not None and rows[1].get("last") is not None:
             by_symbol = {row["symbol"]: row for row in rows}
             if "BZ=F" in by_symbol and "CL=F" in by_symbol:
                 spread = by_symbol["BZ=F"]["last"] - by_symbol["CL=F"]["last"]
 
+        # BOIL#5: describe the data actually served, not a fixed claim.
+        if source_mode == "live_yfinance":
+            legs_with_history = [sym for sym in symbols if history_by_symbol.get(sym)]
+            if legs_with_history:
+                history_clause = "history is daily OHLCV from Yahoo chart data per leg (history_by_symbol)"
+                if len(legs_with_history) < len(symbols):
+                    missing = [sym for sym in symbols if sym not in legs_with_history]
+                    history_clause += f"; no history returned for {', '.join(missing)}"
+            else:
+                history_clause = f"no daily history was returned for {', '.join(symbols)}"
+            boil_methodology = (
+                "BOIL reports front-month WTI (CL=F) and Brent (BZ=F) futures from live quotes. "
+                "Change % is (last / previous close - 1) * 100; " + history_clause + "."
+            )
+        else:
+            boil_methodology = (
+                "BOIL reference model: fixed reference levels dated "
+                f"{_MODEL_PRICES_VINTAGE} (reference_vintage), NOT live prices. "
+                "Change % is the reference change_pct; no daily history is served."
+            )
         data = {
             "status": "ok" if source_mode == "live_yfinance" else "reference_model",
             "market": "oil",
@@ -632,8 +721,10 @@ class BOILFunction(BaseFunction):
             "source_mode": source_mode,
             "rows": rows,
             "history": chart_history,
+            "history_by_symbol": {sym: history_by_symbol.get(sym, []) for sym in symbols},
             "spread": spread,
-            "methodology": "BOIL reports front-month WTI (CL=F) and Brent (BZ=F) futures. Change % is (last / previous close - 1) * 100; history is daily OHLCV from Yahoo chart data.",
+            "show_spread": show_spread,
+            "methodology": boil_methodology,
             "field_dictionary": _commodity_field_dictionary(),
         }
         return FunctionResult(
@@ -646,47 +737,280 @@ class BOILFunction(BaseFunction):
         )
 
 
+# BGAS identity: the Henry Hub natural-gas spot monitor. The only contract it
+# serves is NG=F; any other contract is refused with an explicit input_error
+# instead of being served (or swapped for NG=F) under the natural-gas title.
+BGAS_CONTRACT = "NG=F"
+_BGAS_UNIT = "USD/MMBtu"
+_BGAS_RANGE_DAYS: dict[str, int] = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365}
+_BGAS_INTERVALS: tuple[str, ...] = ("1d",)
+# Sanctioned data_mode values (tests/test_data_mode_vocabulary.py): EIA is an
+# official live publisher, the model row is a computed state.
+_BGAS_DATA_MODE: dict[str, str] = {
+    "live_yfinance": "live_yfinance",
+    "live_eia": "live_official",
+    "model": "modeled",
+}
+
+
+def _ng_front_month(today: Any) -> tuple[str, str]:
+    """Front NYMEX natural-gas delivery month and its last trade date.
+
+    Computed from the published contract rule: trading ends three business
+    days before the first calendar day of the delivery month. Weekends are
+    skipped; exchange holidays are not modelled, so the last-trade date can be
+    one business day late around a holiday. Returns ("YYYY-MM", "YYYY-MM-DD").
+    """
+    from datetime import date, timedelta
+
+    if isinstance(today, datetime):
+        today = today.date()
+    year, month = today.year, today.month
+    for _ in range(24):
+        first = date(year, month, 1)
+        last_trade = first
+        business_days = 0
+        while business_days < 3:
+            last_trade -= timedelta(days=1)
+            if last_trade.weekday() < 5:
+                business_days += 1
+        if last_trade >= today:
+            return f"{year:04d}-{month:02d}", last_trade.isoformat()
+        month += 1
+        if month == 13:
+            month, year = 1, year + 1
+    raise RuntimeError("no NG delivery month found within 24 months")
+
+
+def _bgas_model_vintage_day(as_of: Any) -> Any:
+    """Day the reference model price was quoted, from its ``YYYY-MM`` vintage.
+
+    Returns None when the vintage cannot be parsed, so no expiry is invented.
+    """
+    from datetime import date
+
+    text = str(as_of or "").strip()
+    try:
+        year_text, month_text = text[:7].split("-")
+        return date(int(year_text), int(month_text), 1)
+    except (ValueError, TypeError):
+        return None
+
+
+def _bgas_decorate_rows(rows: list[dict[str, Any]], *, as_of_day: Any) -> list[dict[str, Any]]:
+    """Add contract_unit, expiry and data_mode to every BGAS row.
+
+    Futures rows get the front-month delivery as of the day the price was
+    quoted: today for live rows, the reference vintage for the model row (so a
+    2024 price is never paired with a 2026 contract). The EIA spot series has no
+    delivery month, so its expiry is explicitly null.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["contract_unit"] = _BGAS_UNIT
+        item["data_mode"] = _BGAS_DATA_MODE.get(str(item.get("source_mode")), "explicit_unavailable")
+        if item.get("source") == "eia":
+            item["expiry_month"] = None
+            item["expiry_last_trade"] = None
+            item["expiry_basis"] = "spot_no_delivery_month"
+        elif item.get("source_mode") == "model":
+            vintage_day = _bgas_model_vintage_day(item.get("reference_vintage") or item.get("as_of"))
+            if vintage_day is None:
+                item["expiry_month"] = None
+                item["expiry_last_trade"] = None
+                item["expiry_basis"] = "unknown_price_vintage"
+            else:
+                expiry_month, last_trade = _ng_front_month(vintage_day)
+                item["expiry_month"] = expiry_month
+                item["expiry_last_trade"] = last_trade
+                item["expiry_basis"] = "nymex_ng_rule_weekends_only_at_price_vintage"
+        else:
+            expiry_month, last_trade = _ng_front_month(as_of_day)
+            item["expiry_month"] = expiry_month
+            item["expiry_last_trade"] = last_trade
+            item["expiry_basis"] = "nymex_ng_rule_weekends_only"
+        out.append(item)
+    return out
+
+
+_BGAS_PREV_TOLERANCE = 1e-4  # relative; a quote prev within 0.01% of the bar is the same print
+
+
+def _bgas_unreconciled(
+    row: dict[str, Any],
+    warnings: list[str],
+    reason: str,
+) -> dict[str, Any]:
+    """BGAS#1: label a quote previousClose that no daily bar could verify.
+
+    The quote's own previousClose is kept (no value is invented), but the row
+    says so and the warning names the reason, so the change is never silently
+    trusted.
+    """
+    row = dict(row)
+    row["prev_source"] = "quote_unreconciled"
+    quote_prev = _finite(row.get("prev"))
+    if quote_prev is not None:
+        warnings.append(
+            f"NG=F quote previousClose {quote_prev} is not reconciled with the daily bars "
+            f"({reason}); the change uses the unverified quote previousClose."
+        )
+    return row
+
+
+def _bgas_reconcile_prev(
+    row: dict[str, Any] | None,
+    history: list[dict[str, Any]],
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    """Cross-check the quote's previous close against the daily bars.
+
+    BGAS#1: the chart meta ``previousClose`` is not verified against the bars
+    fetched in the same call, so a stale prior close produced a false change.
+    The prior session's close is the bar before the quote's session; when the
+    quote disagrees with it, the change is taken from the bars and a warning
+    names both values. When the bars cannot place the quote's session, the
+    quote's own previous close is kept and no reconciliation is claimed.
+    """
+    if row is None:
+        return row
+    if len(history) < 2:
+        return _bgas_unreconciled(row, warnings, "fewer than two daily bars")
+    # NGAS#2: the session day is the US Eastern trade day, not the UTC date.
+    quote_day = _exchange_trade_day(row.get("as_of"))
+    dates = [str(h.get("date") or "")[:10] for h in history]
+    bar_prev: float | None = None
+    bar_day: str | None = None
+    if quote_day in dates:
+        idx = dates.index(quote_day)
+        if idx >= 1:
+            bar_prev = _finite(history[idx - 1].get("close"))
+            bar_day = dates[idx - 1]
+    elif quote_day and dates[-1] < quote_day:
+        # The quote's session has no bar yet: the last bar is the prior close.
+        bar_prev = _finite(history[-1].get("close"))
+        bar_day = dates[-1]
+    if bar_prev is None or bar_prev <= 0:
+        return _bgas_unreconciled(row, warnings, "the daily bars cannot place the quote session")
+    quote_prev = _finite(row.get("prev"))
+    row = dict(row)
+    if quote_prev is not None and abs(quote_prev - bar_prev) <= _BGAS_PREV_TOLERANCE * abs(bar_prev):
+        row["prev_source"] = "quote"
+        return row
+    if quote_prev is not None:
+        warnings.append(
+            f"NG=F quote previousClose {quote_prev} disagrees with the daily bar close "
+            f"{bar_prev} for {bar_day}; the change is computed from the daily bars."
+        )
+    last = _finite(row.get("last"))
+    # Keep the quote's own value so a later check (NGAS) labels the replacement.
+    row["quote_previous_close"] = quote_prev
+    row["prev"] = bar_prev
+    row["prev_source"] = "daily_bars"
+    row["prev_as_of"] = bar_day
+    row["change"] = last - bar_prev if last is not None else None
+    row["change_pct"] = (last / bar_prev - 1) * 100 if last is not None else None
+    return row
+
+
 @FunctionRegistry.register
 class BGASFunction(BaseFunction):
-    """BGAS — Henry Hub natural gas."""
+    """BGAS — Henry Hub natural gas spot (NG=F front month, or EIA HENRYHUB)."""
     code = "BGAS"
     name = "Natural Gas Spot"
+    description = (
+        "Henry Hub natural gas spot: live NG=F front-month quote with daily OHLCV "
+        "history, or the EIA Henry Hub spot series when configured. Serves NG=F "
+        "only; other contracts are refused with an explicit input_error."
+    )
     asset_classes = (AssetClass.COMMODITY,)
     category = "commodity"
 
+    def _input_error(self, contract: str, reason: str) -> FunctionResult:
+        return FunctionResult(
+            code=self.code,
+            instrument=None,
+            data={
+                "status": "input_error",
+                "reason": reason,
+                "symbol": contract,
+                "contract": BGAS_CONTRACT,
+                "contract_unit": _BGAS_UNIT,
+                "data_mode": "explicit_unavailable",
+                "rows": [],
+                "history": [],
+                "candles": [],
+                "next_actions": [f"Request contract={BGAS_CONTRACT} (Henry Hub natural gas)."],
+                "methodology": "BGAS serves the Henry Hub natural gas contract only; no other instrument is substituted.",
+                "field_dictionary": _commodity_field_dictionary(),
+            },
+            sources=[],
+            warnings=[reason],
+        )
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         live = _truthy(params.get("live", True) or params.get("live_screen"))
-        days = _int_param(params, "days", 365, 20, 1095)
-        quote_timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
-        contract = str(params.get("contract") or (instrument.symbol if instrument else "") or "NG=F").strip().upper()
-        # BUG-HUNT S01: previously a non-NG=F contract was silently
-        # reverted to NG=F. Track the override so the user knows.
-        original_contract = contract
-        symbol = contract if contract in COMMODITY_CONTRACTS else "NG=F"
-        provider_errors: list[str] = []
-        if original_contract != symbol:
-            provider_errors.append(
-                f"contract={original_contract!r} not in COMMODITY_CONTRACTS; using NG=F"
+        contract = str(params.get("contract") or (instrument.symbol if instrument else "") or BGAS_CONTRACT).strip().upper()
+        if contract != BGAS_CONTRACT:
+            return self._input_error(
+                contract,
+                f"BGAS is the Henry Hub natural gas spot monitor and serves {BGAS_CONTRACT} only; "
+                f"contract {contract!r} is not a natural gas contract and is not served here.",
             )
+        interval = str(params.get("interval") or _BGAS_INTERVALS[0]).strip().lower()
+        if interval not in _BGAS_INTERVALS:
+            return self._input_error(
+                contract,
+                f"BGAS serves daily bars only (interval=1d); got interval={interval!r}.",
+            )
+        # range is the advertised window and wins whenever it is sent. The
+        # agent router always injects a days default next to the caller's
+        # range, so reading days first silently ignored range. days is honoured
+        # only for callers that send no range at all.
+        if params.get("range") not in (None, ""):
+            range_key = str(params.get("range")).strip().upper()
+            if range_key not in _BGAS_RANGE_DAYS:
+                return self._input_error(
+                    contract,
+                    f"BGAS range {range_key!r} is not supported; use one of {', '.join(_BGAS_RANGE_DAYS)}.",
+                )
+            days = _BGAS_RANGE_DAYS[range_key]
+        elif params.get("days") not in (None, ""):
+            days = _int_param(params, "days", 365, 20, 1095)
+        else:
+            days = _BGAS_RANGE_DAYS["1Y"]
+        quote_timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 4))), 8.0))
+        as_of_day = datetime.now(timezone.utc).date()
+        symbol = BGAS_CONTRACT
+        provider_errors: list[str] = []
         try:
             if self.deps.eia:
                 df = await self.deps.eia.fetch(DataRequest(
                     kind=DataKind.ECON_SERIES, symbols=["HENRYHUB"]))
                 eia_rows, eia_history = _eia_spot_rows(df, "HENRYHUB")
                 if eia_rows:
+                    rows = _bgas_decorate_rows(eia_rows, as_of_day=as_of_day)
                     return FunctionResult(
                         code=self.code,
                         instrument=None,
                         data={
                             "status": "ok",
+                            "contract": BGAS_CONTRACT,
                             "symbol": "HENRYHUB",
+                            "contract_unit": _BGAS_UNIT,
+                            "data_mode": _BGAS_DATA_MODE["live_eia"],
                             "source_mode": "live_eia",
-                            "rows": eia_rows,
+                            "as_of": rows[0].get("as_of"),
+                            "expiry_month": None,
+                            "rows": rows,
                             "history": eia_history,
+                            "candles": eia_history,
                             "methodology": (
                                 "BGAS reads Henry Hub natural gas spot data from EIA "
                                 "when configured. Change % is (last / previous period "
-                                "- 1) * 100; history is the daily EIA spot series."
+                                "- 1) * 100; history is the daily EIA spot series. "
+                                "Spot prints carry no delivery month."
                             ),
                             "field_dictionary": _commodity_field_dictionary(),
                         },
@@ -703,13 +1027,12 @@ class BGASFunction(BaseFunction):
             # transport failures so the yfinance fallback ran silently
             # even when EIA was the configured primary. Capture into
             # provider_errors so the source/status panel can show why.
-            provider_errors.append(f"eia: {exc}")
+            provider_errors.append(f"eia: {str(exc) or type(exc).__name__}")
         row = None
         history: list[dict[str, Any]] = []
         if live and self.deps.yfinance:
-            # BUG-HUNT S01: preserve the EIA + contract-override errors
-            # we already accumulated; don't let _contract_snapshot's own
-            # error list overwrite them.
+            # BUG-HUNT S01: preserve the EIA errors we already accumulated;
+            # don't let _contract_snapshot's own error list overwrite them.
             row, history, snapshot_errors = await _contract_snapshot(
                 self.deps.yfinance,
                 symbol,
@@ -718,14 +1041,22 @@ class BGASFunction(BaseFunction):
                 include_history=True,
             )
             provider_errors.extend(snapshot_errors)
+            row = _bgas_reconcile_prev(row, history, provider_errors)
         if row:
+            rows = _bgas_decorate_rows([row], as_of_day=as_of_day)
             data = {
                 "status": "ok",
+                "contract": BGAS_CONTRACT,
                 "symbol": symbol,
+                "contract_unit": _BGAS_UNIT,
+                "data_mode": _BGAS_DATA_MODE["live_yfinance"],
                 "source_mode": "live_yfinance",
-                "rows": [row],
+                "as_of": rows[0].get("as_of"),
+                "expiry_month": rows[0].get("expiry_month"),
+                "rows": rows,
                 "history": history,
-                "methodology": "BGAS/NGAS uses the selected natural-gas futures contract, default NG=F. Change % is (last / previous close - 1) * 100; history is daily OHLCV.",
+                "candles": history,
+                "methodology": "BGAS reports the NG=F front-month natural-gas futures contract. Change % is (last / previous close - 1) * 100; history is daily OHLCV. Expiry is computed from the NYMEX natural-gas last-trade rule (holidays not modelled).",
                 "field_dictionary": _commodity_field_dictionary(),
             }
             return FunctionResult(
@@ -736,15 +1067,24 @@ class BGASFunction(BaseFunction):
                 warnings=provider_errors,
             )
         if not live:
-            model = _model_row("NG=F")
+            # The model row is the NG=F reference, which is the only contract
+            # this function serves, so the requested contract is preserved.
+            rows = _bgas_decorate_rows([_model_row(BGAS_CONTRACT)], as_of_day=as_of_day)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data={
                     "status": "reference_model",
-                    "symbol": "NG=F",
+                    "contract": BGAS_CONTRACT,
+                    "symbol": BGAS_CONTRACT,
+                    "contract_unit": _BGAS_UNIT,
+                    "data_mode": _BGAS_DATA_MODE["model"],
                     "source_mode": "model",
-                    "rows": [model],
+                    "as_of": rows[0].get("as_of"),
+                    "expiry_month": rows[0].get("expiry_month"),
+                    "rows": rows,
+                    "history": [],
+                    "candles": [],
                     "methodology": "Deterministic reference row used only when live=false.",
                     "field_dictionary": _commodity_field_dictionary(),
                 },
@@ -758,12 +1098,17 @@ class BGASFunction(BaseFunction):
                 data={
                     "status": "provider_unavailable",
                     "reason": "Natural gas quote provider returned no usable live quote.",
+                    "contract": BGAS_CONTRACT,
+                    "contract_unit": _BGAS_UNIT,
+                    "data_mode": "unavailable",
                     "rows": [],
+                    "history": [],
+                    "candles": [],
                     "next_actions": [
                         "Retry BGAS/NGAS after the public quote provider recovers.",
                         "Run without live=true for the deterministic local market model.",
                     ],
-                    "methodology": "BGAS/NGAS only reports OK when NG=F or the selected gas contract returns a usable last price or chart close.",
+                    "methodology": "BGAS/NGAS only reports OK when NG=F returns a usable last price or chart close.",
                     "field_dictionary": _commodity_field_dictionary(),
                 },
                 sources=["yfinance_futures"],
@@ -773,11 +1118,140 @@ class BGASFunction(BaseFunction):
         return FunctionResult(code=self.code, instrument=None, data={}, sources=[])
 
 
+# NGAS#2: relative tolerance between the quote's previousClose and the prior
+# daily bar close before the quote value is treated as disagreeing.
+_NGAS_PREV_TOLERANCE = 0.005
+
+
+def _exchange_trade_day(stamp: object) -> str:
+    """NYMEX trade day of a quote time: its calendar date in US Eastern time.
+
+    NGAS#2: the UTC date rolls over at 19:00-20:00 ET, so an evening quote's
+    UTC date is already tomorrow and the forming daily bar would be taken as
+    the prior close. A date-only stamp is used as given.
+    """
+    text = str(stamp or "").strip()
+    if len(text) <= 10:
+        return text[:10]
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if moment.tzinfo is None:
+            return text[:10]
+        return moment.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    except (ValueError, KeyError):
+        return text[:10]
+
+
+def _ngas_verify_previous_close(result: FunctionResult) -> FunctionResult:
+    """Check the quote's previous close against the served daily bars.
+
+    The shared quote path takes ``previousClose`` as-is, and that value can be
+    stale (BGAS#1: 3.533 against a prior close of 3.00, change -15.14%). The
+    prior session's close is the last daily bar dated before the quote's market
+    day. A disagreeing previous close is replaced by that bar and labelled; one
+    that cannot be checked is labelled unverified. Nothing is invented: with no
+    previous close and no bars, change stays null.
+    """
+    data = result.data
+    if not isinstance(data, dict) or data.get("status") != "ok" or data.get("source_mode") != "live_yfinance":
+        return result
+    rows = data.get("rows") or []
+    if len(rows) != 1:
+        return result
+    row = dict(rows[0])
+    as_of_day = _exchange_trade_day(row.get("as_of"))
+    prior_bars = [
+        bar for bar in (data.get("history") or [])
+        if as_of_day and str(bar.get("date") or "") < as_of_day and _finite(bar.get("close")) is not None
+    ]
+    bar_prev = _finite(prior_bars[-1].get("close")) if prior_bars else None
+    # The shared BGAS body may already have replaced a disagreeing quote value
+    # with the daily bar; judge the quote's own previousClose, not the replacement.
+    quote_prev = _finite(row["quote_previous_close"]) if "quote_previous_close" in row else _finite(row.get("prev"))
+    warnings = list(result.warnings or [])
+    if bar_prev is None:
+        if quote_prev is None:
+            prev, source, check = None, None, "no_previous_close"
+        else:
+            prev, source, check = quote_prev, "quote_previous_close", "unverified_no_daily_bar"
+    elif quote_prev is None:
+        prev, source, check = bar_prev, "daily_bar_prior_close", "quote_previous_close_missing"
+    elif abs(quote_prev / bar_prev - 1) <= _NGAS_PREV_TOLERANCE:
+        prev, source, check = quote_prev, "quote_previous_close", "matches_daily_bar"
+    else:
+        prev, source, check = bar_prev, "daily_bar_prior_close", "quote_previous_close_disagrees"
+        if not any("disagrees with the daily bar close" in w for w in warnings):
+            warnings.append(
+                f"NGAS previousClose {quote_prev} disagrees with the daily bar close {bar_prev} "
+                f"for {prior_bars[-1].get('date')}; change uses the daily bar."
+            )
+    last = _finite(row.get("last"))
+    row["prev"] = prev
+    row["prev_source"] = source
+    row["prev_check"] = check
+    row["change"] = last - prev if last is not None and prev not in (None, 0) else None
+    row["change_pct"] = (last / prev - 1) * 100 if last is not None and prev not in (None, 0) else None
+    data = dict(data)
+    data["rows"] = [row]
+    result.data = data
+    result.warnings = warnings
+    return result
+
+
 @FunctionRegistry.register
 class NGASFunction(BGASFunction):
-    """NGAS — Natural gas (alias)."""
+    """NGAS — Natural gas (alias).
+
+    NGAS serves only the Henry Hub contract (NG=F). The shared BGAS body
+    substitutes NG=F for unknown contracts and its EIA tier returns Henry Hub
+    rows for any symbol, so NGAS rejects every other contract up front
+    (NGAS#1) instead of serving Henry Hub data under another label.
+    """
     code = "NGAS"
     name = "Natural Gas"
+    supported_contracts = ("NG=F",)
+
+    async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        contract = str(
+            params.get("contract") or (instrument.symbol if instrument else "") or "NG=F"
+        ).strip().upper()
+        if contract not in self.supported_contracts:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    # Same contract rule as BGAS: an unserved contract is an input
+                    # error (error_kind says which), never a substituted quote.
+                    "status": "input_error",
+                    "error_kind": "unsupported_contract",
+                    "reason": (
+                        f"{contract} is not served by NGAS. NGAS only serves the "
+                        "Henry Hub contract (NG=F, USD/MMBtu); no other contract's "
+                        "rows are substituted."
+                    ),
+                    "contract": contract,
+                    "supported_contracts": list(self.supported_contracts),
+                    "rows": [],
+                    "history": [],
+                    "next_actions": [
+                        "Select NG=F (Henry Hub) as the NGAS contract.",
+                    ],
+                    "methodology": (
+                        "NGAS reports only the Henry Hub front-month future (NG=F). "
+                        "Other contracts are reported as unsupported rather than "
+                        "substituted."
+                    ),
+                    "field_dictionary": _commodity_field_dictionary(),
+                },
+                sources=[],
+                warnings=[f"contract={contract!r} unsupported by NGAS"],
+                metadata={"provider_errors": [f"contract={contract!r} unsupported by NGAS"]},
+            )
+        result = await super().execute(instrument, **params)
+        return _ngas_verify_previous_close(result)
 
 
 # CPF maps each selectable FRED-style series_id to the keyless Yahoo
@@ -786,13 +1260,49 @@ class NGASFunction(BGASFunction):
 # (see CPFFunction._trend_forecast), so CPF needs no key and no second
 # provider — the values move with the live market, never constants.
 CPF_SERIES_MAP: dict[str, dict[str, Any]] = {
-    "WTISPLC": {"name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl"},
-    "DCOILWTICO": {"name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl"},
-    "DHHNGSP": {"name": "Henry Hub natural gas", "futures": "NG=F", "unit": "USD/MMBtu"},
-    "PNGASEUUSDM": {"name": "European natural gas", "futures": "NG=F", "unit": "USD/MMBtu"},
-    "PCOPPUSDM": {"name": "Copper", "futures": "HG=F", "unit": "USD/lb"},
-    "PGOLD": {"name": "Gold", "futures": "GC=F", "unit": "USD/oz"},
+    # CPF#4/#9: each entry is a futures PROXY served under the series id label.
+    # ``contract``/``unit`` describe the proxy actually served; ``fred_unit`` and
+    # ``fred_basis`` describe the FRED series the id names, so the response can
+    # say where they differ. PGOLD has no FRED series (fredgraph.csv?id=PGOLD
+    # returns HTTP 404), so it carries no FRED fields.
+    "WTISPLC": {
+        "name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl",
+        "contract": "NYMEX WTI crude front-month futures",
+        "fred_unit": "USD/bbl", "fred_basis": "monthly spot average",
+    },
+    "DCOILWTICO": {
+        "name": "WTI crude oil", "futures": "CL=F", "unit": "USD/bbl",
+        "contract": "NYMEX WTI crude front-month futures",
+        "fred_unit": "USD/bbl", "fred_basis": "daily spot price",
+    },
+    "DHHNGSP": {
+        "name": "Henry Hub natural gas", "futures": "NG=F", "unit": "USD/MMBtu",
+        "contract": "NYMEX Henry Hub natural gas front-month futures",
+        "fred_unit": "USD/MMBtu", "fred_basis": "daily spot price",
+    },
+    # PNGASEUUSDM (European gas) is deliberately NOT mapped: NG=F is the Henry
+    # Hub contract, so routing it there served US prices under a European label.
+    "PCOPPUSDM": {
+        "name": "Copper", "futures": "HG=F", "unit": "USD/lb",
+        "contract": "COMEX copper front-month futures",
+        "fred_unit": "USD/metric ton", "fred_basis": "monthly world price",
+    },
+    "PGOLD": {"name": "Gold", "futures": "GC=F", "unit": "USD/oz", "contract": "COMEX gold front-month futures"},
 }
+
+
+def _add_calendar_months(anchor: datetime, months: int) -> datetime:
+    """``anchor`` shifted by whole calendar months, day clamped to month end.
+
+    CPF#8: the forecast steps are calendar months (2026-01-31 + 1M is
+    2026-02-28), not fixed 30-day offsets that drift across the year.
+    """
+    total = anchor.year * 12 + (anchor.month - 1) + months
+    year, month_index = divmod(total, 12)
+    month = month_index + 1
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    last_day = (datetime(next_year, next_month, 1) - timedelta(days=1)).day
+    return anchor.replace(year=year, month=month, day=min(anchor.day, last_day))
 
 
 @FunctionRegistry.register
@@ -805,12 +1315,45 @@ class CPFFunction(BaseFunction):
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         series_id = str(params.get("series_id") or "WTISPLC").strip().upper()
-        meta = CPF_SERIES_MAP.get(series_id) or CPF_SERIES_MAP["WTISPLC"]
         horizon = str(params.get("horizon") or "1Y").strip().upper()
         show_actual = _truthy(params.get("show_actual_history", True))
         horizon_months = {"6M": 6, "1Y": 12, "2Y": 24, "5Y": 60}.get(horizon, 12)
         timeout = max(1.0, min(float(params.get("quote_timeout", params.get("yfinance_timeout", 5))), 8.0))
         now = datetime.now(timezone.utc)
+
+        # CPF#1: an unsupported series is an explicit input error. It is never
+        # served with another instrument's prices (the old fallback fetched WTI).
+        meta = CPF_SERIES_MAP.get(series_id)
+        if meta is None:
+            supported = sorted(CPF_SERIES_MAP)
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "series_id": series_id,
+                    "actual": [],
+                    "forecast": [],
+                    "forecast_vintage": None,
+                    "as_of": now.isoformat(),
+                    "data_mode": "explicit_unavailable",
+                    "rows": [],
+                    "series": [],
+                    "cards": {},
+                    "reason": (
+                        f"{series_id} has no live price source in CPF; "
+                        "no other instrument's prices are substituted."
+                    ),
+                    "methodology": _cpf_methodology(),
+                    "field_dictionary": _cpf_field_dictionary(),
+                    "next_actions": [
+                        "Pick a supported series_id: " + ", ".join(supported) + ".",
+                    ],
+                },
+                sources=[],
+                warnings=[f"unsupported series_id {series_id}"],
+                metadata={"supported_series": supported},
+            )
 
         provider_errors: list[str] = []
 
@@ -822,31 +1365,32 @@ class CPFFunction(BaseFunction):
         latest_actual: float | None = None
         actual_as_of: str | None = None
         futures = meta["futures"]
-        if show_actual:
+        # CPF#5: the actual leg is always fetched because the forecast is built
+        # from it. show_actual_history only decides whether it is displayed.
+        try:
+            actual_series = await self._yahoo_history(futures, timeout)
+        except Exception as exc:  # noqa: BLE001
+            provider_errors.append(f"{futures} yahoo: {str(exc) or type(exc).__name__}")
+        if not actual_series and self.deps.yfinance:
             try:
-                actual_series = await self._yahoo_history(futures, timeout)
+                _row, hist, snap_errors = await _contract_snapshot(
+                    self.deps.yfinance,
+                    futures,
+                    days=370,
+                    timeout=timeout,
+                    include_history=True,
+                )
+                provider_errors.extend(snap_errors)
+                for h in hist:
+                    close = _finite(h.get("close"))
+                    if close is None:
+                        continue
+                    actual_series.append({"date": h.get("date"), "value": close})
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"{futures} yahoo: {exc}")
-            if not actual_series and self.deps.yfinance:
-                try:
-                    _row, hist, snap_errors = await _contract_snapshot(
-                        self.deps.yfinance,
-                        futures,
-                        days=370,
-                        timeout=timeout,
-                        include_history=True,
-                    )
-                    provider_errors.extend(snap_errors)
-                    for h in hist:
-                        close = _finite(h.get("close"))
-                        if close is None:
-                            continue
-                        actual_series.append({"date": h.get("date"), "value": close})
-                except Exception as exc:  # noqa: BLE001
-                    provider_errors.append(f"{futures} adapter: {exc}")
-            if actual_series:
-                latest_actual = _finite(actual_series[-1].get("value"))
-                actual_as_of = actual_series[-1].get("date")
+                provider_errors.append(f"{futures} adapter: {str(exc) or type(exc).__name__}")
+        if actual_series:
+            latest_actual = _finite(actual_series[-1].get("value"))
+            actual_as_of = actual_series[-1].get("date")
 
         # --- FORECAST leg: forward projection from the live actual series ---
         # Built by extrapolating the trailing trend (log-linear CAGR over the
@@ -861,10 +1405,17 @@ class CPFFunction(BaseFunction):
                     actual_series, horizon_months, now,
                 )
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"forecast: {exc}")
+                provider_errors.append(f"forecast: {str(exc) or type(exc).__name__}")
 
-        # Genuine outage on the live source -> honest provider_unavailable.
+        # Genuine outage on the live source -> honest provider_unavailable. The
+        # reason carries the errors that were really raised, never a guess.
         if not actual_series and not forecast_series:
+            outage_reason = (
+                f"No live price points were returned for {futures}, "
+                "the actual leg the forecast is built from."
+            )
+            if provider_errors:
+                outage_reason += " Errors: " + "; ".join(provider_errors)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -879,7 +1430,7 @@ class CPFFunction(BaseFunction):
                     "rows": [],
                     "series": [],
                     "cards": {},
-                    "reason": "The live Yahoo futures feed for the actual price leg was unreachable.",
+                    "reason": outage_reason,
                     "methodology": _cpf_methodology(),
                     "field_dictionary": _cpf_field_dictionary(),
                     "next_actions": [
@@ -896,14 +1447,33 @@ class CPFFunction(BaseFunction):
         # HNT-06 fix: the old ``min(1, ...)`` picked the 2ND monthly point;
         # the documented ~12-month target lives at index 11. Shorter
         # horizons clamp to the last available point.
+        # CPF#6: forecast_1y is the ~12-month point only. A shorter horizon has
+        # no 1Y value, so it is None rather than the horizon endpoint under a
+        # 1Y key. forecast_at_horizon carries the endpoint for any horizon.
         forecast_1y: float | None = None
-        if forecast_series:
-            forecast_1y = _finite(forecast_series[min(11, len(forecast_series) - 1)].get("value"))
+        if forecast_series and horizon_months >= 12:
+            forecast_1y = _finite(forecast_series[11].get("value"))
+        forecast_at_horizon: float | None = (
+            _finite(forecast_series[-1].get("value")) if forecast_series else None
+        )
 
         # Build the flat table rows the manifest table_schema expects:
         # {date, kind, value, vintage}.
+        series_note = (
+            f"{series_id} is served from the {meta['contract']} ({futures}), not from FRED."
+        )
+        if meta.get("fred_basis"):
+            series_note += f" The FRED {series_id} series is a {meta['fred_basis']}."
+        if meta.get("fred_unit") and meta["fred_unit"] != meta["unit"]:
+            series_note += (
+                f" Units differ: FRED reports {meta['fred_unit']}, "
+                f"the served proxy is in {meta['unit']}."
+            )
+        # The actual series is shown only when show_actual_history is on; it is
+        # always returned under ``actual`` because the forecast is built from it.
+        displayed_actual = actual_series if show_actual else []
         rows: list[dict[str, Any]] = []
-        for pt in actual_series:
+        for pt in displayed_actual:
             rows.append({
                 "date": pt.get("date"),
                 "kind": "actual",
@@ -918,7 +1488,10 @@ class CPFFunction(BaseFunction):
                 "vintage": forecast_vintage,
             })
 
-        data_mode = "live_official" if (actual_series and forecast_series) else "delayed_reference"
+        # CPF#2: the actual leg is a Yahoo futures proxy and the forecast is a
+        # trend extrapolation, so neither is an official series. live_official
+        # is reserved for official sources.
+        data_mode = "futures_proxy_trend" if (actual_series and forecast_series) else "delayed_reference"
         status = "ok" if rows else "empty"
 
         return FunctionResult(
@@ -929,6 +1502,15 @@ class CPFFunction(BaseFunction):
                 "series_id": series_id,
                 "commodity": meta["name"],
                 "unit": meta["unit"],
+                # CPF#4/#9: the served series is a futures proxy, not the FRED
+                # series named by series_id. Say so, and say where they differ.
+                "proxy_symbol": futures,
+                "proxy_contract": meta["contract"],
+                "proxy_unit": meta["unit"],
+                "fred_series_id": series_id,
+                "fred_unit": meta.get("fred_unit"),
+                "fred_series_fetched": False,
+                "series_note": series_note,
                 "horizon": horizon,
                 "actual": actual_series,
                 "forecast": forecast_series,
@@ -938,12 +1520,13 @@ class CPFFunction(BaseFunction):
                 "data_mode": data_mode,
                 "rows": rows,
                 "series": [
-                    {"name": "actual", "kind": "line", "points": actual_series},
+                    {"name": "actual", "kind": "line", "points": displayed_actual},
                     {"name": "forecast", "kind": "line", "points": forecast_series},
                 ],
                 "cards": {
                     "latest_actual": latest_actual,
                     "forecast_1y": forecast_1y,
+                    "forecast_at_horizon": forecast_at_horizon,
                     "forecast_vintage": forecast_vintage,
                     "forecast_horizon": horizon,
                     "data_mode": data_mode,
@@ -955,7 +1538,9 @@ class CPFFunction(BaseFunction):
             },
             sources=["yfinance"],
             warnings=provider_errors,
-            metadata={"degraded": data_mode != "live_official"} if data_mode != "live_official" else {},
+            # CPF#2: a Yahoo futures proxy with a trend extrapolation is never
+            # an official series, so the quality flag is set on every path.
+            metadata={"degraded": True, "data_mode": data_mode},
         )
 
     async def _yahoo_history(self, symbol: str, timeout: float) -> list[dict[str, Any]]:
@@ -1017,7 +1602,7 @@ class CPFFunction(BaseFunction):
         cur = last_val
         for m in range(1, months + 1):
             cur = cur * monthly_growth
-            dt = last_dt + timedelta(days=30 * m)
+            dt = _add_calendar_months(last_dt, m)
             points.append({"date": dt.date().isoformat(), "value": round(cur, 6)})
         forecast_vintage = str(last_date_str)[:10] if last_date_str else None
         return points, forecast_vintage
@@ -1042,13 +1627,14 @@ def _cpf_methodology() -> str:
 def _cpf_field_dictionary() -> dict[str, str]:
     return {
         "series_id": "Benchmark commodity series identifier.",
-        "actual": "Array of {date, value} live historical futures observations from Yahoo.",
+        "actual": "Array of {date, value} live historical futures observations from Yahoo. Always returned, since the forecast is built from it; rows and series show it only when show_actual_history is true.",
         "forecast": "Array of {date, value} forward trend-extrapolated projections.",
         "forecast_vintage": "Last realized actual date the forecast is anchored to (iso8601).",
         "forecast_horizon": "User-selected forward window (6M/1Y/2Y/5Y).",
         "latest_actual": "Most recent realized futures value.",
-        "forecast_1y": "Forecast value at the ~12-month horizon.",
-        "data_mode": "live_official when both legs are live; delayed_reference when one leg is delayed.",
+        "forecast_1y": "Forecast value at the ~12-month point; null when the horizon is shorter than 12 months.",
+        "forecast_at_horizon": "Forecast value at the end of the selected horizon.",
+        "data_mode": "futures_proxy_trend when the actual futures proxy and the trend forecast are both present; delayed_reference when one leg is missing. live_official is reserved for official sources.",
     }
 
 
@@ -1060,24 +1646,65 @@ class GLCOFunction(BaseFunction):
     asset_classes = (AssetClass.COMMODITY,)
     category = "commodity"
 
+    # The keyless Yahoo chart feed GLCO reads publishes neither open interest
+    # nor a delivery month for a continuous ``=F`` series. Rows say so
+    # explicitly instead of carrying a blank column or the contract description.
+    _OI_UNPUBLISHED_REASON = (
+        "Open interest is not published by the keyless quote feed (Yahoo chart meta has no OI field)."
+    )
+    _CONTRACT_MONTH_UNPUBLISHED_REASON = (
+        "Yahoo =F symbol is a continuous front-month series; the delivery month is not published by the keyless feed."
+    )
+
+    @classmethod
+    def _mark_unpublished_fields(cls, row: dict[str, Any]) -> None:
+        row["open_interest"] = None
+        row["open_interest_reason"] = cls._OI_UNPUBLISHED_REASON
+        row["contract_month"] = None
+        row["contract_month_reason"] = cls._CONTRACT_MONTH_UNPUBLISHED_REASON
+
+    @staticmethod
+    def _bounded_timeout(params: dict[str, Any], key: str, default: float, lo: float, hi: float) -> float:
+        """Parse a timeout param; a non-numeric / non-finite value falls back to the default."""
+        try:
+            value = float(params.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        if not math.isfinite(value):
+            value = default
+        return max(lo, min(value, hi))
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         symbols = ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F", "GC=F", "SI=F", "HG=F", "ZC=F", "ZW=F", "ZS=F", "KC=F", "SB=F", "CT=F"]
         rows: list[dict[str, Any]] = []
         provider_errors: list[str] = []
+        # symbol -> why it is absent from a live board (GLCO#1-RQ).
+        missing_reasons: dict[str, str] = {}
         live = _truthy(params.get("live", True))
         if self.deps.yfinance:
-            quote_timeout = max(1.0, min(float(params.get("quote_timeout", 2.0)), 4.0))
-            screen_timeout = max(2.0, min(float(params.get("screen_timeout", 5.0)), 7.0))
+            quote_timeout = self._bounded_timeout(params, "quote_timeout", 2.0, 1.0, 4.0)
+            screen_timeout = self._bounded_timeout(params, "screen_timeout", 5.0, 2.0, 7.0)
+
+            symbol_errors: dict[str, list[str]] = {}
 
             async def _one(sym: str) -> dict[str, Any] | None:
+                probe = _QuoteStampProbe(self.deps.yfinance)
                 row, _history, errors = await _contract_snapshot(
-                    self.deps.yfinance,
+                    probe,
                     sym,
                     days=30,
                     timeout=quote_timeout,
                     include_history=False,
                 )
+                if row and not probe.stamped.get(sym):
+                    # GLCO#2: a price with no exchange time is never served as
+                    # current (a Friday close read on a Sunday looked live).
+                    errors = [*errors, f"{sym} quote: no exchange time on the quote; price not served"]
+                    row = None
+                if row:
+                    row["as_of_source"] = "quote_exchange_time"
                 provider_errors.extend(errors)
+                symbol_errors[sym] = list(errors)
                 return row
 
             if live:
@@ -1100,12 +1727,23 @@ class GLCOFunction(BaseFunction):
                 done, pending = await asyncio.wait(tasks, timeout=screen_timeout)
                 for task in pending:
                     task.cancel()
-                for task in done:
-                    if task.cancelled():
+                # GLCO#1-RQ: every contract that does not make the board is named
+                # with its reason; nothing is dropped silently.
+                for sym, task in zip(symbols, tasks):
+                    if task not in done or task.cancelled():
+                        missing_reasons[sym] = (
+                            f"no quote within the {screen_timeout:g}s screen cutoff"
+                        )
                         continue
                     row = task.result()
                     if row:
                         rows.append(row)
+                    else:
+                        errs = symbol_errors.get(sym) or []
+                        missing_reasons[sym] = (
+                            "; ".join(errs) if errs
+                            else "provider returned no usable price"
+                        )
                 history_grace = max(0.25, min(1.0, screen_timeout * 0.2))
                 history_done, history_pending = await asyncio.wait(
                     history_tasks, timeout=history_grace,
@@ -1119,7 +1757,7 @@ class GLCOFunction(BaseFunction):
                     try:
                         history = task.result()
                     except Exception as exc:  # noqa: BLE001 — best-effort history
-                        provider_errors.append(f"{sym} history: {exc}")
+                        provider_errors.append(f"{sym} history: {str(exc) or type(exc).__name__}")
                         continue
                     if history:
                         history_by_symbol[sym] = history
@@ -1135,6 +1773,8 @@ class GLCOFunction(BaseFunction):
                         row["history_source"] = "yfinance_daily"
         if not rows:
             rows = [_model_row(sym) for sym in symbols]
+            for model in rows:
+                self._mark_unpublished_fields(model)
             rows = _filter_sector(rows, params.get("sector"))
             return FunctionResult(
                 code=self.code,
@@ -1160,15 +1800,34 @@ class GLCOFunction(BaseFunction):
                     "data_mode": "reference",
                 },
             )
+        for live_row in rows:
+            self._mark_unpublished_fields(live_row)
+        served_count = len(rows)
+        missing = [
+            {"symbol": sym, "reason": missing_reasons[sym]}
+            for sym in symbols if sym in missing_reasons
+        ]
         rows = _filter_sector(rows, params.get("sector"))
         rows.sort(key=lambda row: abs(float(row.get("change_pct") or 0)), reverse=True)
+        # GLCO#1-RQ: a board with missing contracts is partial, never ok.
+        board_status = "partial" if missing else "ok"
+        board_reason = (
+            f"{len(missing)} of {len(symbols)} contracts not served by the live quote "
+            "feed: " + ", ".join(entry["symbol"] for entry in missing)
+            + ". Each is listed under missing with its reason; no other contract's price is substituted."
+            if missing else None
+        )
         return FunctionResult(
             code=self.code,
             instrument=None,
             data={
-                "status": "ok",
+                "status": board_status,
+                "reason": board_reason,
                 "source_mode": "live_yfinance",
                 "rows": rows,
+                "missing": missing,
+                "served_count": served_count,
+                "requested_count": len(symbols),
                 "methodology": "GLCO ranks front-month commodity futures by absolute percent move. Change % is (last / previous close - 1) * 100. Each live row carries a real daily close history (last ~30 calendar days, keyless Yahoo chart data) in row.history when available; absence of history where the provider did not answer.",
                 "field_dictionary": _commodity_field_dictionary(),
             },
@@ -1188,28 +1847,119 @@ class WETRFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         days = _int_param(params, "days", 7, 3, 16)
         location_key = str(params.get("location") or "US_NORTHEAST").strip().upper()
-        preset = LOCATION_PRESETS.get(location_key, LOCATION_PRESETS["US_NORTHEAST"])
-        lat = _finite(params.get("lat")) if params.get("lat") not in (None, "") else None
-        lon = _finite(params.get("lon")) if params.get("lon") not in (None, "") else None
-        lat = lat if lat is not None else float(preset["lat"])
-        lon = lon if lon is not None else float(preset["lon"])
-        commodity = str(params.get("commodity") or preset["commodity_context"]).strip()
+        preset = LOCATION_PRESETS.get(location_key)
+        if preset is None:
+            # WETR#1: an unknown region is an explicit input error. It must not
+            # fall back to US Northeast weather labelled as the requested region.
+            supported = sorted(LOCATION_PRESETS)
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (
+                        f"{location_key} is not a supported WETR region; "
+                        "no other region's weather is substituted."
+                    ),
+                    "location": location_key,
+                    "lat": None,
+                    "lon": None,
+                    "commodity_context": None,
+                    "source_mode": "unsupported_region",
+                    "rows": [],
+                    "history": [],
+                    "risk_flags": [],
+                    "methodology": (
+                        "WETR serves only the curated regions listed in its "
+                        "preset table; each carries its own coordinates."
+                    ),
+                    "field_dictionary": {},
+                    "next_actions": [
+                        "Pick a supported region: " + ", ".join(supported) + ".",
+                    ],
+                },
+                sources=[],
+                warnings=[f"unsupported location {location_key}"],
+                metadata={"supported_locations": supported},
+            )
+        # WETR#4-RQ: lat/lon/commodity are not declared inputs (the pane cannot send
+        # them). The region preset is authoritative, so an undeclared override can
+        # never put another place's coordinates under this region's label.
+        lat = float(preset["lat"])
+        lon = float(preset["lon"])
+        commodity = str(preset["commodity_context"]).strip()
         # Default polarity (2026-09-11, L5): attempt the live weather chain by
         # default. The keyless Open-Meteo adapter is bound by FunctionFactory,
         # so WETR no longer needs an OpenWeatherMap key to serve live rows;
         # ``reference=true`` opts back into the labelled seasonal model.
-        reference = _truthy(params.get("reference"))
+        # WETR#4-RQ: the manifest's provider_mode input is honoured. "modeled" is
+        # the labelled seasonal model (same as reference=true); "live_official" is
+        # the live chain. Any other value is an explicit input error, never a
+        # silent live or model fallback.
+        provider_mode = str(params.get("provider_mode") or "").strip().lower()
+        allowed_modes = ("live_official", "modeled")  # modeled is refused below (not offered)
+        if provider_mode and provider_mode not in allowed_modes:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "field": "provider_mode",
+                    "value": provider_mode,
+                    "allowed": list(allowed_modes),
+                    "reason": (
+                        f"provider_mode {provider_mode!r} is not supported; "
+                        "use live_official or modeled."
+                    ),
+                    "location": location_key,
+                    "lat": None,
+                    "lon": None,
+                    "commodity_context": None,
+                    "source_mode": "unsupported_provider_mode",
+                    "rows": [],
+                    "history": [],
+                    "risk_flags": [],
+                    "methodology": "WETR honours provider_mode=live_official or modeled only.",
+                    "field_dictionary": {},
+                    "next_actions": ["Pick Live or Modeled in the data mode control."],
+                },
+                sources=[],
+                warnings=[f"unsupported provider_mode {provider_mode}"],
+                metadata={"allowed_provider_modes": list(allowed_modes)},
+            )
+        reference = _truthy(params.get("reference")) or provider_mode == "modeled"
+        if reference:
+            # Data policy: the old "seasonal model" was a sine curve, not a
+            # measured or published normal. It is no longer served.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "field": "provider_mode" if provider_mode == "modeled" else "reference",
+                    "reason": ("The synthetic seasonal weather model is not offered: WETR serves live "
+                               "forecast rows only (Open-Meteo keyless, or OpenWeather with a key)."),
+                    "location": location_key,
+                    "lat": lat,
+                    "lon": lon,
+                    "commodity_context": commodity,
+                    "source_mode": "not_offered",
+                    "rows": [],
+                    "history": [],
+                    "risk_flags": [],
+                    "methodology": "WETR serves live forecast rows only; no generated weather rows.",
+                    "field_dictionary": {},
+                    "next_actions": ["Use the Live data mode (the default)."],
+                },
+                sources=[],
+                warnings=["synthetic seasonal weather model is not offered"],
+                metadata={"live": False},
+            )
         provider, provider_name = self._live_weather_provider()
-        if reference or provider is None:
+        if provider is None:
             return self._seasonal_model_result(
                 days, lat, lon, location_key, commodity,
-                reason=(
-                    "Rows are a labelled seasonal weather model (reference), "
-                    "not live forecast data."
-                    if reference
-                    else "No live weather provider is wired; rows are a labelled "
-                    "seasonal weather model, not live forecast data."
-                ),
+                reason="No live weather provider is wired; no weather rows are served.",
             )
         try:
             if provider_name == "open_meteo":
@@ -1219,8 +1969,8 @@ class WETRFunction(BaseFunction):
         except Exception as e:  # noqa: BLE001 — provider outage degrades honestly
             return self._seasonal_model_result(
                 days, lat, lon, location_key, commodity,
-                reason=f"Live weather request failed: {e}",
-                warning=f"{provider_name}: {e}",
+                reason=f"Live weather request failed: {str(e) or type(e).__name__}",
+                warning=f"{provider_name}: {str(e) or type(e).__name__}",
             )
         live_mode = "live_open_meteo" if provider_name == "open_meteo" else "live_openweathermap"
         rows = _normalise_weather_rows(
@@ -1257,7 +2007,10 @@ class WETRFunction(BaseFunction):
                     "weather chain and adds commodity impact flags."
                 ),
                 "field_dictionary": {
-                    "temp_c": "Daily average temperature in Celsius.",
+                    "temp_c": (
+                        "Daily mean temperature in Celsius (Open-Meteo temperature_2m_mean; "
+                        "OpenWeatherMap rows average its day/min/max values)."
+                    ),
                     "precip_mm": "Daily precipitation in millimeters.",
                     "hdd": "Heating degree days versus 18C.",
                     "cdd": "Cooling degree days versus 18C.",
@@ -1265,7 +2018,10 @@ class WETRFunction(BaseFunction):
                 },
             },
             sources=[provider_name],
-            metadata={"live": True, "data_mode": "live_official"},
+            # WETR#5: the keyless Open-Meteo forecast is labelled by its provider
+            # (live_open_meteo, as live_yfinance labels a keyless feed), never as
+            # live_official; "live" alone is not a canonical data_mode value.
+            metadata={"live": True, "data_mode": live_mode},
         )
 
     def _live_weather_provider(self) -> tuple[Any, str]:
@@ -1290,50 +2046,60 @@ class WETRFunction(BaseFunction):
         *,
         reason: str,
         warning: str | None = None,
+        reference: bool = False,
     ) -> FunctionResult:
-        """Labelled seasonal-model fallback — never presented as live."""
-        rows = _weather_model_rows(days, lat, lon, location_key, commodity)
-        provider_errors = [warning] if warning else [
-            "No live weather provider configured; seasonal model used."
+        """Honest non-live result: a provider outage or an unwired provider.
+
+        No weather rows are served (the old synthetic seasonal model is gone);
+        ``reference`` is kept for call-site compatibility and is always False.
+        """
+        rows: list[dict[str, Any]] = []
+        status = "provider_unavailable"
+        source_mode = "provider_unavailable"
+        sources: list[str] = []
+        data_mode = "provider_unavailable"
+        methodology = (
+            "WETR serves weather rows only from a configured live provider. "
+            "During an outage no weather rows are served."
+        )
+        next_actions = [
+            "Retry WETR after the public weather providers recover.",
+            "No weather rows are shown while the provider is unavailable.",
         ]
+        if warning:
+            provider_errors = [warning]
+        else:
+            provider_errors = [] if reference else ["No live weather provider configured."]
         return FunctionResult(
             code=self.code,
             instrument=None,
             data={
-                "status": "provider_unavailable",
+                "status": status,
                 "reason": reason,
                 "location": location_key,
                 "lat": lat,
                 "lon": lon,
                 "commodity_context": commodity,
-                "source_mode": "seasonal_model",
+                "source_mode": source_mode,
                 "rows": rows,
                 "history": rows,
                 "risk_flags": sorted({row["risk_flag"] for row in rows}),
-                "methodology": (
-                    "WETR shows weather variables relevant to commodities. "
-                    "HDD=max(18C-temp,0), CDD=max(temp-18C,0); risk flags map "
-                    "dry/hot/cold/wet days to demand or crop-weather pressure. "
-                    "These rows are a labelled seasonal model, not a live forecast."
-                ),
+                "methodology": methodology,
                 "field_dictionary": {
-                    "temp_c": "Daily average temperature in Celsius.",
+                    "temp_c": "Daily mean temperature in Celsius.",
                     "precip_mm": "Daily precipitation in millimeters.",
                     "hdd": "Heating degree days versus 18C.",
                     "cdd": "Cooling degree days versus 18C.",
                     "commodity_impact": "Plain-language link between weather and the selected commodity context.",
                 },
-                "next_actions": [
-                    "Retry WETR after the public weather providers recover.",
-                    "Rows shown are a deterministic seasonal model, not live forecast data.",
-                ],
+                "next_actions": next_actions,
             },
-            sources=["seasonal_weather_model"],
+            sources=sources,
             warnings=[warning] if warning else [],
             metadata={
                 "fallback": True,
                 "degraded": True,
-                "data_mode": "modeled",
+                "data_mode": data_mode,
                 "provider_errors": provider_errors,
             },
         )
@@ -1366,47 +2132,21 @@ def _csv_lower(value: Any) -> list[str]:
     return [str(item).strip().lower() for item in items if str(item).strip()]
 
 
-def _weather_model_rows(
-    days: int,
-    lat: float,
-    lon: float,
-    location: str,
-    commodity: str,
-) -> list[dict[str, Any]]:
-    start = datetime.now(timezone.utc).date()
-    warm_bias = 2.5 if lat < 35 else 0.0
-    rows: list[dict[str, Any]] = []
-    for i in range(days):
-        date = start + timedelta(days=i)
-        temp = 17.5 + warm_bias + math.sin(i / 2.2) * 3.0 + i * 0.15
-        precip = max(0.0, 2.4 - i * 0.12 + (0.8 if i % 5 == 0 else 0.0))
-        hdd = max(18.0 - temp, 0.0)
-        cdd = max(temp - 18.0, 0.0)
-        if precip < 1 and temp > 22:
-            risk = "dry_heat_watch"
-        elif hdd > 2:
-            risk = "heating_demand"
-        elif cdd > 4:
-            risk = "cooling_demand"
-        elif precip > 3:
-            risk = "wet_weather"
-        else:
-            risk = "normal"
-        rows.append({
-            "date": date.isoformat(),
-            "day": i + 1,
-            "location": location,
-            "lat": lat,
-            "lon": lon,
-            "temp_c": round(temp, 2),
-            "precip_mm": round(precip, 2),
-            "hdd": round(hdd, 2),
-            "cdd": round(cdd, 2),
-            "risk_flag": risk,
-            "commodity_impact": _weather_impact(risk, commodity),
-            "source_mode": "seasonal_model",
-        })
-    return rows
+def _wetr_risk_flag(temp: float, precip: float) -> str:
+    """Single WETR risk taxonomy for live and model rows (WETR#3)."""
+    hdd = max(18.0 - temp, 0.0)
+    cdd = max(temp - 18.0, 0.0)
+    if precip < 1 and temp > 22:
+        return "dry_heat_watch"
+    if hdd > 2:
+        return "heating_demand"
+    if cdd > 4:
+        return "cooling_demand"
+    if precip > 3:
+        return "wet_weather"
+    return "normal"
+
+
 
 
 def _normalise_weather_rows(
@@ -1422,14 +2162,18 @@ def _normalise_weather_rows(
 ) -> list[dict[str, Any]]:
     daily = data.get("daily") if isinstance(data, dict) else None
     if not isinstance(daily, list):
-        return _weather_model_rows(days, lat, lon, location, commodity) if allow_model_fallback else []
+        return []
     rows: list[dict[str, Any]] = []
     for i, item in enumerate(daily[:days]):
         if not isinstance(item, dict):
             continue
         temp_raw = item.get("temp")
         temp = None
-        if isinstance(temp_raw, dict):
+        if isinstance(temp_raw, dict) and source_mode == "live_open_meteo":
+            # WETR#2: Open-Meteo's ``day`` is the provider daily mean; it is
+            # never averaged with the high/low values.
+            temp = _finite(temp_raw.get("day"))
+        elif isinstance(temp_raw, dict):
             vals = [_finite(temp_raw.get(key)) for key in ("day", "min", "max")]
             vals = [v for v in vals if v is not None]
             temp = sum(vals) / len(vals) if vals else None
@@ -1440,7 +2184,7 @@ def _normalise_weather_rows(
         precip = _finite(item.get("rain")) or _finite(item.get("precipitation")) or 0.0
         hdd = max(18.0 - temp, 0.0)
         cdd = max(temp - 18.0, 0.0)
-        risk = "heating_demand" if hdd > 2 else "cooling_demand" if cdd > 4 else "wet_weather" if precip > 3 else "normal"
+        risk = _wetr_risk_flag(temp, precip)
         ts = item.get("dt")
         if isinstance(ts, (int, float)):
             date = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
@@ -1461,7 +2205,7 @@ def _normalise_weather_rows(
             "source_mode": source_mode,
         })
     if not rows:
-        return _weather_model_rows(days, lat, lon, location, commodity) if allow_model_fallback else []
+        return []
     return rows
 
 

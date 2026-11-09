@@ -86,11 +86,23 @@ describe("paneHealthTier", () => {
     expect(PANE_STALE_AFTER_MS).toBeGreaterThan(60_000);
   });
 
-  it("falls back to receivedAt when asOf is missing or unparseable", () => {
+  it("never judges an undated contract by receipt time (ASOF-2 follow-up)", () => {
+    // A payload with no declared observation date can never claim live, and its
+    // receipt time must not make it look fresh or stale.
     const fresh = snap({ asOf: undefined, receivedAt: NOW - 1_000 });
-    expect(paneHealthTier(fresh, NOW)).toBe("live");
+    expect(paneHealthTier(fresh, NOW)).toBe("degraded");
     const old = snap({ asOf: "not-a-date", receivedAt: NOW - PANE_STALE_AFTER_MS - 1 });
-    expect(paneHealthTier(old, NOW)).toBe("stale");
+    expect(paneHealthTier(old, NOW)).toBe("degraded");
+  });
+
+  it("does not judge a date-only observation (monthly/daily print) against the intraday window", () => {
+    // Cadence is unknown for a bare calendar date, so a 5-minute stale window would
+    // mark every monthly series stale forever. It reads degraded instead.
+    const monthly = snap({ asOf: "2026-09-01", receivedAt: NOW - 1_000 });
+    expect(paneHealthTier(monthly, NOW)).toBe("degraded");
+    expect(paneHealthTier(snap({ asOf: "2026-11-06", dataMode: "live_official" }), NOW)).toBe(
+      "degraded",
+    );
   });
 
   it("clock skew on a future asOf clamps the age to zero (never flashes stale)", () => {
@@ -107,10 +119,10 @@ describe("paneStampedAt / paneAgeMs", () => {
     expect(paneAgeMs(s, NOW)).toBe(5_000);
   });
 
-  it("uses receivedAt when no usable asOf exists", () => {
+  it("has no stamp and no age when no usable asOf exists (receipt time is not a stamp)", () => {
     const s = snap({ asOf: undefined, receivedAt: NOW - 7_000 });
-    expect(paneStampedAt(s)).toBe(NOW - 7_000);
-    expect(paneAgeMs(s, NOW)).toBe(7_000);
+    expect(paneStampedAt(s)).toBeNull();
+    expect(paneAgeMs(s, NOW)).toBeNull();
   });
 });
 

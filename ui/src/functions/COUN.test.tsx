@@ -202,6 +202,47 @@ describe("COUN pane — source honesty", () => {
   });
 });
 
+describe("COUN pane — unavailable indicators are never live (G5 COUN#1)", () => {
+  it("renders an unavailable Real GDP as an em dash with an unavailable source, not live", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          country: "TR",
+          rows: [
+            {
+              section: "rates",
+              metric: "Policy rate",
+              value: 5.25,
+              unit: "%",
+              source_mode: "country_reference_profile",
+            },
+            {
+              section: "growth",
+              metric: "Real GDP",
+              value: null,
+              unit: "mn TRY (SA)",
+              as_of: null,
+              series_id: "NGDPRSAXDCTRQ",
+              source_mode: "provider_unavailable",
+            },
+          ],
+          cards: [{ label: "Policy rate", value: 5.25 }],
+          source_mode: "reference_country_profile",
+        },
+        sources: ["country_reference_profile"],
+      },
+    });
+    render(<COUNPane code="COUN" />);
+    expect(screen.queryByText("live+ref")).not.toBeInTheDocument();
+    expect(screen.getByText("unavailable")).toBeInTheDocument();
+    expect(screen.getByText("provider_unavailable")).toBeInTheDocument();
+    const gdpRow = screen.getByText("Real GDP").closest("tr");
+    expect(gdpRow?.textContent ?? "").toContain("—");
+    expect(gdpRow?.textContent ?? "").not.toMatch(/\b1\b/);
+  });
+});
+
 describe("COUN pane — country interaction", () => {
   it("switches country via the segmented control and persists it", () => {
     setMockFn(livePayload());
@@ -248,5 +289,71 @@ describe("COUN pane — grid CSV export", () => {
     render(<COUNPane code="COUN" />);
     expect(screen.getByTitle("Download CSV")).toBeDisabled();
     expect(downloadGridCsv).not.toHaveBeenCalled();
+  });
+});
+
+describe("COUN pane — stale observations are not live (WC1-G04 COUN#4)", () => {
+  it("shows a stale-only payload as stale, never as live", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          country: "EU",
+          rows: [
+            {
+              key: "unemployment",
+              section: "labor",
+              metric: "Unemployment rate",
+              value: 6.666667,
+              unit: "%",
+              as_of: "2022-10-01",
+              series_id: "LRHUTTTTEZQ156S",
+              source_mode: "fred",
+              stale: true,
+              reason: "latest observation 2022-10-01 is older than its series limit",
+            },
+          ],
+          cards: [],
+          source_mode: "stale_macro",
+        },
+        sources: ["fred"],
+      },
+    });
+    render(<COUNPane code="COUN" />);
+    expect(screen.getByText("stale")).toBeInTheDocument();
+    expect(screen.queryByText("live")).not.toBeInTheDocument();
+    expect(screen.queryByText("live+ref")).not.toBeInTheDocument();
+  });
+});
+
+describe("COUN pane — currency card caption (WC1-G04 COUN-R1)", () => {
+  it("captions the currency code as a code, not as a reference profile row", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          country: "TR",
+          rows: [
+            {
+              section: "rates",
+              metric: "Policy rate",
+              value: 37.0,
+              unit: "%",
+              as_of: "2026-08-28",
+              source_mode: "BIS CBPOL",
+            },
+          ],
+          cards: [
+            { key: "currency", label: "Currency", value: "TRY" },
+            { key: "policy_rate", label: "Policy rate", value: 37.0 },
+          ],
+          source_mode: "live_macro",
+        },
+      },
+    });
+    const { container } = render(<COUNPane code="COUN" />);
+    const cardsText = container.querySelector('[aria-label="COUN indicator cards"]')?.textContent ?? "";
+    expect(cardsText).toContain("CURRENCY CODE");
+    expect(cardsText).not.toContain("REFERENCE PROFILE");
   });
 });

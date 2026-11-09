@@ -63,7 +63,8 @@ def test_form4_gift_and_other_codes_are_neutral_not_buys() -> None:
     assert form4_mod._infer_direction({"transactionCode": "j"}) == 0
     # Real purchases / sales keep their signs.
     assert form4_mod._infer_direction({"acquiredDisposedCode": "P"}) == 1
-    assert form4_mod._infer_direction({"acquiredDisposedCode": "A"}) == 1
+    # FORM4#3: SEC code A is a grant/award, not an open-market purchase (neutral).
+    assert form4_mod._infer_direction({"acquiredDisposedCode": "A"}) == 0
     assert form4_mod._infer_direction({"acquiredDisposedCode": "S"}) == -1
     # And the net summary must not move on a pure gift.
     gift_rows = [
@@ -102,7 +103,8 @@ def test_fts_no_live_returns_empty_rows() -> None:
     fn = fts_mod.FTSFunction(deps=_Deps())
     instrument = Instrument(symbol="MSFT", asset_class=AssetClass.EQUITY)
     result = asyncio.run(fn.execute(instrument=instrument, query="risk", live=False))
-    assert result.data["status"] == "provider_unavailable"
+    # A user-chosen live=false skips the provider: an empty state, not an outage.
+    assert result.data["status"] == "empty"
     assert result.data["rows"] == []
 
 

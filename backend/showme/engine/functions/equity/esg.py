@@ -5,7 +5,7 @@ risk scores) via the wired yfinance adapter / yfinance package. When Yahoo does
 not publish a sustainability frame for a ticker (common for smaller or non-US
 names), fall back to a SEC EDGAR full-text-mined E/S/G *proxy*: term-frequency
 counts of environmental / social / governance language across the company's
-recent 10-K filings, fetched keyless from the EDGAR full-text search index. The
+10-K filings from the last three years, fetched keyless from the EDGAR full-text search index. The
 proxy is clearly labelled as a derived signal, never presented as a vendor
 (Sustainalytics) score.
 """
@@ -13,6 +13,7 @@ proxy is clearly labelled as a derived signal, never presented as a vendor
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -25,20 +26,24 @@ _YF_METHODOLOGY = (
     "level is the highest active controversy (1-5)."
 )
 
+_PROXY_WINDOW_YEARS = 3
+
 _PROXY_METHODOLOGY = (
     "DERIVED PROXY (no Yahoo/Sustainalytics ESG score published for this "
-    "ticker). The E/S/G signal is the term-frequency of environmental, social "
-    "and governance language mined from the company's recent SEC EDGAR 10-K "
-    "filings via the keyless full-text search index. Counts are a relative "
-    "emphasis signal, NOT risk scores, and are not comparable to vendor ratings."
+    "ticker). Each count is the number of SEC EDGAR 10-K filings filed in the "
+    f"last {_PROXY_WINDOW_YEARS} years whose text contains at least one E, S or G "
+    "term (keyless full-text search index). These are filing counts, not term "
+    "frequency. The total counts filings matching any term, so it is not the sum "
+    "of the pillars. Counts are a relative emphasis signal, NOT risk scores, and "
+    "are not comparable to vendor ratings."
 )
 
 _FIELD_DICTIONARY = {
     "pillar": "ESG component (total / environment / social / governance / controversy).",
-    "score": "Vendor ESG pillar score (lower may indicate lower unmanaged risk).",
+    "score": "Row score: vendor ESG risk score (yfinance path, lower = lower unmanaged risk) or a 10-K filing count (SEC proxy path, not a risk score).",
     "scale": "Scale / unit semantics for the displayed score.",
     "source_mode": "Provider state for the displayed row.",
-    "totalEsg": "Composite ESG risk score.",
+    "totalEsg": "Vendor composite ESG risk score (yfinance path). On the SEC proxy path it is the count of unique 10-K filings in the window matching any E/S/G term, not a risk score.",
     "environmentScore": "E pillar score.",
     "socialScore": "S pillar score.",
     "governanceScore": "G pillar score.",
@@ -106,31 +111,54 @@ def _build_rows_from_sustainability(flat: dict[str, Any]) -> list[dict[str, Any]
                 "scale": "vendor risk scale (lower=better)"
                 if label != "controversy"
                 else "level 1-5",
-                "source_mode": "live_yfinance",
+                "source_mode": "delayed_reference",
             }
         )
     return rows if has_value else None
 
 
+def proxy_window(today: date | None = None) -> dict[str, str]:
+    """Filing-date window the proxy counts cover: the last few years, inclusive."""
+    end = today or date.today()
+    start = end - timedelta(days=365 * _PROXY_WINDOW_YEARS)
+    return {"startdt": start.isoformat(), "enddt": end.isoformat(), "form": "10-K"}
+
+
+async def _efts_total(client: Any, query: str, symbol: str, window: dict[str, str]) -> int:
+    resp = await client.get(
+        _EFTS_URL,
+        params={"q": query, "entityName": symbol, "forms": "10-K",
+                "startdt": window["startdt"], "enddt": window["enddt"]},
+        headers=_SEC_UA,
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    hits = payload.get("hits", {}) if isinstance(payload, dict) else {}
+    total = hits.get("total", {}) if isinstance(hits, dict) else {}
+    value = total.get("value") if isinstance(total, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        # No count in the payload is not a zero count: surface it as a provider error.
+        raise ValueError("EFTS response has no hits.total.value")
+    return int(value)
+
+
 async def _fetch_proxy_counts(symbol: str) -> dict[str, int]:
-    """Mine SEC EDGAR full-text search for E/S/G term emphasis (keyless)."""
+    """Count the 10-K filings in the proxy window that match each E/S/G bucket.
+
+    ``any`` is the number of filings matching at least one term across all
+    buckets. It is queried directly, because summing the pillars would count a
+    filing once per pillar it mentions.
+    """
     from showme.providers._http import get_client
 
     client = await get_client()
+    window = proxy_window()
     counts: dict[str, int] = {}
     for pillar, query in _PROXY_TERMS.items():
-        resp = await client.get(
-            _EFTS_URL,
-            params={"q": query, "entityName": symbol, "forms": "10-K"},
-            headers=_SEC_UA,
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        hits = payload.get("hits", {}) if isinstance(payload, dict) else {}
-        total = hits.get("total", {}) if isinstance(hits, dict) else {}
-        value = total.get("value") if isinstance(total, dict) else None
-        counts[pillar] = int(value) if isinstance(value, (int, float)) else 0
+        counts[pillar] = await _efts_total(client, query, symbol, window)
+    any_query = " OR ".join(_PROXY_TERMS.values())
+    counts["any"] = await _efts_total(client, any_query, symbol, window)
     return counts
 
 
@@ -150,6 +178,7 @@ class ESGFunction(BaseFunction):
 
         # ---- Primary: Yahoo Finance sustainability (Sustainalytics) ----
         scores: dict[str, Any] = {}
+        yahoo_note: str | None = None  # why the Yahoo primary gave no pillar values
         try:
             if self.deps.yfinance:
                 import yfinance as yf
@@ -164,11 +193,18 @@ class ESGFunction(BaseFunction):
                 )
                 if sus is not None:
                     scores = sus.to_dict() if hasattr(sus, "to_dict") else dict(sus)
+            else:
+                yahoo_note = "yahoo sustainability: yfinance adapter not configured"
         except Exception as exc:  # network / parse failure -> try proxy next
-            warnings.append(f"yfinance esg: {exc}")
+            yahoo_note = f"yfinance esg: {str(exc) or type(exc).__name__}"
 
         flat = _flatten_sustainability(scores)
         rows = _build_rows_from_sustainability(flat) if flat else None
+        if rows is None:
+            # Record why the primary gave nothing, so provenance shows why the proxy answered.
+            warnings.append(
+                yahoo_note or "yahoo sustainability: Yahoo published no pillar values for this ticker"
+            )
         if rows is not None:
             data = {
                 "symbol": symbol,
@@ -219,11 +255,13 @@ class ESGFunction(BaseFunction):
                     "field_dictionary": _FIELD_DICTIONARY,
                 },
                 sources=["yfinance", "sec_edgar"],
-                metadata={"provider_errors": warnings + [f"sec_edgar: {exc}"]},
+                metadata={"provider_errors": warnings + [f"sec_edgar: {str(exc) or type(exc).__name__}"]},
             )
 
-        total_mentions = sum(counts.values())
-        if total_mentions == 0:
+        # Total = filings matching any E/S/G term (never the sum of the pillars,
+        # which would count one filing once per pillar it mentions).
+        total_mentions = counts.get("any")
+        if not any(counts.get(pillar, 0) for pillar in _PROXY_TERMS):
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -280,11 +318,13 @@ class ESGFunction(BaseFunction):
                 "socialScore": counts["social"],
                 "governanceScore": counts["governance"],
                 "controversyLevel": None,
-                "data_mode": "cached_snapshot",
+                "data_mode": "live_official",
+                "window": proxy_window(),
                 "rows": proxy_rows,
                 "warnings": [
                     "No vendor ESG score available for this ticker; values are a "
-                    "derived SEC text proxy (filing-mention counts), not risk scores."
+                    f"derived SEC text proxy (10-K filing counts, last "
+                    f"{_PROXY_WINDOW_YEARS} years), not risk scores."
                 ],
                 "methodology": _PROXY_METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,

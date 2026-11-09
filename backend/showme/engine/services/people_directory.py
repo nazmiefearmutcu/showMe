@@ -116,13 +116,19 @@ def add_role(
         return cur.lastrowid
 
 
+def _like_escape(text: str) -> str:
+    """Escape LIKE wildcards so user input is matched as literal text."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def search(query: str, *, limit: int = 25) -> list[dict[str, Any]]:
     with _LOCK, _connect() as conn:
         _ensure_schema(conn)
-        like = f"%{query}%"
+        like = f"%{_like_escape(str(query or ''))}%"
         rows = conn.execute(
             "SELECT * FROM people "
-            "WHERE full_name LIKE ? OR company LIKE ? OR role LIKE ? OR bio LIKE ? "
+            "WHERE full_name LIKE ? ESCAPE '\\' OR company LIKE ? ESCAPE '\\' "
+            "OR role LIKE ? ESCAPE '\\' OR bio LIKE ? ESCAPE '\\' "
             "ORDER BY ingested_at DESC LIMIT ?",
             (like, like, like, like, limit),
         ).fetchall()

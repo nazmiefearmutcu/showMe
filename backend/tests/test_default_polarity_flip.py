@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -101,11 +101,12 @@ def test_chgs_default_defers_to_live_tech():
 def test_tra_default_is_live_and_failure_is_labelled():
     from showme.engine.functions.portfolio._more import TRAFunction
     result = _run(TRAFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.sources == ["total_return_model"]
-    assert result.metadata.get("fallback") is True
+    # Data policy: no template fallback any more; a failed feed is an explicit
+    # provider_unavailable with no sources and no figures.
+    assert result.sources == []
+    assert result.data["status"] == "provider_unavailable"
     assert result.metadata.get("live") is False
-    assert result.warnings, "template fallback must carry an explicit warning"
-    assert "template" in " ".join(result.warnings).lower()
+    assert result.warnings, "the failure must carry an explicit warning"
 
 
 def test_mars_default_is_live_and_failure_is_labelled():
@@ -115,15 +116,6 @@ def test_mars_default_is_live_and_failure_is_labelled():
     assert result.metadata.get("fallback") is True
     assert result.metadata.get("live") is False
     assert result.warnings
-
-
-def test_evts_default_is_live_attempt():
-    from showme.engine.functions.news.evts import EVTSFunction
-    result = _run(EVTSFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.data["status"] == "empty"
-    assert result.data["rows"] == []
-    assert result.metadata.get("live") is False
-    assert result.metadata.get("fallback") is True
 
 
 def test_ee_default_failure_is_labelled_placeholder():
@@ -136,10 +128,14 @@ def test_ee_default_failure_is_labelled_placeholder():
     assert rows and rows[0]["source_mode"] == "earnings_calendar_unavailable"
 
 
-def test_litm_default_failure_is_labelled():
+def test_litm_default_failure_is_provider_unavailable():
+    # The default live path reads Awareness through CACT; with Awareness down it is an honest
+    # provider_unavailable (never the labelled model, never a silent empty).
     from showme.engine.functions.misc._bonus import LITMFunction
     result = _run(LITMFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.sources == ["litigation_monitor_model"]
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["reason"]
+    assert result.sources == ["no_live_source"]
     assert result.metadata.get("fallback") is True
     assert result.metadata.get("live") is False
     assert result.warnings
@@ -148,7 +144,8 @@ def test_litm_default_failure_is_labelled():
 def test_appl_default_failure_is_labelled():
     from showme.engine.functions.misc._bonus import APPLFunction
     result = _run(APPLFunction(FunctionDeps()).execute(instrument=EQ))
-    assert result.sources == ["taxonomy_model"]
+    # AAPL's template carries bundled crosswalk rows, so the static source is named (APPL#4).
+    assert result.sources == ["taxonomy_model", "taxonomy_crosswalk_static"]
     assert result.metadata.get("fallback") is True
     assert result.metadata.get("live") is False
     assert result.warnings
@@ -170,39 +167,9 @@ def test_fly_default_failure_is_honest():
     assert result.metadata.get("fallback") is True
 
 
-def test_eco_default_failure_is_honest_empty_error():
-    from showme.engine.functions.macro import eco as _eco_mod
-    from showme.engine.functions.macro.eco import ECOFunction
-    # The ForexFactory leg caches at module scope (30-min TTL); a full-suite
-    # run can populate it before this test, which would bypass the boom
-    # client entirely. Reset so the failure path is what's under test.
-    _eco_mod._ff_cache["fetched_at"] = 0.0
-    _eco_mod._ff_cache["rows"] = []
-    fn = ECOFunction(FunctionDeps())
-    fn._http_client = _BoomClient()
-    result = _run(fn.execute(days=30))
-    assert result.data["status"] == "provider_unavailable"
-    assert result.data["rows"] == []
-    assert result.warnings
-
-
 # ────────────────────────────────────────────────────────────────────────
 # 2. reference=true opts back into the labelled template.
 # ────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "code",
-    ["MOSS", "CHGS", "TRA", "MARS", "EVTS", "EE", "LITM", "APPL", "FTS", "FLY"],
-)
-def test_reference_true_never_claims_live(code: str):
-    result = _run(_execute_reference(code))
-    metadata = result.metadata or {}
-    assert metadata.get("live") is not True, f"{code}: reference=true must not claim live"
-    data_mode = str(metadata.get("data_mode") or (result.data or {}).get("data_mode") or "")
-    assert data_mode in {"modeled", "reference", "empty"}, (
-        f"{code}: reference payload data_mode {data_mode!r} is off-vocabulary"
-    )
 
 
 def _execute_reference(code: str):
@@ -270,18 +237,6 @@ def test_mars_default_live_with_mocked_provider():
     assert result.data["factor_loadings"]
 
 
-def test_evts_default_live_with_mocked_provider():
-    from showme.engine.functions.news.evts import EVTSFunction
-    today = datetime.now(timezone.utc).date()
-    events = {"calendar": {"Next Earnings Date": today + timedelta(days=30)}}
-    fn = EVTSFunction(FunctionDeps(yfinance=_FakeYfinance(events)))
-    result = _run(fn.execute(instrument=EQ))
-    assert result.data["status"] == "ok"
-    assert result.data["rows"]
-    assert result.metadata.get("live") is True
-    assert result.sources == ["yfinance"]
-
-
 def test_ee_default_live_with_mocked_provider():
     from showme.engine.functions.equity.ee import EEFunction
 
@@ -326,7 +281,8 @@ def test_appl_default_live_with_mocked_provider():
     fn = APPLFunction(FunctionDeps(yfinance=_FakeYfinance(refdata)))
     result = _run(fn.execute(instrument=EQ))
     assert result.metadata.get("live") is True
-    assert result.sources == ["yfinance"]
+    # AAPL has a bundled GICS crosswalk, so the static source is named (APPL#4).
+    assert result.sources == ["yfinance", "taxonomy_crosswalk_static"]
     assert result.data["status"] == "ok"
     assert result.data["sector"] == "Technology"
 
@@ -386,16 +342,29 @@ def test_litm_default_live_with_mocked_cact():
                     "filing_date": "2026-08-01", "accession": "0001",
                     "document": "https://sec.gov/x",
                 }]},
-                sources=["sec_edgar"],
+                sources=["awareness:filings"],
             )
 
     import showme.engine.functions.equity.cact as cact_mod
     original = cact_mod.CACTFunction
     cact_mod.CACTFunction = _FakeCACT
     try:
-        result = _run(LITMFunction(FunctionDeps(sec_edgar=object())).execute(instrument=EQ))
+        result = _run(LITMFunction(FunctionDeps()).execute(instrument=EQ))
     finally:
         cact_mod.CACTFunction = original
     assert result.data["status"] == "ok"
     assert result.data["rows"][0]["item_code"] == "1.03"
-    assert "sec_edgar" in result.sources
+    assert result.sources == ["awareness:filings"]
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

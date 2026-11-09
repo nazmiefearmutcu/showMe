@@ -167,6 +167,45 @@ describe("FLDS pane — interactions", () => {
   });
 });
 
+describe("FLDS pane — mnemonic and unit (FLDS#2)", () => {
+  it("shows each row's mnemonic alias and the unit of its value", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          rows: [
+            {
+              field: "price",
+              mnemonic: "PX_LAST",
+              category: "market",
+              description: "Last traded price",
+              unit: "currency",
+              example: "BQL get(close, volume) for(['AAPL']) by(date)",
+            },
+            {
+              field: "ytm",
+              mnemonic: "YTM",
+              category: "fixed_income",
+              description: "Yield-to-maturity",
+              unit: "percent (%)",
+              example: "SRCH query: ytm >= 4 AND duration <= 10",
+            },
+          ],
+          summary: { query: "all", matched: 2, shown: 2, catalog_fields: 49 },
+          methodology: "FLDS searches the local ShowMe field catalog.",
+        },
+      },
+    });
+    const { container } = render(<FLDSPane code="FLDS" />);
+    const grid = container.querySelector('[aria-label="FLDS field catalog"]');
+    expect(grid?.textContent).toContain("PX_LAST");
+    expect(grid?.textContent).toContain("percent (%)");
+    expect(screen.getByRole("columnheader", { name: /Mnemonic/i })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /Unit/i })).toBeInTheDocument();
+  });
+});
+
 describe("FLDS pane — grid upgrade (L7)", () => {
   it("filters returned rows client-side by description text", () => {
     setMockFn({ state: "ok", ...okPayload() });

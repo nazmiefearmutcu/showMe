@@ -79,7 +79,9 @@ def test_srch_live_refreshes_full_configured_tenor_set(monkeypatch) -> None:
     assert result.data["status"] == "ok"
     assert len(rows) == 25
     live = [row for row in rows.values() if row.get("quote_type") == "live"]
-    assert len(live) == len(series) == 19
+    # SRCH#3: the six monthly OECD 10Y observations are dated, not live.
+    assert len(live) == 13
+    assert len(series) == 19
     assert rows["US10Y"]["yield"] == pytest.approx(
         4.0 + list(series.values()).index("DGS10") / 100
     )
@@ -87,7 +89,7 @@ def test_srch_live_refreshes_full_configured_tenor_set(monkeypatch) -> None:
     assert rows["US10Y"]["yield_source"] == "fred_csv"
     assert rows["US10Y"]["yield_cadence"] == "daily"
     assert rows["USTIPS10Y"]["quote_type"] == "live"
-    assert rows["DE10Y"]["quote_type"] == "live"
+    assert rows["DE10Y"]["quote_type"] == "monthly"
     assert rows["DE10Y"]["yield_as_of"] == "2026-09-14"
     assert rows["DE10Y"]["yield_cadence"] == "monthly"
     # Foreign 2Y tenors have no keyless provider: explicit unavailable
@@ -98,7 +100,8 @@ def test_srch_live_refreshes_full_configured_tenor_set(monkeypatch) -> None:
         assert rows[symbol]["yield"] > 0, symbol
     assert "fred_csv" in result.sources
     assert "showme_bond_reference_universe" in result.sources
-    assert result.metadata["live_rows"] == 19
+    assert result.metadata["live_rows"] == 13
+    assert result.metadata["monthly_rows"] == 6
     assert result.metadata["unavailable_rows"] == 6
 
 
@@ -113,6 +116,7 @@ def test_srch_partial_coverage_keeps_unavailable_markers(monkeypatch) -> None:
         return {
             "last": 3.96,
             "source": "yahoo_chart",
+            "as_of": "2026-09-15T20:59:00+00:00",  # provider observation, same day as retrieval
             "fetched_at": "2026-09-15T21:00:00+00:00",
         }
 
@@ -129,7 +133,9 @@ def test_srch_partial_coverage_keeps_unavailable_markers(monkeypatch) -> None:
     # The Yahoo tier fills the CBOE-mapped tenors FRED could not answer.
     assert rows["US3M"]["quote_type"] == "live"
     assert rows["US3M"]["yield"] == pytest.approx(3.96)
-    assert rows["US3M"]["yield_source"] == "yahoo_quote"
+    # The row names the provider that actually answered (the snapshot's source), not a
+    # fixed label: the mock answered from yahoo_chart.
+    assert rows["US3M"]["yield_source"] == "yahoo_chart"
     assert rows["US3M"]["yield_cadence"] == "intraday"
     # Unresolved configured tenors keep their curated rows, labelled.
     assert rows["US2Y"]["quote_type"] == "unavailable"
@@ -137,7 +143,8 @@ def test_srch_partial_coverage_keeps_unavailable_markers(monkeypatch) -> None:
     for symbol in FOREIGN_2Y:
         assert rows[symbol]["quote_type"] == "unavailable", symbol
     assert any("no provider answer" in warning.lower() for warning in result.warnings)
-    assert {"fred_csv", "yahoo_quote"} <= set(result.sources)
+    assert {"fred_csv", "yahoo_chart"} <= set(result.sources)
+    assert "yahoo_quote" not in result.sources
 
 
 def test_srch_total_provider_failure_is_honest(monkeypatch) -> None:

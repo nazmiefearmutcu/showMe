@@ -61,6 +61,7 @@ def btune() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Strategy spec being tuned.",
+                options=["sma_crossover", "rsi_meanrev"],
             ),
             InputSpec(
                 name="symbol",
@@ -104,7 +105,7 @@ def btune() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Metric to rank parameter sets by.",
-                options=["sharpe", "cagr", "calmar", "sortino", "profit_factor"],
+                options=["sharpe", "cagr", "calmar", "sortino"],
             ),
             InputSpec(
                 name="train_pct",
@@ -122,7 +123,7 @@ def btune() -> FunctionManifest:
                 control=ControlKind.SELECT,
                 required=True,
                 description="Bar size.",
-                options=["5m", "15m", "1h", "4h", "1d", "1wk"],
+                options=["1d"],
             ),
             InputSpec(
                 name="top_n",
@@ -133,6 +134,27 @@ def btune() -> FunctionManifest:
                 min=1,
                 max=100,
                 step=1,
+            ),
+            InputSpec(
+                name="fee_bps",
+                label="Commission (bps)",
+                control=ControlKind.NUMBER,
+                required=False,
+                description="Per-trade commission in basis points applied to every backtest slice.",
+                min=0,
+                max=500,
+                step=1,
+                unit="bps",
+            ),
+            InputSpec(
+                name="live_backtest",
+                label="Run live backtest",
+                control=ControlKind.BOOLEAN,
+                required=False,
+                description=(
+                    "When true the sweep runs on daily OHLCV history from yfinance. "
+                    "When false no metrics are computed and the planned grid is listed only."
+                ),
             ),
             InputSpec(
                 name="paper_mode",
@@ -146,15 +168,18 @@ def btune() -> FunctionManifest:
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred data mode for OHLCV.",
+                description=(
+                    "Accepted for compatibility only: the handler always fetches daily OHLCV "
+                    "from yfinance and does not read this input."
+                ),
                 options=[
                     DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
         ],
         defaults={
             "search_mode": "grid",
+            "live_backtest": False,
             "n_samples": 200,
             "metric": "sharpe",
             "train_pct": 0.7,
@@ -164,12 +189,10 @@ def btune() -> FunctionManifest:
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["yfinance", "binance", "cached_snapshot"],
+            primary="yfinance",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.DELAYED_REFERENCE,
-                DataMode.MODELED,
-                DataMode.CACHED_SNAPSHOT,
             ],
         ),
         caching=CachingPolicy(ttl_seconds=3600, scope="per_input", persist=True),
@@ -182,7 +205,6 @@ def btune() -> FunctionManifest:
                 "top_n_results",
                 "full_results",
                 "overfit_warning",
-                "data_mode",
             ],
             rows=True,
             series=False,
@@ -206,8 +228,8 @@ def btune() -> FunctionManifest:
                 ColumnSpec(key="metric_oos", label="OOS metric", kind="number", format="%.3f"),
                 ColumnSpec(key="overfit_gap", label="Gap", kind="number", format="%.3f"),
                 ColumnSpec(key="sharpe", label="Sharpe", kind="number", format="%.2f"),
-                ColumnSpec(key="cagr", label="CAGR", kind="percent", unit="%", format="%.2f"),
-                ColumnSpec(key="max_drawdown", label="Max DD", kind="percent", unit="%", format="%.2f"),
+                ColumnSpec(key="cagr", label="CAGR (fraction)", kind="number", format="%.4f"),
+                ColumnSpec(key="max_drawdown", label="Max DD (fraction)", kind="number", format="%.4f"),
             ],
             sortable=True,
             filterable=True,
@@ -231,12 +253,14 @@ def btune() -> FunctionManifest:
             "the train slice (the strategy may be entirely deterministic, "
             "in which case 'fit' is a no-op), evaluate signals on both "
             "slices, and record metric_in_sample + metric_oos. Best_params "
-            "is ranked by metric_oos to discourage overfit selection. "
+            "is the set with the highest metric_in_sample (train slice); the "
+            "test slice is not used to choose parameters. best_metric_oos is "
+            "that chosen set's own metric_oos. "
             "overfit_gap = metric_in_sample − metric_oos; "
             "overfit_warning is raised when the median gap across the "
             "top-N exceeds a domain-specific threshold (e.g. ΔSharpe > 1.0). "
-            "Search is fully parallelizable; the handler caps concurrency "
-            "to keep the sidecar responsive."
+            "The sweep runs sequentially in-process with no concurrency cap; the 9 s request "
+            "timeout applies only at await points and cannot interrupt the synchronous sweep."
         ),
         formula_dict={
             "GridSize": Formula(
@@ -254,8 +278,9 @@ def btune() -> FunctionManifest:
             ),
         },
         field_dict={
-            "best_params": FieldDef(description="Parameter set with the best OOS metric.", source="computed"),
-            "top_n_results[]": FieldDef(description="Top-N ranked by OOS metric.", source="computed"),
+            "best_params": FieldDef(description="Parameter set with the best in-sample (train) metric.", source="computed"),
+            "best_metric_oos": FieldDef(description="Test-slice metric of best_params; not used for selection.", source="computed"),
+            "top_n_results[]": FieldDef(description="Top-N ranked by the in-sample (train-slice) metric; metric_oos is shown per row but does not rank.", source="computed"),
             "full_results[]": FieldDef(description="Complete grid eval — large; usually paginated.", source="computed"),
             "overfit_warning": FieldDef(description="True when median IS-OOS gap exceeds threshold.", source="computed"),
         },
@@ -273,16 +298,19 @@ def btune() -> FunctionManifest:
                 assertions=["defaults.paper_mode == True"],
             ),
             SemanticTest(
-                name="btune_best_params_picked_on_oos_not_in_sample",
-                description="best_params is the row with highest metric_oos, not metric_in_sample.",
+                name="btune_best_params_picked_on_train_not_test",
+                description="best_params is the row with highest metric_in_sample; best_metric_oos is that row's own metric_oos.",
                 inputs={},
-                assertions=["best_params row.metric_oos == max(top_n_results.metric_oos)"],
+                assertions=[
+                    "best_params row.metric_in_sample == max(full_results.metric_in_sample)",
+                    "best_metric_oos == best_params row.metric_oos",
+                ],
             ),
             SemanticTest(
                 name="btune_full_grid_size_equals_product_of_values",
-                description="In grid mode, full_results length equals Cartesian product size.",
+                description="In grid mode, full_results plus combos_skipped equals the Cartesian product size.",
                 inputs={"search_mode": "grid"},
-                assertions=["len(full_results) == prod(len(v) for v in param_grid.values())"],
+                assertions=["len(full_results) + combos_skipped == prod(len(v) for v in param_grid.values())"],
             ),
             SemanticTest(
                 name="btune_overfit_warning_when_gap_high",

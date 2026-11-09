@@ -111,14 +111,17 @@ function needsInputPayload() {
         g_high: 0.1,
         g_terminal: 0.025,
         years: 5,
-        starting_fcfe: 0,
-        pv_explicit: 0,
-        pv_terminal: 0,
-        equity_value: 0,
+        starting_fcfe: null,
+        pv_explicit: null,
+        pv_terminal: null,
+        equity_value: null,
         fair_value_per_share: null,
         shares_outstanding: null,
-        rows: CASHFLOWS.map((r) => ({ ...r, fcfe: 0, pv: 0 })),
-        bridge: BRIDGE.map((r) => ({ ...r, value: 0 })),
+        fcfe_source: "missing",
+        shares_source: "missing",
+        reason: "Provider free cash flow is unavailable for this instrument; pass fcfe to run the model.",
+        rows: [],
+        bridge: [],
         methodology: "Two-stage FCFE DCF.",
       },
       warnings: [
@@ -213,13 +216,26 @@ describe("DCF pane — headline + tables", () => {
 });
 
 describe("DCF pane — honest model states", () => {
-  it("surfaces the needs_input notice without hiding the tables", () => {
+  it("surfaces needs_input with the override inputs and no placeholder values", () => {
     setMockFn({ state: "ok", ...needsInputPayload() });
     render(<DCFPane code="DCF" symbol="AAPL" />);
     expect(screen.getByText(/Needs input/i)).toBeInTheDocument();
     expect(screen.getByText(/override FCFE or shares/i)).toBeInTheDocument();
-    // The (zeroed) tables still render — nothing is faked to look positive.
-    expect(screen.getAllByText("$0").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/No valuation without FCFE/i)).toBeInTheDocument();
+    // The override inputs stay visible so the user can supply FCFE.
+    expect(screen.getByLabelText("FCFE base in millions")).toBeInTheDocument();
+    // Nothing is shown as a zeroed valuation.
+    expect(screen.queryByText("$0")).toBeNull();
+    expect(screen.queryByText(/discounted FCFE forecast/i)).toBeNull();
+  });
+
+  it("labels a caller override as a manual override", () => {
+    const payload = okPayload();
+    (payload.data.data as Record<string, unknown>).fcfe_source = "user_override";
+    (payload.data.data as Record<string, unknown>).shares_source = "yfinance";
+    setMockFn({ state: "ok", ...payload });
+    render(<DCFPane code="DCF" symbol="AAPL" />);
+    expect(screen.getAllByText(/Manual override/i).length).toBeGreaterThan(0);
   });
 
   it("surfaces the wacc ≤ g_terminal model error", () => {
@@ -233,17 +249,19 @@ describe("DCF pane — honest model states", () => {
 });
 
 describe("DCF pane — model inputs", () => {
-  it("sends default inputs converted to backend units", () => {
+  it("sends no FCFE or shares by default so the provider supplies them", () => {
     setMockFn({ state: "ok", ...okPayload() });
     render(<DCFPane code="DCF" symbol="AAPL" />);
+    // Defaults mirror the manifest (DCF#4): 8% stage-1 growth, 2.5% terminal, 10y.
     expect(lastParams).toMatchObject({
-      fcfe: 10e9,
-      shares_outstanding: 15e9,
-      growth_high: 0.1,
+      growth_high: 0.08,
       growth_terminal: 0.025,
-      wacc: 0.08,
-      years: 5,
+      years: 10,
     });
+    expect(lastParams).not.toHaveProperty("fcfe");
+    expect(lastParams).not.toHaveProperty("shares_outstanding");
+    // review of DCF#1: no silent 8% WACC - the backend WACC model decides
+    expect(lastParams).not.toHaveProperty("wacc");
   });
 
   it("drives fcfe from the $M input and persists it", () => {
@@ -253,7 +271,7 @@ describe("DCF pane — model inputs", () => {
       target: { value: "12000" },
     });
     expect(lastParams?.fcfe).toBe(12e9);
-    expect(localStorage.getItem("showme.dcf.fcfe")).toBe("12000");
+    expect(localStorage.getItem("showme.dcf.fcfe_override")).toBe("12000");
   });
 
   it("converts WACC percent to a decimal and persists it", () => {
@@ -263,7 +281,14 @@ describe("DCF pane — model inputs", () => {
       target: { value: "9" },
     });
     expect(lastParams?.wacc).toBe(0.09);
-    expect(localStorage.getItem("showme.dcf.wacc")).toBe("9");
+    expect(localStorage.getItem("showme.dcf.wacc_override_pct")).toBe("9");
+  });
+
+  it("sends no WACC by default so the backend WACC model is used (review of DCF#1)", () => {
+    localStorage.setItem("showme.dcf.wacc", "8"); // a legacy persisted default must not come back
+    setMockFn({ state: "ok", ...okPayload() });
+    render(<DCFPane code="DCF" symbol="AAPL" />);
+    expect(lastParams).not.toHaveProperty("wacc");
   });
 
   it("switches the forecast horizon via the segmented control", () => {
@@ -271,7 +296,7 @@ describe("DCF pane — model inputs", () => {
     render(<DCFPane code="DCF" symbol="AAPL" />);
     fireEvent.click(screen.getByText("7y"));
     expect(lastParams?.years).toBe(7);
-    expect(localStorage.getItem("showme.dcf.years")).toBe("7");
+    expect(localStorage.getItem("showme.dcf.projection_years")).toBe("7");
   });
 });
 

@@ -146,7 +146,7 @@ def dcfs() -> FunctionManifest:
                 ColumnSpec(key="input", label="Input", kind="text"),
                 ColumnSpec(key="low_value", label="−20% value", kind="number", format="%.2f"),
                 ColumnSpec(key="high_value", label="+20% value", kind="number", format="%.2f"),
-                ColumnSpec(key="delta_pct", label="Delta %", kind="percent", format="%.2f"),
+                ColumnSpec(key="delta", label="Spread (USD / share)", kind="number", format="%.2f"),
             ],
             sortable=True,
             filterable=False,
@@ -188,7 +188,7 @@ def dcfs() -> FunctionManifest:
             "grid_min": FieldDef(unit="quote_ccy", description="Minimum IV in the grid.", source="computed"),
             "grid_max": FieldDef(unit="quote_ccy", description="Maximum IV in the grid.", source="computed"),
             "most_sensitive_input": FieldDef(description="Top of the tornado ranking.", source="computed"),
-            "assumptions": FieldDef(description="Echoed inputs (center rates + grid width).", source="input"),
+            "assumptions": FieldDef(description="Echoed base inputs (wacc, g_terminal, g_high, years, starting_fcfe, shares_outstanding, override flags).", source="input"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
@@ -209,12 +209,12 @@ def dcfs() -> FunctionManifest:
             ),
             SemanticTest(
                 name="dcfs_assumptions_visible_in_output",
-                description="The output echoes the centre + grid-width inputs so the consumer can audit.",
-                inputs={"symbol": "AAPL", "discount_rate": 0.10, "terminal_growth": 0.02, "grid_width": 3},
+                description="The output echoes the base wacc and years inputs so the consumer can audit.",
+                inputs={"symbol": "AAPL", "wacc": 0.10, "years": 5},
                 assertions=[
                     "assumptions_visible_in_output",
-                    "assumptions_discount_rate_equals_input",
-                    "assumptions_grid_width_equals_input",
+                    "assumptions_wacc_equals_input",
+                    "assumptions_years_equals_input",
                 ],
             ),
             SemanticTest(

@@ -170,6 +170,31 @@ describe("RV pane — comp table", () => {
   });
 });
 
+describe("RV pane — dividend yield units (RV#1)", () => {
+  it("shows the backend fraction as a percent without a 100x magnitude guess", () => {
+    // Backend returns fractions: AAPL 0.32% = 0.0032, MSFT 0.74% = 0.0074.
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          rows: [
+            { ...okRow("AAPL", 30.5, true), div_yield: 0.0032 },
+            { ...okRow("MSFT", 25.0, false), div_yield: 0.0074 },
+          ],
+          peers: ["MSFT"],
+          methodology: "RV compares the target against a peer set.",
+        },
+      },
+    });
+    const { container } = render(<RVPane code="RV" symbol="AAPL" />);
+    expect(container.textContent).toContain("0.32%");
+    expect(container.textContent).toContain("0.74%");
+    expect(container.textContent).not.toContain("32.0%");
+    expect(container.textContent).not.toContain("74.0%");
+  });
+});
+
 describe("RV pane — interaction", () => {
   it("triggers a refetch when the refresh button is clicked", () => {
     const refetch = vi.fn();

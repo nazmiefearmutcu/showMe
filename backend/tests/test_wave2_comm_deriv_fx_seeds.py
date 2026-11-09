@@ -13,7 +13,7 @@ correct ``Category`` per code, and the per-code spec exemplars:
   * WCRS  → chart_grammar.kind == HEATMAP (NOT row-index)
   * OSA / OVME → chart_grammar.kind == PAYOFF
   * GLCO  → chart_grammar.kind == BAR_LADDER
-  * CPF   → chart_grammar.kind == TIME_SERIES_LINE, primary == fred
+  * CPF   → chart_grammar.kind == TIME_SERIES_LINE, primary == yfinance (futures proxy)
   * BGAS / BOIL / NGAS → futures unit + expiry_month in output_contract
   * WETR  → declares the ``explicit_provider_unavailable_when_no_weather_key`` semantic test
   * FRD   → formula_dict contains the CIP formula
@@ -208,11 +208,15 @@ def test_cpf_chart_is_time_series_line() -> None:
     )
 
 
-def test_cpf_primary_provider_is_fred() -> None:
-    """CPF is a FRED commodity forecast series — primary provider must be fred."""
+def test_cpf_primary_provider_is_yahoo_futures_proxy() -> None:
+    """CPF serves a Yahoo futures proxy (no FRED fetch) — primary must be yfinance.
+
+    wb1-g01 (CPF#3): this previously pinned 'fred', a provider the handler never
+    calls, which made the manifest claim data it did not serve.
+    """
     cpf = REGISTRY.get("CPF")
-    assert cpf.provider_chain.primary == "fred", (
-        f"CPF primary provider must be 'fred'; got {cpf.provider_chain.primary!r}"
+    assert cpf.provider_chain.primary == "yfinance", (
+        f"CPF primary provider must be 'yfinance'; got {cpf.provider_chain.primary!r}"
     )
 
 

@@ -44,9 +44,7 @@ vi.mock("@/lib/market-data", () => ({
 }));
 
 vi.mock("@/lib/watchlist", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/watchlist")>(
-    "@/lib/watchlist",
-  );
+  const actual = await vi.importActual<typeof import("@/lib/watchlist")>("@/lib/watchlist");
   return actual;
 });
 
@@ -66,9 +64,8 @@ beforeEach(() => {
     ],
   });
   useSentimentStore.setState({
-    score: 0,
-    label: "Neutral",
-    mentions: 0,
+    gauge: null,
+    unavailableReason: null,
     loading: false,
     error: null,
     lastUpdated: null,
@@ -103,21 +100,30 @@ describe("A2. BRIEF live wiring", () => {
     });
   });
 
-  it("shows the demo banner when BRIEF has no live articles", async () => {
+  it("says an answered empty brief is empty, with no demo headlines and no retry", async () => {
     briefPayload = { data: { status: "empty", articles: [] } };
-    // A brief retry is scheduled first (loading skeleton); once it fires
-    // with still no live data, the honest demo banner settles in.
     vi.useFakeTimers();
     try {
-      const { getByTestId } = render(<Welcome />);
+      const { getByTestId, queryByText } = render(<Welcome />);
       await act(async () => {
         vi.advanceTimersByTime(8000);
       });
-      const banner = getByTestId("brief-demo-banner");
-      expect(banner.textContent).toMatch(/Demo data/i);
+      const block = getByTestId("brief-empty");
+      expect(block.textContent).toMatch(/No standard-quality headline/i);
+      // The brief panel itself carries no demo badge or illustrative headline.
+      const panel = block.closest(".terminal-panel--brief");
+      expect(panel?.textContent ?? "").not.toMatch(/Demo data/i);
+      expect(queryByText(/NVDA breaking/i)).toBeNull();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("asks for positions or a watchlist when BRIEF needs input", async () => {
+    briefPayload = { data: { status: "needs_input", articles: [] } };
+    const { findByTestId } = render(<Welcome />);
+    const block = await findByTestId("brief-needs-input");
+    expect(block.textContent).toMatch(/Add positions in PORT or save a\s+watchlist/i);
   });
 
   it("hides the demo banner and renders live ribbons when articles arrive", async () => {
@@ -145,10 +151,40 @@ describe("A2. BRIEF live wiring", () => {
     const { queryByTestId, findByText } = render(<Welcome />);
     // A real headline renders.
     await findByText(/Fed holds rates steady/i);
-    // The demo banner is gone.
-    expect(queryByTestId("brief-demo-banner")).toBeNull();
+    // No state block while live lines exist.
+    expect(queryByTestId("brief-unavailable")).toBeNull();
     // The live indicator is present.
     expect(queryByTestId("brief-live-banner")).not.toBeNull();
+  });
+
+  it("names the publisher on every live brief line and links the article safely", async () => {
+    briefPayload = {
+      data: {
+        status: "ok",
+        articles: [
+          {
+            title: "Apple saves $2.7bn in taxes",
+            url: "https://www.ft.com/content/apple",
+            publisher: "Financial Times",
+            matched_symbol: "AAPL",
+            section: "watchlist",
+          },
+          {
+            title: "Unsafe link stays plain text",
+            url: "javascript:alert(1)",
+            publisher: "Example",
+            matched_symbol: "MACRO",
+            section: "top_stories",
+          },
+        ],
+      },
+    };
+    const { findByText, getByText } = render(<Welcome />);
+    const link = (await findByText(/Apple saves/i)).closest("a");
+    expect(link?.getAttribute("href")).toBe("https://www.ft.com/content/apple");
+    expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(getByText("Financial Times")).toBeInTheDocument();
+    expect(getByText(/Unsafe link stays plain text/i).closest("a")).toBeNull();
   });
 });
 
@@ -158,8 +194,8 @@ describe("B3. aria-labels on interactive elements", () => {
     const btc = await findByTestId("kpi-tile-BTC");
     expect(btc.getAttribute("aria-label")).toMatch(/bitcoin/i);
     // A quick-function button exposes its code.
-    const quick = Array.from(container.querySelectorAll(".terminal-command")).find(
-      (b) => b.textContent?.includes("OMON"),
+    const quick = Array.from(container.querySelectorAll(".terminal-command")).find((b) =>
+      b.textContent?.includes("OMON"),
     );
     expect(quick?.getAttribute("aria-label")).toMatch(/OMON/);
     // A mover row exposes its symbol.
@@ -241,13 +277,9 @@ describe("Movers data honesty", () => {
   it("demo mover rows render the missing sentinel for change, not a fake tick", async () => {
     const { container } = render(<Welcome />);
     await waitFor(() => {
-      expect(
-        container.querySelector("[data-testid^='mover-row-']"),
-      ).not.toBeNull();
+      expect(container.querySelector("[data-testid^='mover-row-']")).not.toBeNull();
     });
-    const demoRow = container.querySelector(
-      "[data-testid^='mover-row-'][data-demo='1']",
-    );
+    const demoRow = container.querySelector("[data-testid^='mover-row-'][data-demo='1']");
     expect(demoRow).not.toBeNull();
     // The change cell must not show a fabricated "+0.01%/-0.01%".
     expect(demoRow!.textContent).not.toMatch(/0\.01%/);

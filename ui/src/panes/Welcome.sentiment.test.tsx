@@ -1,15 +1,19 @@
 /**
- * Faz 5 — sentiment panel binding.
+ * Market mood card on the Welcome dashboard.
  *
- * Pins the contract that the Welcome dashboard's sentiment gauge consumes
- * `useSentimentStore` instead of literal "Cautiously Bullish" / "+32%" /
- * static `rotate(-58deg)` styling.
+ * The card renders the CNN Fear & Greed reading held by `useSentimentStore`
+ * (fed by `/api/sentiment/market-gauge`). Pins:
+ *  - no number is ever shown without an accepted reading;
+ *  - ok:false shows the backend reason and no score;
+ *  - a transport error offers Retry;
+ *  - the reading shows the score, rating, change vs previous close and as-of.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
-import { Welcome, sentimentNeedleAngle, formatSentimentPct } from "./Welcome";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import { Welcome } from "./Welcome";
 import { useAppStore } from "@/lib/store";
 import { useSentimentStore } from "@/lib/sentiment-store";
+import { formatUtcStamp } from "@/functions/awareness/FearGreedGauge";
 
 // Welcome's useFunction calls would otherwise try to hit the sidecar in jsdom;
 // stub them. Returning `idle` keeps the loading/skeleton paths benign.
@@ -17,15 +21,36 @@ vi.mock("@/lib/useFunction", () => ({
   useFunction: () => ({ state: "idle", data: null, error: null, refetch: () => {} }),
 }));
 
-// Stub the sentiment refresh action so we can verify it's called and so the
-// real fan-out doesn't escape jsdom.
 const refreshSpy = vi.fn();
+
+function freshAsOf(): string {
+  // Two hours ago: well inside the 36 h staleness window.
+  return new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+}
+
+function reading(
+  overrides: Partial<
+    NonNullable<ReturnType<typeof useSentimentStore.getState>["gauge"]>
+  > = {},
+) {
+  return {
+    score: 22.4,
+    rating: "Extreme Fear",
+    as_of: "2026-11-06T23:59:00Z",
+    previous_close: 24.6,
+    source: "CNN Fear & Greed via Awareness",
+    stale: false,
+    providerStatus: null,
+    cryptoScore: null,
+    cryptoRating: null,
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   cleanup();
   localStorage.clear();
-  // Force "booting" so the auto-refresh effect bails (status guard) and our
-  // tests fully control what's in the store.
+  // Force "booting" so the auto-refresh effect bails and tests control the store.
   useAppStore.setState({
     sidecarStatus: "booting",
     sidecarPort: null,
@@ -33,9 +58,8 @@ beforeEach(() => {
     functionIndex: [],
   });
   useSentimentStore.setState({
-    score: 0,
-    label: "Neutral",
-    mentions: 0,
+    gauge: null,
+    unavailableReason: null,
     loading: false,
     error: null,
     lastUpdated: null,
@@ -45,198 +69,174 @@ beforeEach(() => {
   refreshSpy.mockReset();
 });
 
-describe("Welcome sentiment panel — pure helpers", () => {
-  it("sentimentNeedleAngle maps [-1,+1] to [-90deg,+90deg]", () => {
-    expect(sentimentNeedleAngle(-1)).toBe(-90);
-    expect(sentimentNeedleAngle(0)).toBe(0);
-    expect(sentimentNeedleAngle(1)).toBe(90);
-    // mid-band sanity
-    expect(sentimentNeedleAngle(0.5)).toBeCloseTo(45, 5);
-    expect(sentimentNeedleAngle(-0.5)).toBeCloseTo(-45, 5);
+describe("Market mood card — states", () => {
+  it("first mount (no reading, loading) shows Loading and no score", () => {
+    useSentimentStore.setState({ loading: true });
+    const { getByTestId, queryByTestId } = render(<Welcome />);
+    expect(getByTestId("sentiment-label").textContent).toBe("Loading…");
+    expect(queryByTestId("sentiment-score")).toBeNull();
+    expect(queryByTestId("sentiment-gauge")).toBeNull();
   });
 
-  it("sentimentNeedleAngle clamps out-of-range input", () => {
-    expect(sentimentNeedleAngle(2)).toBe(90);
-    expect(sentimentNeedleAngle(-2)).toBe(-90);
+  it("backend ok:false shows the reason verbatim and renders no number", () => {
+    useSentimentStore.setState({
+      unavailableReason: "awareness-markets is not running",
+      gauge: null,
+    });
+    const { getByTestId, queryByTestId, container } = render(<Welcome />);
+    expect(getByTestId("sentiment-label").textContent).toBe("Market mood unavailable");
+    expect(getByTestId("sentiment-reason").textContent).toBe(
+      "awareness-markets is not running",
+    );
+    expect(queryByTestId("sentiment-score")).toBeNull();
+    expect(queryByTestId("sentiment-gauge")).toBeNull();
+    expect(container.querySelector('[data-testid="market-mood"]')?.textContent).not.toMatch(
+      /\b\d{2}\b/,
+    );
   });
 
-  it("formatSentimentPct adds + prefix for positive, plain for negative/zero", () => {
-    expect(formatSentimentPct(0.33)).toBe("+33%");
-    expect(formatSentimentPct(0)).toBe("0%");
-    expect(formatSentimentPct(-0.32)).toBe("-32%");
+  it("transport error with no reading offers Retry, which refreshes", () => {
+    useSentimentStore.setState({ error: "503 Service Unavailable" });
+    const { getByTestId } = render(<Welcome />);
+    expect(getByTestId("sentiment-label").textContent).toBe("Market mood unavailable");
+    const retry = getByTestId("sentiment-retry");
+    act(() => {
+      fireEvent.click(retry);
+    });
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("Welcome sentiment panel — DOM binding", () => {
-  it("first-mount (no lastUpdated, loading=true) renders 'loading…' eyebrow", () => {
+describe("Market mood card — accepted reading", () => {
+  it("shows the score, rating, change vs previous close and the source line", () => {
+    const asOf = freshAsOf();
     useSentimentStore.setState({
-      loading: true,
-      score: 0,
-      label: "Neutral",
-      mentions: 0,
-      lastUpdated: null,
-      error: null,
-    });
-    const { getByTestId } = render(<Welcome />);
-    const gauge = getByTestId("sentiment-gauge");
-    expect(gauge).toBeTruthy();
-    // The meta line shows the loading prefix.
-    expect(gauge.parentElement?.textContent).toContain("loading…");
-    // Bullish label hidden until first load completes (or load aborts via
-    // lastUpdated being set on error path).
-    expect(getByTestId("sentiment-label").textContent).toMatch(/Loading…/);
-    // No real percentage yet.
-    expect(getByTestId("sentiment-change").textContent).toBe("0%");
-  });
-
-  it("first-mount idle (no lastUpdated, loading=false) renders em-dash placeholder", () => {
-    useSentimentStore.setState({
-      loading: false,
-      score: 0,
-      label: "Neutral",
-      mentions: 0,
-      lastUpdated: null,
-      error: null,
-    });
-    const { getByTestId } = render(<Welcome />);
-    expect(getByTestId("sentiment-change").textContent).toBe("—");
-  });
-
-  it("after populate (score=0.33, label='Cautiously Bullish') renders bound DOM", () => {
-    useSentimentStore.setState({
-      loading: false,
-      score: 0.33,
-      label: "Cautiously Bullish",
-      mentions: 540,
-      lastUpdated: new Date("2026-05-23T12:00:00Z"),
-      error: null,
+      gauge: reading({ as_of: asOf, previous_close: 24.6 }),
+      lastUpdated: new Date(),
     });
     const { getByTestId, container } = render(<Welcome />);
-    // <strong> binding
-    expect(getByTestId("sentiment-label").textContent).toBe("Cautiously Bullish");
-    // +33% chip with positive tone class
-    const change = getByTestId("sentiment-change");
-    expect(change.textContent).toBe("+33%");
-    expect(change.className).toContain("terminal-change--positive");
-    // aria-label reflects label
-    const gauge = getByTestId("sentiment-gauge");
-    expect(gauge.getAttribute("aria-label")).toBe("Sentiment cautiously bullish");
-    // gauge holds the raw score for downstream introspection
-    expect(gauge.getAttribute("data-score")).toBe("0.330");
-    // eyebrow shows mention count
-    expect(container.textContent).toContain("540 mentions");
-  });
-
-  it("negative score: needle rotates to negative angle and chip class is --negative", () => {
-    useSentimentStore.setState({
-      loading: false,
-      score: -0.5,
-      label: "Cautiously Bearish",
-      mentions: 90,
-      lastUpdated: new Date(),
-      error: null,
-    });
-    const { getByTestId } = render(<Welcome />);
-    const needle = getByTestId("sentiment-needle") as HTMLElement;
-    // -0.5 should map to -45deg
-    expect(needle.style.transform).toBe("rotate(-45deg)");
-    const change = getByTestId("sentiment-change");
-    expect(change.textContent).toBe("-50%");
-    expect(change.className).toContain("terminal-change--negative");
+    expect(getByTestId("sentiment-score").textContent).toBe("22");
+    expect(getByTestId("sentiment-label").textContent).toBe("Extreme fear");
+    expect(getByTestId("sentiment-change").textContent).toBe("−2.2 vs prev close");
     expect(getByTestId("sentiment-gauge").getAttribute("aria-label")).toBe(
-      "Sentiment cautiously bearish",
+      "Fear and Greed gauge at 22, extreme fear",
+    );
+    expect(container.querySelector(".aw-mood__source")?.textContent).toContain(
+      `CNN Fear & Greed, as of ${formatUtcStamp(asOf)}.`,
     );
   });
 
-  it("score=0 → needle straight up (0deg)", () => {
+  it("no previous close → change shows an em dash, not a default", () => {
     useSentimentStore.setState({
-      loading: false,
-      score: 0,
-      label: "Neutral",
-      mentions: 10,
+      gauge: reading({ as_of: freshAsOf(), previous_close: null }),
       lastUpdated: new Date(),
-      error: null,
     });
     const { getByTestId } = render(<Welcome />);
-    const needle = getByTestId("sentiment-needle") as HTMLElement;
-    expect(needle.style.transform).toBe("rotate(0deg)");
-  });
-
-  it("score=+1 → needle at +90deg", () => {
-    useSentimentStore.setState({
-      loading: false,
-      score: 1,
-      label: "Strongly Bullish",
-      mentions: 999,
-      lastUpdated: new Date(),
-      error: null,
-    });
-    const { getByTestId } = render(<Welcome />);
-    const needle = getByTestId("sentiment-needle") as HTMLElement;
-    expect(needle.style.transform).toBe("rotate(90deg)");
-  });
-
-  it("error with no last value → 'unavailable' eyebrow + em-dash placeholder", () => {
-    useSentimentStore.setState({
-      loading: false,
-      score: 0,
-      label: "Neutral",
-      mentions: 0,
-      lastUpdated: null,
-      error: "503 Service Unavailable",
-    });
-    const { getByTestId } = render(<Welcome />);
-    expect(getByTestId("sentiment-gauge").parentElement?.textContent).toContain(
-      "unavailable",
-    );
     expect(getByTestId("sentiment-change").textContent).toBe("—");
   });
 
+  it("a reading older than 36 h is flagged stale", () => {
+    useSentimentStore.setState({
+      gauge: reading({ as_of: "2026-11-01T23:59:00Z" }),
+      lastUpdated: new Date(),
+    });
+    const { container } = render(<Welcome />);
+    expect(container.querySelector(".aw-mood__stale")?.textContent).toContain("stale");
+  });
+
+  it("the MSENT jump button opens the market sentiment pane", () => {
+    useSentimentStore.setState({
+      gauge: reading({ as_of: freshAsOf() }),
+      lastUpdated: new Date(),
+    });
+    const { getByRole } = render(<Welcome />);
+    fireEvent.click(getByRole("button", { name: "MSENT" }));
+    expect(window.location.hash).toBe("#/fn/MSENT");
+  });
+});
+
+describe("Market mood card — refresh", () => {
   it("auto-refresh fires once sidecar becomes healthy", () => {
     // Status was "booting" in beforeEach — effect bails.
     const { rerender } = render(<Welcome />);
     expect(refreshSpy).not.toHaveBeenCalled();
 
-    // Flip status to healthy → effect should re-run and fire refresh.
     act(() => {
       useAppStore.setState({ sidecarStatus: "healthy" });
     });
     rerender(<Welcome />);
     expect(refreshSpy).toHaveBeenCalled();
-    // First call should hand over the fallback list (watchRows are empty when
-    // there's no portfolio + the default sample deck IS the watchRows now).
-    const firstCallSymbols = refreshSpy.mock.calls[0]![0] as string[];
-    expect(Array.isArray(firstCallSymbols)).toBe(true);
-    expect(firstCallSymbols.length).toBeGreaterThan(0);
   });
 });
 
-describe("Welcome sentiment gauge — arc geometry", () => {
-  it("draws the scale as a symmetric 180° SVG arc centred on the needle pivot", () => {
-    const { getByTestId } = render(<Welcome />);
-    const gauge = getByTestId("sentiment-gauge");
-    const arc = gauge.querySelector("svg.terminal-gauge__arc");
-    expect(arc).not.toBeNull();
-    // 96×52 viewBox; 44px radius arcs around (48,48) — the same centre the
-    // needle pivots on (rotate(0) = apex/Neutral, ±90° = the arc's ends).
-    // Regression pin: the old border-trick arc was rotated -35°, which
-    // visually skewed the scale 35° away from the needle.
-    expect(arc!.getAttribute("viewBox")).toBe("0 0 96 52");
-    const neg = arc!.querySelector("path.terminal-gauge__arc-neg");
-    const pos = arc!.querySelector("path.terminal-gauge__arc-pos");
-    expect(neg!.getAttribute("d")).toBe("M 4 48 A 44 44 0 0 1 48 4");
-    expect(pos!.getAttribute("d")).toBe("M 48 4 A 44 44 0 0 1 92 48");
-  });
-});
-
-describe("Welcome — demo data banners on BRIEF + MOVERS", () => {
-  it("renders 'Demo data' banner on the BRIEF panel", () => {
-    const { getByTestId } = render(<Welcome />);
-    expect(getByTestId("brief-demo-banner").textContent).toMatch(/Demo data/i);
+describe("Welcome — BRIEF never shows demo headlines; MOVERS demo badge", () => {
+  it("shows an honest BRIEF state instead of demo headlines", () => {
+    const { getByTestId, queryByText } = render(<Welcome />);
+    expect(getByTestId("brief-unavailable").textContent).toMatch(
+      /Awareness news service unavailable/i,
+    );
+    expect(queryByText(/NVDA breaking/i)).toBeNull();
   });
 
   it("renders 'Demo data' badge on the MOVERS panel header", () => {
     const { getByTestId } = render(<Welcome />);
     expect(getByTestId("movers-demo-banner").textContent).toMatch(/Demo data/i);
+  });
+});
+
+describe("Market mood card — F6 notices (M-6, M-7)", () => {
+  it("keeps the reading and says a refresh failed after a good reading", () => {
+    useSentimentStore.setState({
+      gauge: reading({ as_of: freshAsOf() }),
+      lastUpdated: new Date(),
+      error: "sidecar timeout",
+    });
+    const { getByTestId } = render(<Welcome />);
+    expect(getByTestId("sentiment-refresh-error").textContent).toContain(
+      "Refresh failed: sidecar timeout",
+    );
+    expect(getByTestId("sentiment-score").textContent).toBe("22");
+  });
+
+  it("flags a degraded CNN provider next to the reading", () => {
+    useSentimentStore.setState({
+      gauge: reading({
+        as_of: freshAsOf(),
+        stale: true,
+        providerStatus: {
+          provider: "sent.cnn_fng",
+          status: "degraded",
+          last_error: "HTTP 503",
+        },
+      }),
+      lastUpdated: new Date(),
+    });
+    const { getByTestId } = render(<Welcome />);
+    const notice = getByTestId("sentiment-provider-stale").textContent ?? "";
+    expect(notice).toContain("sent.cnn_fng");
+    expect(notice).toContain("HTTP 503");
+    expect(getByTestId("sentiment-score").textContent).toBe("22");
+  });
+
+  it("the source line carries the crypto reading as a footnote", () => {
+    useSentimentStore.setState({
+      gauge: reading({ as_of: freshAsOf(), cryptoScore: 28, cryptoRating: "Fear" }),
+      lastUpdated: new Date(),
+    });
+    const { container } = render(<Welcome />);
+    expect(container.querySelector(".aw-mood__source")?.textContent).toContain(
+      "Crypto: 28, fear.",
+    );
+  });
+
+  it("no crypto reading means no crypto footnote", () => {
+    useSentimentStore.setState({
+      gauge: reading({ as_of: freshAsOf() }),
+      lastUpdated: new Date(),
+    });
+    const { container } = render(<Welcome />);
+    expect(container.querySelector(".aw-mood__source")?.textContent).not.toContain(
+      "Crypto",
+    );
   });
 });

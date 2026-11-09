@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { CACTPane } from "./CACT";
+import { LIVE_8K_SAME_DAY } from "./__fixtures__/awareness-live";
 
 /* ── useFunction mock ──────────────────────────────────────────────── */
 
@@ -135,13 +136,18 @@ describe("CACT pane — load states", () => {
     expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
   });
 
-  it("renders the honest provider-unavailable state with the backend reason", () => {
+  it("renders the honest awareness-unavailable state with the backend reason", () => {
     setMockFn({ state: "ok", ...providerDownPayload() });
     render(<CACTPane code="CACT" symbol="AAPL" />);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.getByText(/Awareness service is not running/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing is estimated/i)).toBeNull();
+  });
+
+  it("says no corporate actions were returned for an empty ok payload", () => {
+    setMockFn({ state: "ok", data: { data: { status: "empty", rows: [] } } });
+    render(<CACTPane code="CACT" symbol="AAPL" />);
     expect(screen.getByText(/No corporate actions returned/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/No dividend, split, or dated 8-K corporate-action rows/i),
-    ).toBeInTheDocument();
   });
 });
 
@@ -153,6 +159,40 @@ describe("CACT pane — actions table", () => {
     expect(container.textContent).toContain("2027-01-15");
     expect(container.textContent).toContain("0000320193-26-000042");
   });
+
+  it("keeps two live 8-K filings filed on the same day as separate rows (F2 I2)", () => {
+    // Backend emits one row per accession; both live filings share a date and carry different items.
+    const rows = LIVE_8K_SAME_DAY.map((f) => ({
+      symbol: null,
+      action_type: "8-K",
+      event_date: f.date,
+      value: null,
+      unit: null,
+      accession: f.fields.accession,
+      url: f.fields.url,
+      items: f.fields.items,
+      source: "awareness:filings",
+    }));
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          symbol: "AAPL",
+          rows,
+          timeline: rows,
+          events_8k: [],
+          counts: { dividend: 0, split: 0, "8-K": rows.length },
+          duplicates_dropped: 0,
+          meta: { providers: [], generated_at: null, notes: [], feed_health: null },
+        },
+      },
+    });
+    const { container } = render(<CACTPane code="CACT" symbol="AAPL" />);
+    expect(container.querySelectorAll("tbody tr").length).toBe(2);
+    expect(container.textContent).toContain(LIVE_8K_SAME_DAY[0].fields.accession);
+    expect(container.textContent).toContain(LIVE_8K_SAME_DAY[1].fields.accession);
+  });
 });
 
 describe("CACT pane — filter interactions", () => {
@@ -162,9 +202,7 @@ describe("CACT pane — filter interactions", () => {
 
     fireEvent.click(screen.getByText("DIV"));
 
-    const table = container.querySelector(
-      '[aria-label="CACT corporate actions table"]',
-    );
+    const table = container.querySelector('[aria-label="CACT corporate actions table"]');
     expect(table?.textContent).toContain("2026-08-10");
     expect(table?.textContent).not.toContain("2027-01-15");
     expect(table?.textContent).not.toContain("0000320193-26-000042");
@@ -175,9 +213,7 @@ describe("CACT pane — filter interactions", () => {
     const { container } = render(<CACTPane code="CACT" symbol="AAPL" />);
 
     // The WINDOW segmented control carries a descriptive aria-label.
-    const windowGroup = container.querySelector(
-      '[aria-label="Past vs upcoming"]',
-    );
+    const windowGroup = container.querySelector('[aria-label="Past vs upcoming"]');
     expect(windowGroup).not.toBeNull();
     const upcomingBtn = Array.from(windowGroup!.querySelectorAll("button")).find(
       (b) => b.textContent === "UPCOMING",
@@ -185,33 +221,26 @@ describe("CACT pane — filter interactions", () => {
     expect(upcomingBtn).toBeDefined();
     fireEvent.click(upcomingBtn!);
 
-    const table = container.querySelector(
-      '[aria-label="CACT corporate actions table"]',
-    );
+    const table = container.querySelector('[aria-label="CACT corporate actions table"]');
     expect(table?.textContent).toContain("2027-01-15");
     expect(table?.textContent).not.toContain("2026-08-10");
   });
 
   it("states outright when no upcoming actions exist in provider data", () => {
     const pastOnly = mixedPayload();
-    (pastOnly.data.data as { rows: Array<{ event_date: string | null }> }).rows =
-      (pastOnly.data.data as { rows: Array<{ event_date: string | null }> }).rows.filter(
-        (r) => r.event_date !== "2027-01-15",
-      );
+    (pastOnly.data.data as { rows: Array<{ event_date: string | null }> }).rows = (
+      pastOnly.data.data as { rows: Array<{ event_date: string | null }> }
+    ).rows.filter((r) => r.event_date !== "2027-01-15");
     setMockFn({ state: "ok", ...pastOnly });
     const { container } = render(<CACTPane code="CACT" symbol="AAPL" />);
 
-    const windowGroup = container.querySelector(
-      '[aria-label="Past vs upcoming"]',
-    );
+    const windowGroup = container.querySelector('[aria-label="Past vs upcoming"]');
     const upcomingBtn = Array.from(windowGroup!.querySelectorAll("button")).find(
       (b) => b.textContent === "UPCOMING",
     );
     fireEvent.click(upcomingBtn!);
 
-    expect(
-      screen.getByText(/No upcoming actions in provider data/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/No upcoming actions in provider data/i)).toBeInTheDocument();
   });
 });
 
@@ -229,9 +258,7 @@ describe("CACT pane — actions grid sort + keyboard (lane B4)", () => {
     });
     expect(grid).toBeInTheDocument();
     // Roving keyboard cell: the first cell owns the tab stop.
-    expect(
-      grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex"),
-    ).toBe("0");
+    expect(grid.querySelector('td[data-cell="0-0"]')?.getAttribute("tabindex")).toBe("0");
 
     // event_date descending -> 2027-01-15 first, 2026-07-31 last.
     expect(container.querySelector('th[aria-sort="descending"]')).not.toBeNull();

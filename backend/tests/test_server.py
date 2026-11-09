@@ -133,30 +133,6 @@ def test_default_asset_class_respects_explicit_request() -> None:
     assert server.default_asset_class_name("BTCUSDT", "equity") == "EQUITY"
 
 
-def test_corr_impactor_template_covers_all_markets() -> None:
-    engine_root = Path(__file__).resolve().parents[2] / "engine"
-    sys.path.insert(0, str(engine_root))
-    from showme.engine.functions.portfolio.corr import _correlation_template
-
-    symbols = ["AAPL", "SPX", "EURUSD", "BTCUSDT", "GC=F", "US10Y", "CDXIG"]
-    payload = _correlation_template(symbols, 365)
-    impact = payload["impactor"]
-
-    assert payload["summary"]["method"] == "correlation_impact_matrix"
-    assert {row["market"] for row in impact["market_coverage"]} == {
-        "Equity",
-        "Index",
-        "FX",
-        "Crypto",
-        "Commodity",
-        "Rates",
-        "Credit",
-    }
-    assert len(impact["matrix"]) == len(symbols) ** 2
-    assert impact["analysis_steps"]
-    assert impact["return_series_summary"]
-    assert impact["top_positive_pairs"]
-    assert impact["bug_analysis"][0]["status"] == "passed"
 
 
 def test_route_params_do_not_inject_symbol_into_standalone_derivative(monkeypatch) -> None:
@@ -178,8 +154,10 @@ def test_route_params_do_not_inject_symbol_into_standalone_derivative(monkeypatc
     assert "symbol" not in params
     assert "topic" not in params
     assert "asset_class" not in params
-    assert params["spot"] == 100
-    assert params["strike"] == 105
+    # WC2-G06: the route no longer invents a demo option (spot/strike/expiry/vol);
+    # only the contract type is defaulted and the function reports needs_input.
+    for key in ("spot", "strike", "years_to_expiry", "vol"):
+        assert key not in params
     assert params["type"] == "CALL"
 
 
@@ -677,6 +655,7 @@ def test_agent_fast_probe_returns_non_zero_candidate_scores(monkeypatch) -> None
         "_load_function_index",
         lambda: [
             server.FunctionIndexEntry(code="MLSIG", name="ML Signal", category="portfolio"),
+            server.FunctionIndexEntry(code="BTFW", name="Walk Forward", category="portfolio"),
             server.FunctionIndexEntry(code="PORT", name="Portfolio", category="portfolio"),
         ],
     )
@@ -704,6 +683,7 @@ def test_agent_fast_probe_exposes_multiple_evidence_rows_and_exclusions(monkeypa
             server.FunctionIndexEntry(code="BTFW", name="Walk Forward", category="portfolio"),
             server.FunctionIndexEntry(code="BTUNE", name="Backtest Tuner", category="portfolio"),
             server.FunctionIndexEntry(code="NALRT", name="News Alerts", category="news"),
+            server.FunctionIndexEntry(code="MOSS", name="Momentum Scan", category="portfolio"),
         ],
     )
 
@@ -719,7 +699,9 @@ def test_agent_fast_probe_exposes_multiple_evidence_rows_and_exclusions(monkeypa
     assert [row["code"] for row in out["excluded_functions"]] == ["AGENT", "ASK", "HOME"]
     assert out["best"]["signal_functions"] >= 4
     assert len(out["best"]["top_evidence"]) >= 4
-    assert {row["code"] for row in out["best"]["top_evidence"]} >= {"MLSIG", "BTFW", "BTUNE", "NALRT"}
+    assert {row["code"] for row in out["best"]["top_evidence"]} >= {"BTFW", "BTUNE", "NALRT", "MOSS"}
+    # MLSIG has no measured history in the probe, so it must not earn ranking evidence.
+    assert "MLSIG" not in {row["code"] for row in out["best"]["top_evidence"]}
 
 
 def test_screen_reference_screeners_apply_real_filters(monkeypatch) -> None:
@@ -760,10 +742,14 @@ def test_icx_index_query_and_reference_rows(monkeypatch) -> None:
     )
 
     routed = server._route_function_params("ICX", {"query": "NDX", "limit": 50})
-    assert routed["index"] == "NDX"
+    # The handler, not the route, reads an index code out of query (ICX#3).
+    assert "index" not in routed and routed["query"] == "NDX"
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
     from showme.engine.functions.screen.icx import ICXFunction
+
+    by_query = asyncio.run(ICXFunction().execute(query="NDX", live=False, limit=50))
+    assert by_query.data["index"] == "NDX"
 
     out = asyncio.run(ICXFunction().execute(index="SPX", live=False, limit=50))
     assert out.data["status"] == "ok"
@@ -908,75 +894,64 @@ def test_av_media_rows_keep_playable_audio_url(monkeypatch) -> None:
     assert row["audio_url"] == "https://example.com/audio.mp3"
     assert row["url"] == "https://example.com/audio.mp3"
     assert row["source_url"] == "https://example.com/episode"
-    assert row["media_type"] == "audio/mpeg"
+    # AV#7: the enclosure MIME type is no longer the media_type; podcast rows
+    # carry the enumerated media type and keep the playable URL above.
+    assert row["media_type"] == "podcast"
     assert _matches_query(row, "market")
 
 
-def test_brief_live_composes_from_top_items_and_returns_articles(monkeypatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.core.base_function import FunctionResult
-    from showme.engine.functions.news import top as top_mod
-    from showme.engine.functions.news.brief import BRIEFFunction
+# BRIEF composition is covered against Awareness rows in tests/test_bughunt_s02.py and
+# tests/test_f5_awareness_consumers.py (TOP macro leg + CN watchlist leg).
 
-    # 2026-06-01 contract change: BRIEF no longer sources headlines from the
-    # READ reading-list store (which is empty for a fresh user). It composes
-    # from TOP, which ranks live RSS/GDELT headlines under the ``items`` key —
-    # the exact key the old BRIEF ignored. This fake TOP proves BRIEF reads
-    # ``items`` and unescapes article HTML.
-    class FakeTOP:
-        def __init__(self, _deps):
-            pass
 
-        async def execute(self, **kwargs):
-            assert kwargs["live"] is True
-            sym = kwargs.get("symbol") or "MACRO"
-            return FunctionResult(
-                code="TOP",
-                instrument=None,
-                data={"items": [{
-                    "title": f"{sym} supply-chain story",
-                    "url": f"https://example.com/{sym}",
-                    "matched_symbol": sym,
-                    "source": "rss",
-                    "summary": "<p>Apple &amp; suppliers raised guidance.</p>",
-                }], "status": "ok"},
-                sources=["rss"],
-                metadata={"provider_errors": []},
-            )
+def _evts_client(handler):
+    import httpx
 
-    monkeypatch.setattr(top_mod, "TOPFunction", FakeTOP)
+    from showme.engine.data_sources.awareness import AwarenessClient
 
-    result = asyncio.run(BRIEFFunction().execute(live=True, watchlist=["AAPL"]))
-
-    assert result.data["status"] == "ok"
-    assert result.data["article_count"] >= 1
-    assert "supply-chain story" in result.data["markdown"]
-    assert any(
-        a["summary"] == "Apple & suppliers raised guidance."
-        for a in result.data["articles"]
-    )
+    return AwarenessClient("http://aw.test", transport=httpx.MockTransport(handler), autostart=False)
 
 
 def test_evts_empty_provider_returns_actionable_status(monkeypatch) -> None:
+    """EVTS reads Awareness only (the yfinance-only path was removed). When Awareness answers
+    with an empty window the status is ``empty`` with an actionable reason, never ``ok`` and never
+    a fabricated row. A real outage is covered by the ``provider_unavailable`` test below."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.core.base_data_source import DataKind
+    import httpx
+
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.core.instrument import AssetClass, Instrument
     from showme.engine.functions.news.evts import EVTSFunction
 
-    class EmptyYFinance:
-        async def fetch(self, request):
-            assert request.kind == DataKind.EVENTS
-            return {
-                "calendar": {},
-                "earnings_dates": pd.DataFrame(),
-                "actions": pd.DataFrame(),
-                "dividends": pd.Series(dtype=float),
-                "splits": pd.Series(dtype=float),
-            }
+    def _empty(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [], "meta": {"providers": [], "notes": [], "generated_at": None}})
 
+    fn = EVTSFunction(FunctionDeps())
+    fn._awareness = _evts_client(_empty)
     instrument = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = asyncio.run(EVTSFunction(FunctionDeps(yfinance=EmptyYFinance())).execute(instrument, live=True))
+    result = asyncio.run(fn.execute(instrument, live=True))
+
+    assert result.data["status"] == "empty"
+    assert result.data["rows"] == []
+    assert result.data["reason"]
+    assert "AAPL" in result.data["reason"]
+
+
+def test_evts_awareness_down_returns_provider_unavailable(monkeypatch) -> None:
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
+    import httpx
+
+    from showme.engine.core.base_function import FunctionDeps
+    from showme.engine.core.instrument import AssetClass, Instrument
+    from showme.engine.functions.news.evts import EVTSFunction
+
+    def _down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated awareness outage", request=request)
+
+    fn = EVTSFunction(FunctionDeps())
+    fn._awareness = _evts_client(_down)
+    instrument = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
+    result = asyncio.run(fn.execute(instrument, live=True))
 
     assert result.data["status"] == "provider_unavailable"
     assert result.data["rows"] == []
@@ -984,52 +959,30 @@ def test_evts_empty_provider_returns_actionable_status(monkeypatch) -> None:
 
 
 def test_sosc_provider_failure_does_not_emit_placeholder(monkeypatch) -> None:
-    """De-garbage 2026-06-01: SOSC now reads keyless GDELT tone, so when the
-    network is up the live path legitimately returns real rows. To pin the
-    *contract* ("a provider failure must NOT be papered over with a fabricated
-    placeholder") deterministically — instead of depending on the network
-    actually being down — we force the GDELT leg to raise and assert the
-    honest ``provider_unavailable`` envelope with empty rows."""
+    """S3a: SOSC reads Awareness. When Awareness cannot answer, a provider failure
+    must NOT be papered over with a fabricated placeholder: the result is the
+    honest ``provider_unavailable`` envelope with empty rows and no score."""
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
+    import httpx
+
     from showme.engine.core.base_function import FunctionDeps
     from showme.engine.core.instrument import AssetClass, Instrument
-    from showme.engine.functions.news import sosc as sosc_mod
+    from showme.engine.data_sources.awareness import AwarenessClient
     from showme.engine.functions.news.sosc import SOSCFunction
 
-    async def _boom(*_args, **_kwargs):
-        raise RuntimeError("simulated GDELT outage")
+    def _down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated awareness outage", request=request)
 
-    monkeypatch.setattr(sosc_mod, "_gdelt_articles", _boom)
-
+    fn = SOSCFunction(FunctionDeps())
+    fn._awareness = AwarenessClient("http://aw.test", transport=httpx.MockTransport(_down), autostart=False)
     instrument = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = asyncio.run(SOSCFunction(FunctionDeps()).execute(instrument, live=True))
+    result = asyncio.run(fn.execute(instrument, live=True))
 
     assert result.data["status"] == "provider_unavailable"
     assert result.data["rows"] == []
-    assert result.data["summary"]["net_sentiment"] is None
-    assert result.data["summary"]["total_mentions"] == 0
-    assert "simulated GDELT outage" in result.data["reason"]
+    assert "news" not in result.data
+    assert "not running" in result.data["reason"]
     assert "placeholder" not in str(result.data).lower()
-
-
-def test_sosc_tone_maps_to_unit_interval() -> None:
-    """De-garbage 2026-06-01: SOSC was rewritten from a StockTwits/Reddit
-    aggregator (the removed ``_sentiment_rows`` helper) to a keyless GDELT
-    news-tone + FinBERT signal. The old per-row reddit_score/sentiment_score
-    separation no longer applies. This pins the new contract's core numeric
-    primitive instead: GDELT tone (roughly [-10, +10]) maps to a bounded
-    [-1, +1] sentiment, and garbage tone values are dropped (None), never
-    fabricated."""
-    from showme.engine.functions.news.sosc import _to_unit_tone
-
-    assert abs(_to_unit_tone(5.0) - 0.5) < 1e-9
-    assert abs(_to_unit_tone(-5.0) - (-0.5)) < 1e-9
-    # Clamped to the unit interval, never out of band.
-    assert _to_unit_tone(50.0) == 1.0
-    assert _to_unit_tone(-50.0) == -1.0
-    # Non-numeric / NaN tone is dropped honestly, not coerced to a fake 0.
-    assert _to_unit_tone("not-a-number") is None
-    assert _to_unit_tone(None) is None
 
 
 def test_news_alert_stale_headline_cannot_be_critical(monkeypatch) -> None:
@@ -1149,15 +1102,3 @@ def test_tldr_mover_lines_do_not_put_gainers_in_down_bucket(monkeypatch) -> None
     assert _format_movers(quotes, positive=False) == "BTCUSDT (-0.11%)"
 
 
-def test_top_age_window_filters_stale_articles(monkeypatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "engine"))
-    from showme.engine.functions.news.top import _within_age_window
-
-    assert _within_age_window(
-        {"published_at": datetime.now(timezone.utc).isoformat()},
-        45,
-    )
-    assert not _within_age_window(
-        {"published_at": (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()},
-        45,
-    )

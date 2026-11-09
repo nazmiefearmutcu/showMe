@@ -113,7 +113,7 @@ class EpochParams:
                 hi_price=float(d.get("hi_price", 0.0)),
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"malformed EpochParams payload: {exc}") from exc
+            raise ValueError(f"malformed EpochParams payload: {str(exc) or type(exc).__name__}") from exc
 
 
 @dataclass(slots=True)
@@ -212,7 +212,7 @@ class Subscribe:
                 band=None if d.get("band") is None else str(d["band"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"malformed Subscribe payload: {exc}") from exc
+            raise ValueError(f"malformed Subscribe payload: {str(exc) or type(exc).__name__}") from exc
 
 
 @dataclass(slots=True)
@@ -264,7 +264,7 @@ class HistoryRequest:
             return cls(req_id=int(d["req_id"]), before_t=int(d["before_t"]),
                        n_cols=int(d["n_cols"]))
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"malformed HistoryRequest payload: {exc}") from exc
+            raise ValueError(f"malformed HistoryRequest payload: {str(exc) or type(exc).__name__}") from exc
 
 
 # --- Hot (hand-packed binary) messages -----------------------------------------

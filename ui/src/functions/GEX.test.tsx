@@ -37,13 +37,18 @@ function setMockFn(next: MockFnState) {
   mockFn.error = next.error ?? null;
 }
 
+const mockUseFunctionArgs: { last?: unknown } = {};
+
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: unknown) => {
+    mockUseFunctionArgs.last = args;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
 
 /* ── fixtures ──────────────────────────────────────────────────────── */
@@ -236,6 +241,23 @@ describe("GEX pane — data honesty", () => {
   });
 });
 
+describe("GEX pane — zero-gamma caption", () => {
+  it("says no crossing within ±10% of spot when gamma_flip is null", () => {
+    const payload = livePayload();
+    (payload.data.data as Record<string, unknown>).summary = {
+      ...liveSummary,
+      gamma_flip: null,
+    };
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<GEXPane code="GEX" symbol="SPY" />);
+    const zeroCard = Array.from(container.querySelectorAll(".stat-card")).find(
+      (card) => card.textContent?.includes("Zero-gamma"),
+    );
+    expect(zeroCard?.textContent).toContain("no crossing within ±10% of spot");
+    expect(zeroCard?.textContent).not.toContain("no sign change");
+  });
+});
+
 describe("GEX pane — KPI + primary ladder", () => {
   it("renders exactly four KPI cards", () => {
     setMockFn({ state: "ok", ...livePayload() });
@@ -393,5 +415,98 @@ describe("GEX pane — KPI + primary ladder", () => {
     expect(subtitle?.textContent).not.toMatch(/strikes/);
     const footer = container.querySelector(".ds-pane-footer");
     expect(footer?.textContent).toContain("strikes");
+  });
+});
+
+describe("GEX pane — FLIP tag on the ladder", () => {
+  // The flip is an interpolated spot level (e.g. 608.08), not a strike, so
+  // the ladder must tag the nearest displayed strike instead of comparing
+  // equality against the strike grid (which never matched).
+  it("tags the nearest displayed strike when the flip level falls between strikes", () => {
+    const payload = livePayload();
+    (payload.data.data as Record<string, unknown>).summary = {
+      ...liveSummary,
+      gamma_flip: 608.08,
+    };
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<GEXPane code="GEX" symbol="SPY" />);
+    const flipRows = Array.from(container.querySelectorAll(".gex-ladder__row")).filter(
+      (row) => (row.getAttribute("aria-label") ?? "").includes("flip"),
+    );
+    expect(flipRows.length).toBe(1);
+    expect(flipRows[0].getAttribute("aria-label")).toMatch(/Strike 610(\.0+)?:/);
+    expect(
+      flipRows[0].querySelector('[data-testid="gex-row-tags"]')?.textContent,
+    ).toContain("FLIP");
+  });
+
+  it("does not tag any row when the flip lies outside the displayed ladder", () => {
+    const payload = livePayload();
+    (payload.data.data as Record<string, unknown>).summary = {
+      ...liveSummary,
+      gamma_flip: 700,
+    };
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<GEXPane code="GEX" symbol="SPY" />);
+    const tagTexts = Array.from(
+      container.querySelectorAll('[data-testid="gex-row-tags"]'),
+    ).map((el) => el.textContent ?? "");
+    expect(tagTexts.some((text) => text.includes("FLIP"))).toBe(false);
+  });
+});
+
+describe("GEX pane — wc1-g06 honesty fixes", () => {
+  it("captions a flip without spot as the spot-grid zero crossing (GEX#2-RQ)", () => {
+    const payload = livePayload();
+    const data = payload.data.data as Record<string, unknown>;
+    data.spot = null;
+    data.summary = { ...liveSummary, gamma_flip: 758 };
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<GEXPane code="GEX" symbol="SPY" />);
+    const zeroCard = Array.from(container.querySelectorAll(".stat-card")).find(
+      (card) => card.textContent?.includes("Zero-gamma"),
+    );
+    expect(zeroCard?.textContent).toContain("spot-grid zero crossing of total GEX");
+    expect(zeroCard?.textContent).not.toContain("first sign change");
+  });
+
+  it("labels a last-session chain as last session, never live (GEX#6)", () => {
+    const payload = livePayload();
+    const data = payload.data.data as Record<string, unknown>;
+    data.data_mode = "last_session_yfinance";
+    data.as_of = "2026-11-06T20:59:00+00:00";
+    setMockFn({ state: "ok", ...payload });
+    const { container } = render(<GEXPane code="GEX" symbol="SPY" />);
+    expect(screen.queryByText("live chain")).toBeNull();
+    expect(screen.getByText("last session")).toBeInTheDocument();
+    const footer = container.querySelector(".ds-pane-footer");
+    expect(footer?.textContent).toContain("as of");
+    expect(footer?.textContent).toContain("2026-11-06 20:59 UTC");
+  });
+
+  it("shows the provider's input reason for needs_input instead of a fake empty chain", () => {
+    setMockFn({
+      state: "ok",
+      ...envelope({
+        status: "needs_input",
+        symbol: "SPY",
+        spot: null,
+        reason: "GEX needs the underlying spot: pass spot=<price>, or set live=true.",
+        rows: [],
+        curve: [],
+        summary: {},
+      }),
+    });
+    render(<GEXPane code="GEX" symbol="SPY" />);
+    expect(screen.getByText(/GEX needs the underlying spot/)).toBeInTheDocument();
+    expect(screen.queryByTestId("gex-ladder-row")).toBeNull();
+  });
+
+  it("requests the manifest default next_3 expiry scope, not a single expiry (GEX#3)", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<GEXPane code="GEX" symbol="SPY" />);
+    const args = mockUseFunctionArgs.last as { params?: Record<string, unknown> } | undefined;
+    expect(args?.params?.expiry_filter).toBe("next_3");
+    expect(args?.params?.max_expiries).toBeUndefined();
   });
 });

@@ -195,7 +195,7 @@ export function simpleParamSpecsForFunction(code: string): SimpleParamSpec[] {
     case "ONCH":
       return [
         { key: "symbol", label: "Asset", hint: "BTCUSDT/ETHUSDT" },
-        { key: "chain", label: "Chain", hint: "BTC/ETH" },
+        { key: "chain", label: "Chain", hint: "BTC" },
       ];
     case "POLY":
       return [{ key: "include_closed", label: "Closed", hint: "false/true" }];
@@ -246,7 +246,6 @@ export function simpleParamSpecsForFunction(code: string): SimpleParamSpec[] {
       return [
         { key: "countries", label: "Countries", hint: "TR, US, DE, JP" },
         { key: "recovery", label: "Recovery", hint: "0.4" },
-        { key: "proxy_spread_pct", label: "Fallback spread", hint: "3.25" },
       ];
     case "TAUC":
       return [
@@ -278,12 +277,12 @@ export function simpleParamSpecsForFunction(code: string): SimpleParamSpec[] {
       ];
     case "PSC":
       return [
-        { key: "account", label: "Account $", hint: "10000" },
+        { key: "account", label: "Account $", hint: "portfolio value" },
         { key: "risk_pct", label: "Risk %", hint: "0.01" },
-        { key: "entry", label: "Entry", hint: "100" },
-        { key: "stop", label: "Stop", hint: "95" },
-        { key: "target", label: "Target", hint: "115" },
-        { key: "win_rate", label: "Win rate", hint: "0.55" },
+        { key: "entry", label: "Entry", hint: "live price" },
+        { key: "stop", label: "Stop", hint: "required" },
+        { key: "target", label: "Target", hint: "optional" },
+        { key: "win_rate", label: "Win rate", hint: "optional, 0-1" },
       ];
     case "PORT_WHATIF":
       return [
@@ -316,7 +315,7 @@ export function simpleParamSpecsForFunction(code: string): SimpleParamSpec[] {
       ];
     case "MGN":
       return [
-        { key: "cash", label: "Cash", hint: "10000" },
+        { key: "cash", label: "Cash", hint: "only with positions=[...]" },
         { key: "margin_type", label: "Margin", hint: "reg_t" },
       ];
     default:
@@ -374,21 +373,21 @@ export function defaultSimpleParamsForFunction(code: string): Record<string, str
     GC3D: { country: "US" },
     DDIS: { issuer: "AAPL" },
     DEBT: { countries: "US, JP, DE, TR" },
-    SRSK: { countries: "TR, US, DE, JP", recovery: "0.4", proxy_spread_pct: "3.25" },
+    SRSK: { countries: "TR, US, DE, JP", recovery: "0.4" },
     TAUC: { action: "upcoming", security_type: "" },
     WB: { countries: "US, DE, JP, GB, FR, IT, ES, AU" },
-    YAS: { price: "99.5", coupon: "4.25", maturity_years: "10", freq: "2", benchmark_rate: "4.45" },
+    YAS: { freq: "2" },
     TECH: { interval: "1d", bars: "1000", rsi_period: "14", sma_fast: "20", sma_slow: "50", ema_period: "20", bb_period: "20", bb_std: "2" },
     ISIN: { id_type: "AUTO" },
     PCAS: { pc_index: "0", k_sigma: "3", top_n: "8" },
     PVAR: { confidence: "0.95", max_positions: "12" },
-    PSC: { account: "10000", risk_pct: "0.01", entry: "100", stop: "95", target: "115", win_rate: "0.55" },
+    PSC: { risk_pct: "0.01" },
     PORT_WHATIF: { quantity: "1", cost: "100" },
     REBA: { targets: "AAPL:0.5, MSFT:0.3, GOOGL:0.2", min_drift_pct: "0.005" },
     STRS: { scenarios: "GFC_2008, COVID_2020, RATE_SHOCK_300BP, CRYPTO_WINTER", scale: "1" },
     TLH: { tax_bracket: "0.24", lt_cap_rate: "0.15", max_positions: "10" },
     LOTS: { action: "list", symbol: "AAPL", quantity: "1", price: "100", method: "FIFO" },
-    MGN: { cash: "10000", margin_type: "reg_t" },
+    MGN: { margin_type: "reg_t" },
   };
   return defaults[code.toUpperCase()] ?? {};
 }
@@ -591,7 +590,6 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     return {
       ...(values.callsign?.trim() ? { callsign: values.callsign.trim().toUpperCase() } : {}),
       ...(values.country?.trim() ? { country: values.country.trim() } : {}),
-      live_flight: true,
     };
   }
   if (upper === "GRAB") {
@@ -672,7 +670,6 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     return {
       countries: splitCsv(values.countries || "TR, US, DE, JP").map((item) => item.toUpperCase()),
       recovery: numeric("recovery", 0.4),
-      proxy_spread_pct: numeric("proxy_spread_pct", 3.25),
     };
   }
   if (upper === "TAUC") {
@@ -684,17 +681,18 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     };
   }
   if (upper === "WB") {
-    return { countries: splitCsv(values.countries || "US, DE, JP, GB, FR, IT, ES, AU").map((item) => item.toUpperCase()), live_bonds: true };
+    return { countries: splitCsv(values.countries || "US, DE, JP, GB, FR, IT, ES, AU").map((item) => item.toUpperCase()), reference: false };
   }
   if (upper === "YAS") {
-    return {
-      price: numeric("price", 99.5),
-      coupon: numeric("coupon", 4.25),
-      maturity_years: numeric("maturity_years", 10),
+    // Only typed overrides are sent: generic US tenors use the live FRED CMT
+    // yield, other bonds get an input request from the backend.
+    return definedOnly({
+      price: optionalNumber(values.price),
+      coupon: optionalNumber(values.coupon),
+      maturity_years: optionalNumber(values.maturity_years),
       freq: Math.max(1, Math.round(numeric("freq", 2))),
-      benchmark_rate: numeric("benchmark_rate", 4.45),
-      live_benchmark: true,
-    };
+      benchmark_rate: optionalNumber(values.benchmark_rate),
+    });
   }
   if (upper === "ISIN") {
     const idType = (values.id_type || "AUTO").trim().toUpperCase();
@@ -707,7 +705,16 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     return { confidence: numeric("confidence", 0.95), max_positions: Math.max(1, Math.round(numeric("max_positions", 12))), live_risk: true };
   }
   if (upper === "PSC") {
-    return { account: numeric("account", 10000), risk_pct: numeric("risk_pct", 0.01), entry: numeric("entry", 100), stop: numeric("stop", 95), target: numeric("target", 115), win_rate: numeric("win_rate", 0.55) };
+    // No demo trade: blanks fall to the live price / portfolio value, and the
+    // backend asks for the stop.
+    return definedOnly({
+      account: optionalNumber(values.account),
+      risk_pct: numeric("risk_pct", 0.01),
+      entry: optionalNumber(values.entry),
+      stop: optionalNumber(values.stop),
+      target: optionalNumber(values.target),
+      win_rate: optionalNumber(values.win_rate),
+    });
   }
   if (upper === "PORT_WHATIF") {
     return { quantity: numeric("quantity", 1), cost: numeric("cost", 100) };
@@ -719,7 +726,7 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     return { action: "compare", scenarios: splitCsv(values.scenarios ?? ""), scale: numeric("scale", 1) };
   }
   if (upper === "TLH") {
-    return { tax_bracket: numeric("tax_bracket", 0.24), lt_cap_rate: numeric("lt_cap_rate", 0.15), max_positions: Math.max(1, Math.round(numeric("max_positions", 10))), live_tax: true, include_legacy: true };
+    return { tax_bracket: numeric("tax_bracket", 0.24), lt_cap_rate: numeric("lt_cap_rate", 0.15), max_positions: Math.max(1, Math.round(numeric("max_positions", 10))), include_legacy: true };
   }
   if (upper === "LOTS") {
     return {
@@ -731,7 +738,7 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     };
   }
   if (upper === "MGN") {
-    return { cash: numeric("cash", 10000), margin_type: values.margin_type || "reg_t", include_saved: true, include_legacy: true };
+    return definedOnly({ cash: optionalNumber(values.cash), margin_type: values.margin_type || "reg_t", include_saved: true, include_legacy: true });
   }
   if (upper === "ECST") {
     const frequency = (values.frequency || "").trim();
@@ -747,4 +754,16 @@ export function buildSimpleControlParams(code: string, values: Record<string, st
     };
   }
   return {};
+}
+
+/** A typed number, or undefined for a blank/invalid field (never a default). */
+export function optionalNumber(raw: string | undefined): number | undefined {
+  const text = (raw ?? "").trim();
+  if (text === "") return undefined;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function definedOnly(params: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined));
 }

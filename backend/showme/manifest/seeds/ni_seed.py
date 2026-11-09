@@ -1,9 +1,7 @@
-"""NI — News Impact Scorer (topic-scoped).
+"""NI — News by Topic (sourced stories for one topic preset).
 
-Topic-scoped news feed with per-item impact tag (low / medium / high).
-The impact tag is a curated tag bucket, not a synthetic float — it
-combines source authority, topic weight, sentiment magnitude, and
-freshness decay through a documented heuristic.
+Backend handler is ``engine/functions/news/ni.py``. Each preset maps onto awareness
+taxonomy tags (topics and asset classes); the mapping is listed in the methodology.
 """
 from __future__ import annotations
 
@@ -15,13 +13,11 @@ from ..enums import (
 )
 from ..registry import manifest
 from ..spec import (
-    AlertingSpec,
     CachingPolicy,
     CardSchema,
     CardSlot,
     ColumnSpec,
     FieldDef,
-    Formula,
     FunctionManifest,
     InputSpec,
     OutputContract,
@@ -36,18 +32,17 @@ from ..spec import (
 def ni() -> FunctionManifest:
     return FunctionManifest(
         code="NI",
-        name="News Impact",
+        name="News by Topic",
         category=Category.NEWS_INTEL,
         intent=(
-            "Topic-scoped news feed with a per-item impact TAG (low / medium / high) — never a "
-            "synthetic float. Combines source authority, topic weight, sentiment magnitude, and "
-            "freshness decay through a documented heuristic so analysts can trust the tag's "
-            "provenance."
+            "Sourced news for one topic preset (banks, earnings, Fed, chips, oil, tech, macro, "
+            "war, M&A, IPO, crypto): one row per story from the awareness taxonomy, with publisher, "
+            "sentiment, importance and quality shown on every row."
         ),
         asset_classes=[
             AssetClass.EQUITY,
-            AssetClass.CRYPTO,
             AssetClass.ETF,
+            AssetClass.CRYPTO,
             AssetClass.FX,
             AssetClass.COMMODITY,
             AssetClass.BOND,
@@ -60,75 +55,44 @@ def ni() -> FunctionManifest:
                 label="Topic",
                 control=ControlKind.SELECT,
                 required=True,
-                description="Topic preset; resolved to a curated query (MACRO=GDP OR CPI OR inflation; FED=Federal Reserve OR FOMC OR Powell; etc.).",
-                options=["MACRO", "FED", "BANKS", "EARN", "CHIPS", "OIL", "TECH", "CRYPTO", "M&A", "IPO", "WAR"],
+                description="Topic preset: BANKS, EARN, FED, CHIPS, OIL, TECH, MACRO, WAR, M&A, IPO or CRYPTO.",
+                options=["BANKS", "EARN", "FED", "CHIPS", "OIL", "TECH", "MACRO", "WAR", "M&A", "IPO", "CRYPTO"],
             ),
             InputSpec(
-                name="query",
-                label="Free-text query",
-                control=ControlKind.TEXT,
+                name="hours",
+                label="Window (hours)",
+                control=ControlKind.NUMBER,
                 required=False,
-                description="Override the topic with a free-text query.",
+                description="Look-back window in hours (1 to 168).",
+                min=1.0,
+                max=168.0,
+                step=1.0,
+                unit="hours",
             ),
             InputSpec(
                 name="limit",
-                label="Headline cap",
+                label="Rows",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Maximum headlines to return.",
-                min=1,
-                max=200,
-                step=10,
-            ),
-            InputSpec(
-                name="threshold",
-                label="Importance threshold",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Importance score floor for critical-article flagging (0..100).",
-                min=0,
-                max=100,
-                step=5,
-            ),
-            InputSpec(
-                name="deep",
-                label="Deep search",
-                control=ControlKind.BOOLEAN,
-                required=False,
-                description="Also pull from GDELT in addition to the primary RSS sources.",
-            ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; the chain may downgrade and report it.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
+                description="Maximum number of story rows (1 to 200).",
+                min=1.0,
+                max=200.0,
+                step=1.0,
             ),
         ],
-        defaults={
-            "topic": "MACRO",
-            "query": "",
-            "limit": 50,
-            "threshold": 70,
-            "deep": False,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
-        },
+        defaults={"topic": "MACRO", "hours": 48, "limit": 50},
         provider_chain=ProviderChain(
-            primary="gdelt",
-            fallbacks=["rss", "cached_snapshot"],
+            primary="awareness",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
-        caching=CachingPolicy(ttl_seconds=120, scope="per_input", persist=False),
+        caching=CachingPolicy(ttl_seconds=60, scope="per_input", persist=False),
         output_contract=OutputContract(
-            must_have=["topic", "items", "data_mode"],
+            must_have=["status", "rows", "topic", "meta"],
             rows=True,
             series=False,
             cards=True,
@@ -137,102 +101,71 @@ def ni() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="published_utc", label="Time", kind="datetime", format="rel-time"),
-                ColumnSpec(key="source", label="Source", kind="tag"),
-                ColumnSpec(key="title", label="Title", kind="text"),
-                ColumnSpec(key="impact", label="Impact", kind="tag"),
-                ColumnSpec(key="importance_score", label="Score", kind="number", format="%.0f"),
+                ColumnSpec(key="published_at", label="Time", kind="datetime", format="rel-time"),
+                ColumnSpec(key="publisher", label="Publisher", kind="tag"),
+                ColumnSpec(key="title", label="Headline", kind="text"),
+                ColumnSpec(key="symbols", label="Symbols", kind="tag"),
                 ColumnSpec(key="sentiment", label="Sentiment", kind="tag"),
-                ColumnSpec(key="link", label="", kind="action"),
+                ColumnSpec(key="importance", label="Importance", kind="number", format="%.0f"),
+                ColumnSpec(key="url", label="", kind="action"),
             ],
             sortable=True,
             filterable=True,
         ),
         card_schema=CardSchema(
             slots=[
-                CardSlot(key="total_items", label="Items", kind="kpi"),
-                CardSlot(key="high_impact_count", label="High Impact", kind="kpi"),
-                CardSlot(key="medium_impact_count", label="Medium", kind="kpi"),
-                CardSlot(key="low_impact_count", label="Low", kind="kpi"),
+                CardSlot(key="count", label="Stories", kind="kpi"),
+                CardSlot(key="topic", label="Topic", kind="badge"),
                 CardSlot(key="data_mode", label="Mode", kind="mode_pill"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
-            "NI resolves the topic to a curated query (or accepts a free-text query) and pulls "
-            "matching headlines from GDELT (primary) and RSS (fallback). Each item is enriched "
-            "via news_intelligence.enrich_articles which computes a 0..100 importance_score and "
-            "a FinBERT sentiment label. The per-item `impact` field is then derived as a tag "
-            "bucket — NOT a synthetic float — by mapping the importance_score and sentiment "
-            "magnitude through the heuristic in `formula_dict.impact_tag`. The tag value is one "
-            "of {low, medium, high}. Critical_articles flags rows above the threshold for the "
-            "alert lane. When both adapters miss, items=[] with a warning explaining both "
-            "providers failed — no synthetic headlines are ever surfaced."
+            "Awareness tags every item with taxonomy topics and asset classes (rule-based, "
+            "alias matching). A preset is a filter on those tags: topics are OR-ed inside the "
+            "preset, asset classes are AND-ed with them. BANKS = funding_liquidity, credit_stress, "
+            "earnings within equities; CHIPS = supply_chain, trade_tariffs, product_launch within "
+            "equities; TECH = product_launch, cyber_outage within equities (approximations: "
+            "awareness has no bank or semiconductor tag); EARN = earnings, guidance; FED = "
+            "central_bank; OIL = energy; MACRO = inflation, employment, growth_recession, "
+            "fiscal_policy; WAR = geopolitics, sanctions; M&A = m_and_a; IPO = ipo; CRYPTO = "
+            "crypto_market within the crypto asset class. Only quality standard or better is kept. "
+            "importance is the awareness 0-100 score; sentiment is labelled by awareness per row "
+            "(the row's sentiment_model names the model: FinBERT ProsusAI/finbert, or the lexicon "
+            "fallback aw-fin-1). An unknown topic shows MACRO and says so in hidden_note."
         ),
-        formula_dict={
-            "impact_tag": Formula(
-                expression=(
-                    r"impact = \begin{cases} \text{high} & importance\_score \ge 70 "
-                    r"\text{ or } |sentiment\_score| \ge 0.8 \\ "
-                    r"\text{medium} & importance\_score \ge 40 \\ "
-                    r"\text{low} & \text{otherwise} \end{cases}"
-                ),
-                variables={
-                    "importance_score": "0..100 from news_intelligence.enrich_articles",
-                    "sentiment_score": "-1..+1 normalized FinBERT score",
-                },
-                notes="Tag bucket, not a numeric score. The thresholds are committed in repo so the analyst can sanity-check.",
-            ),
-        },
         field_dict={
-            "topic": FieldDef(description="Resolved topic preset or echoed free-text query.", source="input"),
-            "items[].published_utc": FieldDef(unit="iso8601", description="Article publish time.", source="feed"),
-            "items[].source": FieldDef(description="Publisher domain.", source="derived"),
-            "items[].title": FieldDef(description="Headline text.", source="feed"),
-            "items[].impact": FieldDef(description="Tag bucket (low/medium/high) — never a float.", source="computed"),
-            "items[].importance_score": FieldDef(unit="[0,100]", description="Importance score from news_intelligence.", source="computed"),
-            "items[].sentiment": FieldDef(description="pos/neu/neg from FinBERT.", source="finbert"),
-            "items[].link": FieldDef(unit="url", description="Direct link to the source article.", source="feed"),
+            "rows[].published_at": FieldDef(unit="iso8601", description="Publisher timestamp (UTC).", source="feed"),
+            "rows[].publisher": FieldDef(description="Publisher name.", source="feed"),
+            "rows[].title": FieldDef(description="Headline as published.", source="feed"),
+            "rows[].url": FieldDef(unit="url", description="Link to the publisher article.", source="feed"),
+            "rows[].sentiment": FieldDef(description="positive, negative or neutral (awareness label; model named in sentiment_model).", source="finbert"),
+            "rows[].importance": FieldDef(unit="0-100", description="Awareness importance score (a number, not a tag).", source="awareness"),
+            "rows[].story_size": FieldDef(unit="count", description="Reports collapsed into this story.", source="awareness"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,
             require_as_of=True,
             require_latency_ms=True,
         ),
-        alerting=AlertingSpec(
-            conditions=["high_impact_for_topic", "critical_article_above_threshold"],
-            delivery=["tray", "notification", "log"],
-        ),
         semantic_tests=[
             SemanticTest(
-                name="ni_impact_is_a_tag_not_float",
-                description="Asserts every item's impact field is one of the canonical strings 'low' / 'medium' / 'high' — never a float, int, or null.",
-                inputs={"topic": "MACRO"},
-                assertions=[
-                    "every_item_impact_in_low_medium_high",
-                    "no_item_impact_is_numeric",
-                ],
+                name="ni_importance_is_score_0_100",
+                description="importance on every row is the awareness 0-100 numeric score, never a tag.",
+                inputs={"topic": "EARN"},
+                assertions=["importance_is_number_between_0_and_100"],
             ),
             SemanticTest(
-                name="ni_high_impact_matches_heuristic",
-                description="For each item tagged high, asserts importance_score >= 70 OR |sentiment_score| >= 0.8 (matches the documented heuristic).",
+                name="ni_every_row_matches_topic_tags",
+                description="Each row carries at least one of the preset's topic tags or asset-class tags.",
                 inputs={"topic": "FED"},
-                assertions=["every_high_item_matches_heuristic"],
+                assertions=["row_topics_intersect_preset"],
             ),
             SemanticTest(
-                name="ni_provider_outage_returns_empty_not_synthetic",
-                description="When both GDELT and RSS fail, asserts items=[] and warning lists the failed adapters; no synthetic headlines appear.",
-                inputs={"_mock": "all_news_down"},
-                assertions=[
-                    "items_empty_array",
-                    "warning_lists_both_providers",
-                ],
-            ),
-            SemanticTest(
-                name="ni_critical_count_matches_threshold",
-                description="critical-count card equals the number of items with importance_score >= threshold.",
-                inputs={"topic": "MACRO", "threshold": 80},
-                assertions=["critical_count_matches_threshold_filter"],
+                name="ni_unknown_topic_is_disclosed",
+                description="An unknown topic falls back to MACRO and hidden_note names the requested topic.",
+                inputs={"topic": "NOPE"},
+                assertions=["topic_falls_back_to_macro", "hidden_note_names_requested_topic"],
             ),
         ],
     )

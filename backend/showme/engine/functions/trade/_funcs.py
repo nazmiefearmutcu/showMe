@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,26 @@ LOG = logging.getLogger("showme.engine.functions.trade")
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _fx_now_utc() -> datetime:
+    """Current UTC time for FX quote-age checks (a seam tests can pin)."""
+    return datetime.now(timezone.utc)
+
+
+# Asset classes that can never describe a ``=F`` futures contract (EMSX#4).
+_FUTURES_INCOMPATIBLE_CLASSES = frozenset({
+    "EQUITY", "ETF", "REIT", "FUND", "INDEX", "CRYPTO", "FX", "MACRO",
+})
+
+
+def _futures_asset_class_conflict(instrument: Instrument) -> str | None:
+    """Return the declared class when it contradicts a ``=F`` futures symbol."""
+    symbol = str(instrument.symbol or "").strip().upper()
+    if not symbol.endswith("=F"):
+        return None
+    declared = str(getattr(instrument.asset_class, "value", instrument.asset_class)).upper()
+    return declared if declared in _FUTURES_INCOMPATIBLE_CLASSES else None
 
 
 def _select_broker(deps: Any, asset_class: AssetClass) -> Any:
@@ -97,6 +118,54 @@ class EMSXFunction(BaseFunction):
                 sources=["paper_ticket"],
                 metadata={"preview_only": True},
             )
+        # WB1-G16 (EMSX#1-#3, TSOX#4): the EMSX/TSOX ticket contract is checked
+        # before any preview or broker call. BBGT and FXGO inherit this method
+        # and keep their existing behaviour; only the codes listed in
+        # _STRICT_TICKET_CODES go through the validation below.
+        strict_ticket = self.code in _STRICT_TICKET_CODES
+        ticket: dict[str, Any] = {}
+        if strict_ticket:
+            ticket_error, ticket = _validate_ticket_fields(
+                quantity=quantity, side=side, order_type=order_type, tif=tif,
+                price=params.get("price"), leverage=params.get("leverage"),
+            )
+            if ticket_error is not None:
+                return _ticket_input_error_result(
+                    self.code, instrument, ticket_error,
+                    side=side, quantity=quantity, order_type=order_type, tif=tif,
+                )
+        # EMSX#4: the caller-declared asset_class overrides the symbol resolver,
+        # so a futures ticket declared as an equity/fund/FX class would reach the
+        # wrong broker. Refuse before any broker is selected or contacted. Scoped
+        # to EMSX: TSOX/FXGO/BBGT inherit this method and keep their behaviour.
+        futures_conflict = (
+            _futures_asset_class_conflict(instrument) if self.code == "EMSX" else None
+        )
+        if futures_conflict is not None:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "reason": (
+                        f"{instrument.symbol} is a futures contract but the ticket asset_class is "
+                        f"{futures_conflict}; no broker was contacted. Futures tickets route as DERIVATIVE."
+                    ),
+                    "broker": None,
+                    "symbol": instrument.symbol,
+                    "asset_class": futures_conflict,
+                    "side": side,
+                    "quantity": quantity,
+                    "order_type": order_type,
+                    "time_in_force": tif,
+                    "tif": tif,
+                    "next_actions": [
+                        "Set asset_class to DERIVATIVE for CME futures and preview again.",
+                    ],
+                },
+                sources=["paper_ticket"],
+                metadata={"preview_only": True, "provider_errors": []},
+            )
         broker = _select_broker(self.deps, instrument.asset_class)
         if broker is None and live_armed:
             return FunctionResult(
@@ -135,8 +204,12 @@ class EMSXFunction(BaseFunction):
             # "Price: —" row, hiding the fact that the value the user typed
             # was carried through. Echo both fields back so the preview is
             # actually a faithful round-trip of what the trader requested.
-            price_param = _float_param(params.get("price"), default=0.0) if params.get("price") not in (None, "") else None
-            leverage_param = params.get("leverage")
+            if strict_ticket:
+                price_param = ticket["price"]
+                leverage_param = ticket["leverage"]
+            else:
+                price_param = _float_param(params.get("price"), default=0.0) if params.get("price") not in (None, "") else None
+                leverage_param = params.get("leverage")
             preview = {
                 "broker": "paper",
                 "status": "preview",
@@ -176,9 +249,9 @@ class EMSXFunction(BaseFunction):
             side=OrderSide(side),
             quantity=quantity,
             order_type=OrderType(order_type),
-            price=params.get("price"),
+            price=ticket["price"] if strict_ticket else params.get("price"),
             time_in_force=TimeInForce(tif),
-            leverage=params.get("leverage"),
+            leverage=ticket["leverage"] if strict_ticket else params.get("leverage"),
         )
         order_id = await broker.place_order(order)
         # Per PY-LINT-05 P0: do NOT silently swallow audit-write failures
@@ -223,8 +296,8 @@ class EMSXFunction(BaseFunction):
                 "order_type": order_type,
                 "time_in_force": tif,
                 "tif": tif,
-                "price": params.get("price"),
-                "leverage": params.get("leverage"),
+                "price": ticket["price"] if strict_ticket else params.get("price"),
+                "leverage": ticket["leverage"] if strict_ticket else params.get("leverage"),
                 "next_actions": [
                     "Track the working order in AIM (broker + order_id).",
                     "A fill will appear in the AIM ledger once the broker reports it.",
@@ -244,6 +317,15 @@ class AIMFunction(BaseFunction):
 
     _BROKERS = ("binance_broker", "alpaca_broker", "ibkr_broker", "oanda_broker")
 
+    # Lifecycle states that count as working when a live adapter lists the
+    # order. "submitted" is included: a broker that reports it (IBKR "Submitted")
+    # is working the order. History rows never reach this check; EMSX/BBGT write
+    # "submitted" to history at placement and that row is never broker-confirmed.
+    _OPEN_STATUSES = frozenset({
+        "open", "new", "accepted", "pending", "pending_new", "working",
+        "partially_filled", "submitted",
+    })
+
     _FIELD_DICTIONARY = {
         "created_at": "Order creation timestamp.",
         "broker": "Adapter name (binance_broker, alpaca_broker, ...).",
@@ -260,13 +342,23 @@ class AIMFunction(BaseFunction):
     }
 
     _METHODOLOGY = (
-        "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda), calling "
-        "get_open_orders() and collecting per-broker results. Provider failures are recorded as "
+        "AIM iterates over every configured broker adapter (binance/alpaca/ibkr/oanda) one at a time "
+        "(sequential, not parallel), calling get_open_orders() and collecting per-broker results. "
+        "provider_mode=cached_snapshot skips live polling. Provider failures are recorded as "
         "warnings without dropping rows from working brokers. The persisted local order_history "
         "store contributes a configurable tail of recent orders so the user sees a cross-broker "
         "chronological ledger even when individual brokers are momentarily down. AIM never mutates "
         "state — it is the read-only counterpart to EMSX/BBGT/FXGO/TSOX."
     )
+
+    @staticmethod
+    def _broker_identities(key: str, broker: Any) -> set[str]:
+        """Names one adapter's orders are stored under: its config key and its ``.name``."""
+        ids = {key}
+        nm = getattr(broker, "name", None)
+        if isinstance(nm, str) and nm:
+            ids.add(nm)
+        return ids
 
     @staticmethod
     def _normalise_order(broker_name: str, raw: Any, *, from_history: bool = False) -> dict[str, Any]:
@@ -303,25 +395,46 @@ class AIMFunction(BaseFunction):
         warnings: list[str] = []
         rows: list[dict[str, Any]] = []
         brokers_online: list[str] = []
+        # (broker identity, order_id) pairs that a live adapter currently lists.
+        live_keys: set[tuple[str, str]] = set()
 
         broker_filter = params.get("broker_filter") or []
         if isinstance(broker_filter, str):
             broker_filter = [broker_filter]
         targets = [b for b in self._BROKERS if (not broker_filter or b in broker_filter)]
 
-        for name in targets:
+        # provider_mode=cached_snapshot skips live adapter polling entirely and
+        # serves only the local history tail; any other value polls live.
+        provider_mode = str(params.get("provider_mode") or "").strip().lower()
+        skip_live = provider_mode == "cached_snapshot"
+        if provider_mode and provider_mode not in {"live_exchange", "cached_snapshot"}:
+            warnings.append(f"AIM: unsupported provider_mode={provider_mode!r}; live broker polling was used.")
+        # brokers_checked: configured adapters AIM actually attempted a poll on
+        # (failed polls included, unconfigured adapters and cached_snapshot excluded).
+        polled: list[str] = []
+
+        for name in ([] if skip_live else targets):
             broker = getattr(self.deps, name, None)
             if broker is None:
                 continue
+            polled.append(name)
             try:
                 open_orders = await broker.get_open_orders()
             except Exception as exc:  # noqa: BLE001
-                provider_errors.append(f"{name}.get_open_orders: {exc}")
-                warnings.append(f"{name} unavailable: {exc}")
+                provider_errors.append(f"{name}.get_open_orders: {str(exc) or type(exc).__name__}")
+                warnings.append(f"{name} unavailable: {str(exc) or type(exc).__name__}")
                 continue
             brokers_online.append(name)
             for raw in (open_orders or []):
-                rows.append(self._normalise_order(name, raw, from_history=False))
+                live_row = self._normalise_order(name, raw, from_history=False)
+                # Only a live broker listing proves an order is working now.
+                live_row["confirmed_open"] = (
+                    str(live_row.get("status") or "").lower() in self._OPEN_STATUSES
+                )
+                rows.append(live_row)
+                if live_row.get("order_id") is not None:
+                    for ident in self._broker_identities(name, broker):
+                        live_keys.add((ident, str(live_row["order_id"])))
 
         # Persisted order history (cross-broker tail)
         raw_limit = params.get("limit", 200)
@@ -334,11 +447,98 @@ class AIMFunction(BaseFunction):
         history_rows: list[dict[str, Any]] = []
         try:
             from showme.engine.services.order_history import list_orders
-            for raw in (list_orders(limit=limit_int) or []):
+            if broker_filter:
+                # History rows are stored under the adapter's .name (not its
+                # config key), so query every name the filtered adapters use.
+                identities: set[str] = set()
+                for name in targets:
+                    identities |= self._broker_identities(name, getattr(self.deps, name, None))
+                raw_history: list[dict[str, Any]] = []
+                for ident in sorted(identities):
+                    raw_history.extend(list_orders(broker=ident, limit=limit_int) or [])
+                raw_history.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+                raw_history = raw_history[:limit_int]
+            else:
+                raw_history = list_orders(limit=limit_int) or []
+            for raw in raw_history:
                 history_rows.append(self._normalise_order("history", raw, from_history=True))
         except Exception as exc:  # noqa: BLE001
-            provider_errors.append(f"order_history.list_orders: {exc}")
-            warnings.append(f"order history unavailable: {exc}")
+            provider_errors.append(f"order_history.list_orders: {str(exc) or type(exc).__name__}")
+            warnings.append(f"order history unavailable: {str(exc) or type(exc).__name__}")
+        # A history row that a live adapter already lists is the same order:
+        # keep the live row only, so it is neither duplicated nor double counted.
+        # AIM#3-RQ: one order can be stored under an adapter's .name AND its config
+        # key. Map every stored name to the config key, then drop history rows
+        # for an order already listed live and keep one row per (broker, order_id)
+        # (list_orders is newest-first, so the first row wins).
+        alias_to_key: dict[str, str] = {}
+        for key in self._BROKERS:
+            for ident in self._broker_identities(key, getattr(self.deps, key, None)):
+                alias_to_key.setdefault(ident, key)
+
+        def _canon_broker(value: Any) -> str:
+            text = str(value)
+            return alias_to_key.get(text, text)
+
+        known_names = set(alias_to_key) | set(alias_to_key.values())
+        seen_history: set[tuple[str, str]] = set()
+        unique_history: list[dict[str, Any]] = []
+        # AIM#3-RQ: history_rows is newest-first, so the first row for an order wins.
+        dropped_labels: dict[str, set[str]] = {}
+        for r in history_rows:
+            if r.get("order_id") is None:
+                unique_history.append(r)
+                continue
+            oid = str(r.get("order_id"))
+            canon = _canon_broker(r.get("broker"))
+            if canon in known_names:
+                key_pair = (canon, oid)
+                if key_pair in live_keys or key_pair in seen_history:
+                    continue
+            else:
+                # The history store is written once per placement, so one order_id
+                # under labels no adapter resolves to is one order recorded twice:
+                # count it once, keyed by order_id alone.
+                key_pair = ("<unresolved>", oid)
+                if key_pair in seen_history:
+                    dropped_labels.setdefault(oid, set()).add(str(r.get("broker")))
+                    continue
+            seen_history.add(key_pair)
+            unique_history.append(r)
+        history_rows = unique_history
+        for oid, labels in sorted(dropped_labels.items()):
+            kept = next(
+                str(r.get("broker")) for r in history_rows if str(r.get("order_id")) == oid
+            )
+            warnings.append(
+                f"Duplicate order_id {oid} recorded under unmatched broker name(s) "
+                + ", ".join(sorted(labels))
+                + f" was counted once, as '{kept}' (the newest record)."
+            )
+        # Any order_id still recorded under more than one resolved name is listed
+        # and counted separately, because the response cannot prove it is one order.
+        names_by_order: dict[str, set[str]] = {}
+        for r in history_rows:
+            if r.get("order_id") is not None:
+                names_by_order.setdefault(str(r["order_id"]), set()).add(_canon_broker(r.get("broker")))
+        shared_ids = sorted(oid for oid, names in names_by_order.items() if len(names) > 1)
+        if shared_ids:
+            warnings.append(
+                "Possible duplicate order(s): order_id " + ", ".join(shared_ids)
+                + " recorded under different broker names; each row is listed and counted separately."
+            )
+        # The history store is written once at placement and never updated on
+        # fills or closes, so no history row can prove a working order: it is
+        # shown for the audit trail but never counted as open.
+        for r in history_rows:
+            r["confirmed_open"] = False
+        # A 'submitted' row no live broker confirms may be stale (filled, closed).
+        unconfirmed = [r for r in history_rows if str(r.get("status") or "").lower() == "submitted"]
+        if unconfirmed:
+            warnings.append(
+                f"{len(unconfirmed)} order(s) recorded as 'submitted' in local history could not be "
+                "confirmed open by a live broker; their current status may have changed since placement."
+            )
         rows.extend(history_rows)
 
         # Optional status filter (manifest input).
@@ -349,23 +549,37 @@ class AIMFunction(BaseFunction):
             wanted = {str(s).lower() for s in status_filter}
             rows = [r for r in rows if str(r.get("status") or "").lower() in wanted]
 
-        open_count = sum(1 for r in rows if str(r.get("status") or "").lower() == "open")
+        open_count = sum(1 for r in rows if r.get("confirmed_open") is True)
         filled_count = sum(
             1 for r in rows if str(r.get("status") or "").lower() in {"filled", "partially_filled"}
         )
 
-        def _notional(r: dict[str, Any]) -> float:
+        def _notional(r: dict[str, Any]) -> float | None:
+            # None = not computable (market order with no price or fill price).
             try:
                 qty = float(r.get("quantity") or 0.0)
-                px = float(r.get("price") or r.get("avg_fill_px") or 0.0)
-                return qty * px
+                px_raw = r.get("price")
+                if px_raw in (None, ""):
+                    px_raw = r.get("avg_fill_px")
+                if px_raw in (None, ""):
+                    return None
+                return qty * float(px_raw)
             except (TypeError, ValueError):
-                return 0.0
+                return None
 
-        total_notional = round(sum(_notional(r) for r in rows), 2)
+        notionals = [_notional(r) for r in rows]
+        priced_count = sum(1 for n in notionals if n is not None)
+        unpriced_count = len(rows) - priced_count
+        # Quantities are base units and prices are quote units, and rows span
+        # several symbols, so the total is an indicative sum, not a USD figure.
+        total_notional = round(sum(n for n in notionals if n is not None), 2)
+        if unpriced_count:
+            warnings.append(
+                f"{unpriced_count} unpriced order(s) (no price or fill price) are excluded from the indicative notional total."
+            )
 
         data_mode = "live_exchange" if brokers_online else "not_configured"
-        if not brokers_online and history_rows:
+        if (not brokers_online and history_rows) or skip_live:
             data_mode = "cached_snapshot"
 
         cards = {
@@ -373,6 +587,10 @@ class AIMFunction(BaseFunction):
             "filled_today": filled_count,
             "brokers_online": len(brokers_online),
             "total_notional": total_notional,
+            "notional_basis": "indicative_unconverted",
+            "priced_count": priced_count,
+            "unpriced_count": unpriced_count,
+            "unconfirmed_submitted_count": len(unconfirmed),
             "data_mode": data_mode,
             "as_of": _utc_now_iso(),
         }
@@ -387,7 +605,8 @@ class AIMFunction(BaseFunction):
                     "rows": [],
                     "orders": [],
                     "cards": cards,
-                    "brokers_checked": list(targets),
+                    "brokers_checked": list(polled),
+                    "provider_mode": provider_mode or None,
                     "data_mode": data_mode,
                     "as_of": cards["as_of"],
                     "methodology": self._METHODOLOGY,
@@ -413,8 +632,9 @@ class AIMFunction(BaseFunction):
                 "rows": rows,
                 "orders": rows,
                 "cards": cards,
-                "brokers_checked": list(targets),
+                "brokers_checked": list(polled),
                 "brokers_online": brokers_online,
+                "provider_mode": provider_mode or None,
                 "data_mode": data_mode,
                 "as_of": cards["as_of"],
                 "methodology": self._METHODOLOGY,
@@ -426,12 +646,73 @@ class AIMFunction(BaseFunction):
         )
 
 
+# TSOX#2: US Treasury yield quotes (mirrors server.BOND_SYMBOLS). These are yields,
+# not prices, so a price-unit limit cannot be checked against them.
+_YIELD_QUOTED_SYMBOLS = frozenset({
+    "US1M", "US3M", "US6M", "US1Y", "US2Y", "US3Y", "US5Y", "US7Y", "US10Y", "US20Y", "US30Y",
+})
+
+
+def _is_yield_quoted(symbol: str) -> bool:
+    return str(symbol or "").upper().replace("-", "") in _YIELD_QUOTED_SYMBOLS
+
+
+def _tsox_ticket_type(params: dict[str, Any]) -> str:
+    """The order type the TSOX ticket uses: type, then order_type, then MARKET.
+
+    A blank value counts as absent here (TSOX#2), so a blank "type" cannot hide
+    an order_type=LIMIT from the yield guard.
+    """
+    for key in ("type", "order_type"):
+        value = params.get(key)
+        if value not in (None, ""):
+            return str(value).strip().upper()
+    return "MARKET"
+
+
 @FunctionRegistry.register
 class TSOXFunction(EMSXFunction):
     """TSOX — Treasury / Bond order ticket."""
     code = "TSOX"
     name = "Treasury Order Entry"
-    asset_classes = (AssetClass.BOND,)
+    # Cash Treasuries (BOND) and CME Treasury futures (DERIVATIVE, e.g. ZN=F).
+    asset_classes = (AssetClass.BOND, AssetClass.DERIVATIVE)
+
+    async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        yield_quoted = instrument is not None and _is_yield_quoted(instrument.symbol)
+        ticket_type = _tsox_ticket_type(params)
+        if yield_quoted and ticket_type == "LIMIT":
+            # TSOX#2: a yield quote cannot take a price-unit limit. There is no
+            # yield-to-price conversion here (it needs the bond's terms), so the
+            # ticket says so instead of previewing the price as valid.
+            return _ticket_input_error_result(
+                self.code, instrument,
+                {
+                    "field": "price",
+                    "reason": (
+                        f"{instrument.symbol} is quoted as a yield, not a price. A limit price in price "
+                        "units cannot be checked against it and no yield-to-price conversion is "
+                        "performed. Trade a price-quoted instrument (for example ZN=F) or source the bond's terms."
+                    ),
+                },
+                side=str(params.get("side", "BUY")).upper(),
+                quantity=_float_param(params.get("quantity")),
+                order_type="LIMIT",
+                tif=str(params.get("tif", params.get("time_in_force", "GTC"))).upper(),
+            )
+        result = await super().execute(instrument=instrument, **params)
+        if isinstance(result.data, dict):
+            # WB1-G16 TSOX#3: bond-ticket analytics are not in the ticket inputs,
+            # so say so explicitly instead of leaving them silently absent.
+            result.data["analytics"] = _tsox_analytics_not_computed()
+        # The MARKET note belongs to a previewed MARKET ticket only, not to an input_error.
+        errored = isinstance(result.data, dict) and result.data.get("status") == "input_error"
+        if yield_quoted and ticket_type == "MARKET" and not errored:
+            result.warnings.append(
+                f"{instrument.symbol} is quoted as a yield; a MARKET ticket has no price and no "
+                "yield-to-price conversion is performed."
+            )
+        return result
 
 
 @FunctionRegistry.register
@@ -449,22 +730,33 @@ class FXGOFunction(EMSXFunction):
         "EURJPY", "GBPJPY",
     )
 
+    # A spot quote older than this is shown as a stale reference, never as a
+    # live price (e.g. a Friday-close quote read on the weekend).
+    _QUOTE_STALE_AFTER_SECONDS = 3600
+
     _BOARD_FIELD_DICTIONARY = {
         "pair": "FX pair (base/quote).",
-        "bid": "Best bid (quote per base) — last minus half synthetic spread.",
-        "ask": "Best ask (quote per base) — last plus half synthetic spread.",
+        "bid": "Indicative bid (quote per base) — mid minus half a synthetic spread; not a quoted venue bid.",
+        "ask": "Indicative ask (quote per base) — mid plus half a synthetic spread; not a quoted venue ask.",
+        "bid_ask_basis": "synthetic_indicative — bid/ask are derived from the spot mid, never a broker or venue quote.",
         "mid": "Mid price (last traded spot).",
         "spread": "Ask minus bid, in quote units.",
         "spread_pips": "Spread expressed in pips.",
-        "change": "Absolute change vs previous close.",
-        "change_pct": "Percent change vs previous close.",
-        "previous_close": "Prior session close.",
+        "change": "Absolute change vs the prior daily session close (one-day bar).",
+        "change_pct": "Percent change vs the prior daily session close (one-day bar).",
+        "previous_close": "Prior daily session close (the bar before the latest one), not the start of the 5-day window.",
+        "previous_close_date": "UTC date of the prior daily session bar that previous_close comes from.",
+        "quote_time": "UTC time the provider printed the mid (regularMarketTime). Unknown when the provider omits it.",
+        "quote_age_seconds": "Seconds between the quote time and the request. Above the stale threshold the board is reference, not live.",
+        "as_of": "Quote time of the oldest quote on the board (null when the provider gave no quote time).",
+        "fetched_at": "When ShowMe fetched the board (not a market time).",
     }
 
     _BOARD_METHODOLOGY = (
-        "FXGO surfaces a live keyless FX dealing board: spot mid for each major/cross is pulled "
-        "from yfinance (EURUSD=X style tickers); a synthetic dealing spread (1 pip JPY-quoted, "
-        "0.0001 otherwise, scaled to liquidity) is applied around the mid to derive indicative "
+        "FXGO surfaces a keyless FX dealing board: spot mid for each major/cross is pulled "
+        "from yfinance (EURUSD=X style tickers); a fixed synthetic 1-pip dealing spread "
+        "(0.0001 quote units, or 0.01 for JPY-quoted pairs; not scaled to liquidity) is applied "
+        "around the mid to derive indicative "
         "bid/ask so the board reads like a venue ladder without any keyed broker feed. When a "
         "ticket (quantity/side/submit) is supplied, FXGO falls back to the EMSX two-mode "
         "safe-by-default trade-ticket contract (paper preview unless explicitly armed)."
@@ -476,7 +768,13 @@ class FXGOFunction(EMSXFunction):
         # ``pairs`` cannot smuggle path segments / query chars into the Yahoo
         # chart URL. Returns "" when nothing alphabetic survives so the caller
         # can skip the pair rather than request a malformed ``=X`` symbol.
-        base = re.sub(r"[^A-Za-z]", "", pair).upper().replace("=X", "")
+        # The Yahoo ``=X`` suffix must be removed BEFORE the non-letter strip:
+        # the strip deletes "=" first, so ``GBPUSD=X`` used to become
+        # ``GBPUSDX`` and requested the non-existent ``GBPUSDX=X`` (404).
+        text = str(pair or "").strip().upper()
+        if text.endswith("=X"):
+            text = text[:-2]
+        base = re.sub(r"[^A-Z]", "", text)
         if not base:
             return ""
         return f"{base}=X"
@@ -512,21 +810,63 @@ class FXGOFunction(EMSXFunction):
         result = (((payload.get("chart") or {}).get("result") or [None])[0]) or {}
         meta = result.get("meta") or {}
         quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
-        closes = [c for c in (quote.get("close") or []) if c is not None]
+        # Pair each daily bar's close with its timestamp; bars without a close
+        # (e.g. an unfinished bar) are skipped.
+        raw_closes = list(quote.get("close") or [])
+        raw_ts = list(result.get("timestamp") or [])
+        bars = [
+            (raw_ts[i] if i < len(raw_ts) else None, c)
+            for i, c in enumerate(raw_closes)
+            if c is not None
+        ]
+        closes = [c for _, c in bars]
         last_close = closes[-1] if closes else None
         mid = meta.get("regularMarketPrice") or last_close
-        prev = (
-            meta.get("previousClose")
-            or meta.get("chartPreviousClose")
-            or (closes[-2] if len(closes) >= 2 else None)
-        )
+        # Prior session = the daily bar before the latest one. Yahoo's
+        # chartPreviousClose / previousClose for range=5d is the close BEFORE
+        # the whole 5-session window, so it must never stand in for the
+        # one-day previous close.
+        # regularMarketTime is when the quoted price printed; it is the honest
+        # as-of for the mid, not the moment we fetched it.
+        quote_time = None
+        try:
+            if meta.get("regularMarketTime") is not None:
+                quote_time = datetime.fromtimestamp(int(meta["regularMarketTime"]), tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            quote_time = None
+        # FXGO#2: the base is the last daily bar dated BEFORE the quote's UTC
+        # session date. Taking "the second-to-last close" was wrong when the
+        # newest bar has no close yet (null bars are dropped), which moved the
+        # base two sessions back and presented a two-session move as one day.
+        prev = None
+        prev_date = None
+        if quote_time is not None:
+            quote_day = quote_time.date()
+            prior = [
+                (ts, c) for ts, c in bars
+                if ts is not None
+                and datetime.fromtimestamp(int(ts), tz=timezone.utc).date() < quote_day
+            ]
+            if prior:
+                prior_ts, prev = prior[-1]
+                prev_date = datetime.fromtimestamp(int(prior_ts), tz=timezone.utc).date().isoformat()
+        elif len(bars) >= 2:
+            # No quote time, so the session cannot be pinned. The row is already
+            # flagged as unknown freshness; its previous_close_date states the
+            # bar actually used.
+            prev_ts, prev = bars[-2]
+            if prev_ts is not None:
+                prev_date = datetime.fromtimestamp(int(prev_ts), tz=timezone.utc).date().isoformat()
         return (
             float(mid) if mid is not None else None,
             float(prev) if prev is not None else None,
+            {"previous_close_date": prev_date, "quote_time": quote_time},
         )
 
     def _board_row(self, pair: str) -> dict[str, Any] | None:
-        mid, prev = self._fetch_fx_spot(pair)
+        spot = self._fetch_fx_spot(pair)
+        mid, prev = spot[0], spot[1]
+        spot_meta = spot[2] if len(spot) > 2 and isinstance(spot[2], dict) else {}
         if mid is None or mid <= 0:
             return None
         pip = self._pip_size(pair)
@@ -543,17 +883,25 @@ class FXGOFunction(EMSXFunction):
         except (TypeError, ValueError):
             change = None
             change_pct = None
+        quote_time = spot_meta.get("quote_time")
+        quote_age = None
+        if isinstance(quote_time, datetime):
+            quote_age = max(0, int((_fx_now_utc() - quote_time).total_seconds()))
         return {
             "pair": pair.upper(),
             "symbol": pair.upper(),
             "bid": bid,
             "ask": ask,
+            "bid_ask_basis": "synthetic_indicative",
             "mid": round(mid, 6),
             "spread": round(ask - bid, 6),
             "spread_pips": round((ask - bid) / pip, 2),
             "change": change,
             "change_pct": change_pct,
             "previous_close": (round(float(prev), 6) if prev is not None else None),
+            "previous_close_date": spot_meta.get("previous_close_date"),
+            "quote_time": quote_time.isoformat() if isinstance(quote_time, datetime) else None,
+            "quote_age_seconds": quote_age,
         }
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
@@ -568,12 +916,36 @@ class FXGOFunction(EMSXFunction):
             return await super().execute(instrument=instrument, **params)
 
         # Default path: live FX dealing board (keyless spot grid w/ bid/ask/spread).
-        pairs = params.get("pairs") or params.get("symbols")
+        # ``pairs`` is the board's own input. ``symbols`` is read only when the
+        # caller supplied it: the router drops the injected FX agent peer group
+        # (EURUSD/GBPUSD/USDJPY) for FXGO (_agent_runtime._route_function_params),
+        # so a surviving ``symbols`` list is a caller's board request (FXGO#5).
+        pairs = params.get("pairs")
+        board_source = "explicit_pairs"
         if isinstance(pairs, str):
             pairs = [p.strip() for p in pairs.split(",") if p.strip()]
         if not pairs:
-            single = params.get("symbol") or (instrument.symbol if instrument else None)
-            pairs = [single] if single else list(self._BOARD_PAIRS)
+            symbols = params.get("symbols")
+            if isinstance(symbols, str):
+                symbols = symbols.split(",")
+            if isinstance(symbols, (list, tuple)):
+                cleaned = [str(s).strip() for s in symbols if str(s).strip()]
+                if cleaned:
+                    pairs = cleaned
+                    board_source = "explicit_symbols"
+        if not pairs:
+            # A symbol is only a board request when the caller supplied it;
+            # the router sets __explicit_symbol=False when it injected one.
+            explicit_symbol = params.get("__explicit_symbol", True) is not False
+            single = None
+            if explicit_symbol:
+                single = params.get("symbol") or (instrument.symbol if instrument else None)
+            if single:
+                pairs = [single]
+                board_source = "explicit_symbol"
+            else:
+                pairs = list(self._BOARD_PAIRS)
+                board_source = "default"
 
         # ``pairs`` is user-supplied — cap it to a sane board size so a caller
         # cannot fan out hundreds of blocking ``requests.get`` threads at once.
@@ -604,7 +976,16 @@ class FXGOFunction(EMSXFunction):
             if result is not None:
                 rows.append(result)
 
-        as_of = _utc_now_iso()
+        fetched_at = _utc_now_iso()
+        # as_of is the OLDEST quote on the board (the honest freshness bound);
+        # None when the provider gave no quote time.
+        aged_rows = [r for r in rows if r.get("quote_age_seconds") is not None]
+        oldest = max(aged_rows, key=lambda r: r["quote_age_seconds"]) if aged_rows else None
+        as_of = oldest["quote_time"] if oldest else None
+        stale_rows = [
+            r for r in aged_rows
+            if r["quote_age_seconds"] > self._QUOTE_STALE_AFTER_SECONDS
+        ]
         if not rows:
             return FunctionResult(
                 code=self.code,
@@ -618,9 +999,10 @@ class FXGOFunction(EMSXFunction):
                     "order_type": "MARKET",
                     "tif": "GTC",
                     "rows": [],
-                    "cards": {"data_mode": "provider_unavailable", "as_of": as_of},
+                    "cards": {"data_mode": "provider_unavailable", "as_of": None},
                     "data_mode": "provider_unavailable",
-                    "as_of": as_of,
+                    "as_of": None,
+                    "fetched_at": fetched_at,
                     "methodology": self._BOARD_METHODOLOGY,
                     "field_dictionary": self._BOARD_FIELD_DICTIONARY,
                     "warning": "FX spot board unavailable from yfinance.",
@@ -641,20 +1023,52 @@ class FXGOFunction(EMSXFunction):
         # while most pairs 404'd is exactly the false-labelling defect the
         # FN-WAVE survey caught.
         total_requested = len(rows) + len(provider_errors)
+        # FXGO#1: a row without a provider quote time has unverifiable age, so
+        # it can never be presented as a live price (data policy: explicit state).
+        unknown_time = [r["pair"] for r in rows if r.get("quote_time") is None]
         if provider_errors and len(rows) < total_requested:
             board_mode = "delayed_reference"
             board_warnings.append(
                 f"Board degraded: {len(rows)}/{total_requested} pairs returned "
                 "quotes; the rest failed upstream and are NOT shown."
             )
+        elif stale_rows or unknown_time:
+            # The feed answered, but the newest quote is old (e.g. the FX
+            # market is closed) or its age is unknown: a reference price, not a live one.
+            board_mode = "delayed_reference"
+            if stale_rows:
+                board_warnings.append(
+                    f"Stale quotes: {len(stale_rows)}/{len(rows)} pair(s) were last "
+                    f"quoted more than {self._QUOTE_STALE_AFTER_SECONDS // 60} minutes "
+                    f"before the request (oldest quote {as_of}). Shown as reference, "
+                    "not a live price."
+                )
         else:
-            board_mode = "live_exchange"
+            # Yahoo spot quotes with an indicative spread - not a venue's
+            # two-way board, so never "live_exchange".
+            board_mode = "live_yfinance_quote"
+        if unknown_time:
+            board_warnings.append(
+                "Quote time not reported by the provider for: "
+                + ", ".join(unknown_time)
+                + "; freshness of these rows is unknown, so they are shown as "
+                "reference, not a live price."
+            )
 
         # Card summary mirrors the EMSX/manifest card slots while reflecting the
         # live board: show the top pair's indicative two-way quote.
         top = rows[0]
+        # FXGO#1-RQ: cards.status must follow board_mode, not only staleness.
+        # A degraded board (upstream failures) is not "ok" even when the rows
+        # that survived are fresh.
+        if board_mode == "live_yfinance_quote":
+            card_status = "ok"
+        elif provider_errors and len(rows) < total_requested and not (stale_rows or unknown_time):
+            card_status = "degraded"
+        else:
+            card_status = "stale"
         cards = {
-            "status": "live",
+            "status": card_status,
             "broker": "indicative",
             "symbol": top["pair"],
             "side": "TWO_WAY",
@@ -682,7 +1096,11 @@ class FXGOFunction(EMSXFunction):
                 "rows": rows,
                 "cards": cards,
                 "data_mode": board_mode,
+                "requested_pairs": [str(p).upper() for p in pairs],
+                "board_source": board_source,
+                "bid_ask_basis": "synthetic_indicative",
                 "as_of": as_of,
+                "fetched_at": fetched_at,
                 "methodology": self._BOARD_METHODOLOGY,
                 "field_dictionary": self._BOARD_FIELD_DICTIONARY,
                 "next_actions": [
@@ -699,11 +1117,321 @@ class FXGOFunction(EMSXFunction):
         )
 
 
+def _is_treasury_future_symbol(symbol: str | None) -> bool:
+    """True for CME Treasury futures (ZN=F, ZB=F ...), using the server's classifier."""
+    if not symbol:
+        return False
+    # Lazy import: showme.server imports the engine, so a module-level import cycles.
+    from showme.server import looks_like_treasury_future
+
+    return bool(looks_like_treasury_future(str(symbol)))
+
+
 @FunctionRegistry.register
 class BBGTFunction(EMSXFunction):
     """BBGT — Bloomberg Trade (multi-asset)."""
     code = "BBGT"
     name = "Multi-Asset Trade Ticket"
+
+    # BBGT ticket vocabulary (manifest bbgt_seed.py). Validated here, before the
+    # shared EMSX engine, so EMSX / TSOX / FXGO keep their existing behaviour.
+    _SIDES = ("BUY", "SELL")
+    _ORDER_TYPES = ("MARKET", "LIMIT")
+    _TIFS = ("DAY", "GTC", "IOC", "FOK")
+
+    @staticmethod
+    def _ticket_text(params: dict[str, Any], keys: tuple[str, ...], default: str) -> str:
+        for key in keys:
+            value = params.get(key)
+            if value not in (None, ""):
+                return str(value).strip().upper()
+        return default
+
+    @staticmethod
+    def _ticket_field(params: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+        """Normalised ticket text, or None when absent or blank. Never defaulted."""
+        for key in keys:
+            value = params.get(key)
+            if value not in (None, ""):
+                text = str(value).strip().upper()
+                if text:
+                    return text
+        return None
+
+    @staticmethod
+    def _fx_quote_currency(symbol: str) -> str | None:
+        """Quote (second) leg of an FX pair such as EURUSD, EUR/USD or EURUSD=X; None if not parseable."""
+        text = str(symbol or "").strip().upper().removesuffix("=X")
+        match = re.fullmatch(r"([A-Z]{3})[/_\-]?([A-Z]{3})", text)
+        return match.group(2) if match else None
+
+    @staticmethod
+    def _limit_price(params: dict[str, Any]) -> float | None:
+        raw = params.get("price")
+        if raw in (None, ""):
+            return None
+        try:
+            price = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not (0.0 < price < float("inf")):
+            return None
+        return price
+
+    async def _indicative_last(self, instrument: Instrument) -> tuple[float | None, str | None, str | None, str | None]:
+        """Return (last, as_of, source, reason) from the keyless quote adapter, or a reason it is absent."""
+        yf = getattr(self.deps, "yfinance", None)
+        if yf is None:
+            return None, None, None, "No indicative quote adapter is wired, so a MARKET notional cannot be computed."
+        from showme.engine.core.base_data_source import DataKind, DataRequest
+
+        try:
+            quote = await asyncio.wait_for(
+                yf.fetch(DataRequest(
+                    kind=DataKind.QUOTE,
+                    instrument=instrument,
+                    extra={"timeout": 2.0},
+                )),
+                timeout=2.5,
+            )
+        except Exception as exc:  # noqa: BLE001 — quote is best-effort; degrade honestly
+            return None, None, None, f"Indicative quote unavailable ({type(exc).__name__}); MARKET notional not computed."
+        try:
+            last = float(getattr(quote, "last", None))
+        except (TypeError, ValueError):
+            last = None
+        if last is None or not (0.0 < last < float("inf")):
+            return None, None, None, "Indicative quote returned no usable last price; MARKET notional not computed."
+        ts = getattr(quote, "timestamp", None)
+        as_of = ts.isoformat() if hasattr(ts, "isoformat") else None
+        source = getattr(quote, "source", None) or "yfinance"
+        return last, as_of, str(source), None
+
+    _US_VENUES = frozenset({"NASDAQ", "NYSE", "AMEX", "ARCA", "NYSEARCA", "BATS"})
+
+    @classmethod
+    def _listing_currency(cls, instrument: Instrument) -> tuple[str | None, str | None]:
+        """(currency, reason) for a non-FX notional. Labelled only when explicitly known:
+        a non-default instrument currency, or a US venue. Otherwise null with a reason,
+        because Instrument.currency silently defaults to USD."""
+        currency = str(instrument.currency or "").strip().upper()
+        if currency and currency != "USD":
+            return currency, None
+        if str(instrument.exchange or "").strip().upper() in cls._US_VENUES:
+            return "USD", None
+        return None, (
+            f"Listing currency for {instrument.symbol} is not explicitly known "
+            "(the instrument carries the default currency); notional currency is not labelled."
+        )
+
+    async def _notional_fields(
+        self, instrument: Instrument, quantity: float, limit_price: float | None,
+    ) -> dict[str, Any]:
+        """Pre-trade notional = quantity x (limit price, else indicative last), never a fabricated value."""
+        fee_note = "No commission or fee estimate: no free fee source is wired."
+        currency_reason: str | None = None
+        if instrument.asset_class == AssetClass.FX:
+            # An FX notional is denominated in the pair's quote leg, which is not
+            # always instrument.currency (that field defaults to USD).
+            quote_ccy = self._fx_quote_currency(instrument.symbol)
+            if quote_ccy is None:
+                return {
+                    "reference_price": None,
+                    "reference_price_basis": None,
+                    "notional": None,
+                    "notional_currency": None,
+                    "notional_basis": "unavailable",
+                    "notional_indicative": None,
+                    "notional_as_of": None,
+                    "notional_source": None,
+                    "notional_reason": "FX quote currency could not be derived from the symbol; notional not computed.",
+                    "notional_currency_reason": None,
+                    "notional_note": fee_note,
+                }
+            currency = quote_ccy
+        else:
+            currency, currency_reason = self._listing_currency(instrument)
+        if limit_price is not None:
+            return {
+                "reference_price": limit_price,
+                "reference_price_basis": "limit_price",
+                "notional": round(quantity * limit_price, 6),
+                "notional_currency": currency,
+                "notional_currency_reason": currency_reason,
+                "notional_basis": "limit_price",
+                "notional_indicative": False,
+                "notional_as_of": _utc_now_iso(),
+                "notional_source": None,
+                "notional_reason": None,
+                "notional_note": "quantity x limit price in quote currency; no contract multiplier applied. " + fee_note,
+            }
+        last, as_of, source, reason = await self._indicative_last(instrument)
+        if last is None:
+            return {
+                "reference_price": None,
+                "reference_price_basis": None,
+                "notional": None,
+                "notional_currency": currency,
+                "notional_currency_reason": currency_reason,
+                "notional_basis": "unavailable",
+                "notional_indicative": None,
+                "notional_as_of": None,
+                "notional_source": None,
+                "notional_reason": reason,
+                "notional_note": fee_note,
+            }
+        return {
+            "reference_price": last,
+            "reference_price_basis": "indicative_last_quote",
+            "notional": round(quantity * last, 6),
+            "notional_currency": currency,
+            "notional_currency_reason": currency_reason,
+            "notional_basis": "indicative_last_quote",
+            "notional_indicative": True,
+            "notional_as_of": as_of,
+            "notional_source": source,
+            "notional_reason": None,
+            "notional_note": "quantity x indicative last quote in quote currency; not an executable price. " + fee_note,
+        }
+
+    async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        if instrument is None:
+            return await super().execute(instrument=None, **params)
+        # Side has no default: a missing or blank side must never reach a broker
+        # as BUY (data policy: no silent substitution on the armed path).
+        # BBGT#2-RQ: type and TIF follow the same rule. A missing value is an
+        # explicit input_required, never a silent MARKET / GTC substitution.
+        side = self._ticket_field(params, ("side",))
+        order_type = self._ticket_field(params, ("type", "order_type"))
+        tif = self._ticket_field(params, ("tif", "time_in_force"))
+        quantity = _float_param(params.get("quantity"))
+        common: dict[str, Any] = {
+            "broker": "paper",
+            "symbol": instrument.symbol,
+            "asset_class": instrument.asset_class.value,
+            "side": side,
+            "quantity": quantity,
+            "order_type": order_type,
+            "time_in_force": tif,
+            "tif": tif,
+        }
+        # BBGT#1: an explicit asset class bypasses the symbol classifier, and
+        # _select_broker would then route a CME Treasury future (ZN=F) to whichever
+        # venue that class maps to (EQUITY -> alpaca, ETF -> alpaca, FX -> oanda,
+        # CRYPTO -> binance, BOND/COMMODITY -> ibkr with the wrong margin model).
+        # Only DERIVATIVE is the futures class, so every other explicit class is
+        # refused before any preview or broker call.
+        if instrument.asset_class != AssetClass.DERIVATIVE and _is_treasury_future_symbol(instrument.symbol):
+            requested = instrument.asset_class.value
+            return _ticket_input_error_result(
+                self.code,
+                instrument,
+                {
+                    "field": "asset_class",
+                    "reason": (
+                        f"{instrument.symbol} is a CME Treasury future and cannot be traded as "
+                        f"{requested}: only a DERIVATIVE ticket is priced and routed as a futures "
+                        "contract. Set the asset class to DERIVATIVE (IBKR desk) or leave it on "
+                        "auto-detect."
+                    ),
+                },
+                side=side or "",
+                quantity=quantity,
+                order_type=order_type or "",
+                tif=tif or "",
+            )
+        if side is None:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    **common,
+                    "status": "input_required",
+                    "field": "side",
+                    "reason": "Side is required: choose BUY or SELL before previewing or submitting.",
+                    "next_actions": ["Pick BUY or SELL in the ticket controls."],
+                },
+                sources=["paper_ticket"],
+                metadata={"preview_only": True},
+            )
+        # Reject unknown enum values before anything is previewed or armed:
+        # previously "HOLD" / "FOO" were echoed back as a valid preview.
+        # A missing (None) type/TIF is handled by the input_required check below.
+        for field_name, value, allowed in (
+            ("side", side, self._SIDES),
+            ("order_type", order_type, self._ORDER_TYPES),
+            ("tif", tif, self._TIFS),
+        ):
+            if value is not None and value not in allowed:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        **common,
+                        "status": "input_error",
+                        "field": field_name,
+                        "value": value,
+                        "allowed": list(allowed),
+                        "reason": f"{field_name.upper()} '{value}' is not supported; use one of {', '.join(allowed)}.",
+                        "next_actions": ["Pick a supported value in the ticket controls and preview again."],
+                    },
+                    sources=["paper_ticket"],
+                    metadata={"preview_only": True},
+                )
+        for missing_field, label, choices in (
+            ("order_type", "Type", "MARKET or LIMIT"),
+            ("tif", "TIF", "DAY, GTC, IOC or FOK"),
+        ):
+            if {"order_type": order_type, "tif": tif}[missing_field] is None:
+                return FunctionResult(
+                    code=self.code,
+                    instrument=instrument,
+                    data={
+                        **common,
+                        "status": "input_required",
+                        "field": missing_field,
+                        "reason": f"{label} is required: choose {choices} before previewing or submitting.",
+                        "next_actions": [f"Pick a {label} value in the ticket controls."],
+                    },
+                    sources=["paper_ticket"],
+                    metadata={"preview_only": True},
+                )
+        limit_price = self._limit_price(params) if order_type == "LIMIT" else None
+        if order_type == "LIMIT" and limit_price is None:
+            # A LIMIT ticket without a positive price must not preview as valid
+            # or reach the broker with price=None.
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    **common,
+                    "status": "input_required",
+                    "field": "price",
+                    "reason": "LIMIT order needs a limit price greater than zero before it can be previewed or submitted.",
+                    "next_actions": [
+                        "Enter a limit price in the ticket controls.",
+                        "Or set Type to MARKET.",
+                    ],
+                },
+                sources=["paper_ticket"],
+                metadata={"preview_only": True},
+            )
+        # EMSX reads the raw params (str(...).upper() with no strip, and the
+        # price passed straight to the broker order), so hand it the validated
+        # ticket values instead of what the caller typed.
+        ticket_params = {
+            **params,
+            "side": side,
+            "type": order_type,
+            "order_type": order_type,
+            "tif": tif,
+            "time_in_force": tif,
+            "price": limit_price,
+        }
+        result = await super().execute(instrument=instrument, **ticket_params)
+        if isinstance(result.data, dict) and result.data.get("status") in {"preview", "submitted"}:
+            result.data.update(await self._notional_fields(instrument, quantity, limit_price))
+        return result
 
 
 # TCA is canonically registered via showme.engine.functions.trade.tca (TCAFunction).
@@ -724,6 +1452,116 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# WB1-G16: the EMSX/TSOX ticket contract. BBGT and FXGO inherit
+# EMSXFunction.execute too and are deliberately excluded here.
+_STRICT_TICKET_CODES = frozenset({"EMSX", "TSOX"})
+_TICKET_SIDES = ("BUY", "SELL")
+_TICKET_ORDER_TYPES = ("MARKET", "LIMIT")
+_TICKET_TIFS = ("DAY", "GTC", "IOC", "FOK")
+_TICKET_LEVERAGE_MAX = 125  # EMSX seed leverage max
+
+
+def _validate_ticket_fields(
+    *, quantity: float, side: str, order_type: str, tif: str, price: Any, leverage: Any,
+) -> tuple[dict[str, str] | None, dict[str, Any]]:
+    """Check a ticket against the EMSX/TSOX seed options and ranges.
+
+    Returns ``(error, normalised)``. ``error`` is ``{"field", "reason"}`` for
+    the first invalid field, else None. ``normalised`` holds the values the
+    preview and the broker order are built from: ``price`` is None on MARKET
+    and a positive float on LIMIT, ``leverage`` is an int or None.
+    """
+    def _bad(field: str, reason: str) -> tuple[dict[str, str], dict[str, Any]]:
+        return {"field": field, "reason": reason}, {}
+
+    if not math.isfinite(quantity) or quantity <= 0:
+        return _bad("quantity", "Quantity must be a finite number greater than 0.")
+    if side not in _TICKET_SIDES:
+        return _bad("side", f"side must be BUY or SELL; got {side!r}.")
+    if order_type not in _TICKET_ORDER_TYPES:
+        return _bad("order_type", f"order_type must be MARKET or LIMIT; got {order_type!r}.")
+    if tif not in _TICKET_TIFS:
+        return _bad("tif", f"tif must be one of DAY, GTC, IOC, FOK; got {tif!r}.")
+    limit_price: float | None = None
+    if order_type == "LIMIT":
+        try:
+            limit_price = float(price) if price not in (None, "") else float("nan")
+        except (TypeError, ValueError):
+            limit_price = float("nan")
+        if not math.isfinite(limit_price) or limit_price <= 0:
+            return _bad("price", "LIMIT tickets need a limit price greater than 0.")
+    lev: int | None = None
+    if leverage not in (None, ""):
+        try:
+            lev_f = float(leverage)
+        except (TypeError, ValueError):
+            lev_f = float("nan")
+        if (
+            not math.isfinite(lev_f)
+            or lev_f != int(lev_f)
+            or not 1 <= lev_f <= _TICKET_LEVERAGE_MAX
+        ):
+            return _bad(
+                "leverage",
+                f"leverage must be a whole number from 1 to {_TICKET_LEVERAGE_MAX}; got {leverage!r}.",
+            )
+        lev = int(lev_f)
+    return None, {"side": side, "order_type": order_type, "tif": tif,
+                  "price": limit_price, "leverage": lev}
+
+
+def _ticket_input_error_result(
+    code: str, instrument: Instrument, error: dict[str, str], *,
+    side: str, quantity: float, order_type: str, tif: str,
+) -> FunctionResult:
+    """Honest ``input_error`` for an invalid ticket; nothing reaches a broker."""
+    field = error["field"]
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": error["reason"],
+            "field": field,
+            "broker": "paper",
+            "submit": False,
+            "symbol": instrument.symbol,
+            "asset_class": instrument.asset_class.value,
+            "side": side,
+            # NaN/inf cannot be serialised as JSON, so echo them as null.
+            "quantity": quantity if math.isfinite(quantity) else None,
+            "order_type": order_type,
+            "time_in_force": tif,
+            "tif": tif,
+            "price": None,
+            "leverage": None,
+            "next_actions": [
+                f"Correct the {field} field in the ticket controls and preview again.",
+                "Nothing was sent to a broker.",
+            ],
+        },
+        sources=["paper_ticket"],
+        metadata={"preview_only": True, "submitted": False},
+    )
+
+
+def _tsox_analytics_not_computed() -> dict[str, Any]:
+    """Explicit TSOX analytics state: listed, never estimated or defaulted."""
+    return {
+        "status": "not_computed",
+        "reason": (
+            "DV01, accrued interest, dirty price, settlement date and contract multiplier "
+            "need the bond's modified duration, coupon schedule or the contract specification. "
+            "The ticket inputs do not carry them and this ticket does not source them, "
+            "so none are estimated."
+        ),
+        "not_computed": [
+            "dv01", "accrued_interest", "dirty_price",
+            "settlement_date", "contract_multiplier", "notional_face",
+        ],
+    }
 
 
 def _paper_mode_enabled(value: Any) -> bool:

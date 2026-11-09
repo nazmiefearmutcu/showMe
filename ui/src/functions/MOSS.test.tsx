@@ -26,6 +26,8 @@ interface MockFnState {
   data?: { data?: unknown } | undefined;
   error?: Error | null;
   refetch: ReturnType<typeof vi.fn>;
+  /** Params the pane last passed to useFunction (what the sidecar receives). */
+  lastParams?: Record<string, unknown>;
 }
 
 const mockFn: MockFnState = {
@@ -43,12 +45,15 @@ function setMockFn(next: Partial<MockFnState>) {
 }
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: mockFn.refetch,
-  }),
+  useFunction: (opts: { params?: Record<string, unknown> }) => {
+    mockFn.lastParams = opts.params;
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: mockFn.refetch,
+    };
+  },
 }));
 
 vi.mock("@/shell/SymbolBar", () => ({
@@ -254,5 +259,51 @@ describe("MOSS pane — empty symbol (R1-2)", () => {
     const rowEl = container.querySelector("tbody tr");
     expect(rowEl?.textContent).toContain("—");
     expect(rowEl?.querySelector("button")).toBeNull();
+  });
+});
+
+/* ── MOSS#3: universe control + honest ranked count ───────────────── */
+
+describe("MOSS pane — universe control and ranked count (wb1-g10 MOSS#3)", () => {
+  function unavailableRow(symbol: string) {
+    return row({ symbol, vol_annualized: null, vol: null, vol_pct: null, samples: 0, last_close: null, state: "unavailable" });
+  }
+
+  it("subtitle counts ranked rows separately from unavailable rows", () => {
+    const payload = livePayload();
+    (payload.data.data as { rows: unknown[] }).rows = [
+      row({ symbol: "HIGHVOL", vol_pct: 61.2 }),
+      row({ symbol: "MANYPTS", vol_pct: 47.5 }),
+      unavailableRow("NOPE1"),
+      unavailableRow("NOPE2"),
+    ];
+    setMockFn({ state: "ok", ...payload });
+    render(<MOSSPane code="MOSS" />);
+    expect(screen.getByText(/2 ranked · 2 unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText(/4 rows ·/)).toBeNull();
+  });
+
+  it("sends a universe typed by the user and omits it when blank", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<MOSSPane code="MOSS" />);
+    const input = screen.getByLabelText("Universe symbols");
+    fireEvent.change(input, { target: { value: "aapl, msft  nvda" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply universe" }));
+    expect(mockFn.lastParams).toMatchObject({ universe: "AAPL,MSFT,NVDA" });
+
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply universe" }));
+    expect(mockFn.lastParams).not.toHaveProperty("universe");
+  });
+
+  it("rejects an invalid universe token instead of sending it", () => {
+    setMockFn({ state: "ok", ...livePayload() });
+    render(<MOSSPane code="MOSS" />);
+    fireEvent.change(screen.getByLabelText("Universe symbols"), {
+      target: { value: "AAPL $$$" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply universe" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/invalid symbol/i);
+    expect(mockFn.lastParams).not.toHaveProperty("universe");
   });
 });

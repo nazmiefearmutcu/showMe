@@ -13,6 +13,7 @@
 import { create } from "zustand";
 import { sidecarFetch } from "./sidecar";
 import { useBotsSupervisionStore } from "./bots-supervision-store";
+import { foldSearchText } from "./search-fold";
 
 /**
  * Shape returned by `GET /api/exchange/credentials/{id}/dependents` (Agent 2).
@@ -356,13 +357,13 @@ export const useExchangeStore = create<ExchangeStoreShape>((set, get) => ({
   setSelectedExchange: (id) => set({ selectedExchangeId: id }),
 
   filterCatalog: ({ query, assetClasses, regions }) => {
-    const q = query.trim().toLowerCase();
+    const q = foldSearchText(query.trim());
     return get().catalog.filter((e) => {
       if (q) {
         const hit =
-          e.id.toLowerCase().includes(q) ||
-          e.display_name.toLowerCase().includes(q) ||
-          e.aliases.some((a) => a.toLowerCase().includes(q));
+          foldSearchText(e.id).includes(q) ||
+          foldSearchText(e.display_name).includes(q) ||
+          e.aliases.some((a) => foldSearchText(a).includes(q));
         if (!hit) return false;
       }
       if (assetClasses.length && !assetClasses.some((c) => e.asset_classes.includes(c))) {

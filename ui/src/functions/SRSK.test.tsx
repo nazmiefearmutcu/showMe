@@ -15,7 +15,7 @@
  * `lastParams` capture.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { SRSKPane } from "./SRSK";
 import { downloadGridCsv } from "@/design-system/grid-csv";
 
@@ -107,7 +107,7 @@ function livePayload(rows: Record<string, unknown>[] = CORE_ROWS) {
           recovery: 0.4,
           formula: "PD ~= spread / (1 - recovery)",
           worldbank_countries: rows.length,
-          fallback_countries: 0,
+          unscored_countries: 0,
           highest_risk_country: "TR",
         },
       },
@@ -184,7 +184,7 @@ describe("SRSK pane — ranked table", () => {
     setMockFn({
       state: "ok",
       ...livePayload([
-        srskRow({ country: "XX", risk_score: null, source_mode: "sovereign_risk_model" }),
+        srskRow({ country: "XX", risk_score: null, source_mode: "unavailable" }),
         ...CORE_ROWS,
       ]),
     });
@@ -193,7 +193,39 @@ describe("SRSK pane — ranked table", () => {
     expect(rows.length).toBe(4);
     const last = rows[rows.length - 1].textContent ?? "";
     expect(last).toContain("XX");
-    expect(last).toContain("sovereign_risk_model");
+    expect(last).toContain("unavailable");
+  });
+
+  it("shows the visible reason and no spread or PD for an unscored country", () => {
+    const note =
+      "no live World Bank macro for XX; no risk score, spread or PD computed (unranked)";
+    setMockFn({
+      state: "ok",
+      ...livePayload([
+        srskRow({
+          country: "XX",
+          risk_score: null,
+          proxy_spread_pct: null,
+          pd_1y_pct: null,
+          debt_to_gdp: null,
+          reserves_months: null,
+          current_account_gdp: null,
+          inflation_pct: null,
+          source_mode: "unavailable",
+          note,
+        }),
+        ...CORE_ROWS,
+      ]),
+    });
+    const { container } = render(<SRSKPane code="SRSK" />);
+    const last = container.querySelectorAll("tbody tr")[3];
+    const text = last.textContent ?? "";
+    // The reason is visible in the row, not only in a title tooltip.
+    expect(text).toContain(note);
+    // No spread or PD was invented: the numeric cells render the dash.
+    const cells = Array.from(last.querySelectorAll("td")).map((td) => td.textContent ?? "");
+    expect(cells.filter((c) => c === "—").length).toBeGreaterThanOrEqual(2);
+    expect(text).not.toContain("3.25");
   });
 
   it("caps the table at 10 rows with an honest showing-note", () => {
@@ -215,6 +247,33 @@ describe("SRSK pane — ranked table", () => {
     // TR appears in the table and in the "Highest risk" card.
     expect(screen.getAllByText("TR").length).toBeGreaterThan(0);
     expect(screen.getByText("Ranked countries")).toBeInTheDocument();
+  });
+});
+
+describe("SRSK pane — FRED-priced rows without a score", () => {
+  const fredNote =
+    "no live World Bank macro for DE; no risk score computed (unranked); spread and PD come from the FRED 10Y differential";
+
+  it("counts a FRED-priced row with no score as unscored and shows its note", () => {
+    setMockFn({
+      state: "ok",
+      ...livePayload([
+        srskRow({
+          country: "DE",
+          risk_score: null,
+          proxy_spread_pct: 1.5,
+          pd_1y_pct: 2.5,
+          source_mode: "fred",
+          note: fredNote,
+        }),
+        ...CORE_ROWS,
+      ]),
+    });
+    const { container } = render(<SRSKPane code="SRSK" />);
+    // 4 requested, 3 ranked, so exactly 1 unscored.
+    expect(screen.getByText(/4 requested · 1 unscored/)).toBeInTheDocument();
+    const last = container.querySelectorAll("tbody tr")[3];
+    expect(last.textContent ?? "").toContain(fredNote);
   });
 });
 
@@ -314,5 +373,57 @@ describe("SRSK pane — grid CSV export", () => {
     render(<SRSKPane code="SRSK" />);
     expect(screen.getByTitle("Download CSV")).toBeDisabled();
     expect(downloadGridCsv).not.toHaveBeenCalled();
+  });
+});
+
+describe("SRSK pane — highest-risk KPI follows the highest-PD card", () => {
+  it("shows the backend highest-PD sovereign even when the score ranking differs", () => {
+    const rows = [
+      srskRow({ country: "TR", risk_score: 90.1, pd_1y_pct: 1.67 }),
+      srskRow({ country: "DE", risk_score: 30.2, pd_1y_pct: 16.67 }),
+    ];
+    const payload = livePayload(rows);
+    payload.data.data.cards = {
+      highest_pd_country: "DE",
+      highest_pd: 16.67,
+      recovery: 0.4,
+      data_mode: "live_official",
+      as_of: "2024",
+    };
+    setMockFn({ state: "ok", ...payload });
+    render(<SRSKPane code="SRSK" />);
+    expect(screen.getByText("1Y PD 16.67%")).toBeInTheDocument();
+    expect(screen.queryByText("1Y PD 1.67%")).toBeNull();
+  });
+});
+
+describe("SRSK pane — partial-leg composites", () => {
+  it("shows the leg coverage and does not rank a partial composite", () => {
+    const rows = [
+      srskRow({ country: "TR", risk_score: 90.1, pd_1y_pct: 26.9, legs_present: 4, legs_total: 4 }),
+      srskRow({ country: "DE", risk_score: 99.9, pd_1y_pct: 40.0, legs_present: 3, legs_total: 4 }),
+      srskRow({ country: "US", risk_score: 55.76, pd_1y_pct: 11.23, legs_present: 4, legs_total: 4 }),
+    ];
+    setMockFn({ state: "ok", ...livePayload(rows) });
+    render(<SRSKPane code="SRSK" />);
+    expect(screen.getByText("3/4")).toBeInTheDocument();
+    // DE has the top score but only 3 legs: it is not ranked #1 and gets no rank cell.
+    expect(screen.getByText(/1 partial legs/)).toBeInTheDocument();
+    const grid = screen.getByRole("table", { name: /SRSK ranked sovereign risk table/ });
+    const tr = within(grid).getAllByRole("row").find((r) => r.textContent?.includes("DE"));
+    expect(tr?.textContent).not.toMatch(/^\s*1/);
+    expect(within(grid).getAllByRole("row")[1].textContent).toContain("TR");
+  });
+});
+
+describe("SRSK pane — PD is labelled as an uncalibrated proxy", () => {
+  it("states that the PD is not a market-implied default probability", () => {
+    const payload = livePayload();
+    Object.assign(payload.data.data.summary, { pd_calibration: "uncalibrated" });
+    setMockFn({ state: "ok", ...payload });
+    render(<SRSKPane code="SRSK" />);
+    expect(
+      screen.getByText(/uncalibrated macro proxy, not a market-implied default probability/),
+    ).toBeInTheDocument();
   });
 });

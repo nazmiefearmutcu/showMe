@@ -37,9 +37,8 @@ beforeEach(() => {
     functionIndex: [],
   });
   useSentimentStore.setState({
-    score: 0,
-    label: "Neutral",
-    mentions: 0,
+    gauge: null,
+    unavailableReason: null,
     loading: false,
     error: null,
     lastUpdated: null,
@@ -121,9 +120,7 @@ describe("Welcome KPI strip — canonical quote symbols", () => {
 
   it("BTC slash-form is explicitly forbidden in the seed", async () => {
     const { MARKET_STRIP_SEED } = await import("../Welcome");
-    const offenders = MARKET_STRIP_SEED.filter((t) =>
-      (t.quoteSymbol ?? "").includes("/"),
-    );
+    const offenders = MARKET_STRIP_SEED.filter((t) => (t.quoteSymbol ?? "").includes("/"));
     expect(offenders).toHaveLength(0);
   });
 });

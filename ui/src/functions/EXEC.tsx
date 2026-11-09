@@ -1,12 +1,13 @@
 /**
  * EXEC — Execution Monitor.
  *
- * Slice-by-slice VWAP/TWAP execution plan built against live intraday bars
- * (backend drives the real algo schedulers over Binance/Yahoo 5m OHLCV).
+ * Slice-by-slice TWAP/VWAP/ICEBERG/SNIPER execution schedule replayed over
+ * historical intraday bars (backend drives the real algo schedulers over
+ * Binance/Yahoo OHLCV; no order is sent).
  * Header: algo / side / slices / horizon / parent-size controls (all
- * persisted under `showme.exec.*`) + status pill + refresh. Body: pace +
+ * persisted under `showme.exec.*`) + status pill + refresh. Body: schedule +
  * implementation-shortfall headline cards, then the per-slice TCA table —
- * each slice maps to a real market bar with its interval-VWAP benchmark,
+ * each slice maps to a real market bar with its typical-price benchmark,
  * slippage bps (tone-tinted) and side-signed IS bps.
  */
 import { useMemo, type CSSProperties } from "react";
@@ -43,11 +44,10 @@ interface EXECRow {
   qty?: number;
   cum_qty?: number;
   bar_close?: number | null;
-  interval_vwap?: number | null;
   benchmark_px?: number | null;
   slip_bps?: number | null;
   is_bps?: number | null;
-  pace_pct?: number | null;
+  schedule_pct?: number | null;
 }
 
 interface EXECOrder {
@@ -58,7 +58,7 @@ interface EXECOrder {
   filled_qty?: number;
   avg_fill_px?: number | null;
   arrival_price?: number | null;
-  pace_pct?: number | null;
+  schedule_pct?: number | null;
   status?: string;
 }
 
@@ -178,7 +178,7 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
       },
       {
         key: "benchmark_px",
-        header: "Benchmark VWAP",
+        header: "Benchmark px",
         numeric: true,
         width: 140,
         render: (r) => (
@@ -215,11 +215,11 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
         ),
       },
       {
-        key: "pace_pct",
-        header: "Pace",
+        key: "schedule_pct",
+        header: "Schedule",
         numeric: true,
         width: 88,
-        render: (r) => <span style={monoMutedStyle}>{fmtPct(r.pace_pct)}</span>,
+        render: (r) => <span style={monoMutedStyle}>{fmtPct(r.schedule_pct)}</span>,
       },
     ],
     [side],
@@ -270,7 +270,7 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
         <StatCard
           label="Worst slip"
           value={fmtBps(cards?.worst_slippage_bps)}
-          caption={`${planned ? "PLANNED · " : ""}WORST SLICE VS INTERVAL VWAP`}
+          caption={`${planned ? "PLANNED · " : ""}WORST SLICE VS BAR TYPICAL PRICE`}
           tone={bpsTone(cards?.worst_slippage_bps, side, false)}
         />
         <StatCard
@@ -280,8 +280,8 @@ export function EXECPane({ code, symbol }: FunctionPaneProps) {
           tone="neutral"
         />
         <StatCard
-          label="Final pace"
-          value={fmtPct(rows[rows.length - 1]?.pace_pct)}
+          label="Final schedule"
+          value={fmtPct(rows[rows.length - 1]?.schedule_pct)}
           caption={`ARRIVAL ${fmtNum(order?.arrival_price, 2)} → ${planned ? "SIMULATED " : ""}AVG FILL ${fmtNum(order?.avg_fill_px, 2)}`}
           tone="neutral"
         />
@@ -397,7 +397,7 @@ function labelForHorizon(seconds: number): string {
  *    the slice executed worse than arrival (paid more on BUY, sold lower on
  *    SELL) — negative is a favourable fill on both sides.
  *  - ``slip_bps`` is the raw close-vs-benchmark move, NOT side-signed:
- *    positive = close above the interval VWAP, which is a cost on BUY but a
+ *    positive = close above the bar typical price, which is a cost on BUY but a
  *    favourable print on SELL — so the SELL side flips the sign for colour.
  */
 function bpsColor(

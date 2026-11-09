@@ -105,10 +105,12 @@ def test_risk_surface_has_model_assumption_input(code: str) -> None:
     )
 
 
-# Research surfaces that default paper_mode=True.
+# Research surfaces that default paper_mode=True. MARS is deliberately absent:
+# its seed was a mean-reversion allocator (order-adjacent, paper_mode) and was
+# replaced by the factor-regression contract the handler ships. That is an
+# analysis-only surface with no orders, so it carries no paper_mode control.
 _PAPER_SAFE_DEFAULTS = (
     "RPAR",
-    "MARS",
     "PSC",
     "REBA",
     "TLH",
@@ -143,17 +145,20 @@ def test_tlh_semantic_test_pins_wash_sale_rule() -> None:
     )
 
 
-def test_mgn_semantic_test_pins_numbers_come_from_broker() -> None:
-    """MGN must carry a semantic test asserting numbers come from broker, not modeled."""
+def test_mgn_semantic_test_pins_numbers_are_model_estimates_not_broker() -> None:
+    """MGN must not claim broker sourcing: its semantic test pins model estimates (MGN#4).
+
+    Previously this asserted broker-sourced numbers, which the handler never produced
+    (it models margin from its own rule table, sources margin_engine).
+    """
     mgn = REGISTRY.get("MGN")
     test_names = [t.name for t in mgn.semantic_tests]
-    assert any(
-        "broker" in name and ("not_modeled" in name or "not modeled" in name)
-        for name in test_names
-    ), (
-        "MGN must declare a semantic_test whose name asserts broker-sourced "
-        f"(not client-side-modeled) margin numbers; got {test_names!r}"
+    assert any("model_estimates_not_broker" in name for name in test_names), (
+        "MGN must declare a semantic_test whose name asserts model estimates, not broker "
+        f"figures; got {test_names!r}"
     )
+    assert "broker" not in mgn.provider_chain.primary
+    assert all("broker" not in f for f in mgn.provider_chain.fallbacks)
 
 
 def test_rpar_methodology_mentions_parity_equation() -> None:
@@ -182,11 +187,15 @@ def test_pvar_options_cover_standard_confidence_levels() -> None:
 
 
 def test_strs_scenarios_options_include_named_history() -> None:
-    """STRS scenarios option list must include canonical historical windows."""
+    """STRS scenarios option list must include the measured windows the engine runs.
+
+    The option keys are the engine's SCENARIOS keys (STRS#4: the manifest offered
+    historical names the engine could not run, so this now pins the real keys).
+    """
     strs = REGISTRY.get("STRS")
     scen_input = next(i for i in strs.inputs if i.name == "scenarios")
     assert scen_input.options is not None, "STRS scenarios must declare options"
-    required_scenarios = {"lehman_2008", "covid_2020"}
+    required_scenarios = {"GFC_2008", "COVID_2020"}
     options_set = set(scen_input.options)
     missing = required_scenarios - options_set
     assert not missing, (

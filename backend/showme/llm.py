@@ -115,8 +115,25 @@ class CostLedger:
         self.entries.append(entry)
 
     def today_spend(self) -> float:
+        # ASOF-7: ts is written in UTC, so compare each entry's LOCAL calendar
+        # day (the cap is a per-user daily budget) instead of a string prefix
+        # against the local date, which dropped spend made after local midnight.
         today = date.today().isoformat()
-        return sum(e.usd for e in self.entries if e.ts.startswith(today))
+        return sum(e.usd for e in self.entries if _entry_local_day(e.ts) == today)
+
+
+def _entry_local_day(ts: str) -> str | None:
+    """Local calendar day (ISO date) of a ledger stamp, or None if unparseable.
+
+    Ledger stamps are UTC ISO strings; a naive stamp is read as UTC.
+    """
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone().date().isoformat()
 
 
 def default_ledger_path() -> Path:

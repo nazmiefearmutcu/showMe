@@ -15,7 +15,7 @@
  * honestly, including the backend `reason` on an outage (no keyring
  * credential is involved on the keyless path).
  */
-import { useEffect, useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
   type DataGridColumn,
@@ -109,6 +109,16 @@ const VIEWS = [
 type ViewId = (typeof VIEWS)[number]["id"];
 const VIEW_IDS = VIEWS.map((v) => v.id);
 
+// Manifest `status` select (poly_seed.py): the backend maps each to Gamma flags.
+const STATUSES = [
+  { id: "open", label: "Open" },
+  { id: "closed", label: "Closed" },
+  { id: "resolved", label: "Resolved" },
+  { id: "all", label: "All" },
+] as const;
+type StatusId = (typeof STATUSES)[number]["id"];
+const STATUS_IDS = STATUSES.map((s) => s.id);
+
 const REFRESH_MS = 60_000;
 
 export function POLYPane({ code }: FunctionPaneProps) {
@@ -122,12 +132,25 @@ export function POLYPane({ code }: FunctionPaneProps) {
     VIEW_IDS,
     "cards",
   );
+  const [status, setStatus] = usePersistentOption<StatusId>(
+    "showme.poly-status",
+    STATUS_IDS,
+    "open",
+  );
+  // The topic is a request parameter, so it is applied on submit only, not on
+  // every keystroke.
+  const [topicDraft, setTopicDraft] = useState("");
+  const [topic, setTopic] = useState("");
   // Bundle D / PERF-04. Visibility-aware poll.
   const tick = useVisibilityTick(REFRESH_MS);
 
   const { state, data, error, refetch } = useFunction<unknown>({
     code,
-    params: { status: "open", min_liquidity_usd: 10_000 },
+    params: {
+      status,
+      min_liquidity_usd: 10_000,
+      ...(topic ? { query: topic } : {}),
+    },
   });
   // Poll on the visibility tick WITHOUT putting `tick` in params: a changing
   // param key makes useFunction treat every poll as a fresh load (skeleton
@@ -190,8 +213,10 @@ export function POLYPane({ code }: FunctionPaneProps) {
             ? r.price * 100
             : 0;
       m.outcomes.push({ label: r.outcome ?? "YES", prob });
+      // Liquidity is a market-level figure repeated on every outcome row:
+      // assign it (idempotent), never accumulate it, or binary markets double.
       const liq = numeric(r.liquidity_usd ?? r.volume_usd);
-      if (liq != null) m.liquidity += liq;
+      if (liq != null) m.liquidity = liq;
       if (!m.url && r.url) m.url = r.url;
       if (!m.category && r.category) m.category = r.category;
       if (!m.endDate && r.end_date) m.endDate = r.end_date;
@@ -313,7 +338,7 @@ export function POLYPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="Prediction markets"
-          subtitle={`${marketCount} markets · sort ${sort} · poll ${REFRESH_MS / 1000}s · ${dataMode}`}
+          subtitle={`${marketCount} markets · ${status} · sort ${sort} · poll ${REFRESH_MS / 1000}s · ${dataMode}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>
@@ -330,6 +355,38 @@ export function POLYPane({ code }: FunctionPaneProps) {
             </FunctionControlGroup>
           }
         />
+        <div style={filterBarStyle}>
+          <label style={filterFieldStyle}>
+            <span style={sortLabelStyle}>Status</span>
+            <select value={status} onChange={(e) => setStatus(e.target.value as StatusId)}>
+              {STATUSES.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <form
+            style={filterFieldStyle}
+            onSubmit={(e) => {
+              e.preventDefault();
+              setTopic(topicDraft.trim());
+            }}
+          >
+            <label style={filterFieldStyle}>
+              <span style={sortLabelStyle}>Topic</span>
+              <input
+                value={topicDraft}
+                onChange={(e) => setTopicDraft(e.target.value)}
+                placeholder="e.g. fed cuts"
+                spellCheck={false}
+              />
+            </label>
+            <button type="submit" className="btn">
+              Search
+            </button>
+          </form>
+        </div>
         <div style={tabBarStyle}>
           <Tabs
             variant="segmented"
@@ -346,7 +403,11 @@ export function POLYPane({ code }: FunctionPaneProps) {
           ) : markets.length === 0 ? (
             <Empty
               title={
-                isOutage ? "Prediction market feed unavailable" : "No open markets"
+                isOutage
+                  ? "Prediction market feed unavailable"
+                  : status === "all"
+                    ? "No markets"
+                    : `No ${status} markets`
               }
               body={
                 isOutage
@@ -354,7 +415,7 @@ export function POLYPane({ code }: FunctionPaneProps) {
                     warningsList[0] ??
                     "The keyless Polymarket Gamma feed is unreachable — no odds are fabricated."
                   : warningsList[0] ??
-                    "No open prediction markets matched the filter."
+                    "No prediction markets matched this status and topic."
               }
               icon="◇"
             />
@@ -614,6 +675,21 @@ function truncate(s: string, n: number): string {
 }
 
 // ── styles ──────────────────────────────────────────────────────────────
+const filterBarStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: 12,
+  padding: "8px 14px",
+  borderBottom: "1px solid var(--border-subtle)",
+};
+
+const filterFieldStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+
 const tabBarStyle: CSSProperties = {
   padding: "8px 14px",
   borderBottom: "1px solid var(--border-subtle)",

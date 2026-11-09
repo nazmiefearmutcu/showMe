@@ -1,9 +1,8 @@
 """PIB — Public Information Book.
 
 Aggregates the issuer's recent SEC filings into a single chronological
-"public info book": 10-K, 10-Q, 8-K, DEF 14A, 13D/G, S-1, plus an optional
-AI-generated summary stub. Backed by SEC EDGAR (primary) with yfinance
-news / actions as best-effort context.
+"public info book": 10-K, 10-Q, 8-K, DEF 14A, 13D/G, S-1. Backed by SEC EDGAR
+only; the AI summary is not implemented (summary_status not_implemented).
 """
 from __future__ import annotations
 
@@ -38,7 +37,7 @@ def pib() -> FunctionManifest:
         category=Category.EQUITIES,
         intent=(
             "Compile a chronological book of the issuer's public filings (10-K, 10-Q, 8-K, DEF 14A, "
-            "13D/G, S-1) and a brief AI summary of the most recent material disclosures."
+            "13D/G, S-1). An AI summary is planned but not implemented: include_summary reports summary_status not_implemented."
         ),
         asset_classes=[AssetClass.EQUITY, AssetClass.ETF],
         inputs=[
@@ -73,18 +72,19 @@ def pib() -> FunctionManifest:
                 label="AI summary",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="When true the handler attaches a short summary of the most recent material filings.",
+                description="Requests an AI summary. Not implemented yet: the response sets summary_status to not_implemented and attaches no summary.",
             ),
             InputSpec(
                 name="provider_mode",
                 label="Data mode",
                 control=ControlKind.PROVIDER_MODE,
                 required=False,
-                description="Preferred provider mode; chain may downgrade and report it.",
+                description=(
+                    "Accepted for compatibility only: the sole source is SEC EDGAR (live official "
+                    "filings); the handler does not read this input."
+                ),
                 options=[
                     DataMode.LIVE_OFFICIAL.value,
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
         ],
@@ -94,12 +94,10 @@ def pib() -> FunctionManifest:
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
-            primary="yfinance",
-            fallbacks=["sec_edgar", "cached_snapshot"],
+            primary="sec_edgar",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
-                DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
@@ -114,10 +112,11 @@ def pib() -> FunctionManifest:
         ),
         table_schema=TableSchema(
             columns=[
-                ColumnSpec(key="filing_date", label="Date", kind="date"),
-                ColumnSpec(key="form_type", label="Form", kind="tag"),
-                ColumnSpec(key="description", label="Description", kind="text"),
-                ColumnSpec(key="filing_url", label="Filing", kind="action"),
+                ColumnSpec(key="filingDate", label="Filed", kind="date"),
+                ColumnSpec(key="reportDate", label="Reported", kind="date"),
+                ColumnSpec(key="form", label="Form", kind="tag"),
+                ColumnSpec(key="accession", label="Accession", kind="text"),
+                ColumnSpec(key="url", label="Filing", kind="action"),
             ],
             sortable=True,
             filterable=True,
@@ -134,19 +133,19 @@ def pib() -> FunctionManifest:
         ),
         methodology=(
             "PIB walks SEC EDGAR for the issuer's recent filings within the lookback window. Each "
-            "row is normalized into (filing_date, form_type, description, filing_url) and ranked "
-            "by filing date descending. The form_types filter is applied server-side. When "
-            "include_summary=true the handler attaches a short paragraph summarizing the most "
-            "recent 8-K / 10-K / DEF 14A items — this is an opt-in AI step and disabled by "
-            "default so the panel works without an LLM credential."
+            "row carries symbol, section, form, filingDate, reportDate, accession, url (the absolute "
+            "EDGAR primary-document link, or null when the CIK is unknown) and source_mode. Rows are "
+            "ranked by filingDate descending. The months and form_types filters are applied "
+            "server-side before the row cap. include_summary is not implemented: the handler reports "
+            "summary_status not_implemented and attaches no summary text."
         ),
         field_dict={
             "symbol": FieldDef(description="Equity ticker.", source="instrument"),
             "filings": FieldDef(description="Chronological filings list.", source="sec_edgar"),
             "filing_count": FieldDef(description="Total filings in the lookback window.", source="computed"),
             "latest_filing_date": FieldDef(description="Most-recent filing date.", source="computed"),
-            "summary": FieldDef(description="Optional AI summary of recent material disclosures.", source="llm"),
-            "filing_url": FieldDef(description="Direct EDGAR document URL.", source="sec_edgar"),
+            "summary": FieldDef(description="AI summary of recent material disclosures; always null until implemented.", source="not_implemented"),
+            "rows[].url": FieldDef(description="Direct EDGAR primary-document URL (CIK, accession and document name).", source="sec_edgar"),
         },
         provenance=ProvenanceSpec(
             require_source_list=True,

@@ -79,7 +79,7 @@ class LiquidationPressureIndicator(BaseIndicator):
             short_liq = float(liqs.loc[liqs["side"] == "BUY", "notional"].sum())
             long_liq = float(liqs.loc[liqs["side"] == "SELL", "notional"].sum())
         except Exception as e:
-            return self._make_result(Signal.NEUTRAL, f"Liq parse error: {e}")
+            return self._make_result(Signal.NEUTRAL, f"Liq parse error: {str(e) or type(e).__name__}")
 
         total = short_liq + long_liq
         if total < min_total_notional:

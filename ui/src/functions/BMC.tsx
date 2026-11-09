@@ -8,11 +8,10 @@
  * list + a reader panel for the selected lesson. Synth by design (curriculum
  * reference), and the pane says so — nothing pretends to be live data.
  *
- * Completion truth (A6 fix 2026-09-11): the backend curriculum always ships
- * `progress:"not_started"` (no persistence exists server-side), so the pane
- * tracks completion locally under `showme.bmc.completed` keyed by
- * `module#lesson_no`. The Completed KPI counts that real local state instead
- * of a field that could never be non-zero.
+ * Completion truth: the backend curriculum carries no progress state (there is
+ * no persistence server-side), so the pane tracks completion locally under
+ * `showme.bmc.completed` keyed by `module#lesson_no`. The Completed KPI and
+ * the lesson pills both read that local state.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
@@ -39,7 +38,6 @@ interface BMCLesson {
   objective?: string;
   example?: string;
   quiz?: string;
-  progress?: string;
 }
 
 interface BMCData {
@@ -108,9 +106,8 @@ export function BMCPane({ code }: FunctionPaneProps) {
   const selected = rows.find((r) => lessonKey(r) === selectedKey) ?? rows[0] ?? null;
   const status = payload?.status ?? "—";
 
-  // Completion = local persistence OR (future) a real backend progress field.
-  const lessonCompleted = (r: BMCLesson): boolean =>
-    completed[lessonKey(r)] === true || r.progress === "completed";
+  // Completion is local persistence only: the backend carries no progress state.
+  const lessonCompleted = (r: BMCLesson): boolean => completed[lessonKey(r)] === true;
   const completedCount = rows.filter(lessonCompleted).length;
 
   function toggleCompleted(r: BMCLesson) {
@@ -226,7 +223,7 @@ export function BMCPane({ code }: FunctionPaneProps) {
                     variant="soft"
                     withDot={false}
                   >
-                    {lessonCompleted(lesson) ? "completed" : (lesson.progress ?? "not_started")}
+                    {lessonCompleted(lesson) ? "completed" : "not started"}
                   </Pill>
                 </button>
               </li>

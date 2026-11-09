@@ -22,9 +22,9 @@ from showme.quotes import fetch_quote_snapshot
 
 @FunctionRegistry.register
 class SRCHFunction(BaseFunction):
-    """SRCH — Bond Screener (alias of EQS pattern)."""
+    """SRCH — Sovereign curve screener over benchmark curve points (EQS pattern DSL)."""
     code = "SRCH"
-    name = "Bond Screener"
+    name = "Sovereign Curve Screener"
     asset_classes = (AssetClass.BOND,)
     category = "screen"
 
@@ -54,6 +54,7 @@ class SRCHFunction(BaseFunction):
         reference_note: str | None = None
         status_override: str | None = None
         live_rows = 0
+        monthly_rows = 0
         if live:
             live_map, provider_warnings, provider_sources = await _collect_live_bond_yields(
                 getattr(self.deps, "ustreasury", None),
@@ -62,12 +63,15 @@ class SRCHFunction(BaseFunction):
             warnings.extend(provider_warnings)
             rows = _merge_live_yield_rows(rows, live_map)
             live_rows = sum(1 for row in rows if row.get("quote_type") == "live")
-            if live_rows:
+            monthly_rows = sum(1 for row in rows if row.get("quote_type") == "monthly")
+            if live_rows or monthly_rows:
                 sources = [*provider_sources, "showme_bond_reference_universe"]
                 reference_note = (
-                    f"{live_rows} of {len(_LIVE_BOND_TENORS)} configured live tenors refreshed"
+                    f"{live_rows} live and {monthly_rows} monthly-reference of "
+                    f"{len(_LIVE_BOND_TENORS)} configured tenors refreshed"
                     + (f" from {', '.join(provider_sources)}" if provider_sources else "")
-                    + "; durations, ratings and unmapped tenors remain curated reference values."
+                    + "; live-yield durations are par-bond approximations (duration_basis), "
+                    "other durations, ratings and unmapped tenors remain curated reference values."
                 )
             else:
                 # Total provider failure: keep the curated rows (never wipe the
@@ -85,7 +89,7 @@ class SRCHFunction(BaseFunction):
         # H-6 honesty fix (2026-09-08): when no live tenor resolved, a matched
         # filter must never report status "ok" as if these were current market
         # levels; the payload stays labelled reference.
-        return _screen_result(
+        result = _screen_result(
             self.code,
             rows,
             query=query,
@@ -93,12 +97,15 @@ class SRCHFunction(BaseFunction):
             sources=sources,
             field_dictionary=_BOND_FIELDS,
             warnings=warnings,
+            # SRCH#3 follow-up: monthly OECD observations are not live, so a
+            # table with no live tenor is labelled reference (H-6).
             reference=live_rows == 0,
             reference_note=reference_note,
             status=status_override,
             metadata_extra=(
                 {
                     "live_rows": live_rows,
+                    "monthly_rows": monthly_rows,
                     "unavailable_rows": sum(
                         1 for row in rows if row.get("quote_type") == "unavailable"
                     ),
@@ -107,6 +114,9 @@ class SRCHFunction(BaseFunction):
                 else None
             ),
         )
+        if live:
+            _flag_curated_yield_matches(result, rows, query)
+        return result
 
 
 @FunctionRegistry.register
@@ -118,9 +128,21 @@ class FSRCFunction(BaseFunction):
     category = "screen"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        query = str(params.get("query") or "expenseRatio < 0.01 AND aum_usd > 10000000000")
+        query = str(params.get("query") or "expenseRatio < 0.01")
         universe = _symbol_filter(params.get("universe"))
         rows = _filter_universe(_fund_reference_rows(), universe)
+        # FSRC#1: AUM and YTD are not served. A predicate on them cannot be
+        # evaluated honestly, so refuse it explicitly before any quote call.
+        unserved = _fund_unserved_predicate_columns(query)
+        if unserved:
+            return _fund_unserved_predicate_result(
+                self.code,
+                query,
+                unserved,
+                scanned=len(rows),
+                limit=_int_param(params, "limit", 50),
+                sources=["showme_fund_reference_universe"],
+            )
         # Default polarity (2026-09-11, L9): attempt keyless yfinance quotes by
         # default; an explicit falsy ``live``/``live_screen`` or
         # ``reference=true`` serves the curated reference universe only.
@@ -157,6 +179,10 @@ class FSRCFunction(BaseFunction):
                 sources = ["yfinance", "showme_fund_reference_universe"]
             else:
                 warnings = [*warnings, "quote provider returned no usable rows"]
+        # FSRC#1: AUM and YTD are not served. Every row says so explicitly, and
+        # the payload warns, so no reader mistakes a missing value for a zero.
+        rows = _label_fund_reference_rows(rows)
+        warnings = [*warnings, _FUND_UNSERVED_WARNING]
         return _screen_result(
             self.code,
             rows,
@@ -200,7 +226,7 @@ class CSRCFunction(BaseFunction):
             # whole board resolves inside the latency budget (WEI pattern).
             # Symbols the provider does not return are kept in the payload as
             # explicit quote_state="reference" rows — never silently dropped.
-            quotes, warnings = await _screen_quote_rows(
+            quotes, warnings = await _csrc_screen_quote_rows(
                 self.deps.yfinance,
                 [str(row["symbol"]) for row in rows],
                 timeout=_float_param(params, "quote_timeout", 4.0),
@@ -216,7 +242,7 @@ class CSRCFunction(BaseFunction):
                         *warnings,
                         f"{unresolved} commodity quote(s) unavailable this cycle",
                     ]
-        return _screen_result(
+        result = _screen_result(
             self.code,
             rows,
             query=query,
@@ -225,6 +251,10 @@ class CSRCFunction(BaseFunction):
             field_dictionary=_COMMODITY_FIELDS,
             warnings=warnings,
         )
+        # wb1-g17 / CSRC#5: as_of is the newest provider quote time across the
+        # scanned contracts; null when no provider stamped one (reference rows).
+        result.data["as_of"] = _most_as_of(rows)
+        return result
 
 
 @FunctionRegistry.register
@@ -276,11 +306,12 @@ class SECFFunction(BaseFunction):
             )
             page = result.data.get("rows") or []
             if live and self.deps.yfinance and page:
-                quotes, quote_warnings = await _quote_rows(
+                quotes, quote_warnings = await _secf_quote_rows(
                     self.deps.yfinance,
                     [str(row["symbol"]) for row in page],
                     timeout=quote_timeout,
                     screen_timeout=screen_timeout,
+                    concurrency=int(_float_param(params, "quote_concurrency", 8.0)),
                 )
                 if quotes:
                     result.data["rows"] = _merge_quote_rows(page, quotes)
@@ -299,11 +330,12 @@ class SECFFunction(BaseFunction):
         page = filtered[:limit]
         live_quotes = False
         if live and self.deps.yfinance and page:
-            quotes, warnings = await _quote_rows(
+            quotes, warnings = await _secf_quote_rows(
                 self.deps.yfinance,
                 [str(row["symbol"]) for row in page],
                 timeout=quote_timeout,
                 screen_timeout=screen_timeout,
+                concurrency=int(_float_param(params, "quote_concurrency", 8.0)),
             )
             if quotes:
                 page = _merge_quote_rows(page, quotes)
@@ -412,7 +444,7 @@ class MOSTFunction(BaseFunction):
                     merged.extend(batch_rows)
                     provider_sources.append("binance")
                 else:
-                    fallback_quotes, fallback_warnings = await _screen_quote_rows(
+                    fallback_quotes, fallback_warnings = await _most_screen_quote_rows(
                         self.deps.yfinance,
                         [str(row["symbol"]) for row in crypto_rows],
                         timeout=_float_param(params, "quote_timeout", 4.0),
@@ -428,7 +460,7 @@ class MOSTFunction(BaseFunction):
                         "Binance batch ticker unavailable; crypto quotes fell back per symbol"
                     )
             if other_rows:
-                quote_rows, quote_warnings = await _screen_quote_rows(
+                quote_rows, quote_warnings = await _most_screen_quote_rows(
                     self.deps.yfinance,
                     [str(row["symbol"]) for row in other_rows],
                     timeout=_float_param(params, "quote_timeout", 4.0),
@@ -438,7 +470,9 @@ class MOSTFunction(BaseFunction):
                 merged.extend(_merge_live_most_rows(other_rows, quote_rows, keep_unresolved=True))
                 warnings.extend(quote_warnings)
                 provider_sources.append("yfinance")
-            resolved = sum(1 for row in merged if row.get("quote_state") == "live")
+            # wb1-g17 / MOST#3: a closed-session or stale quote is not "live".
+            _most_apply_quote_states(merged, _most_utc_now())
+            resolved = sum(1 for row in merged if row.get("quote_state") in _MOST_USABLE_QUOTE_STATES)
             unavailable = len(merged) - resolved
             if unavailable:
                 warnings.append(
@@ -446,6 +480,9 @@ class MOSTFunction(BaseFunction):
                 )
             ranked = _rank_most_active_rows(merged, sort_key)[:limit]
             scan_universe = [str(row.get("symbol") or "") for row in merged]
+            # The board is live only when at least one row is a live open-session
+            # quote; last_close and stale rows never make the payload live.
+            board_live = any(row.get("quote_state") == "live" for row in merged)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -455,7 +492,7 @@ class MOSTFunction(BaseFunction):
                     limit=limit,
                     asset_class=asset_filter or "all",
                     sort=sort_key,
-                    live=True,
+                    live=board_live,
                     status="ok" if resolved else "provider_unavailable",
                     reason=(
                         None
@@ -467,7 +504,7 @@ class MOSTFunction(BaseFunction):
                     unavailable=unavailable,
                 ),
                 metadata={
-                    "live": True,
+                    "live": board_live,
                     "universe_size": len(scan_universe),
                     "scanned": len(merged),
                     "live_rows": resolved,
@@ -518,6 +555,28 @@ class WEIFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         # Single source of truth: the curated, provider-verified world set.
         indices = _world_index_symbols()
+        # WEI#2: the region param is honoured server-side (not only by the pane).
+        region = str(params.get("region") or "").strip().lower()
+        known_regions = sorted({str(_WORLD_INDEX_META[s]["region"]) for s in indices})
+        region_filter = region if region and region != "all" else None
+        if region_filter is not None and region_filter not in known_regions:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": f"Unknown world-index region '{region}'.",
+                    "rows": [],
+                    "universe_size": len(indices),
+                    "source_mode": "none",
+                    "next_actions": [f"Use region one of: all, {', '.join(known_regions)}."],
+                },
+                metadata={"live": False, "universe_size": len(indices)},
+                sources=[],
+                warnings=[],
+            )
+        if region_filter is not None:
+            indices = [s for s in indices if _WORLD_INDEX_META[s]["region"] == region_filter]
         # Default polarity (2026-09-11, L9): attempt keyless yfinance quotes by
         # default; an explicit falsy ``live``/``live_screen`` or
         # ``reference=true`` serves the labelled deterministic template only.
@@ -550,7 +609,7 @@ class WEIFunction(BaseFunction):
                 burst=True,
             )
             if rows:
-                complete = _complete_world_index_rows(rows)
+                complete = _region_world_rows(_complete_world_index_rows(rows), region_filter)
                 resolved = sum(1 for row in complete if row.get("last") is not None)
                 unresolved = len(complete) - resolved
                 if unresolved:
@@ -573,7 +632,15 @@ class WEIFunction(BaseFunction):
                         "resolved": resolved,
                         "unresolved": unresolved,
                         "source_mode": "yfinance_live",
-                        "as_of": _utc_now_iso(),
+                        # The quote provider reports no market (quote) time and no
+                        # exchange session state, so ``as_of`` is withheld rather than
+                        # stamped with the request clock. ``fetched_at`` is retrieval time.
+                        "quote_time": None,
+                        "fetched_at": _utc_now_iso(),
+                        "quote_time_note": (
+                            "The quote provider did not report a market time; rows show "
+                            "retrieval time (fetched_at), not the last trade time."
+                        ),
                     },
                     metadata={
                         "live": True,
@@ -584,7 +651,7 @@ class WEIFunction(BaseFunction):
                     sources=["yfinance"],
                     warnings=warnings,
                 )
-            fallback_rows = _world_index_template()
+            fallback_rows = _region_world_rows(_world_index_template(), region_filter)
             return FunctionResult(
                 code=self.code,
                 instrument=None,
@@ -593,10 +660,10 @@ class WEIFunction(BaseFunction):
                     "reason": "World index quote provider returned no usable live rows.",
                     "rows": fallback_rows,
                     "source_mode": "world_index_template",
-                    "as_of": _utc_now_iso(),
+                    "generated_at": _utc_now_iso(),
                     "next_actions": [
                         "Retry WEI after the public quote provider recovers.",
-                        "Rows shown are a deterministic world-index model, not live quotes.",
+                        "Rows carry symbol and name only; no level is modelled for the unavailable quotes.",
                     ],
                 },
                 metadata={
@@ -606,7 +673,7 @@ class WEIFunction(BaseFunction):
                     "universe_size": len(indices),
                     "provider_errors": warnings or ["yfinance world index quotes unavailable"],
                 },
-                sources=["yfinance", "world_index_model"],
+                sources=["yfinance", "world_index_identity"],
                 warnings=warnings,
             )
         warnings = [] if not live else ["market data provider did not return world-index quotes within the latency budget"]
@@ -617,21 +684,33 @@ class WEIFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
-                "status": "ok" if not live else "provider_unavailable",
-                "rows": _world_index_template(),
+                # A deterministic model is never an "ok" snapshot: status "model"
+                # on the explicit reference path, provider_unavailable when live was
+                # requested but no provider is wired.
+                "status": "model" if not live else "provider_unavailable",
+                "rows": _region_world_rows(_world_index_template(), region_filter),
                 "universe_size": len(indices),
                 "source_mode": "world_index_template",
-                "as_of": _utc_now_iso(),
+                # Model generation time, not a market or quote time.
+                "generated_at": _utc_now_iso(),
+                "reason": (
+                    "Reference path: no world-index quotes were requested, so no levels are shown."
+                    if not live
+                    else "World index quote provider is not configured; no levels are shown."
+                ),
+                "next_actions": [
+                    "Call WEI without reference=true to request live index quotes.",
+                ],
             },
             metadata={"live": False, "fallback": True, "degraded": degraded, "universe_size": len(indices)},
-            sources=["showme_local_baseline"],
+            sources=["showme_world_index_identity"],
             warnings=warnings,
         )
 
 
 _COMMODITY_FIELDS = [
     {"field": "symbol", "meaning": "Yahoo futures ticker used for quote lookup."},
-    {"field": "sector", "meaning": "Commodity complex such as Energy, Metals, or Agriculture."},
+    {"field": "sector", "meaning": "Commodity complex: Energy, Metals, Grains, Softs, or Livestock."},
     {"field": "last", "meaning": "Latest available futures price when live quotes are available."},
     {"field": "change_pct", "meaning": "Percent move versus prior close when live quotes are available."},
     {"field": "volume", "meaning": "Latest session volume from the quote provider when available."},
@@ -643,9 +722,14 @@ _COMMODITY_FIELDS = [
 _FUND_FIELDS = [
     {"field": "symbol", "meaning": "ETF or fund ticker."},
     {"field": "category", "meaning": "Fund exposure bucket."},
-    {"field": "aum_usd", "meaning": "Assets under management in US dollars."},
-    {"field": "expenseRatio", "meaning": "Annual expense ratio as a decimal."},
-    {"field": "ytd_return_pct", "meaning": "Reference year-to-date return in percent."},
+    {"field": "aum_usd", "meaning": "Not served: always null. No keyless provider supplies fund AUM, and the earlier curated figures were stale."},
+    {"field": "aum_state", "meaning": "\"unavailable\" — aum_usd is not served; no value is shown or implied."},
+    {"field": "ytd_state", "meaning": "\"unavailable\" — ytd_return_pct is not served; no value is shown or implied."},
+    {"field": "expenseRatio", "meaning": "Curated reference annual expense ratio as a decimal (0.0009 = 0.09%); no provider as-of date."},
+    {"field": "expense_state", "meaning": "\"reference\" - expenseRatio is a curated reference value, not a provider reading; no as-of date."},
+    {"field": "dividend_state", "meaning": "\"reference\" - dividend_yield is a curated reference value, not a provider reading; no as-of date."},
+    {"field": "ytd_return_pct", "meaning": "Not served: always null. No keyless provider supplies fund YTD returns."},
+    {"field": "dividend_yield", "meaning": "Curated reference dividend yield as a decimal (0.012 = 1.2%); no provider as-of date."},
     {"field": "last", "meaning": "Latest available traded price when live quotes are available."},
 ]
 
@@ -656,9 +740,9 @@ _BOND_FIELDS = [
     {"field": "duration", "meaning": "Approximate interest-rate duration in years."},
     {"field": "rating", "meaning": "Reference credit rating."},
     {"field": "maturity", "meaning": "Maturity bucket or final maturity date."},
-    {"field": "quote_type", "meaning": "live when a keyless provider refreshed this tenor this cycle; unavailable when a configured live tenor had no provider answer; reference for curated-only rows."},
+    {"field": "quote_type", "meaning": "live when a keyless provider refreshed this tenor this cycle; monthly when the provider observation is a dated monthly series (not live); unavailable when a configured live tenor had no provider answer (curated value shown); reference for curated-only rows."},
     {"field": "yield_state", "meaning": "live or reference — whether the yield value shown came from a provider refresh or the curated table."},
-    {"field": "yield_source", "meaning": "Provider that refreshed this row (fred_csv, yahoo_quote, ustreasury) or null."},
+    {"field": "yield_source", "meaning": "Provider that refreshed this row (fred_csv, yahoo_chart, stooq, yfinance_fast_info, ustreasury) or null."},
     {"field": "yield_as_of", "meaning": "Observation date of the refreshed yield (monthly foreign series carry their publication date)."},
 ]
 
@@ -675,10 +759,13 @@ _MOST_FIELDS = [
     {"field": "name", "meaning": "Human-readable security or pair name from ShowMe's reference universe."},
     {"field": "asset_class", "meaning": "Market bucket used by the All/Equities/Crypto/FX tabs."},
     {"field": "last", "meaning": "Latest provider price."},
-    {"field": "change_pct", "meaning": "Percent move versus previous close when available."},
-    {"field": "volume", "meaning": "Latest session or 24-hour volume from the quote provider."},
-    {"field": "dollar_volume", "meaning": "Approximate traded notional: latest price multiplied by volume."},
-    {"field": "quote_state", "meaning": "live when provider data was returned; reference only in deterministic non-live mode."},
+    {"field": "change_pct", "meaning": "Percent move versus previous close (equities, ETFs, FX); crypto is versus the 24h open, see change_basis."},
+    {"field": "change_basis", "meaning": "previous_close for equities, ETFs and FX; 24h_open for crypto (Binance 24h change)."},
+    {"field": "prev_close", "meaning": "Previous close from the provider; null for crypto, whose 24h open is open_24h."},
+    {"field": "volume", "meaning": "Latest session or 24-hour volume from the quote provider; null for FX, which publishes no volume."},
+    {"field": "dollar_volume", "meaning": "Approximate traded notional: latest price multiplied by volume; null for FX."},
+    {"field": "quote_time", "meaning": "Provider quote timestamp (UTC) for the row's price, when the provider stamps one."},
+    {"field": "quote_state", "meaning": "live inside an open session; last_close when the session is closed (value is the last close); stale when an open-session quote is older than 20 minutes; reference for curated rows in non-live mode; unavailable when the provider did not answer in budget."},
 ]
 
 
@@ -700,6 +787,89 @@ def _extract_predicate_columns(rewritten: str) -> list[str]:
             continue
         columns.append(token)
     return columns
+
+
+# FSRC#1: AUM and YTD have no served source. The curated constants were removed
+# (they were stale or wrong against live data and no as-of date existed for
+# them), so every row states "unavailable" rather than a number or a date.
+_FUND_UNSERVED_COLUMNS = ("aum_usd", "ytd_return_pct")
+
+_FUND_UNSERVED_WARNING = (
+    "AUM and YTD are not served: ShowMe has no keyless provider for fund AUM or YTD, "
+    "and the earlier curated figures were removed because they were stale or wrong "
+    "against live data. expenseRatio and dividend_yield are curated reference values "
+    "with no provider as-of date."
+)
+
+
+def _fund_unserved_predicate_columns(query: str) -> list[str]:
+    """Unserved columns (AUM / YTD) that a predicate filters on, after alias rewrite."""
+    used = _extract_predicate_columns(_rewrite_screen_query(query))
+    return sorted({column for column in used if column in _FUND_UNSERVED_COLUMNS})
+
+
+def _fund_unserved_predicate_result(
+    code: str,
+    query: str,
+    unserved: list[str],
+    *,
+    scanned: int,
+    limit: int,
+    sources: list[str],
+) -> FunctionResult:
+    """Explicit provider_unavailable state for a predicate on AUM / YTD (never a silent match)."""
+    rewritten = _rewrite_screen_query(query)
+    return FunctionResult(
+        code=code,
+        instrument=None,
+        data={
+            "status": "provider_unavailable",
+            "query": query,
+            "filter": rewritten,
+            "rows": [],
+            "field_dictionary": _FUND_FIELDS,
+            "scanned": scanned,
+            "matched": 0,
+            "limit": limit,
+            "reason": (
+                f"Filter references {', '.join(unserved)}, which ShowMe does not serve: "
+                "no provider supplies fund AUM or YTD."
+            ),
+            "next_actions": [
+                "Remove the aum_usd / ytd_return_pct clause and run the screen again.",
+                "Filter on expenseRatio, dividend_yield or category instead.",
+            ],
+            "unsupported_columns": unserved,
+        },
+        metadata={
+            "query": query,
+            "filter": rewritten,
+            "matched": 0,
+            "scanned": scanned,
+            "limit": limit,
+            "unsupported_columns": unserved,
+        },
+        sources=sources,
+        warnings=[_FUND_UNSERVED_WARNING],
+    )
+
+
+def _label_fund_reference_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """FSRC: AUM / YTD are null and marked unavailable on every row (copies, not in place)."""
+    return [
+        {
+            **row,
+            "aum_usd": None,
+            "ytd_return_pct": None,
+            "aum_state": "unavailable",
+            "ytd_state": "unavailable",
+            # expenseRatio and dividend_yield are curated values with no provider
+            # as-of date: the row says so, so the pane can mark them.
+            "expense_state": "reference",
+            "dividend_state": "reference",
+        }
+        for row in rows
+    ]
 
 
 def _screen_result(
@@ -1071,15 +1241,25 @@ async def _yahoo_yield_values(
             return None
         if not math.isfinite(value):
             return None
-        fetched_at = str(snapshot.get("fetched_at") or "")
+        # ASOF-3: the date is the provider observation date (snapshot as_of), never the
+        # retrieval date. A quote observed on the retrieval date is intraday; an earlier
+        # observation (weekend, holiday, overnight) is the last close; with no observation
+        # time the cadence is unknown rather than guessed.
+        observed = str(snapshot.get("as_of") or "")[:10]
+        fetched_day = str(snapshot.get("fetched_at") or "")[:10]
+        # Provenance: the row names the provider that actually answered (yahoo_chart, stooq
+        # or yfinance_fast_info), never a fixed label that would hide a fallback.
+        provider = snapshot.get("source")
         entry: dict[str, Any] = {
             "symbol": symbol,
             "value": value,
-            "source": "yahoo_quote",
-            "cadence": "intraday",
+            "source": str(provider) if provider else None,
         }
-        if fetched_at:
-            entry["as_of"] = fetched_at[:10]
+        if observed:
+            entry["as_of"] = observed
+            entry["cadence"] = "intraday" if observed == fetched_day else "last_close"
+        else:
+            entry["cadence"] = "unknown"
         return entry
 
     results = await asyncio.gather(
@@ -1146,7 +1326,8 @@ async def _collect_live_bond_yields(
         yahoo_values = await _yahoo_yield_values(yahoo_targets)
         if yahoo_values:
             values.update(yahoo_values)
-            sources.append("yahoo_quote")
+            for provider in sorted({str(e["source"]) for e in yahoo_values.values() if e.get("source")}):
+                sources.append(provider)
     missing = sorted(_LIVE_BOND_PROVIDER_TENORS - set(values))
     if missing:
         warnings.append(
@@ -1171,17 +1352,21 @@ def _merge_live_yield_rows(
         symbol = str(row.get("symbol") or "").upper()
         entry = live.get(symbol)
         if entry is not None:
+            # SRCH#3: a monthly observation (OECD long-term 10Y) is dated, not
+            # live; it gets its own quote_type and stays out of the live count.
+            monthly = entry.get("cadence") == "monthly"
             merged = {
                 **row,
                 "yield": round(float(entry["value"]), 3),
-                "yield_state": "live",
-                "quote_type": "live",
+                "yield_state": "reference" if monthly else "live",
+                "quote_type": "monthly" if monthly else "live",
                 "yield_source": entry.get("source") or None,
             }
             if entry.get("as_of"):
                 merged["yield_as_of"] = entry["as_of"]
             if entry.get("cadence"):
                 merged["yield_cadence"] = entry["cadence"]
+            _apply_duration_basis(merged, row, live_yield=not monthly)
             out.append(merged)
         elif symbol in _LIVE_BOND_TENORS:
             out.append({
@@ -1189,16 +1374,148 @@ def _merge_live_yield_rows(
                 "yield_state": "reference",
                 "quote_type": "unavailable",
                 "yield_source": None,
+                "duration_basis": "curated_reference",
             })
         else:
-            out.append({**row, "yield_state": "reference", "quote_type": "reference"})
+            out.append({
+                **row,
+                "yield_state": "reference",
+                "quote_type": "reference",
+                "duration_basis": "curated_reference",
+            })
     return out
+
+
+def _par_bond_modified_duration(yield_pct: float, tenor_years: float) -> float | None:
+    """Modified duration of a par bond (semiannual) priced at ``yield_pct``.
+
+    An approximation: the benchmark coupon is not in the reference universe,
+    so the bond is assumed to trade at par on its own yield. Returns ``None``
+    when the inputs cannot give a finite duration.
+    """
+    if not math.isfinite(yield_pct) or not math.isfinite(tenor_years) or tenor_years <= 0:
+        return None
+    y = yield_pct / 100.0
+    if abs(y) < 1e-9:
+        return tenor_years
+    base = 1.0 + y / 2.0
+    if base <= 0:
+        return None
+    value = (1.0 - base ** (-2.0 * tenor_years)) / y
+    return value if math.isfinite(value) else None
+
+
+def _apply_duration_basis(
+    merged: dict[str, Any],
+    curated_row: dict[str, Any],
+    *,
+    live_yield: bool,
+) -> None:
+    """SRCH#4: a live-yield row carries a duration derived from that yield.
+
+    The curated duration is kept as ``duration_curated``; every other row keeps
+    the curated duration and says so in ``duration_basis``.
+    """
+    merged["duration_basis"] = "curated_reference"
+    if not live_yield:
+        return
+    modelled = _par_bond_modified_duration(
+        float(merged["yield"]), float(curated_row.get("tenor_years") or 0.0)
+    )
+    if modelled is None:
+        return
+    merged["duration_curated"] = curated_row.get("duration")
+    merged["duration"] = round(modelled, 2)
+    merged["duration_basis"] = "par_bond_model_from_live_yield"
+
+
+def _flag_curated_yield_matches(
+    result: FunctionResult,
+    rows: list[dict[str, Any]],
+    query: str,
+) -> None:
+    """SRCH#2: count and warn about matched rows whose yield is curated only.
+
+    The rows stay in the payload (never dropped); the flag makes clear that a
+    yield predicate matched a curated value for a tenor no provider answered.
+    """
+    if result.data.get("status") in ("input_error", "unsupported_predicate"):
+        return
+    rewritten = _rewrite_screen_query(query)
+    # SRCH#2 follow-up: only a predicate on the yield column makes a curated
+    # yield the basis of a match. Other predicates (e.g. currency) apply no
+    # yield filter, so there is nothing for this warning to qualify.
+    if not re.search(r"\byield\b", rewritten, re.I):
+        return
+    try:
+        filtered = _apply_screen_query(rows, rewritten)
+    except Exception:  # noqa: BLE001 — parse errors are reported by _screen_result
+        return
+    count = sum(1 for row in filtered if row.get("quote_type") == "unavailable")
+    result.metadata["curated_yield_matches"] = count
+    if count:
+        result.warnings.append(
+            f"{count} matched row(s) carry a curated yield for a tenor no live provider "
+            "answered (quote_type unavailable); the yield filter does not verify them."
+        )
+
+
+async def _secf_quote_rows(
+    provider: Any,
+    symbols: list[str],
+    *,
+    timeout: float,
+    screen_timeout: float,
+    concurrency: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """SECF quote enrichment: one batched call, then a bounded fan-out for the rest.
+
+    SECF#3: the per-symbol fan-out alone let the provider's shared 2 rps bucket
+    eat the 3 s budget, so most of a 23-row page stayed unquoted. The batch
+    endpoint covers the whole page in a few calls. Symbols it does not return
+    (non-Yahoo tickers, batch errors) get the bounded burst fan-out on the
+    remaining screen budget. Rows neither path returns stay quote_state
+    "reference".
+    """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    quotes: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    try:
+        quotes, warnings = await asyncio.wait_for(
+            _batch_quote_rows(provider, symbols),
+            timeout=screen_timeout,
+        )
+    except asyncio.TimeoutError:
+        warnings = [f"batch quote request exceeded {screen_timeout:.1f}s"]
+    got = {str(row.get("symbol") or "").upper() for row in quotes}
+    missing = [symbol for symbol in symbols if symbol.upper() not in got]
+    remaining = screen_timeout - (loop.time() - started)
+    if missing and remaining <= 0:
+        # The batch used the whole screen budget; a floor budget here would
+        # run past it, so the rest stay quote_state "reference" with a warning.
+        warnings = [*warnings, f"screen budget spent on batch quotes; {len(missing)} symbol(s) not fanned out"]
+    elif missing:
+        extra, extra_warnings = await _screen_quote_rows(
+            provider,
+            missing,
+            timeout=timeout,
+            screen_timeout=remaining,
+            concurrency=concurrency,
+        )
+        quotes = [*quotes, *extra]
+        warnings = [*warnings, *extra_warnings]
+    return quotes, warnings
 
 
 def _security_text_search(rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     terms = [term.lower() for term in re.split(r"[\s,;]+", query or "") if term.strip()]
     if not terms:
         return rows
+    # SECF#1: whole-word matching. A term must start at a word boundary, so
+    # "technology" does not match inside "biotechnology" while the prefix
+    # "tech" still finds "technology".
+    patterns = [re.compile(r"(?<!\w)" + re.escape(term)) for term in terms]
     matched: list[dict[str, Any]] = []
     for row in rows:
         haystack = " ".join(
@@ -1208,9 +1525,9 @@ def _security_text_search(rows: list[dict[str, Any]], query: str) -> list[dict[s
         ).lower()
         tags = " ".join(str(item) for item in row.get("tags", [])).lower() if isinstance(row.get("tags"), list) else ""
         combined = f"{haystack} {tags}"
-        if all(term in combined for term in terms):
+        if all(pattern.search(combined) for pattern in patterns):
             matched.append({**row, "match": "all_terms"})
-        elif any(term in combined for term in terms):
+        elif any(pattern.search(combined) for pattern in patterns):
             matched.append({**row, "match": "partial"})
     return sorted(matched, key=lambda row: 0 if row.get("match") == "all_terms" else 1)
 
@@ -1225,33 +1542,35 @@ def _commodity_reference_rows() -> list[dict[str, Any]]:
     but to the 2-Year Eris Swap Futures contract, NOT lithium; the lithium
     hydroxide contract is ``LTH=F`` and is included below).
 
-    ``volume``/``open_interest`` on newly added rows are deliberately null:
-    the quote provider never publishes them and ShowMe will not fabricate
-    reference numbers for contracts the curated table never carried. The
-    legacy rows keep their curated reference values (flagged per row by
+    No row carries a volume: volume is session data from the quote provider
+    only (wb1-g17 / CSRC#5), so a contract the provider does not answer serves
+    null rather than a hard-coded constant. ``open_interest`` on newly added rows is
+    deliberately null: the quote provider never publishes it and ShowMe will not
+    fabricate reference numbers for contracts the curated table never carried. The
+    legacy rows keep their curated open_interest (flagged per row by
     ``open_interest_state="reference"`` after a live merge).
     """
     return [
         # Energy
-        {"symbol": "CL=F", "name": "WTI Crude Oil", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "1,000 barrels", "volume": 290_000, "open_interest": 310_000, "curve": "front_month"},
-        {"symbol": "BZ=F", "name": "Brent Crude Oil", "sector": "Energy", "exchange": "ICE", "contract_unit": "1,000 barrels", "volume": 180_000, "open_interest": 225_000, "curve": "front_month"},
-        {"symbol": "NG=F", "name": "Natural Gas", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "10,000 MMBtu", "volume": 160_000, "open_interest": 420_000, "curve": "front_month"},
+        {"symbol": "CL=F", "name": "WTI Crude Oil", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "1,000 barrels", "open_interest": 310_000, "curve": "front_month"},
+        {"symbol": "BZ=F", "name": "Brent Crude Oil", "sector": "Energy", "exchange": "ICE", "contract_unit": "1,000 barrels", "open_interest": 225_000, "curve": "front_month"},
+        {"symbol": "NG=F", "name": "Natural Gas", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "10,000 MMBtu", "open_interest": 420_000, "curve": "front_month"},
         {"symbol": "RB=F", "name": "RBOB Gasoline", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "42,000 gallons", "curve": "front_month"},
         {"symbol": "HO=F", "name": "NY Harbor ULSD (Heating Oil)", "sector": "Energy", "exchange": "NYMEX", "contract_unit": "42,000 gallons", "curve": "front_month"},
         # Metals
-        {"symbol": "GC=F", "name": "Gold", "sector": "Metals", "exchange": "COMEX", "contract_unit": "100 troy ounces", "volume": 145_000, "open_interest": 480_000, "curve": "front_month"},
-        {"symbol": "SI=F", "name": "Silver", "sector": "Metals", "exchange": "COMEX", "contract_unit": "5,000 troy ounces", "volume": 75_000, "open_interest": 150_000, "curve": "front_month"},
-        {"symbol": "HG=F", "name": "Copper", "sector": "Metals", "exchange": "COMEX", "contract_unit": "25,000 pounds", "volume": 62_000, "open_interest": 95_000, "curve": "front_month"},
+        {"symbol": "GC=F", "name": "Gold", "sector": "Metals", "exchange": "COMEX", "contract_unit": "100 troy ounces", "open_interest": 480_000, "curve": "front_month"},
+        {"symbol": "SI=F", "name": "Silver", "sector": "Metals", "exchange": "COMEX", "contract_unit": "5,000 troy ounces", "open_interest": 150_000, "curve": "front_month"},
+        {"symbol": "HG=F", "name": "Copper", "sector": "Metals", "exchange": "COMEX", "contract_unit": "25,000 pounds", "open_interest": 95_000, "curve": "front_month"},
         {"symbol": "PL=F", "name": "Platinum", "sector": "Metals", "exchange": "NYMEX", "contract_unit": "50 troy ounces", "curve": "front_month"},
         {"symbol": "PA=F", "name": "Palladium", "sector": "Metals", "exchange": "NYMEX", "contract_unit": "100 troy ounces", "curve": "front_month"},
         {"symbol": "ALI=F", "name": "Aluminum", "sector": "Metals", "exchange": "COMEX", "contract_unit": "25 metric tons", "curve": "front_month"},
         {"symbol": "LTH=F", "name": "Lithium Hydroxide (CIF CJK)", "sector": "Metals", "exchange": "COMEX", "contract_unit": "1 metric ton", "curve": "front_month"},
         {"symbol": "UX=F", "name": "Uranium U3O8", "sector": "Metals", "exchange": "COMEX", "contract_unit": "250 lbs U3O8", "curve": "front_month"},
         # Grains
-        {"symbol": "ZC=F", "name": "Corn", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "volume": 205_000, "open_interest": 620_000, "curve": "front_month"},
-        {"symbol": "ZW=F", "name": "Chicago SRW Wheat", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "volume": 92_000, "open_interest": 220_000, "curve": "front_month"},
+        {"symbol": "ZC=F", "name": "Corn", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "open_interest": 620_000, "curve": "front_month"},
+        {"symbol": "ZW=F", "name": "Chicago SRW Wheat", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "open_interest": 220_000, "curve": "front_month"},
         {"symbol": "KE=F", "name": "KC HRW Wheat", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "curve": "front_month"},
-        {"symbol": "ZS=F", "name": "Soybeans", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "volume": 125_000, "open_interest": 360_000, "curve": "front_month"},
+        {"symbol": "ZS=F", "name": "Soybeans", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "open_interest": 360_000, "curve": "front_month"},
         {"symbol": "ZM=F", "name": "Soybean Meal", "sector": "Grains", "exchange": "CBOT", "contract_unit": "100 short tons", "curve": "front_month"},
         {"symbol": "ZL=F", "name": "Soybean Oil", "sector": "Grains", "exchange": "CBOT", "contract_unit": "60,000 pounds", "curve": "front_month"},
         {"symbol": "ZO=F", "name": "Oats", "sector": "Grains", "exchange": "CBOT", "contract_unit": "5,000 bushels", "curve": "front_month"},
@@ -1277,10 +1596,13 @@ def _commodity_reference_symbols() -> list[str]:
 def _fund_reference_rows() -> list[dict[str, Any]]:
     """Curated fund/ETF reference universe (60+ liquid US vehicles).
 
-    AUM/expense/return fields are curated reference values (the same
-    legitimacy class as the original 10-row table); the live quote overlay
-    attaches real prices per row when the provider answers. Categories are
-    the values the FSRC pane composes into ``category = "…"`` predicates.
+    Carries identity, category, expense ratio, dividend yield and holdings as
+    curated reference values with no provider as-of date. AUM and YTD are NOT
+    in this table: no keyless provider is wired for them, and the earlier
+    curated figures were stale or wrong against live data (FSRC#1), so they
+    are not served. The live quote overlay attaches real prices per row when
+    the provider answers. Categories are the values the FSRC pane composes
+    into ``category = "…"`` predicates.
     """
     # Verified live on 2026-09-15: batch quote probe over this exact list
     # returned 68/68 symbols with a last price (0 rejects). The probe was run
@@ -1289,92 +1611,92 @@ def _fund_reference_rows() -> list[dict[str, Any]]:
     # long-running process could not resolve the Yahoo host at probe time.
     return [
         # US Large Blend
-        {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "issuer": "State Street", "category": "US Large Blend", "aum_usd": 500_000_000_000, "expenseRatio": 0.000945, "ytd_return_pct": 8.6, "dividend_yield": 0.012, "holdings": 503},
-        {"symbol": "VOO", "name": "Vanguard S&P 500 ETF", "issuer": "Vanguard", "category": "US Large Blend", "aum_usd": 470_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 8.5, "dividend_yield": 0.013, "holdings": 505},
-        {"symbol": "IVV", "name": "iShares Core S&P 500 ETF", "issuer": "BlackRock", "category": "US Large Blend", "aum_usd": 460_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 8.5, "dividend_yield": 0.013, "holdings": 505},
-        {"symbol": "SPLG", "name": "SPDR Portfolio S&P 500 ETF", "issuer": "State Street", "category": "US Large Blend", "aum_usd": 45_000_000_000, "expenseRatio": 0.0002, "ytd_return_pct": 8.5, "dividend_yield": 0.012, "holdings": 503},
-        {"symbol": "RSP", "name": "Invesco S&P 500 Equal Weight ETF", "issuer": "Invesco", "category": "US Large Blend", "aum_usd": 55_000_000_000, "expenseRatio": 0.002, "ytd_return_pct": 6.1, "dividend_yield": 0.017, "holdings": 503},
-        {"symbol": "SCHX", "name": "Schwab U.S. Large-Cap ETF", "issuer": "Charles Schwab", "category": "US Large Blend", "aum_usd": 42_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 8.4, "dividend_yield": 0.013, "holdings": 750},
+        {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "issuer": "State Street", "category": "US Large Blend", "expenseRatio": 0.000945, "dividend_yield": 0.012, "holdings": 503},
+        {"symbol": "VOO", "name": "Vanguard S&P 500 ETF", "issuer": "Vanguard", "category": "US Large Blend", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 505},
+        {"symbol": "IVV", "name": "iShares Core S&P 500 ETF", "issuer": "BlackRock", "category": "US Large Blend", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 505},
+        {"symbol": "SPLG", "name": "SPDR Portfolio S&P 500 ETF", "issuer": "State Street", "category": "US Large Blend", "expenseRatio": 0.0002, "dividend_yield": 0.012, "holdings": 503},
+        {"symbol": "RSP", "name": "Invesco S&P 500 Equal Weight ETF", "issuer": "Invesco", "category": "US Large Blend", "expenseRatio": 0.002, "dividend_yield": 0.017, "holdings": 503},
+        {"symbol": "SCHX", "name": "Schwab U.S. Large-Cap ETF", "issuer": "Charles Schwab", "category": "US Large Blend", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 750},
         # US Large Growth
-        {"symbol": "QQQ", "name": "Invesco QQQ Trust", "issuer": "Invesco", "category": "US Large Growth", "aum_usd": 250_000_000_000, "expenseRatio": 0.002, "ytd_return_pct": 10.4, "dividend_yield": 0.006, "holdings": 101},
-        {"symbol": "VUG", "name": "Vanguard Growth ETF", "issuer": "Vanguard", "category": "US Large Growth", "aum_usd": 120_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 10.1, "dividend_yield": 0.005, "holdings": 220},
-        {"symbol": "IWF", "name": "iShares Russell 1000 Growth ETF", "issuer": "BlackRock", "category": "US Large Growth", "aum_usd": 85_000_000_000, "expenseRatio": 0.0019, "ytd_return_pct": 10.3, "dividend_yield": 0.005, "holdings": 450},
-        {"symbol": "SCHG", "name": "Schwab U.S. Large-Cap Growth ETF", "issuer": "Charles Schwab", "category": "US Large Growth", "aum_usd": 28_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 10.2, "dividend_yield": 0.004, "holdings": 250},
-        {"symbol": "MGK", "name": "Vanguard Mega Cap Growth ETF", "issuer": "Vanguard", "category": "US Large Growth", "aum_usd": 18_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 11.0, "dividend_yield": 0.004, "holdings": 70},
+        {"symbol": "QQQ", "name": "Invesco QQQ Trust", "issuer": "Invesco", "category": "US Large Growth", "expenseRatio": 0.002, "dividend_yield": 0.006, "holdings": 101},
+        {"symbol": "VUG", "name": "Vanguard Growth ETF", "issuer": "Vanguard", "category": "US Large Growth", "expenseRatio": 0.0004, "dividend_yield": 0.005, "holdings": 220},
+        {"symbol": "IWF", "name": "iShares Russell 1000 Growth ETF", "issuer": "BlackRock", "category": "US Large Growth", "expenseRatio": 0.0019, "dividend_yield": 0.005, "holdings": 450},
+        {"symbol": "SCHG", "name": "Schwab U.S. Large-Cap Growth ETF", "issuer": "Charles Schwab", "category": "US Large Growth", "expenseRatio": 0.0004, "dividend_yield": 0.004, "holdings": 250},
+        {"symbol": "MGK", "name": "Vanguard Mega Cap Growth ETF", "issuer": "Vanguard", "category": "US Large Growth", "expenseRatio": 0.0007, "dividend_yield": 0.004, "holdings": 70},
         # US Large Value
-        {"symbol": "VTV", "name": "Vanguard Value ETF", "issuer": "Vanguard", "category": "US Large Value", "aum_usd": 130_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 5.2, "dividend_yield": 0.023, "holdings": 340},
-        {"symbol": "IWD", "name": "iShares Russell 1000 Value ETF", "issuer": "BlackRock", "category": "US Large Value", "aum_usd": 55_000_000_000, "expenseRatio": 0.0019, "ytd_return_pct": 5.4, "dividend_yield": 0.021, "holdings": 850},
-        {"symbol": "SCHD", "name": "Schwab U.S. Dividend Equity ETF", "issuer": "Charles Schwab", "category": "US Large Value", "aum_usd": 65_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": 4.8, "dividend_yield": 0.037, "holdings": 100},
-        {"symbol": "VYM", "name": "Vanguard High Dividend Yield ETF", "issuer": "Vanguard", "category": "US Large Value", "aum_usd": 60_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": 5.6, "dividend_yield": 0.026, "holdings": 550},
-        {"symbol": "DVY", "name": "iShares Select Dividend ETF", "issuer": "BlackRock", "category": "US Large Value", "aum_usd": 20_000_000_000, "expenseRatio": 0.0038, "ytd_return_pct": 4.2, "dividend_yield": 0.039, "holdings": 100},
+        {"symbol": "VTV", "name": "Vanguard Value ETF", "issuer": "Vanguard", "category": "US Large Value", "expenseRatio": 0.0004, "dividend_yield": 0.023, "holdings": 340},
+        {"symbol": "IWD", "name": "iShares Russell 1000 Value ETF", "issuer": "BlackRock", "category": "US Large Value", "expenseRatio": 0.0019, "dividend_yield": 0.021, "holdings": 850},
+        {"symbol": "SCHD", "name": "Schwab U.S. Dividend Equity ETF", "issuer": "Charles Schwab", "category": "US Large Value", "expenseRatio": 0.0006, "dividend_yield": 0.037, "holdings": 100},
+        {"symbol": "VYM", "name": "Vanguard High Dividend Yield ETF", "issuer": "Vanguard", "category": "US Large Value", "expenseRatio": 0.0006, "dividend_yield": 0.026, "holdings": 550},
+        {"symbol": "DVY", "name": "iShares Select Dividend ETF", "issuer": "BlackRock", "category": "US Large Value", "expenseRatio": 0.0038, "dividend_yield": 0.039, "holdings": 100},
         # US Total Market
-        {"symbol": "VTI", "name": "Vanguard Total Stock Market ETF", "issuer": "Vanguard", "category": "US Total Market", "aum_usd": 380_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 7.9, "dividend_yield": 0.014, "holdings": 3700},
-        {"symbol": "ITOT", "name": "iShares Core S&P Total U.S. Stock Market ETF", "issuer": "BlackRock", "category": "US Total Market", "aum_usd": 55_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 7.8, "dividend_yield": 0.014, "holdings": 3600},
-        {"symbol": "SCHB", "name": "Schwab U.S. Broad Market ETF", "issuer": "Charles Schwab", "category": "US Total Market", "aum_usd": 30_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 7.8, "dividend_yield": 0.013, "holdings": 2400},
+        {"symbol": "VTI", "name": "Vanguard Total Stock Market ETF", "issuer": "Vanguard", "category": "US Total Market", "expenseRatio": 0.0003, "dividend_yield": 0.014, "holdings": 3700},
+        {"symbol": "ITOT", "name": "iShares Core S&P Total U.S. Stock Market ETF", "issuer": "BlackRock", "category": "US Total Market", "expenseRatio": 0.0003, "dividend_yield": 0.014, "holdings": 3600},
+        {"symbol": "SCHB", "name": "Schwab U.S. Broad Market ETF", "issuer": "Charles Schwab", "category": "US Total Market", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 2400},
         # US Mid Blend
-        {"symbol": "IJH", "name": "iShares Core S&P Mid-Cap ETF", "issuer": "BlackRock", "category": "US Mid Blend", "aum_usd": 90_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 4.9, "dividend_yield": 0.015, "holdings": 400},
-        {"symbol": "VO", "name": "Vanguard Mid-Cap ETF", "issuer": "Vanguard", "category": "US Mid Blend", "aum_usd": 75_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 5.1, "dividend_yield": 0.015, "holdings": 340},
-        {"symbol": "SCHM", "name": "Schwab U.S. Mid-Cap ETF", "issuer": "Charles Schwab", "category": "US Mid Blend", "aum_usd": 12_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 4.7, "dividend_yield": 0.013, "holdings": 500},
+        {"symbol": "IJH", "name": "iShares Core S&P Mid-Cap ETF", "issuer": "BlackRock", "category": "US Mid Blend", "expenseRatio": 0.0005, "dividend_yield": 0.015, "holdings": 400},
+        {"symbol": "VO", "name": "Vanguard Mid-Cap ETF", "issuer": "Vanguard", "category": "US Mid Blend", "expenseRatio": 0.0004, "dividend_yield": 0.015, "holdings": 340},
+        {"symbol": "SCHM", "name": "Schwab U.S. Mid-Cap ETF", "issuer": "Charles Schwab", "category": "US Mid Blend", "expenseRatio": 0.0004, "dividend_yield": 0.013, "holdings": 500},
         # US Small Blend
-        {"symbol": "IWM", "name": "iShares Russell 2000 ETF", "issuer": "BlackRock", "category": "US Small Blend", "aum_usd": 70_000_000_000, "expenseRatio": 0.0019, "ytd_return_pct": 3.1, "dividend_yield": 0.012, "holdings": 1980},
-        {"symbol": "VB", "name": "Vanguard Small-Cap ETF", "issuer": "Vanguard", "category": "US Small Blend", "aum_usd": 65_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 3.6, "dividend_yield": 0.014, "holdings": 1400},
-        {"symbol": "IJR", "name": "iShares Core S&P Small-Cap ETF", "issuer": "BlackRock", "category": "US Small Blend", "aum_usd": 85_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": 2.4, "dividend_yield": 0.013, "holdings": 600},
-        {"symbol": "SPSM", "name": "SPDR Portfolio S&P 600 Small Cap ETF", "issuer": "State Street", "category": "US Small Blend", "aum_usd": 12_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 2.5, "dividend_yield": 0.013, "holdings": 600},
+        {"symbol": "IWM", "name": "iShares Russell 2000 ETF", "issuer": "BlackRock", "category": "US Small Blend", "expenseRatio": 0.0019, "dividend_yield": 0.012, "holdings": 1980},
+        {"symbol": "VB", "name": "Vanguard Small-Cap ETF", "issuer": "Vanguard", "category": "US Small Blend", "expenseRatio": 0.0005, "dividend_yield": 0.014, "holdings": 1400},
+        {"symbol": "IJR", "name": "iShares Core S&P Small-Cap ETF", "issuer": "BlackRock", "category": "US Small Blend", "expenseRatio": 0.0006, "dividend_yield": 0.013, "holdings": 600},
+        {"symbol": "SPSM", "name": "SPDR Portfolio S&P 600 Small Cap ETF", "issuer": "State Street", "category": "US Small Blend", "expenseRatio": 0.0003, "dividend_yield": 0.013, "holdings": 600},
         # US Small Value
-        {"symbol": "VBR", "name": "Vanguard Small-Cap Value ETF", "issuer": "Vanguard", "category": "US Small Value", "aum_usd": 30_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 2.9, "dividend_yield": 0.021, "holdings": 850},
-        {"symbol": "AVUV", "name": "Avantis U.S. Small Cap Value ETF", "issuer": "Avantis", "category": "US Small Value", "aum_usd": 14_000_000_000, "expenseRatio": 0.0025, "ytd_return_pct": 1.8, "dividend_yield": 0.017, "holdings": 750},
+        {"symbol": "VBR", "name": "Vanguard Small-Cap Value ETF", "issuer": "Vanguard", "category": "US Small Value", "expenseRatio": 0.0007, "dividend_yield": 0.021, "holdings": 850},
+        {"symbol": "AVUV", "name": "Avantis U.S. Small Cap Value ETF", "issuer": "Avantis", "category": "US Small Value", "expenseRatio": 0.0025, "dividend_yield": 0.017, "holdings": 750},
         # Emerging Markets
-        {"symbol": "EEM", "name": "iShares MSCI Emerging Markets ETF", "issuer": "BlackRock", "category": "Emerging Markets", "aum_usd": 20_000_000_000, "expenseRatio": 0.0068, "ytd_return_pct": 5.2, "dividend_yield": 0.021, "holdings": 1200},
-        {"symbol": "VWO", "name": "Vanguard FTSE Emerging Markets ETF", "issuer": "Vanguard", "category": "Emerging Markets", "aum_usd": 85_000_000_000, "expenseRatio": 0.0008, "ytd_return_pct": 5.5, "dividend_yield": 0.027, "holdings": 4500},
-        {"symbol": "IEMG", "name": "iShares Core MSCI Emerging Markets ETF", "issuer": "BlackRock", "category": "Emerging Markets", "aum_usd": 80_000_000_000, "expenseRatio": 0.0009, "ytd_return_pct": 5.4, "dividend_yield": 0.025, "holdings": 2500},
-        {"symbol": "SCHE", "name": "Schwab Emerging Markets Equity ETF", "issuer": "Charles Schwab", "category": "Emerging Markets", "aum_usd": 9_000_000_000, "expenseRatio": 0.0011, "ytd_return_pct": 5.3, "dividend_yield": 0.027, "holdings": 1600},
+        {"symbol": "EEM", "name": "iShares MSCI Emerging Markets ETF", "issuer": "BlackRock", "category": "Emerging Markets", "expenseRatio": 0.0068, "dividend_yield": 0.021, "holdings": 1200},
+        {"symbol": "VWO", "name": "Vanguard FTSE Emerging Markets ETF", "issuer": "Vanguard", "category": "Emerging Markets", "expenseRatio": 0.0008, "dividend_yield": 0.027, "holdings": 4500},
+        {"symbol": "IEMG", "name": "iShares Core MSCI Emerging Markets ETF", "issuer": "BlackRock", "category": "Emerging Markets", "expenseRatio": 0.0009, "dividend_yield": 0.025, "holdings": 2500},
+        {"symbol": "SCHE", "name": "Schwab Emerging Markets Equity ETF", "issuer": "Charles Schwab", "category": "Emerging Markets", "expenseRatio": 0.0011, "dividend_yield": 0.027, "holdings": 1600},
         # International Developed
-        {"symbol": "EFA", "name": "iShares MSCI EAFE ETF", "issuer": "BlackRock", "category": "International Developed", "aum_usd": 55_000_000_000, "expenseRatio": 0.0033, "ytd_return_pct": 6.8, "dividend_yield": 0.028, "holdings": 750},
-        {"symbol": "VEA", "name": "Vanguard FTSE Developed Markets ETF", "issuer": "Vanguard", "category": "International Developed", "aum_usd": 140_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 6.9, "dividend_yield": 0.03, "holdings": 4000},
-        {"symbol": "IEFA", "name": "iShares Core MSCI EAFE ETF", "issuer": "BlackRock", "category": "International Developed", "aum_usd": 120_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 6.9, "dividend_yield": 0.028, "holdings": 2900},
-        {"symbol": "SCHF", "name": "Schwab International Equity ETF", "issuer": "Charles Schwab", "category": "International Developed", "aum_usd": 40_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": 6.9, "dividend_yield": 0.028, "holdings": 1500},
+        {"symbol": "EFA", "name": "iShares MSCI EAFE ETF", "issuer": "BlackRock", "category": "International Developed", "expenseRatio": 0.0033, "dividend_yield": 0.028, "holdings": 750},
+        {"symbol": "VEA", "name": "Vanguard FTSE Developed Markets ETF", "issuer": "Vanguard", "category": "International Developed", "expenseRatio": 0.0005, "dividend_yield": 0.03, "holdings": 4000},
+        {"symbol": "IEFA", "name": "iShares Core MSCI EAFE ETF", "issuer": "BlackRock", "category": "International Developed", "expenseRatio": 0.0007, "dividend_yield": 0.028, "holdings": 2900},
+        {"symbol": "SCHF", "name": "Schwab International Equity ETF", "issuer": "Charles Schwab", "category": "International Developed", "expenseRatio": 0.0006, "dividend_yield": 0.028, "holdings": 1500},
         # Commodity Precious Metals
-        {"symbol": "GLD", "name": "SPDR Gold Shares", "issuer": "State Street", "category": "Commodity Precious Metals", "aum_usd": 58_000_000_000, "expenseRatio": 0.004, "ytd_return_pct": 12.4, "dividend_yield": 0.0, "holdings": 1},
-        {"symbol": "IAU", "name": "iShares Gold Trust", "issuer": "BlackRock", "category": "Commodity Precious Metals", "aum_usd": 32_000_000_000, "expenseRatio": 0.0025, "ytd_return_pct": 12.5, "dividend_yield": 0.0, "holdings": 1},
-        {"symbol": "SLV", "name": "iShares Silver Trust", "issuer": "BlackRock", "category": "Commodity Precious Metals", "aum_usd": 13_000_000_000, "expenseRatio": 0.005, "ytd_return_pct": 14.8, "dividend_yield": 0.0, "holdings": 1},
-        {"symbol": "PPLT", "name": "abrdn Physical Platinum Shares ETF", "issuer": "abrdn", "category": "Commodity Precious Metals", "aum_usd": 1_200_000_000, "expenseRatio": 0.006, "ytd_return_pct": 9.1, "dividend_yield": 0.0, "holdings": 1},
+        {"symbol": "GLD", "name": "SPDR Gold Shares", "issuer": "State Street", "category": "Commodity Precious Metals", "expenseRatio": 0.004, "dividend_yield": 0.0, "holdings": 1},
+        {"symbol": "IAU", "name": "iShares Gold Trust", "issuer": "BlackRock", "category": "Commodity Precious Metals", "expenseRatio": 0.0025, "dividend_yield": 0.0, "holdings": 1},
+        {"symbol": "SLV", "name": "iShares Silver Trust", "issuer": "BlackRock", "category": "Commodity Precious Metals", "expenseRatio": 0.005, "dividend_yield": 0.0, "holdings": 1},
+        {"symbol": "PPLT", "name": "abrdn Physical Platinum Shares ETF", "issuer": "abrdn", "category": "Commodity Precious Metals", "expenseRatio": 0.006, "dividend_yield": 0.0, "holdings": 1},
         # Long Government
-        {"symbol": "TLT", "name": "iShares 20+ Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "aum_usd": 55_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": -2.8, "dividend_yield": 0.039, "holdings": 45},
-        {"symbol": "TLH", "name": "iShares 10-20 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "aum_usd": 7_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": -1.9, "dividend_yield": 0.04, "holdings": 30},
-        {"symbol": "VGLT", "name": "Vanguard Long-Term Treasury ETF", "issuer": "Vanguard", "category": "Long Government", "aum_usd": 15_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": -2.6, "dividend_yield": 0.045, "holdings": 90},
-        {"symbol": "EDV", "name": "Vanguard Extended Duration Treasury ETF", "issuer": "Vanguard", "category": "Long Government", "aum_usd": 4_000_000_000, "expenseRatio": 0.0006, "ytd_return_pct": -4.1, "dividend_yield": 0.047, "holdings": 80},
-        {"symbol": "GOVT", "name": "iShares U.S. Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "aum_usd": 30_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 1.2, "dividend_yield": 0.041, "holdings": 160},
+        {"symbol": "TLT", "name": "iShares 20+ Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "expenseRatio": 0.0015, "dividend_yield": 0.039, "holdings": 45},
+        {"symbol": "TLH", "name": "iShares 10-20 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "expenseRatio": 0.0015, "dividend_yield": 0.04, "holdings": 30},
+        {"symbol": "VGLT", "name": "Vanguard Long-Term Treasury ETF", "issuer": "Vanguard", "category": "Long Government", "expenseRatio": 0.0004, "dividend_yield": 0.045, "holdings": 90},
+        {"symbol": "EDV", "name": "Vanguard Extended Duration Treasury ETF", "issuer": "Vanguard", "category": "Long Government", "expenseRatio": 0.0006, "dividend_yield": 0.047, "holdings": 80},
+        {"symbol": "GOVT", "name": "iShares U.S. Treasury Bond ETF", "issuer": "BlackRock", "category": "Long Government", "expenseRatio": 0.0005, "dividend_yield": 0.041, "holdings": 160},
         # Intermediate Government
-        {"symbol": "IEF", "name": "iShares 7-10 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Intermediate Government", "aum_usd": 35_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": 0.9, "dividend_yield": 0.04, "holdings": 15},
-        {"symbol": "IEI", "name": "iShares 3-7 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Intermediate Government", "aum_usd": 14_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": 1.6, "dividend_yield": 0.041, "holdings": 15},
-        {"symbol": "VGIT", "name": "Vanguard Intermediate-Term Treasury ETF", "issuer": "Vanguard", "category": "Intermediate Government", "aum_usd": 25_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 1.5, "dividend_yield": 0.04, "holdings": 120},
+        {"symbol": "IEF", "name": "iShares 7-10 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Intermediate Government", "expenseRatio": 0.0015, "dividend_yield": 0.04, "holdings": 15},
+        {"symbol": "IEI", "name": "iShares 3-7 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Intermediate Government", "expenseRatio": 0.0015, "dividend_yield": 0.041, "holdings": 15},
+        {"symbol": "VGIT", "name": "Vanguard Intermediate-Term Treasury ETF", "issuer": "Vanguard", "category": "Intermediate Government", "expenseRatio": 0.0004, "dividend_yield": 0.04, "holdings": 120},
         # Short Government
-        {"symbol": "SHY", "name": "iShares 1-3 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Short Government", "aum_usd": 25_000_000_000, "expenseRatio": 0.0015, "ytd_return_pct": 2.4, "dividend_yield": 0.043, "holdings": 40},
-        {"symbol": "VGSH", "name": "Vanguard Short-Term Treasury ETF", "issuer": "Vanguard", "category": "Short Government", "aum_usd": 20_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 2.5, "dividend_yield": 0.043, "holdings": 100},
-        {"symbol": "BIL", "name": "SPDR Bloomberg 1-3 Month T-Bill ETF", "issuer": "State Street", "category": "Short Government", "aum_usd": 40_000_000_000, "expenseRatio": 0.001359, "ytd_return_pct": 2.9, "dividend_yield": 0.046, "holdings": 20},
+        {"symbol": "SHY", "name": "iShares 1-3 Year Treasury Bond ETF", "issuer": "BlackRock", "category": "Short Government", "expenseRatio": 0.0015, "dividend_yield": 0.043, "holdings": 40},
+        {"symbol": "VGSH", "name": "Vanguard Short-Term Treasury ETF", "issuer": "Vanguard", "category": "Short Government", "expenseRatio": 0.0004, "dividend_yield": 0.043, "holdings": 100},
+        {"symbol": "BIL", "name": "SPDR Bloomberg 1-3 Month T-Bill ETF", "issuer": "State Street", "category": "Short Government", "expenseRatio": 0.001359, "dividend_yield": 0.046, "holdings": 20},
         # High Yield Bond
-        {"symbol": "HYG", "name": "iShares iBoxx High Yield Corporate Bond ETF", "issuer": "BlackRock", "category": "High Yield Bond", "aum_usd": 16_000_000_000, "expenseRatio": 0.0049, "ytd_return_pct": 3.7, "dividend_yield": 0.058, "holdings": 1200},
-        {"symbol": "JNK", "name": "SPDR Bloomberg High Yield Bond ETF", "issuer": "State Street", "category": "High Yield Bond", "aum_usd": 8_000_000_000, "expenseRatio": 0.004, "ytd_return_pct": 3.6, "dividend_yield": 0.06, "holdings": 1000},
-        {"symbol": "USHY", "name": "iShares Broad USD High Yield Corporate Bond ETF", "issuer": "BlackRock", "category": "High Yield Bond", "aum_usd": 15_000_000_000, "expenseRatio": 0.0022, "ytd_return_pct": 3.8, "dividend_yield": 0.06, "holdings": 1900},
-        {"symbol": "SJNK", "name": "SPDR Bloomberg Short Term High Yield Bond ETF", "issuer": "State Street", "category": "High Yield Bond", "aum_usd": 4_000_000_000, "expenseRatio": 0.004, "ytd_return_pct": 3.4, "dividend_yield": 0.062, "holdings": 800},
+        {"symbol": "HYG", "name": "iShares iBoxx High Yield Corporate Bond ETF", "issuer": "BlackRock", "category": "High Yield Bond", "expenseRatio": 0.0049, "dividend_yield": 0.058, "holdings": 1200},
+        {"symbol": "JNK", "name": "SPDR Bloomberg High Yield Bond ETF", "issuer": "State Street", "category": "High Yield Bond", "expenseRatio": 0.004, "dividend_yield": 0.06, "holdings": 1000},
+        {"symbol": "USHY", "name": "iShares Broad USD High Yield Corporate Bond ETF", "issuer": "BlackRock", "category": "High Yield Bond", "expenseRatio": 0.0022, "dividend_yield": 0.06, "holdings": 1900},
+        {"symbol": "SJNK", "name": "SPDR Bloomberg Short Term High Yield Bond ETF", "issuer": "State Street", "category": "High Yield Bond", "expenseRatio": 0.004, "dividend_yield": 0.062, "holdings": 800},
         # Aggregate Bond
-        {"symbol": "AGG", "name": "iShares Core U.S. Aggregate Bond ETF", "issuer": "BlackRock", "category": "Aggregate Bond", "aum_usd": 110_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 2.1, "dividend_yield": 0.038, "holdings": 12000},
-        {"symbol": "BND", "name": "Vanguard Total Bond Market ETF", "issuer": "Vanguard", "category": "Aggregate Bond", "aum_usd": 130_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 2.0, "dividend_yield": 0.038, "holdings": 11000},
+        {"symbol": "AGG", "name": "iShares Core U.S. Aggregate Bond ETF", "issuer": "BlackRock", "category": "Aggregate Bond", "expenseRatio": 0.0003, "dividend_yield": 0.038, "holdings": 12000},
+        {"symbol": "BND", "name": "Vanguard Total Bond Market ETF", "issuer": "Vanguard", "category": "Aggregate Bond", "expenseRatio": 0.0003, "dividend_yield": 0.038, "holdings": 11000},
         # International Bond
-        {"symbol": "BNDX", "name": "Vanguard Total International Bond ETF", "issuer": "Vanguard", "category": "International Bond", "aum_usd": 60_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 1.4, "dividend_yield": 0.03, "holdings": 8000},
-        {"symbol": "IAGG", "name": "iShares Core International Aggregate Bond ETF", "issuer": "BlackRock", "category": "International Bond", "aum_usd": 5_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 1.3, "dividend_yield": 0.031, "holdings": 4000},
+        {"symbol": "BNDX", "name": "Vanguard Total International Bond ETF", "issuer": "Vanguard", "category": "International Bond", "expenseRatio": 0.0007, "dividend_yield": 0.03, "holdings": 8000},
+        {"symbol": "IAGG", "name": "iShares Core International Aggregate Bond ETF", "issuer": "BlackRock", "category": "International Bond", "expenseRatio": 0.0007, "dividend_yield": 0.031, "holdings": 4000},
         # TIPS
-        {"symbol": "SCHP", "name": "Schwab U.S. TIPS ETF", "issuer": "Charles Schwab", "category": "TIPS", "aum_usd": 14_000_000_000, "expenseRatio": 0.0003, "ytd_return_pct": 3.2, "dividend_yield": 0.029, "holdings": 50},
-        {"symbol": "TIP", "name": "iShares TIPS Bond ETF", "issuer": "BlackRock", "category": "TIPS", "aum_usd": 20_000_000_000, "expenseRatio": 0.0018, "ytd_return_pct": 3.1, "dividend_yield": 0.032, "holdings": 50},
-        {"symbol": "VTIP", "name": "Vanguard Short-Term Inflation-Protected Securities ETF", "issuer": "Vanguard", "category": "TIPS", "aum_usd": 15_000_000_000, "expenseRatio": 0.0004, "ytd_return_pct": 2.8, "dividend_yield": 0.03, "holdings": 30},
+        {"symbol": "SCHP", "name": "Schwab U.S. TIPS ETF", "issuer": "Charles Schwab", "category": "TIPS", "expenseRatio": 0.0003, "dividend_yield": 0.029, "holdings": 50},
+        {"symbol": "TIP", "name": "iShares TIPS Bond ETF", "issuer": "BlackRock", "category": "TIPS", "expenseRatio": 0.0018, "dividend_yield": 0.032, "holdings": 50},
+        {"symbol": "VTIP", "name": "Vanguard Short-Term Inflation-Protected Securities ETF", "issuer": "Vanguard", "category": "TIPS", "expenseRatio": 0.0004, "dividend_yield": 0.03, "holdings": 30},
         # Municipal Bond
-        {"symbol": "MUB", "name": "iShares National Muni Bond ETF", "issuer": "BlackRock", "category": "Municipal Bond", "aum_usd": 38_000_000_000, "expenseRatio": 0.0007, "ytd_return_pct": 1.8, "dividend_yield": 0.028, "holdings": 6000},
-        {"symbol": "VTEB", "name": "Vanguard Tax-Exempt Bond ETF", "issuer": "Vanguard", "category": "Municipal Bond", "aum_usd": 35_000_000_000, "expenseRatio": 0.0005, "ytd_return_pct": 1.7, "dividend_yield": 0.03, "holdings": 5500},
+        {"symbol": "MUB", "name": "iShares National Muni Bond ETF", "issuer": "BlackRock", "category": "Municipal Bond", "expenseRatio": 0.0007, "dividend_yield": 0.028, "holdings": 6000},
+        {"symbol": "VTEB", "name": "Vanguard Tax-Exempt Bond ETF", "issuer": "Vanguard", "category": "Municipal Bond", "expenseRatio": 0.0005, "dividend_yield": 0.03, "holdings": 5500},
         # Closed-End Fund
-        {"symbol": "ADX", "name": "Adams Diversified Equity Fund", "issuer": "Adams Funds", "category": "Closed-End Fund", "aum_usd": 2_700_000_000, "expenseRatio": 0.0057, "ytd_return_pct": 9.2, "dividend_yield": 0.062, "holdings": 100},
-        {"symbol": "GAB", "name": "Gabelli Equity Trust", "issuer": "GAMCO", "category": "Closed-End Fund", "aum_usd": 1_700_000_000, "expenseRatio": 0.0062, "ytd_return_pct": 7.8, "dividend_yield": 0.09, "holdings": 250},
-        {"symbol": "CET", "name": "Central Securities Corporation", "issuer": "Central Securities", "category": "Closed-End Fund", "aum_usd": 1_400_000_000, "expenseRatio": 0.0071, "ytd_return_pct": 8.1, "dividend_yield": 0.02, "holdings": 70},
-        {"symbol": "RVT", "name": "Royce Value Trust", "issuer": "Royce & Associates", "category": "Closed-End Fund", "aum_usd": 1_800_000_000, "expenseRatio": 0.011, "ytd_return_pct": 6.4, "dividend_yield": 0.08, "holdings": 350},
+        {"symbol": "ADX", "name": "Adams Diversified Equity Fund", "issuer": "Adams Funds", "category": "Closed-End Fund", "expenseRatio": 0.0057, "dividend_yield": 0.062, "holdings": 100},
+        {"symbol": "GAB", "name": "Gabelli Equity Trust", "issuer": "GAMCO", "category": "Closed-End Fund", "expenseRatio": 0.0062, "dividend_yield": 0.09, "holdings": 250},
+        {"symbol": "CET", "name": "Central Securities Corporation", "issuer": "Central Securities", "category": "Closed-End Fund", "expenseRatio": 0.0071, "dividend_yield": 0.02, "holdings": 70},
+        {"symbol": "RVT", "name": "Royce Value Trust", "issuer": "Royce & Associates", "category": "Closed-End Fund", "expenseRatio": 0.011, "dividend_yield": 0.08, "holdings": 350},
     ]
 
 
@@ -1754,6 +2076,95 @@ async def _quote_snapshot_rows(
     return rows, [warning for warning in warnings if warning][:4]
 
 
+def _csrc_with_established_baseline(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """CSRC#1: a commodity row's 1D change must come from the prior session or not at all.
+
+    The chart quote reports ``prior_session_established`` False when the bars could not
+    establish the prior session; its previous_close is then Yahoo's range=5d previousClose,
+    a multi-session baseline. Such a snapshot keeps its last price but drops the baseline
+    and the change, so the row shows an honest blank rather than a 5-session move.
+    """
+    raw = snapshot.get("raw") or {}
+    if raw.get("prior_session_established") is not False:
+        return snapshot
+    return {**snapshot, "previous_close": None, "previousClose": None, "change_pct": None,
+            "regularMarketChangePercent": None}
+
+
+async def _csrc_quote_snapshot_rows(
+    symbols: list[str],
+    *,
+    screen_timeout: float,
+    concurrency: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """CSRC quote fan-out over the quote service that keeps each row's provider quote time.
+
+    Same bounded fan-out as :func:`_quote_snapshot_rows`; kept separate so the
+    shared helper's row shape stays unchanged for the other screens
+    (wb1-g17 / CSRC#5: commodity rows must carry the quote's own timestamp).
+    """
+    from showme.quotes import fetch_quote_snapshot, quote_cache_get, quote_cache_set
+
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def _run(symbol: str) -> dict[str, Any] | None:
+        async with semaphore:
+            snapshot = quote_cache_get(symbol)
+            if snapshot is None:
+                try:
+                    snapshot = await fetch_quote_snapshot(symbol)
+                except Exception:  # noqa: BLE001 — unresolved symbols are labelled upstream
+                    return None
+                quote_cache_set(symbol, snapshot)
+            snapshot = _csrc_with_established_baseline(snapshot)
+            row = _snapshot_to_quote_row(symbol, snapshot)
+            if row is not None:
+                row["quote_time"] = _most_snapshot_quote_time(snapshot)
+            return row
+
+    tasks = [asyncio.create_task(_run(symbol)) for symbol in symbols]
+    done, pending = await asyncio.wait(tasks, timeout=screen_timeout)
+    for task in pending:
+        task.cancel()
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for task in done:
+        try:
+            row = task.result()
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(str(exc) or type(exc).__name__)
+            continue
+        if row:
+            rows.append(row)
+    if pending:
+        warnings.append(f"{len(pending)} quote request(s) exceeded {screen_timeout:.1f}s")
+    return rows, [warning for warning in warnings if warning][:4]
+
+
+async def _csrc_screen_quote_rows(
+    provider: Any,
+    symbols: list[str],
+    *,
+    timeout: float,
+    screen_timeout: float,
+    concurrency: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """CSRC quote fan-out: the quote service keeps quote times; an injected provider keeps its path."""
+    if _screen_uses_live_quote_service(provider):
+        return await _csrc_quote_snapshot_rows(
+            symbols,
+            screen_timeout=screen_timeout,
+            concurrency=concurrency,
+        )
+    return await _screen_quote_rows(
+        provider,
+        symbols,
+        timeout=timeout,
+        screen_timeout=screen_timeout,
+        concurrency=concurrency,
+    )
+
+
 async def _screen_quote_rows(
     provider: Any,
     symbols: list[str],
@@ -2039,13 +2450,24 @@ def _most_active_crypto_row_from_ticker(item: dict[str, Any]) -> dict[str, Any] 
     if not math.isfinite(last) or last <= 0:
         return None
     name = _MOST_CRYPTO_BASE_NAMES.get(base, base)
+    # wb1-g17 / MOST#4: Binance ``openPrice`` is the 24h open, not the prior
+    # close. It is kept as open_24h and prev_close stays null; change_pct is
+    # Binance's own 24h change and change_basis says so.
+    close_ms = _finite_number(item.get("closeTime"))
+    quote_time = (
+        datetime.fromtimestamp(close_ms / 1000.0, timezone.utc).isoformat()
+        if close_ms
+        else None
+    )
     return {
         "symbol": symbol,
         "name": f"{name} / USDT",
         "asset_class": "crypto",
         "exchange": "BINANCE",
         "last": last,
-        "prev_close": prev_close,
+        "prev_close": None,
+        "open_24h": prev_close,
+        "change_basis": "24h_open",
         "change": last - prev_close,
         "volume": volume,
         "dollar_volume": quote_volume,
@@ -2053,6 +2475,7 @@ def _most_active_crypto_row_from_ticker(item: dict[str, Any]) -> dict[str, Any] 
         "high": high,
         "low": low,
         "range_pct": ((high - low) / last * 100.0) if last else None,
+        "quote_time": quote_time,
         "quote_state": "live",
         "source": "binance",
     }
@@ -2168,6 +2591,21 @@ def _merge_live_most_rows(
     return out
 
 
+def _mover_liquidity_tier(row: dict[str, Any]) -> int:
+    """Rank tier for the abs_change board: 2 liquid, 1 thin, 0 no evidence.
+
+    Missing data is never treated as liquidity: a row whose 24h notional is
+    unknown (or an unavailable row with null market fields) sorts below rows
+    with a known notional, thin or not. Spot FX publishes no traded volume, so
+    its notional is unknown and FX rows sit in tier 0 with the other rows that
+    have no liquidity evidence (wb1-g17 / MOST#4).
+    """
+    dollar = row.get("dollar_volume")
+    if dollar is None:
+        return 0
+    return 2 if float(dollar) >= _MOST_MOVERS_MIN_DOLLAR_VOLUME else 1
+
+
 def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for row in rows:
@@ -2176,6 +2614,12 @@ def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[di
         # quote_state="reference". setdefault never clobbers the "live" state
         # stamped by _merge_live_most_rows, so the shared live path is safe.
         merged.setdefault("quote_state", "reference")
+        merged.setdefault("change_basis", "previous_close")
+        if _normalize_most_asset_class(merged.get("asset_class")) == "fx":
+            # wb1-g17 / MOST#5: spot FX has no centralised volume; the provider's
+            # 0 means "not reported", so volume and dollar volume are null.
+            merged["volume"] = None
+            merged["dollar_volume"] = None
         if merged.get("dollar_volume") is None and merged.get("last") is not None and merged.get("volume") is not None:
             merged["dollar_volume"] = float(merged["last"]) * float(merged["volume"])
         merged["activity_score"] = (
@@ -2189,7 +2633,9 @@ def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[di
             return float(row.get("volume") or 0)
     elif sort_key in {"abs_change", "change", "mover"}:
         def key(row):
-            return abs(float(row.get("change_pct") or 0))
+            # wb1-g17 / MOST#4: liquid movers first, then thin names, then rows
+            # with no liquidity evidence (unknown notional / unavailable).
+            return (_mover_liquidity_tier(row), abs(float(row.get("change_pct") or 0)))
     elif sort_key in {"activity", "score"}:
         def key(row):
             return float(row.get("activity_score") or 0)
@@ -2197,6 +2643,129 @@ def _rank_most_active_rows(rows: list[dict[str, Any]], sort_key: str) -> list[di
         def key(row):
             return float(row.get("dollar_volume") or 0)
     return sorted(enriched, key=key, reverse=True)
+
+
+# ── MOST — session / freshness labelling and movers floor (wb1-g17) ─────────
+_MOST_QUOTE_FRESH_WINDOW_S = 20 * 60
+_MOST_USABLE_QUOTE_STATES = frozenset({"live", "stale", "last_close"})
+# abs_change board: rows whose 24h notional is below this rank after liquid names.
+_MOST_MOVERS_MIN_DOLLAR_VOLUME = 10_000_000.0
+
+
+def _most_utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _most_market_open(asset_class: Any, now: datetime) -> bool:
+    """Whether the provider session for ``asset_class`` is trading at ``now``.
+
+    Crypto trades around the clock. Equities/ETFs follow the NYSE regular
+    session (Mon-Fri 09:30-16:00 America/New_York); exchange holidays are not
+    modelled, so a holiday with no provider quote time can still read open.
+    Spot FX trades Sunday 17:00 ET through Friday 17:00 ET.
+    """
+    from zoneinfo import ZoneInfo
+
+    cls = _normalize_most_asset_class(asset_class)
+    if cls == "crypto":
+        return True
+    local = now.astimezone(ZoneInfo("America/New_York"))
+    minutes = local.hour * 60 + local.minute
+    weekday = local.weekday()  # Monday=0 .. Sunday=6
+    if cls == "fx":
+        if weekday == 5:
+            return False
+        if weekday == 6:
+            return minutes >= 17 * 60
+        if weekday == 4:
+            return minutes < 17 * 60
+        return True
+    return weekday < 5 and 9 * 60 + 30 <= minutes < 16 * 60
+
+
+def _most_session_summary(now: datetime) -> dict[str, str]:
+    return {
+        "equity": "open" if _most_market_open("equity", now) else "closed",
+        "fx": "open" if _most_market_open("fx", now) else "closed",
+        "crypto": "open",
+    }
+
+
+def _most_snapshot_quote_time(snapshot: dict[str, Any] | None) -> str | None:
+    """ISO-8601 UTC provider quote time of a cached snapshot, when the provider gave one."""
+    if not snapshot:
+        return None
+    epoch = _finite_number((snapshot.get("raw") or {}).get("regular_market_time"))
+    if epoch is None or epoch <= 0:
+        return None
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+
+def _parse_most_quote_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _most_apply_quote_states(rows: list[dict[str, Any]], now: datetime) -> None:
+    """Relabel live-merged rows (in place) by market session and quote age.
+
+    A quote taken while the session is closed is the last close, never a live
+    print. An open-session quote whose provider time is older than the freshness
+    window is ``stale``. Rows without a provider quote time keep ``live`` only
+    while their session is open.
+    """
+    for row in rows:
+        if row.get("quote_state") != "live":
+            continue
+        if not _most_market_open(row.get("asset_class"), now):
+            row["quote_state"] = "last_close"
+            continue
+        quoted_at = _parse_most_quote_time(row.get("quote_time"))
+        if quoted_at is not None and (now - quoted_at).total_seconds() > _MOST_QUOTE_FRESH_WINDOW_S:
+            row["quote_state"] = "stale"
+
+
+def _most_as_of(rows: list[dict[str, Any]]) -> str | None:
+    """Newest provider quote time across rows; None when no provider stamped one."""
+    latest: datetime | None = None
+    for row in rows:
+        quoted_at = _parse_most_quote_time(row.get("quote_time"))
+        if quoted_at is not None and (latest is None or quoted_at > latest):
+            latest = quoted_at
+    return latest.isoformat() if latest is not None else None
+
+
+async def _most_screen_quote_rows(
+    provider: Any,
+    symbols: list[str],
+    *,
+    timeout: float,
+    screen_timeout: float,
+    concurrency: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """MOST quote fan-out that also keeps each provider quote time on its row."""
+    rows, warnings = await _screen_quote_rows(
+        provider,
+        symbols,
+        timeout=timeout,
+        screen_timeout=screen_timeout,
+        concurrency=concurrency,
+    )
+    if _screen_uses_live_quote_service(provider):
+        from showme.quotes import quote_cache_get
+
+        # The fan-out stores every snapshot it resolves in the quote cache, so
+        # the cached entry is the exact snapshot each row was built from.
+        for row in rows:
+            row["quote_time"] = _most_snapshot_quote_time(
+                quote_cache_get(str(row.get("symbol") or ""))
+            )
+    return rows, warnings
 
 
 def _most_active_payload(
@@ -2213,6 +2782,7 @@ def _most_active_payload(
     resolved: int | None = None,
     unavailable: int | None = None,
 ) -> dict[str, Any]:
+    now = _most_utc_now()
     payload: dict[str, Any] = {
         "status": status,
         "rows": rows,
@@ -2222,15 +2792,22 @@ def _most_active_payload(
         "asset_class_filter": asset_class,
         "sort": sort,
         "live": live,
-        "as_of": datetime.now(timezone.utc).isoformat(),
+        # as_of is the provider quote time; requested_at is when this was served.
+        "as_of": _most_as_of(rows),
+        "requested_at": now.isoformat(),
+        "market_session": _most_session_summary(now),
         "reason": reason,
         "methodology": (
             "Ranks a selected cross-asset universe by provider volume, absolute percent move, "
             "or approximate traded notional. Dollar volume is last price multiplied by session/24h volume. "
-            "Crypto ranks the Binance USDT spot board by 24h quote volume from one batched ticker call; "
-            "equities/ETFs scan a bounded liquid subset of the bundled security master and FX covers the "
-            "G10 + major EM pairs — every scanned symbol the provider does not answer inside the latency "
-            "budget is emitted as an explicit quote_state=unavailable row (null values, never dropped)."
+            "Crypto ranks the Binance USDT spot board by 24h quote volume from one batched ticker call and "
+            "its change is versus the 24h open (change_basis=24h_open). Equities/ETFs scan a bounded liquid "
+            "subset of the bundled security master; FX covers the G10 + major EM pairs and publishes no "
+            "volume, so its volume and dollar volume are null. quote_state is live inside an open session, "
+            "last_close when the session is closed, and stale when an open-session quote is older than 20 "
+            "minutes. Every scanned symbol the provider does not answer inside the latency budget is emitted "
+            "as an explicit quote_state=unavailable row (null values, never dropped). abs_change ranks movers "
+            "with at least $10M 24h notional ahead of thinner names."
         ),
         "field_dictionary": _MOST_FIELDS,
     }
@@ -2296,22 +2873,11 @@ _WORLD_INDEX_META: dict[str, dict[str, str]] = {
     "^CASE30": {"name": "EGX 30 (Egypt)", "region": "mea"},
 }
 
-# Deterministic baseline levels for the offline / provider-down template.
-# Coarse round numbers — these are explicitly NOT live quotes (rows carry
-# market_state="model"); they exist only so the UI has structure to show
-# while clearly labelled as model data.
-_WORLD_INDEX_BASELINE: dict[str, float] = {
-    "^GSPC": 5200.0, "^DJI": 39000.0, "^IXIC": 16500.0, "^RUT": 2050.0,
-    "^GSPTSE": 22000.0, "^BVSP": 128000.0, "^MXX": 56000.0,
-    "^FTSE": 8200.0, "^GDAXI": 18400.0, "^FCHI": 8100.0, "^STOXX50E": 5000.0,
-    "^IBEX": 11000.0, "^AEX": 900.0, "^SSMI": 12000.0, "FTSEMIB.MI": 34000.0,
-    "^OMX": 2500.0, "WIG20.WA": 4100.0, "^BFX": 5720.0, "OBX.OL": 2035.0,
-    "^N225": 39200.0, "^HSI": 18100.0, "^KS11": 2700.0, "^TWII": 22000.0,
-    "^BSESN": 80000.0, "^NSEI": 24000.0, "^AXJO": 7800.0, "^STI": 3400.0,
-    "^JKSE": 7200.0, "000001.SS": 3000.0, "^KLSE": 1600.0,
-    "399001.SZ": 13300.0, "^SET": 7600.0, "PSEI.PS": 6010.0, "^NZ50": 13480.0,
-    "XU100.IS": 9800.0, "^TA125.TA": 2000.0, "^J203.JO": 80000.0, "^CASE30": 28000.0,
-}
+def _region_world_rows(rows: list[dict[str, Any]], region: str | None) -> list[dict[str, Any]]:
+    """WEI region filter over already-built rows (``None`` keeps every row)."""
+    if region is None:
+        return rows
+    return [row for row in rows if str(row.get("region") or "").lower() == region]
 
 
 def _world_index_symbols() -> list[str]:
@@ -2328,7 +2894,9 @@ def _enrich_world_index_row(row: dict[str, Any]) -> dict[str, Any]:
         **row,
         "name": row.get("name") or meta.get("name"),
         "region": row.get("region") or meta.get("region"),
-        "market_state": row.get("market_state") or "live",
+        # No session state is reported by the quote provider, so the default is
+        # "unknown" — never a live claim the provider did not make.
+        "market_state": row.get("market_state") or "unknown",
     }
 
 
@@ -2364,31 +2932,26 @@ def _complete_world_index_rows(quote_rows: list[dict[str, Any]]) -> list[dict[st
 
 
 def _world_index_template() -> list[dict[str, Any]]:
-    """Deterministic offline / provider-down model for the full universe.
+    """Identity-only world-index rows for the reference and provider-down paths.
 
-    Derived from ``_WORLD_INDEX_META`` so it never drifts from the live
-    set. Every row is labelled ``market_state="model"`` — these are NOT
-    live quotes and the UI must surface them as model data.
+    No level is modelled: ``last``, ``change``, ``change_pct``, ``high`` and
+    ``low`` are null and every row is labelled ``market_state="unavailable"``.
+    A baseline level or a pseudo-move would present invented market data
+    (WEI#3 follow-up; DATA POLICY).
     """
     rows: list[dict[str, Any]] = []
     for sym in _world_index_symbols():
         meta = _WORLD_INDEX_META[sym]
-        base = _WORLD_INDEX_BASELINE.get(sym, 1000.0)
-        # Stable, deterministic pseudo-move from the symbol so the model
-        # table isn't a wall of zeros, while staying clearly synthetic.
-        seed = sum(ord(ch) for ch in sym)
-        change_pct = round(((seed % 11) - 5) * 0.08, 2)
-        last = round(base * (1 + change_pct / 100), 2)
-        high = round(last * 1.004, 2)
-        low = round(last * 0.996, 2)
         rows.append({
             "symbol": sym,
             "name": meta["name"],
             "region": meta["region"],
-            "last": last,
-            "change_pct": change_pct,
-            "high": high,
-            "low": low,
-            "market_state": "model",
+            "last": None,
+            "prev_close": None,
+            "change": None,
+            "change_pct": None,
+            "high": None,
+            "low": None,
+            "market_state": "unavailable",
         })
     return rows

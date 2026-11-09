@@ -102,42 +102,40 @@ def test_resolve_invalid_user_override_falls_through_to_quote():
 
 
 def test_ivol_reference_branch_uses_live_spot():
-    """The headline bug: ``live_options`` unset → reference branch must
-    still anchor strikes around the real SPY price, not 100."""
+    """``reference=true`` no longer serves the constant-IV template (T10), even with a
+    live spot. It reports the real spot and an explicit provider_unavailable state with
+    no surface, see the WC1 IVOL tests."""
     fn = IVOLFunction(deps=_StubDeps(yfinance=_StubYf(last=525.42)))
-    result = asyncio.run(fn.execute(instrument=_spy()))
+    result = asyncio.run(fn.execute(instrument=_spy(), reference=True))
     assert result.data["spot"] == pytest.approx(525.42)
     assert result.data["data_state"] == "live_quote"
-    # Strikes should be anchored around the real spot — first strike
-    # is 0.8 * spot, last is 1.2 * spot.
-    strikes = sorted({row["strike"] for row in result.data["calls_grid"]})
-    assert min(strikes) > 100, f"reference surface still anchored at 100 default: {strikes}"
-    assert min(strikes) == pytest.approx(round(525.42 * 0.8, 2))
-    assert max(strikes) == pytest.approx(round(525.42 * 1.2, 2))
+    assert result.data["status"] == "provider_unavailable"
+    assert "calls_grid" not in result.data and "puts_grid" not in result.data
+    assert result.data["surface"] == []
 
 
 def test_ivol_marks_synthetic_anchor_when_no_quote():
-    """If the quote adapter is unavailable, the response must
-    self-label as ``synthetic_anchor`` so the UI doesn't display a
-    fake $100 strike grid as if it were real."""
+    """If the quote adapter is unavailable, the response must self-label as
+    ``synthetic_anchor`` and must NOT report the placeholder 100 as ``spot``
+    (WC1 IVOL placeholder_value: 100 is a demo price, not a quote)."""
     fn = IVOLFunction(deps=_StubDeps(yfinance=None))
     result = asyncio.run(fn.execute(instrument=_spy()))
-    assert result.data["spot"] == 100.0
+    assert result.data["spot"] is None
+    assert result.data["status"] == "provider_unavailable"
     assert result.data["data_state"] == "synthetic_anchor"
     assert result.metadata.get("spot_source") == "synthetic_anchor"
 
 
-def test_ivol_yfinance_unavailable_branch_uses_live_quote_for_spot():
-    """When live_options is requested but yfinance is missing, the
-    fallback synthetic surface must STILL use the resolved spot (from
-    the quote adapter) — not 100. We exercise this with the live path
-    selected but yfinance forcibly None by passing the live flag and
-    no yfinance adapter."""
+def test_ivol_yfinance_unavailable_branch_reports_no_spot():
+    """When live_options is requested but yfinance is missing, there is no
+    live spot and no surface: the response reports spot None, not the
+    placeholder 100 and not a template. Exercised by passing the live flag
+    with no yfinance adapter."""
     fn = IVOLFunction(deps=_StubDeps(yfinance=None))
     result = asyncio.run(fn.execute(instrument=_spy(), live_options=True))
-    # No yfinance → resolver returns synthetic_anchor (100). Make sure
-    # the response says so honestly.
-    assert result.data["spot"] == 100.0
+    # No yfinance → resolver returns synthetic_anchor; the placeholder is not
+    # reported as a spot. Make sure the response says so honestly.
+    assert result.data["spot"] is None
     assert result.data["data_state"] == "synthetic_anchor"
     assert "provider_errors" in result.metadata
 

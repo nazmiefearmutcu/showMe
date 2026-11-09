@@ -255,7 +255,9 @@ def test_fsrc_fund_universe_is_comprehensive():
     } <= categories
     for row in rows:
         assert row["symbol"] and row["name"] and row["issuer"] and row["category"]
-        assert row["aum_usd"] > 0 and 0 <= row["expenseRatio"] < 0.05
+        # FSRC#1: AUM / YTD are not in the reference table (no served source).
+        assert "aum_usd" not in row and "ytd_return_pct" not in row
+        assert 0 <= row["expenseRatio"] < 0.05
 
 
 def test_fsrc_accepts_dividend_yield_alias_predicate():

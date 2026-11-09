@@ -28,6 +28,8 @@ with an honest warning and ``next_actions`` — it never fabricates rows.
 from __future__ import annotations
 
 import re
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
@@ -41,29 +43,33 @@ _PODCAST_FEEDS = [
     "https://feeds.simplecast.com/3hnxp7yk",      # Finance/business interview archive
 ]
 
-# SEC EDGAR form code -> human media_type the manifest enumerates / understands.
-_FORM_MEDIA_TYPE = {
-    "8-K": "earnings_call",       # material events incl. earnings releases / calls
-    "8-K/A": "earnings_call",
-    "10-Q": "earnings_call",
-    "10-K": "earnings_call",
-    "ARS": "conference",          # annual report to shareholders
-    "DEF 14A": "conference",      # proxy / annual meeting
-    "DEFA14A": "conference",
-    "6-K": "earnings_call",       # foreign-issuer interim report
-    "20-F": "earnings_call",      # foreign-issuer annual report
+# SEC EDGAR forms kept as investor-relevant filings. Every SEC row is a filing
+# document, so its media_type is "filing" (not an earnings call or a conference:
+# an 8-K or 10-K is not a call recording and carries no stored transcript).
+_INVESTOR_FORMS = {
+    "8-K",
+    "8-K/A",
+    "10-Q",
+    "10-K",
+    "ARS",
+    "DEF 14A",
+    "DEFA14A",
+    "6-K",
+    "20-F",
 }
+_FILING_MEDIA_TYPE = "filing"
 
 _FIELD_DICTIONARY = {
-    "event_date": "Filing / recording timestamp (ISO-8601, UTC).",
+    "event_date": "Filing date (SEC filingDate, ISO-8601) or episode publish date (RSS).",
+    "period_end": "SEC fiscal period end for a filing (reportDate); empty when SEC gives none.",
     "symbol": "Primary ticker for the issuer (uppercase).",
     "title": "Display title for the media / filing event.",
-    "media_type": "earnings_call / central_bank_presser / conference / podcast / interview.",
+    "media_type": "filing (SEC EDGAR filing document) or podcast (RSS audio episode).",
     "duration_seconds": "Asset duration in seconds when known (podcast enclosures); null for filings.",
     "play_url": "Verifiable HTTPS link to open / play the asset (SEC filing index or audio enclosure).",
     "url": "Alias of play_url for table action columns.",
     "source": "Source publisher (sec.gov, NPR Planet Money, ...).",
-    "has_transcript": "True when a textual transcript/document is directly attached.",
+    "has_transcript": "True only when a stored call transcript exists. No provider here stores one, so this is always false.",
 }
 
 _METHODOLOGY = (
@@ -92,6 +98,27 @@ class AVFunction(BaseFunction):
         limit = max(1, min(int(params.get("limit", 25) or 25), 100))
         query = str(params.get("query") or "").strip()
         symbol = self._resolve_symbol(instrument, params)
+        _days, window_error = _date_window(params)
+        if window_error:
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "input_error",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="not_configured"),
+                    "reason": window_error,
+                    "next_actions": ["Use date_range last_Nd (for example last_30d or last_365d), or all."],
+                },
+                sources=["sec_edgar" if symbol else "podcast_rss"],
+                metadata={"live": False, "data_mode": "not_configured"},
+                warnings=[window_error],
+            )
         try:
             import asyncio
             return await asyncio.wait_for(
@@ -99,7 +126,7 @@ class AVFunction(BaseFunction):
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"AV execution timed out: {exc}"
+            reason = f"AV execution timed out: {str(exc) or type(exc).__name__}"
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -163,18 +190,46 @@ class AVFunction(BaseFunction):
 
         if filings is None:
             # Resolved cleanly but the ticker has no EDGAR mapping (e.g. crypto/FX).
-            return await self._podcast_archive(
-                query, limit, params, symbol=symbol,
-                note=f"No SEC EDGAR filer maps to '{symbol}'; showing the global media archive.",
+            # The global podcast episodes are not this symbol's archive, so they
+            # are never substituted under the symbol. The global scope serves them.
+            reason = (
+                f"No SEC EDGAR filer maps to {symbol}, so there is no filings archive for it. "
+                "The general podcast archive is available under global scope."
+            )
+            return FunctionResult(
+                code=self.code,
                 instrument=instrument,
+                data={
+                    "status": "empty",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "count": 0,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="live_official"),
+                    "reason": reason,
+                    "next_actions": [
+                        "Switch scope to global for the general finance podcast archive.",
+                        "Use a US equity ticker that has SEC EDGAR filings.",
+                    ],
+                },
+                sources=["sec_edgar"],
+                metadata={"provider_errors": errors, "live": True, "data_mode": "live_official", "symbol_mapped": False},
+                warnings=[reason],
             )
 
+        days, _err = _date_window(params)
+        cutoff = _window_start(days)
+        wanted = _media_filter(params)
         for f in filings:
             row = self._filing_row(symbol, f)
-            if row and _matches_query(row, query):
+            if row and _matches_query(row, query) and _matches_media(row, wanted):
                 rows.append(row)
 
-        rows = _dedupe(rows)[:limit]
+        rows = [r for r in _dedupe(rows) if _in_window(r.get("event_date"), cutoff)][:limit]
+        window = _window_fields(days, cutoff)
         if not rows:
             return FunctionResult(
                 code=self.code,
@@ -185,12 +240,13 @@ class AVFunction(BaseFunction):
                     "items": [],
                     "query": query,
                     "symbol": symbol,
+                    **window,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards([], data_mode="live_official"),
-                    "reason": f"No archive entries for {symbol} match these filters.",
+                    "reason": f"No archive entries for {symbol} match these filters{_window_note(days)}.",
                     "next_actions": [
-                        "Clear or broaden the media query.",
+                        "Widen date_range or clear the media query.",
                         "Try a different symbol with public SEC filings.",
                     ],
                 },
@@ -208,6 +264,7 @@ class AVFunction(BaseFunction):
                 "query": query,
                 "symbol": symbol,
                 "count": len(rows),
+                **window,
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
                 "cards": _cards(rows, data_mode="live_official"),
@@ -268,7 +325,7 @@ class AVFunction(BaseFunction):
             )
         # Keep the investor-relevant forms; fall back to all when none match so
         # the archive is never empty for an active filer.
-        relevant = [f for f in out if f.get("form") in _FORM_MEDIA_TYPE]
+        relevant = [f for f in out if f.get("form") in _INVESTOR_FORMS]
         return relevant or out
 
     async def _resolve_cik(self, symbol: str, params: dict[str, Any]) -> int | None:
@@ -321,21 +378,25 @@ class AVFunction(BaseFunction):
                 f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/"
                 f"{accession}-index.htm"
             )
-        media_type = _FORM_MEDIA_TYPE.get(form, "conference")
         desc = str(f.get("primary_desc") or "").strip()
         edgar_items = str(f.get("edgar_items") or "").strip()
         title_bits = [f"{symbol} {form}"]
-        if desc:
+        # SEC often sets the primary doc description to the form itself
+        # ("10-K"); repeating it adds nothing, so only a real description is kept.
+        if desc and desc.upper() != form.upper():
             title_bits.append(desc)
         elif edgar_items:
             title_bits.append(f"Items {edgar_items}")
-        event_date = str(f.get("report_date") or f.get("filing_date") or "").strip()
+        filing_date = str(f.get("filing_date") or "").strip()
         return {
-            "event_date": event_date,
-            "filing_date": str(f.get("filing_date") or ""),
+            # event_date is the filing timestamp (SEC filingDate). The fiscal
+            # period end (reportDate) is kept separately as period_end.
+            "event_date": filing_date,
+            "filing_date": filing_date,
+            "period_end": str(f.get("report_date") or "").strip(),
             "symbol": symbol,
             "title": " — ".join(title_bits),
-            "media_type": media_type,
+            "media_type": _FILING_MEDIA_TYPE,
             "duration_seconds": None,
             "play_url": play_url,
             "url": play_url,
@@ -344,7 +405,9 @@ class AVFunction(BaseFunction):
             "feed": "SEC EDGAR",
             "form": form,
             "accession": accession,
-            "has_transcript": bool(primary_doc),
+            # No transcript store is wired, so no SEC row has a stored transcript.
+            # The primary HTML document is the filing itself, not a transcript.
+            "has_transcript": False,
         }
 
     # ----------------------------------------------------------------- podcast
@@ -361,6 +424,10 @@ class AVFunction(BaseFunction):
         items: list[dict[str, Any]] = []
         errors: list[str] = []
         parsed_feeds = 0
+        windowed_out = 0
+        days, _err = _date_window(params)
+        cutoff = _window_start(days)
+        wanted = _media_filter(params)
         try:
             import asyncio
 
@@ -392,14 +459,77 @@ class AVFunction(BaseFunction):
                     row = _media_row(feed.feed, entry)
                     # _media_row returns {} for entries with no openable
                     # play_url — skip them so every emitted row has a real link.
-                    if row and _matches_query(row, query):
-                        items.append(row)
+                    if row and _matches_query(row, query) and _matches_media(row, wanted):
+                        if _in_window(row.get("event_date"), cutoff):
+                            items.append(row)
+                        else:
+                            windowed_out += 1
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc) or type(exc).__name__)
 
         items = _dedupe(items)[:limit]
         warnings = [note] if note else []
+        window = _window_fields(days, cutoff)
+        if not items and windowed_out:
+            # Feeds answered and matched, but every match is outside the window.
+            # That is an empty result, not a provider outage.
+            reason = (
+                f"No podcast episodes in the last {days} days match this query; "
+                "widen date_range to see older episodes."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "empty",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "feed_count": parsed_feeds,
+                    **window,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="live_official"),
+                    "reason": reason,
+                    "next_actions": ["Widen date_range (for example last_365d or all)."],
+                },
+                sources=["podcast_rss"],
+                metadata={"provider_errors": errors, "live": True, "data_mode": "live_official"},
+                warnings=[*warnings, reason],
+            )
+        if not items and parsed_feeds:
+            # At least one feed answered and parsed, so nothing is down. The
+            # query or the media_type filter simply matched no episode.
+            reason = (
+                f"No podcast episodes match this query or media_type filter{_window_note(days)}."
+            )
+            return FunctionResult(
+                code=self.code,
+                instrument=instrument,
+                data={
+                    "status": "empty",
+                    "rows": [],
+                    "items": [],
+                    "query": query,
+                    "symbol": symbol,
+                    "feed_count": parsed_feeds,
+                    **window,
+                    "methodology": _METHODOLOGY,
+                    "field_dictionary": _FIELD_DICTIONARY,
+                    "cards": _cards([], data_mode="live_official"),
+                    "reason": reason,
+                    "next_actions": [
+                        "Clear or broaden the media query.",
+                        "Clear the media_type filter to see all podcast episodes.",
+                    ],
+                },
+                sources=["podcast_rss"],
+                metadata={"provider_errors": errors, "live": True, "data_mode": "live_official"},
+                warnings=[*warnings, reason],
+            )
         if not items:
+            # No feed could be read at all: a genuine outage.
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
@@ -409,13 +539,14 @@ class AVFunction(BaseFunction):
                     "items": [],
                     "query": query,
                     "symbol": symbol,
-                    "feed_count": parsed_feeds,
+                    "feed_count": 0,
+                    **window,
                     "methodology": _METHODOLOGY,
                     "field_dictionary": _FIELD_DICTIONARY,
                     "cards": _cards([], data_mode="not_configured"),
-                    "reason": "Podcast RSS feeds returned no matching playable media.",
+                    "reason": "None of the podcast RSS feeds could be read.",
                     "next_actions": [
-                        "Clear or broaden the media query.",
+                        "Retry in a moment once the podcast feeds are reachable.",
                         "Open Raw function payload to inspect RSS provider errors.",
                     ],
                 },
@@ -435,6 +566,7 @@ class AVFunction(BaseFunction):
                 "symbol": symbol,
                 "feed_count": parsed_feeds,
                 "count": len(items),
+                **window,
                 "methodology": _METHODOLOGY,
                 "field_dictionary": _FIELD_DICTIONARY,
                 "cards": _cards(items, data_mode="live_official"),
@@ -530,17 +662,17 @@ def _media_row(feed: Any, entry: Any) -> dict[str, Any]:
         # contract (every row must carry a real http(s) play_url). Signal the
         # caller to skip this malformed RSS entry rather than emit a dead row.
         return {}
-    # Honest media_type: surface the real enclosure MIME type (e.g. audio/mpeg)
-    # when the feed provides one, so consumers can pick a player; fall back to the
-    # generic "podcast" label only when the enclosure omits a type.
-    media_type = enclosure.get("type") or "podcast"
+    # media_type is the manifest's enumerated kind; the enclosure MIME type
+    # (e.g. audio/mpeg) is kept separately as enclosure_type.
+    published = _parse_event_date(entry.get("published"))
     return {
-        "event_date": entry.get("published"),
+        "event_date": published.isoformat() if published else "",
         "feed": feed.get("title"),
         "source": feed.get("title"),
         "symbol": "",
         "title": entry.get("title"),
-        "media_type": media_type,
+        "media_type": "podcast",
+        "enclosure_type": str(enclosure.get("type") or ""),
         "url": play_url,
         "play_url": play_url,
         "source_url": article_url,
@@ -597,6 +729,94 @@ def _matches_query(row: dict[str, Any], query: str) -> bool:
                 return True
         return False
     return all(term in haystack for term in terms[:4])
+
+
+_DEFAULT_DATE_RANGE = "last_90d"
+_DATE_RANGE_RE = re.compile(r"last_(\d{1,4})d")
+
+
+def _date_window(params: dict[str, Any]) -> tuple[int | None, str | None]:
+    """Resolve ``date_range`` to a window in days.
+
+    Returns ``(days, None)`` for ``last_Nd``, ``(None, None)`` for ``all``. An
+    empty value takes the manifest default (last 90 days). Anything else
+    returns ``(0, reason)`` so the caller reports an input error.
+    """
+    supplied = params.get("date_range")
+    raw = str(supplied or "").strip().lower() or _DEFAULT_DATE_RANGE
+    if raw in {"all", "max"}:
+        return None, None
+    match = _DATE_RANGE_RE.fullmatch(raw)
+    if not match or int(match.group(1)) < 1:
+        return 0, (
+            f"Unsupported date_range {supplied!r}; use last_Nd (for example last_30d) or all."
+        )
+    return int(match.group(1)), None
+
+
+def _window_start(days: int | None) -> date | None:
+    if days is None:
+        return None
+    return datetime.now(timezone.utc).date() - timedelta(days=days)
+
+
+def _window_fields(days: int | None, cutoff: date | None) -> dict[str, Any]:
+    return {
+        "date_range": "all" if days is None else f"last_{days}d",
+        "window_start": cutoff.isoformat() if cutoff else None,
+    }
+
+
+def _window_note(days: int | None) -> str:
+    return "" if days is None else f" in the last {days} days"
+
+
+def _parse_event_date(value: Any) -> date | None:
+    """ISO date prefix (SEC filing dates) or RFC 2822 (RSS pubDate) -> date."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if match:
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return None
+    try:
+        parsed = parsedate_to_datetime(raw)
+    except Exception:  # noqa: BLE001 - malformed date means "unknown", not a crash
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.date()
+
+
+def _media_filter(params: dict[str, Any]) -> set[str]:
+    """Lower-cased media_type filter values; empty set means no filter."""
+    raw = params.get("media_type")
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        values: list[Any] = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = []
+    return {str(v).strip().lower() for v in values if str(v).strip()}
+
+
+def _matches_media(row: dict[str, Any], wanted: set[str]) -> bool:
+    return not wanted or str(row.get("media_type") or "").lower() in wanted
+
+
+def _in_window(value: Any, cutoff: date | None) -> bool:
+    """True when the row date is inside the window. Unknown dates fail a set window."""
+    if cutoff is None:
+        return True
+    row_date = _parse_event_date(value)
+    return row_date is not None and row_date >= cutoff
 
 
 def _dedupe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

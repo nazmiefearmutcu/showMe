@@ -3,7 +3,7 @@
 Historical quarterly EPS actual vs consensus (Finnhub `/stock/earnings`,
 with Yahoo earnings-dates as the secondary calendar source), surprise %,
 beat rate and the next report date. Live by default; `reference=true`
-serves the labelled template. Resynced to the shipped handler
+returns an explicit empty state with no figures. Resynced to the shipped handler
 (``engine/functions/equity/ee.py``) by fix lane F14 — the previous seed
 claimed yfinance as primary and an empty-array outage contract, while
 the shipped handler emits a labelled placeholder row (pane folds
@@ -71,8 +71,8 @@ def ee() -> FunctionManifest:
                 control=ControlKind.BOOLEAN,
                 required=False,
                 description=(
-                    "When true the handler serves the labelled modeled template instead "
-                    "of calling Finnhub / yfinance."
+                    "When true the handler returns an explicit empty state (status=empty, "
+                    "no rows, no earnings figures) instead of calling Finnhub / yfinance."
                 ),
             ),
         ],
@@ -129,10 +129,10 @@ def ee() -> FunctionManifest:
             "EPS, consensus estimate, surprise percent ((actual − estimate) / |estimate| "
             "× 100, recomputed when the provider omits it), and a source_mode per row. "
             "Beat rate = count(actual > estimate) / count(rows with actual and estimate) "
-            "over the loaded window. Live by default; `reference=true` serves the "
-            "labelled `earnings_calendar_model` template (status=reference_model, "
-            "data_mode=modeled). When neither provider responds the handler returns "
-            "status=ok with ONE explicitly labelled placeholder row "
+            "over the loaded window. Live by default; `reference=true` returns status=empty "
+            "with no rows and no earnings figures (nothing is modelled or fabricated). "
+            "When neither provider responds the handler returns "
+            "status=provider_unavailable with ONE explicitly labelled placeholder row "
             "(period='provider_unavailable', source_mode='earnings_calendar_unavailable'), "
             "metadata fallback=true / live=false and a warning — never reported EPS. "
             "The pane folds that placeholder into an unavailable state (F6)."
@@ -181,7 +181,7 @@ def ee() -> FunctionManifest:
             SemanticTest(
                 name="ee_provider_outage_returns_labelled_placeholder_row",
                 description=(
-                    "When yfinance + finnhub both fail, status=ok with a single labelled "
+                    "When yfinance + finnhub both fail, status=provider_unavailable with a single labelled "
                     "placeholder row (source_mode=earnings_calendar_unavailable) and "
                     "fallback metadata — never fake reported EPS and never an unlabelled "
                     "empty table."

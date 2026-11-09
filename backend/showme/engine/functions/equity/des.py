@@ -10,6 +10,7 @@ DATA PIPELINE:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,6 +18,13 @@ from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.functions.equity._common import EXCHANGE_LEGEND
+from showme.engine.reference.symbol_registry import is_known_etf
+
+# DES#4: Yahoo exchange codes the shared legend does not carry. SNP is the S&P index
+# exchange (for example ^GSPC). Kept here so the shared EXCHANGE_LEGEND is unchanged.
+_DES_EXCHANGE_NAMES = {
+    "SNP": "S&P Indices",
+}
 
 
 # yfinance ``info`` keys we promote onto the DES payload so the native pane
@@ -63,15 +71,17 @@ def _coalesce(*values: Any) -> Any:
     return None
 
 
-def _normalize_dividend_yield(value: Any) -> float | None:
-    """yfinance ``info.dividendYield`` ships in two flavors depending on the
-    library version — decimal (0.0035 = 0.35%) and percent (0.35 = 0.35%).
-    Normalize to a decimal fraction so the UI's ``*100`` is always correct.
+def _normalize_dividend_yield(value: Any, unit: str | None = None) -> float | None:
+    """Normalize a yfinance dividend yield to a decimal fraction (0.0035 = 0.35%)
+    so the UI's ``*100`` is always correct.
 
-    A real equity yield rarely exceeds 15%, and decimal form caps at 0.15.
-    Anything above 0.2 is therefore the percent-form reading from a
-    newer yfinance and must be divided by 100. Below that, we trust the
-    value as-is — matching the older decimal contract."""
+    ``unit`` is the scale of ``value`` as named by the yfinance field it came
+    from: ``"decimal"`` for ``trailingAnnualDividendYield`` and ``"percent"``
+    for ``dividendYield``. Callers that know the field must pass it; a
+    magnitude guess cannot tell a 0.15% percent-form yield from a 15% decimal.
+
+    With no ``unit`` the legacy magnitude guess applies: anything above 0.2 is
+    percent-form, anything else is trusted as decimal."""
     if value in (None, ""):
         return None
     try:
@@ -80,6 +90,10 @@ def _normalize_dividend_yield(value: Any) -> float | None:
         return None
     if v < 0 or v != v:  # NaN
         return None
+    if unit == "decimal":
+        return v
+    if unit == "percent":
+        return v / 100.0
     return v / 100.0 if v > 0.2 else v
 
 
@@ -153,15 +167,26 @@ def _coingecko_to_des(payload: dict[str, Any], symbol_hint: str) -> dict[str, An
     current_price = _md_usd("current_price")
     high_24h = _md_usd("high_24h")
     low_24h = _md_usd("low_24h")
-    high_52w = _md_usd("high_52w") or _md_usd("ath")
-    low_52w = _md_usd("low_52w") or _md_usd("atl")
+    # CoinGecko /coins/{id} carries no 52-week fields. Never substitute ATH/ATL
+    # here: those are all-time extremes (DES#1), not a trailing 52-week range.
+    # Missing stays None so the pane shows an empty value, not a 2013 low.
+    high_52w = _md_usd("high_52w")
+    low_52w = _md_usd("low_52w")
     change_pct = md.get("price_change_percentage_24h")
-    prev_close = None
+    # ASOF-9: crypto trades 24/7, so CoinGecko's 24h change is measured against the price
+    # 24 hours ago, not a prior session close. That baseline is exposed as price_24h_ago
+    # and never published as previousClose.
+    price_24h_ago = None
     if current_price is not None and change_pct not in (None, 0):
         try:
-            prev_close = current_price / (1.0 + float(change_pct) / 100.0)
+            price_24h_ago = current_price / (1.0 + float(change_pct) / 100.0)
         except (TypeError, ValueError, ZeroDivisionError):
-            prev_close = None
+            price_24h_ago = None
+    change_24h = (
+        current_price - price_24h_ago
+        if current_price is not None and price_24h_ago is not None
+        else None
+    )
 
     return {
         "symbol": (payload.get("symbol") or symbol_hint or "").upper(),
@@ -180,7 +205,11 @@ def _coingecko_to_des(payload: dict[str, Any], symbol_hint: str) -> dict[str, An
         "market_cap": _md_usd("market_cap"),
         "regularMarketPrice": current_price,
         "currentPrice": current_price,
-        "previousClose": prev_close,
+        # ASOF-9: no prior session close exists for crypto, so previousClose is null.
+        "previousClose": None,
+        "price_24h_ago": price_24h_ago,
+        "change_24h": change_24h,
+        "change_basis": "24h_rolling",
         "regularMarketChangePercent": (
             float(change_pct) if change_pct not in (None, "") else None
         ),
@@ -205,6 +234,68 @@ def _coingecko_to_des(payload: dict[str, Any], symbol_hint: str) -> dict[str, An
         "github_repo": repo,
         "source": "coingecko",
     }
+
+
+_PROFILE_FIELDS = (
+    "name",
+    "longName",
+    "shortName",
+    "sector",
+    "industry",
+    "market_cap",
+    "marketCap",
+    "employees",
+    "fullTimeEmployees",
+    "website",
+    "description",
+    "longBusinessSummary",
+    "ceo",
+    "headquarters",
+    "isin",
+    "country",
+    "exchange",
+    "shares_outstanding",
+    "shares_float",
+)
+
+
+def _is_profile_value(value: Any) -> bool:
+    """A real profile value: not missing, not blank, and not a zero placeholder.
+
+    Zero market cap, share count or headcount is an unknown value reported as
+    a number (DES#2 follow-up), not a company that happens to have none.
+    """
+    if value is None or value == "" or value == [] or value == {}:
+        return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0:
+        return False
+    return True
+
+
+def _has_profile_content(rd: Any) -> bool:
+    """True when a provider answer carries at least one company-profile value.
+
+    The yfinance adapter returns an empty ``ReferenceData`` (every field None,
+    the failure recorded only in ``extras.raw``) when its info call is refused.
+    That is not an answer: counting it as one labels a provider outage as a
+    live yfinance profile."""
+    if rd is None:
+        return False
+    if isinstance(rd, dict):
+        market_data = rd.get("market_data")
+        if isinstance(market_data, dict) and any(_is_profile_value(v) for v in market_data.values()):
+            return True
+        values = [rd.get(k) for k in _PROFILE_FIELDS]
+        extras = rd.get("extras")
+    else:
+        values = [getattr(rd, k, None) for k in _PROFILE_FIELDS]
+        extras = getattr(rd, "extras", None)
+    if any(_is_profile_value(v) for v in values):
+        return True
+    raw = extras.get("raw") if isinstance(extras, dict) else None
+    if isinstance(raw, dict):
+        return any(_is_profile_value(raw.get(k)) for k in _PROMOTED_INFO_KEYS)
+    return False
 
 
 def _build_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -243,7 +334,8 @@ def _promote_raw_fields(data: dict[str, Any], raw: dict[str, Any]) -> None:
     if not isinstance(raw, dict):
         return
     for key in _PROMOTED_INFO_KEYS:
-        if key not in raw:
+        if key not in raw or key == "dividendYield":
+            # dividendYield is unit-normalized below, never copied raw.
             continue
         if data.get(key) in (None, ""):
             data[key] = raw[key]
@@ -268,15 +360,21 @@ def _promote_raw_fields(data: dict[str, Any], raw: dict[str, Any]) -> None:
             data.setdefault("ipoDate", iso)
 
     # Dividend yield: store the decimal form once so the UI's ``*100`` math
-    # stays correct. ``trailingAnnualDividendYield`` is the more consistent
-    # decimal field; ``dividendYield`` flips formats between yfinance
-    # versions and is the fallback. Both go through the same normalization.
-    raw_dy = _coalesce(
-        raw.get("trailingAnnualDividendYield"),
-        raw.get("dividendYield"),
-        data.get("dividendYield"),
-    )
-    normalized = _normalize_dividend_yield(raw_dy)
+    # stays correct. The unit is taken from the field name, not guessed from
+    # magnitude: ``trailingAnnualDividendYield`` is decimal and is preferred;
+    # ``dividendYield`` is percent-form and is the fallback.
+    trailing = _normalize_dividend_yield(raw.get("trailingAnnualDividendYield"), unit="decimal")
+    percent_form = _normalize_dividend_yield(raw.get("dividendYield"), unit="percent")
+    if trailing is not None:
+        normalized = trailing
+    elif percent_form is not None:
+        normalized = percent_form
+    else:
+        # A dividendYield already on the record has no field name that says
+        # its unit, so it is dropped rather than magnitude-guessed (DES#3).
+        normalized = None
+        if data.get("dividendYield") not in (None, ""):
+            data["dividendYield"] = None
     if normalized is not None:
         data["dividendYield"] = normalized
 
@@ -318,7 +416,13 @@ class DESFunction(BaseFunction):
             raise ValueError("DES requires an instrument")
         warnings: list[str] = []
         sources_used: list[str] = []
+        attempted: list[str] = []
         rd: Any = None
+        # DES#4: the router classes every non-crypto symbol without an ETF branch, so a known
+        # ETF (SPY) arrives as EQUITY. Describe it with the registry's class instead.
+        etf_override = instrument.asset_class == AssetClass.EQUITY and is_known_etf(instrument.symbol)
+        if etf_override:
+            instrument = dataclasses.replace(instrument, asset_class=AssetClass.ETF)
         provider_timeout = max(
             1.0,
             min(float(params.get("refdata_timeout", params.get("yfinance_timeout", 2.5))), 4.0),
@@ -335,8 +439,9 @@ class DESFunction(BaseFunction):
                 warnings.append(f"{src_name}: skipped because DES latency budget was exhausted")
                 break
             budget = max(0.75, min(provider_timeout, remaining))
+            attempted.append(src_name)
             try:
-                rd = await asyncio.wait_for(
+                candidate = await asyncio.wait_for(
                     src.fetch(
                         DataRequest(
                             kind=DataKind.REFDATA,
@@ -346,11 +451,17 @@ class DESFunction(BaseFunction):
                     ),
                     timeout=budget,
                 )
-                sources_used.append(src_name)
-                if rd is not None:
-                    break
             except Exception as e:
-                warnings.append(f"{src_name}: {e}")
+                warnings.append(f"{src_name}: {str(e) or type(e).__name__}")
+                continue
+            if _has_profile_content(candidate):
+                rd = candidate
+                sources_used.append(src_name)
+                break
+            extras = candidate.get("extras") if isinstance(candidate, dict) else getattr(candidate, "extras", None)
+            info_error = (extras.get("raw") or {}).get("info_error") if isinstance(extras, dict) else None
+            detail = f": {info_error}" if info_error else ""
+            warnings.append(f"{src_name}: returned no company profile data{detail}")
 
         if rd is None:
             data: dict[str, Any] = {
@@ -373,7 +484,9 @@ class DESFunction(BaseFunction):
                     "Increase refdata_timeout for an interactive profile lookup.",
                 ],
             }
-            sources_used = list(provider_order)
+            # No provider answered with profile data, so none is a source.
+            # ``attempted_providers`` records what was tried, separately.
+            sources_used = []
         elif is_crypto and "coingecko" in sources_used and isinstance(rd, dict) and _looks_like_coingecko_payload(rd):
             # CoinGecko ships a nested ``market_data`` / ``description`` /
             # ``links`` shape — translate to the shared DES wire schema
@@ -417,11 +530,18 @@ class DESFunction(BaseFunction):
                 data.pop("extras", None)
 
         if data.get("exchange"):
+            _code = str(data.get("exchange") or "")
             data["exchange_name"] = EXCHANGE_LEGEND.get(
-                str(data.get("exchange") or ""), data.get("exchange")
+                _code, _DES_EXCHANGE_NAMES.get(_code, data.get("exchange"))
             )
+        if etf_override:
+            # The describing class is the ETF the registry knows, whatever a provider echoed.
+            data["asset_class"] = AssetClass.ETF.value
 
-        data["rows"] = _build_rows(data)
+        # An exhausted provider chain has no profile: no placeholder rows (they
+        # echoed the symbol as the Name and showed empty fields as a table).
+        data["rows"] = ([] if str(data.get("status") or "").lower() == "provider_unavailable"
+                        else _build_rows(data))
         data.setdefault(
             "methodology",
             "DES is a live company profile assembled from yfinance, Finnhub, and SEC reference "
@@ -436,6 +556,7 @@ class DESFunction(BaseFunction):
         metadata: dict[str, Any] = {
             "asset_class": instrument.asset_class.value,
             "provider_errors": warnings,
+            "attempted_providers": attempted,
         }
         if rd is None:
             # 2026-09-11 (L5): provider-exhausted envelopes must declare the
@@ -490,7 +611,10 @@ def _des_field_dictionary() -> dict[str, str]:
         "fiftyTwoWeekHigh": "Highest regular-session price in the trailing 52 weeks.",
         "fiftyTwoWeekLow": "Lowest regular-session price in the trailing 52 weeks.",
         "regularMarketPrice": "Latest regular-session last price.",
-        "previousClose": "Previous regular-session close used to derive change percent.",
+        "previousClose": "Previous regular-session close used to derive change percent (equities, ETFs, FX). Null for crypto, which has no prior session close.",
+        "price_24h_ago": "Crypto only: price 24 hours ago, implied from CoinGecko's 24h change. A rolling window, not a prior close.",
+        "change_24h": "Crypto only: last price minus the 24h-ago price, in USD.",
+        "change_basis": "Basis of the change figures: previous_close (equities, ETFs, FX) or 24h_rolling (crypto).",
         # Crypto-specific fields exposed when ``asset_class == 'CRYPTO'``.
         "circulating_supply": "Coins currently in circulation per CoinGecko.",
         "total_supply": "Total minted coin supply.",

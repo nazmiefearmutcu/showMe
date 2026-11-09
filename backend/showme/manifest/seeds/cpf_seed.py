@@ -1,10 +1,10 @@
 """CPF — Commodity Price Forecast.
 
-Surfaces forward-looking commodity price forecasts pulled from FRED
-series (e.g. WTI futures curves, Henry Hub forecasts published by the
-EIA in FRED). The handler returns the historical actual + the forward
-forecast vintage with an explicit forecast_vintage date so users
-never mistake a stale projection for a live print.
+Plots a live actual leg (a keyless Yahoo futures proxy for the chosen series
+id) and a trend-extrapolated forward leg. The forecast is not an EIA, World
+Bank or other published forecast. The handler returns the forecast vintage
+(the last realized actual date) so a projection is never mistaken for a live
+print.
 """
 from __future__ import annotations
 
@@ -43,10 +43,11 @@ def cpf() -> FunctionManifest:
         name="Commodity Price Forecast",
         category=Category.COMMODITIES,
         intent=(
-            "Plot actual + forecast price for a benchmark commodity series "
-            "from FRED (EIA forecasts, World Bank commodity outlooks) with "
-            "the publication vintage labelled so stale forecasts cannot "
-            "masquerade as live data."
+            "Plot the live actual price of a benchmark commodity futures proxy "
+            "with a trend-extrapolated forward forecast. The forecast vintage "
+            "(last realized actual date) is labelled so a projection cannot "
+            "masquerade as a live print. This is a trend model, not a published "
+            "EIA or World Bank forecast."
         ),
         asset_classes=[AssetClass.COMMODITY],
         inputs=[
@@ -55,14 +56,16 @@ def cpf() -> FunctionManifest:
                 label="Series",
                 control=ControlKind.SELECT,
                 required=True,
-                description="FRED commodity series with a published forecast vintage.",
+                description=(
+                    "Benchmark commodity id. Each id is served from a Yahoo futures "
+                    "proxy, not from the FRED series of that name (see series_note)."
+                ),
                 options=[
                     "WTISPLC",
                     "DCOILWTICO",
                     "DHHNGSP",
                     "PCOPPUSDM",
                     "PGOLD",
-                    "PNGASEUUSDM",
                 ],
             ),
             InputSpec(
@@ -80,32 +83,18 @@ def cpf() -> FunctionManifest:
                 required=False,
                 description="Render the historical actual series underneath the forecast.",
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode; chain may downgrade.",
-                options=[
-                    DataMode.LIVE_OFFICIAL.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
             "series_id": "WTISPLC",
             "horizon": "1Y",
             "show_actual_history": True,
-            "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
+        # CPF#3/#7: the only source is the keyless Yahoo futures chart. There is
+        # no cached snapshot or official source, and no provider_mode input.
         provider_chain=ProviderChain(
-            primary="fred",
-            fallbacks=["cached_snapshot"],
-            acceptable_modes=[
-                DataMode.LIVE_OFFICIAL,
-                DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
-            ],
+            primary="yfinance",
+            fallbacks=[],
+            acceptable_modes=[DataMode.DELAYED_REFERENCE],
         ),
         caching=CachingPolicy(ttl_seconds=900, scope="per_input", persist=True),
         output_contract=OutputContract(
@@ -154,16 +143,14 @@ def cpf() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "CPF fetches the chosen FRED commodity series (e.g. WTISPLC for "
-            "WTI monthly average, DHHNGSP for Henry Hub spot, PGOLD for "
-            "gold) along with its companion forecast series when FRED "
-            "publishes one. The forecast vintage (the date the EIA / World "
-            "Bank published the forecast) is captured from the FRED "
-            "series metadata and surfaced on the card as a badge — a six-"
-            "month-old EIA forecast must never silently render alongside a "
-            "today-stamped actual. Forecast points beyond `horizon` are "
-            "clipped. Cache TTL is 15 minutes since EIA vintages rarely "
-            "change intraday."
+            "CPF reads the daily Yahoo futures history for the futures proxy "
+            "behind each series id (WTISPLC and DCOILWTICO use CL=F, DHHNGSP "
+            "uses NG=F, PCOPPUSDM uses HG=F, PGOLD uses GC=F). No FRED series "
+            "is fetched. The forward leg is a trend extrapolation of that "
+            "history (a clamped log-linear growth rate), not a published EIA "
+            "or World Bank forecast. forecast_vintage is the last realized "
+            "actual date. Forecast points are calendar months after it and "
+            "are clipped to `horizon`. Cache TTL is 15 minutes."
         ),
         formula_dict={
             "forecast_error_pct": Formula(
@@ -173,10 +160,10 @@ def cpf() -> FunctionManifest:
             ),
         },
         field_dict={
-            "series_id": FieldDef(description="FRED series identifier.", source="input"),
-            "actual": FieldDef(description="Array of {date, value} historical observations.", source="fred"),
-            "forecast": FieldDef(description="Array of {date, value} forecast observations.", source="fred"),
-            "forecast_vintage": FieldDef(unit="iso8601", description="Publication date of the loaded forecast vintage.", source="fred"),
+            "series_id": FieldDef(description="Benchmark commodity id, served from a Yahoo futures proxy.", source="input"),
+            "actual": FieldDef(description="Array of {date, value} daily futures-proxy closes.", source="yfinance"),
+            "forecast": FieldDef(description="Array of {date, value} trend-extrapolated points.", source="derived"),
+            "forecast_vintage": FieldDef(unit="iso8601", description="Last realized actual date the forecast is anchored to.", source="yfinance"),
             "forecast_horizon": FieldDef(description="User-selected forward window.", source="input"),
             "latest_actual": FieldDef(unit="USD/unit", description="Most recent realized value.", source="derived"),
             "forecast_1y": FieldDef(unit="USD/unit", description="Forecast at ~12-month horizon.", source="derived"),

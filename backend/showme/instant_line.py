@@ -105,7 +105,7 @@ async def instant_status() -> dict[str, Any]:
             "db_path": str(db),
             "health": fallback["health"],
             "performance": fallback["performance"],
-            "warning": f"instant HTTP unavailable: {exc}",
+            "warning": f"instant HTTP unavailable: {str(exc) or type(exc).__name__}",
         }
 
 
@@ -123,7 +123,7 @@ async def instant_events(limit: int = 100) -> dict[str, Any]:
             "mode": "secondary",
             "transport": "sqlite-fallback" if fallback["events"] else "unavailable",
             "events": fallback["events"],
-            "warning": f"instant HTTP unavailable: {exc}",
+            "warning": f"instant HTTP unavailable: {str(exc) or type(exc).__name__}",
         }
 
 
@@ -163,7 +163,7 @@ async def instant_backfill(limit: int = 15) -> dict[str, Any]:
             "ok": False,
             "mode": "secondary",
             "transport": "unavailable",
-            "warning": f"instant backfill unavailable: {exc}",
+            "warning": f"instant backfill unavailable: {str(exc) or type(exc).__name__}",
         }
 
 

@@ -1,8 +1,9 @@
-"""TRAN — Earnings Call Transcript Viewer.
+"""TRAN — Earnings Transcript or Release Viewer.
 
-Reader pane for earnings-call (and other investor-event) transcripts.
-Symbol → quarter lookup uses yfinance event metadata; the transcript
-text comes from the internal transcripts_archive. Full audio
+Reader pane for earnings-call (and other investor-event) transcripts or the
+8-K earnings release. Symbol → 8-K lookup uses keyless SEC EDGAR filings; a
+pasted or archived transcript is served from the internal transcripts_archive
+when present. Full audio
 transcription requires Whisper to be wired up; without it the pane
 serves whatever stored transcripts are available and reports
 data_mode=not_configured for missing rows.
@@ -36,12 +37,13 @@ from ..spec import (
 def tran() -> FunctionManifest:
     return FunctionManifest(
         code="TRAN",
-        name="Earnings Call Transcript",
+        name="Earnings Transcript or Release",
         category=Category.NEWS_INTEL,
         intent=(
-            "Reader pane for earnings-call (and other investor-event) transcripts. Symbol → "
-            "quarter lookup uses yfinance event metadata; the transcript text comes from the "
-            "internal transcripts_archive. Full audio transcription requires Whisper for "
+            "Reader pane for earnings-call (and other investor-event) transcripts, or the SEC "
+            "8-K earnings release when no transcript exists. Symbol → 8-K lookup uses keyless "
+            "SEC EDGAR filings; stored transcripts come from the internal transcripts_archive. "
+            "Full audio transcription requires Whisper for "
             "events without a pre-supplied transcript; without Whisper the pane serves stored "
             "transcripts and reports the not-configured rows honestly."
         ),
@@ -55,14 +57,14 @@ def tran() -> FunctionManifest:
                 label="Symbol",
                 control=ControlKind.SYMBOL_PICKER,
                 required=True,
-                description="Equity ticker. Looked up against yfinance earnings event metadata.",
+                description="Equity ticker. Looked up against SEC EDGAR 8-K earnings filings.",
             ),
             InputSpec(
                 name="quarter",
                 label="Quarter",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Fiscal quarter (e.g. Q4 FY25). Empty = most recent available transcript.",
+                description="Fiscal quarter (e.g. Q1 FY26). The 8-K whose report date releases that fiscal quarter is matched using the company's SEC fiscal year end; no fiscal year end or no match is an empty state. Empty = newest earnings 8-K.",
             ),
             InputSpec(
                 name="speaker_filter",
@@ -100,7 +102,7 @@ def tran() -> FunctionManifest:
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
-            primary="yfinance",
+            primary="sec_edgar",
             fallbacks=["internal", "cached_snapshot"],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
@@ -143,8 +145,11 @@ def tran() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "TRAN resolves (symbol, quarter) to a specific earnings event using yfinance's "
-            "calendar metadata. If a transcript already exists in transcripts_archive for that "
+            "TRAN resolves the symbol to its 8-K earnings exhibit using the keyless SEC EDGAR "
+            "submissions index. A requested fiscal quarter is matched to the 8-K that releases it, "
+            "using the report date and the company's SEC fiscal year end; event.quarter_basis "
+            "states this derivation. "
+            "If a transcript already exists in transcripts_archive for that "
             "event id, it is served straight from the archive. If no transcript exists and the "
             "event has an audio_url, TRAN attempts to invoke Whisper to transcribe the audio — "
             "this requires Whisper to be installed and configured (engine/services/whisper). "
@@ -158,7 +163,7 @@ def tran() -> FunctionManifest:
         field_dict={
             "symbol": FieldDef(description="Echoed input symbol.", source="input"),
             "status": FieldDef(description="ok / not_configured / provider_unavailable.", source="derived"),
-            "event": FieldDef(description="Earnings event metadata (quarter, fiscal_year, event_date, audio_url, source).", source="yfinance / archive"),
+            "event": FieldDef(description="Earnings event metadata (quarter, quarter_basis, event_date, audio_url, source).", source="sec_edgar / archive"),
             "utterances[].section": FieldDef(description="prepared_remarks / qa.", source="archive"),
             "utterances[].speaker": FieldDef(description="Speaker name as captured in the transcript.", source="archive"),
             "utterances[].role": FieldDef(description="Role/title (CEO, CFO, Analyst:Firm).", source="archive"),

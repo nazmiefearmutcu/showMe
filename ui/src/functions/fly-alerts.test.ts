@@ -112,7 +112,7 @@ describe("erratic rule", () => {
   });
 });
 
-describe("crash-risk rule", () => {
+describe("steep-descent rule", () => {
   it("fires on a steep descent (vertical rate below −threshold)", () => {
     const { alerts } = evaluateFlyAlerts(
       emptyFlyAlertMemory(),
@@ -122,7 +122,7 @@ describe("crash-risk rule", () => {
     );
     const hit = alerts.find((a) => a.rule === "crash");
     expect(hit).toBeDefined();
-    expect(hit?.label).toBe("FLY rule: crash risk — steep descent");
+    expect(hit?.label).toBe("FLY rule: steep descent");
     expect(hit?.detail).toContain("-3,937 ft/min");
     expect(hit?.detail).toContain("−2,500");
   });
@@ -135,7 +135,8 @@ describe("crash-risk rule", () => {
       T0,
     );
     const hit = alerts.find((a) => a.rule === "crash");
-    expect(hit?.label).toBe("FLY rule: crash risk — low altitude + descending");
+    expect(hit?.label).toBe("FLY rule: low altitude + descending");
+    expect(hit?.label).not.toMatch(/crash/i);
   });
 
   it("never fires on a low altitude without a descent rate", () => {

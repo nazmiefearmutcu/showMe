@@ -47,7 +47,8 @@ class BetaFunction(BaseFunction):
                 },
                 sources=[],
             )
-        benchmark_sym = params.get("benchmark") or "SPY"
+        # Manifest default is ^GSPC (S&P 500 index); keep the handler in step.
+        benchmark_sym = str(params.get("benchmark") or "^GSPC").strip()
         windows = _parse_windows(params.get("windows", ["1Y", "2Y", "5Y"]))
         warnings: list[str] = []
         sources: list[str] = []
@@ -166,27 +167,32 @@ class BetaFunction(BaseFunction):
                 sources=["no_live_source"],
                 metadata={"fallback": True, "provider_errors": ["insufficient overlapping return history"]},
             )
+        beta_days, beta_warning = _parse_beta_window(params.get("beta_window") or "252d")
+        if beta_warning:
+            warnings.append(beta_warning)
         out: dict[str, Any] = {}
         rows: list[dict[str, Any]] = []
         for w in windows:
             n_days = {"1Y": 252, "2Y": 504, "5Y": 1260}.get(w, 252)
-            df = joined.tail(n_days)
-            if len(df) < 30:
+            row = _window_stats(joined, w, n_days)
+            if row is None:
                 continue
-            # Audit Q3 #19 — matched ddof. np.cov defaults to ddof=1 while
-            # np.var defaults to ddof=0; the ratio inherited a hidden
-            # n/(n-1) bias. Pin both to ddof=1 (sample statistics).
-            cov = np.cov(df["t"], df["b"], ddof=1)[0, 1]
-            var = np.var(df["b"], ddof=1)
-            beta = cov / var if var else float("nan")
-            corr = float(df.corr().iloc[0, 1])
-            row = {"window": w, "window_days": n_days, "beta": float(beta), "correlation": corr,
-                   "samples": int(len(df)),
-                   "annualized_volatility_target": float(df["t"].std() * np.sqrt(252)),
-                   "annualized_volatility_bench": float(df["b"].std() * np.sqrt(252))}
             out[w] = {k: v for k, v in row.items() if k != "window"}
             rows.append(row)
-        history = _rolling_beta_history(joined, int(params.get("rolling_window", 60) or 60))
+        selected_window: str | None = None
+        if beta_days is not None:
+            # The requested lookback is labelled 1Y/2Y/5Y when it matches a
+            # standard window (no duplicate row); otherwise it is appended.
+            label = _STANDARD_WINDOW_LABELS.get(beta_days, f"{beta_days}d")
+            if label not in out:
+                row = _window_stats(joined, label, beta_days)
+                if row is not None:
+                    out[label] = {k: v for k, v in row.items() if k != "window"}
+                    rows.append(row)
+            if label in out:
+                selected_window = label
+        rolling_window = int(params.get("rolling_window", 60) or 60)
+        history = _rolling_beta_history(joined, rolling_window)
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
@@ -195,12 +201,23 @@ class BetaFunction(BaseFunction):
                 "rows": rows,
                 "history": history,
                 "betas": out,
-                "return_frequency": "daily close-to-close returns",
+                "selected_window": selected_window,
+                "n_observations": int(len(joined)),
+                "assumptions": {
+                    "benchmark": benchmark_sym,
+                    "beta_window": f"{beta_days}d" if beta_days is not None else None,
+                    "windows": list(windows),
+                    "rolling_window": rolling_window,
+                    "return_method": "simple",
+                },
+                "return_frequency": "simple daily close-to-close returns",
                 "dividend_handling": "price returns from Yahoo daily close; dividends are not reinvested unless the provider close is adjusted upstream.",
                 "risk_free_treatment": "CAPM beta itself is estimated from excess-return covariance but this implementation uses raw daily returns; risk-free input is applied in WACC, not in beta.",
                 "methodology": "Beta = cov(target daily returns, benchmark daily returns) / var(benchmark daily returns). Window rows use trailing 1Y/2Y/5Y samples; the chart uses rolling beta over the selected rolling window.",
                 "field_dictionary": {
                     "beta": "Return sensitivity to the benchmark.",
+                    "alpha": "Daily regression intercept: mean target return minus beta times mean benchmark return.",
+                    "r_squared": "Share of target return variance explained by the benchmark (single-factor fit = correlation squared).",
                     "correlation": "Pearson correlation between target and benchmark daily returns.",
                     "samples": "Overlapping daily return count after date alignment.",
                     "rolling_window": "Number of daily observations in each rolling beta point.",
@@ -254,6 +271,56 @@ def _intersected_returns(target_df: pd.DataFrame, bench_df: pd.DataFrame) -> pd.
         "b": b_close.reindex(common_idx),
     }).sort_index()
     return aligned.pct_change().dropna()
+
+
+_STANDARD_WINDOW_LABELS: dict[int, str] = {252: "1Y", 504: "2Y", 1260: "5Y"}
+# Same lookback menu the manifest exposes as beta_window options.
+_BETA_WINDOW_DAYS: tuple[int, ...] = (60, 126, 252, 504, 756)
+
+
+def _parse_beta_window(raw: Any) -> tuple[int | None, str | None]:
+    """Parse ``beta_window`` ("252d" or "252") into a day count.
+
+    Returns ``(days, None)`` on success, ``(None, warning)`` when the value is
+    not on the manifest menu so the caller can report it instead of silently
+    ignoring it.
+    """
+    text = str(raw).strip().lower()
+    digits = text[:-1] if text.endswith("d") else text
+    try:
+        days = int(digits)
+    except ValueError:
+        return None, f"beta_window {raw!r} is not a day count; only standard windows were computed."
+    if days not in _BETA_WINDOW_DAYS:
+        allowed = ", ".join(f"{d}d" for d in _BETA_WINDOW_DAYS)
+        return None, f"beta_window {raw!r} is not one of {allowed}; it was ignored."
+    return days, None
+
+
+def _window_stats(joined: pd.DataFrame, label: str, n_days: int) -> dict[str, Any] | None:
+    """OLS single-factor stats over the trailing ``n_days`` aligned returns."""
+    df = joined.tail(n_days)
+    if len(df) < 30:
+        return None
+    # Audit Q3 #19 — matched ddof. np.cov defaults to ddof=1 while
+    # np.var defaults to ddof=0; the ratio inherited a hidden
+    # n/(n-1) bias. Pin both to ddof=1 (sample statistics).
+    cov = np.cov(df["t"], df["b"], ddof=1)[0, 1]
+    var = np.var(df["b"], ddof=1)
+    beta = float(cov / var) if var else float("nan")
+    corr = float(df.corr().iloc[0, 1])
+    alpha = float(df["t"].mean() - beta * df["b"].mean())
+    return {
+        "window": label,
+        "window_days": n_days,
+        "beta": beta,
+        "alpha": alpha,
+        "correlation": corr,
+        "r_squared": corr * corr,
+        "samples": int(len(df)),
+        "annualized_volatility_target": float(df["t"].std() * np.sqrt(252)),
+        "annualized_volatility_bench": float(df["b"].std() * np.sqrt(252)),
+    }
 
 
 def _parse_windows(raw: Any) -> list[str]:

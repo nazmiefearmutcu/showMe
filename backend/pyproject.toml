@@ -1,6 +1,6 @@
 [project]
 name = "showme-backend"
-version = "0.1.1"
+version = "0.3.0"
 description = "showMe backend sidecar — exposes the bundled 139-function engine through a localhost FastAPI server discovered by the Tauri shell."
 requires-python = ">=3.11"
 # Floors are pinned per SEC-10 to versions that include published security
@@ -29,13 +29,24 @@ dependencies = [
     "safetensors>=0.4",
     "ccxt>=4.4.0",
     "keyring>=25.0",
+    # Holiday-aware exchange sessions; without it calendar_registry falls back
+    # to weekday-only sessions (holiday-blind market status / trading hours).
+    "exchange-calendars>=4.5",
+    # Parses Damodaran's keyless country-risk-premium workbook (ctryprem.xlsx).
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
+# Legacy TBV3 Binance bot/scanner path only (BinanceClient). The 141-function
+# catalog does not need it. Install with: uv sync --extra binance
+binance = [
+    "python-binance>=1.0.19",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5",
+    "pytest-timeout>=2.3",
     "ruff>=0.7",
     "pyinstaller>=6.11",
 ]

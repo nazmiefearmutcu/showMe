@@ -426,12 +426,15 @@ describe("calendar helpers — MQL5 parity", () => {
   });
 
   it("groups calendar rows by day preserving order", () => {
-    const a = row({ id: "a", when_utc: new Date(NOW + 3600_000).toISOString() });
-    const b = row({ id: "b", when_utc: new Date(NOW + 2 * 86400_000).toISOString() });
-    const groups = groupCalendarByDay([a, b], NOW);
+    // Fixed midday clock: with Date.now() the "+1h" row crossed UTC midnight
+    // whenever the suite ran between 23:00 and 24:00 UTC and became "Tomorrow".
+    const noon = Date.UTC(2026, 10, 4, 12, 0, 0);
+    const a = row({ id: "a", when_utc: new Date(noon + 3600_000).toISOString() });
+    const b = row({ id: "b", when_utc: new Date(noon + 2 * 86400_000).toISOString() });
+    const groups = groupCalendarByDay([a, b], noon);
     expect(groups.map((g) => g.key)).toEqual([
       "Today",
-      new Date(NOW + 2 * 86400_000).toISOString().slice(0, 10),
+      new Date(noon + 2 * 86400_000).toISOString().slice(0, 10),
     ]);
     expect(groups[0]?.rows.map((r) => r.id)).toEqual(["a"]);
   });
@@ -480,6 +483,33 @@ describe("MEET pane — world-events body", () => {
       data: { data: worldPayload(), sources: ["forex_factory", "gdelt"], elapsed_ms: 42 },
     });
   }
+
+  it("reports a degraded Awareness provider next to the rows it fed (F2 I3)", () => {
+    const payload = worldPayload() as Record<string, unknown>;
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          ...payload,
+          data_mode: "cached_snapshot",
+          meta: {
+            providers: [
+              { provider: "news.feeds", status: "degraded", last_ok_at: null, last_error: "timeout" },
+            ],
+            generated_at: new Date(NOW).toISOString(),
+            notes: [],
+            feed_health: { ok: 1, degraded: 1, down: 0, never: 0 },
+          },
+        },
+        sources: ["awareness:econ", "awareness:news"],
+        elapsed_ms: 42,
+      },
+    });
+    render(<MEETPane code="MEET" />);
+    expect(screen.getAllByText(/news\.feeds/).length).toBeGreaterThan(0);
+    expect(document.querySelector(".aw-health--warn")).not.toBeNull();
+    expect(screen.getAllByText("TCMB Interest Rate Decision").length).toBeGreaterThanOrEqual(1);
+  });
 
   it("groups rows into UPCOMING and PAST with countdowns and SPOT pins", () => {
     okFixture();

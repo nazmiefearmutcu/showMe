@@ -308,7 +308,7 @@ const SM_FNS = (function () {
         { code: "BIO",  name: "Biometric Auth",        desc: "WebAuthn biometric registration / login." },
         { code: "BMC",  name: "Market Concepts Education", desc: "Bloomberg Market Concepts-style education." },
         { code: "CDE",  name: "Custom Data Fields",    desc: "User-defined formulas." },
-        { code: "DINE", name: "Restaurants",           desc: "Yelp Fusion restaurant info." },
+        { code: "DINE", name: "Restaurants",           desc: "Restaurant lookup via OpenStreetMap Nominatim." },
         { code: "FLY",  name: "Flight Tracking",       desc: "Flight tracking via OpenSky." },
         { code: "GRAB", name: "Screenshot Email",      desc: "Email a screenshot of the current page." },
         { code: "LANG", name: "Language Switch",       desc: "i18n switcher (12 languages)." },

@@ -243,7 +243,7 @@ def test_bbgt_returns_provider_unavailable_when_submit_without_broker() -> None:
     fn = BBGTFunction()
     fn.deps = FunctionDeps()  # no broker adapters wired
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = _run(fn.execute(instrument=inst, quantity=1, submit=True, paper_mode=False))
+    result = _run(fn.execute(instrument=inst, quantity=1, side="BUY", type="MARKET", tif="GTC", submit=True, paper_mode=False))
     assert result.data["status"] == "provider_unavailable"
     assert result.data["broker"] is None
     assert result.sources == ["no_live_source"]
@@ -257,7 +257,7 @@ def test_bbgt_keeps_preview_when_submit_false_without_broker() -> None:
     fn = BBGTFunction()
     fn.deps = FunctionDeps()
     inst = Instrument(symbol="AAPL", asset_class=AssetClass.EQUITY)
-    result = _run(fn.execute(instrument=inst, quantity=1, submit=False))
+    result = _run(fn.execute(instrument=inst, quantity=1, side="BUY", type="MARKET", tif="GTC", submit=False))
     assert result.data["status"] == "preview"
     assert result.data["broker"] == "paper"
 
@@ -421,16 +421,16 @@ def test_bgas_captures_eia_failure_in_provider_errors() -> None:
                for e in errors), errors
 
 
-def test_bgas_warns_when_contract_overridden_to_ngas() -> None:
-    """Passing a contract not in COMMODITY_CONTRACTS used to be silently
-    reverted to NG=F. Now we surface the override in provider_errors."""
+def test_bgas_refuses_contract_instead_of_reverting_to_ngas() -> None:
+    """A contract BGAS does not serve used to be silently reverted to NG=F
+    (with only a provider_errors note). BGAS is the natural-gas monitor, so
+    the request is now refused explicitly and NG=F is not substituted."""
     fn = BGASFunction()
     fn.deps = FunctionDeps()
-    # FAKE=F is not in COMMODITY_CONTRACTS; the function must report the
-    # silent revert to NG=F.
     result = _run(fn.execute(contract="FAKE=F"))
-    errors = result.metadata.get("provider_errors") or []
-    assert any("FAKE=F" in str(e) and "NG=F" in str(e) for e in errors), errors
+    assert result.data["status"] == "input_error"
+    assert result.data["rows"] == []
+    assert "FAKE=F" in str(result.data.get("reason", ""))
 
 
 # ── APPL ────────────────────────────────────────────────────────────────────

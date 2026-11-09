@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  __clearSentimentRetryForTests,
-  labelForScore,
+  MARKET_GAUGE_PATH,
+  isGaugeStale,
+  parseMarketGauge,
   useSentimentStore,
 } from "./sentiment-store";
 
@@ -9,13 +10,19 @@ vi.mock("./sidecar", () => ({ sidecarFetch: vi.fn() }));
 import { sidecarFetch } from "./sidecar";
 const mock = sidecarFetch as ReturnType<typeof vi.fn>;
 
+const OK_BODY = {
+  ok: true,
+  score: 22.4,
+  rating: "Extreme Fear",
+  as_of: "2026-11-06T23:59:00Z",
+  previous_close: 20.2,
+  source: "CNN Fear & Greed via Awareness",
+};
+
 beforeEach(() => {
-  // hard reset between tests to avoid bleed-over from prior aborts
-  __clearSentimentRetryForTests();
   useSentimentStore.setState({
-    score: 0,
-    label: "Neutral",
-    mentions: 0,
+    gauge: null,
+    unavailableReason: null,
     loading: false,
     error: null,
     lastUpdated: null,
@@ -24,256 +31,128 @@ beforeEach(() => {
   mock.mockReset();
 });
 
-describe("labelForScore thresholds", () => {
-  it("score >= 0.66 → Strongly Bullish", () => {
-    expect(labelForScore(0.66)).toBe("Strongly Bullish");
-    expect(labelForScore(1)).toBe("Strongly Bullish");
+describe("parseMarketGauge", () => {
+  it("accepts a well-formed ok answer", () => {
+    const parsed = parseMarketGauge(OK_BODY);
+    expect("gauge" in parsed && parsed.gauge.score).toBe(22.4);
+    expect("gauge" in parsed && parsed.gauge.previous_close).toBe(20.2);
   });
-  it("0.33 <= score < 0.66 → Cautiously Bullish", () => {
-    expect(labelForScore(0.33)).toBe("Cautiously Bullish");
-    expect(labelForScore(0.5)).toBe("Cautiously Bullish");
+
+  it("returns the backend reason verbatim for ok:false", () => {
+    expect(parseMarketGauge({ ok: false, reason: "awareness down: ECONNREFUSED" })).toEqual(
+      {
+        reason: "awareness down: ECONNREFUSED",
+      },
+    );
   });
-  it("|score| < 0.33 → Neutral", () => {
-    expect(labelForScore(0)).toBe("Neutral");
-    expect(labelForScore(0.32)).toBe("Neutral");
-    expect(labelForScore(-0.32)).toBe("Neutral");
+
+  it("never yields a score for ok:false without a reason", () => {
+    expect(parseMarketGauge({ ok: false })).toEqual({ reason: "Market gauge unavailable" });
+    expect(parseMarketGauge(null)).toEqual({ reason: "Market gauge unavailable" });
   });
-  it("-0.66 <= score < -0.33 → Cautiously Bearish", () => {
-    expect(labelForScore(-0.5)).toBe("Cautiously Bearish");
-    expect(labelForScore(-0.34)).toBe("Cautiously Bearish");
+
+  it("rejects an ok answer whose score is out of range or missing", () => {
+    expect("reason" in parseMarketGauge({ ...OK_BODY, score: 140 })).toBe(true);
+    expect("reason" in parseMarketGauge({ ...OK_BODY, score: null })).toBe(true);
+    expect("reason" in parseMarketGauge({ ...OK_BODY, score: Number.NaN })).toBe(true);
   });
-  it("score < -0.66 → Strongly Bearish", () => {
-    expect(labelForScore(-0.67)).toBe("Strongly Bearish");
-    expect(labelForScore(-1)).toBe("Strongly Bearish");
+
+  it("rejects an ok answer without a parseable timestamp", () => {
+    expect("reason" in parseMarketGauge({ ...OK_BODY, as_of: "yesterday-ish" })).toBe(true);
+  });
+});
+
+describe("parseMarketGauge F6 fields (M-6, M-7)", () => {
+  it("carries the provider flag, the provider status and the crypto reading", () => {
+    const parsed = parseMarketGauge({
+      ...OK_BODY,
+      stale: true,
+      provider_status: {
+        provider: "sent.cnn_fng",
+        status: "degraded",
+        last_error: "HTTP 503",
+      },
+      crypto_score: 28,
+      crypto_rating: "Fear",
+    });
+    if (!("gauge" in parsed)) throw new Error("expected a gauge");
+    expect(parsed.gauge.stale).toBe(true);
+    expect(parsed.gauge.providerStatus).toEqual({
+      provider: "sent.cnn_fng",
+      status: "degraded",
+      last_error: "HTTP 503",
+    });
+    expect(parsed.gauge.cryptoScore).toBe(28);
+    expect(parsed.gauge.cryptoRating).toBe("Fear");
+  });
+
+  it("defaults to not stale and no crypto when the route omits them", () => {
+    const parsed = parseMarketGauge(OK_BODY);
+    if (!("gauge" in parsed)) throw new Error("expected a gauge");
+    expect(parsed.gauge.stale).toBe(false);
+    expect(parsed.gauge.providerStatus).toBeNull();
+    expect(parsed.gauge.cryptoScore).toBeNull();
+    expect(parsed.gauge.cryptoRating).toBeNull();
+  });
+});
+
+describe("isGaugeStale", () => {
+  it("flags readings older than 36 h", () => {
+    const now = Date.parse("2026-11-08T12:00:00Z");
+    expect(isGaugeStale("2026-11-06T11:59:00Z", now)).toBe(true);
+    expect(isGaugeStale("2026-11-07T13:00:00Z", now)).toBe(false);
   });
 });
 
 describe("sentiment-store.refresh", () => {
-  it("single symbol → calls /api/x/symbol_chip and updates score", async () => {
-    mock.mockResolvedValueOnce({
-      symbol: "AAPL",
-      ok: true,
-      post_count: 100,
-      bullish_score: 0.5,
-    });
-    await useSentimentStore.getState().refresh(["AAPL"]);
+  it("fetches the market-gauge route and stores the reading", async () => {
+    mock.mockResolvedValueOnce(OK_BODY);
+    await useSentimentStore.getState().refresh();
+    expect(mock.mock.calls[0][0]).toBe(MARKET_GAUGE_PATH);
     const s = useSentimentStore.getState();
-    /* First call = the chip fan-out; the follow-up tape call feeds the
-       price-consistency guard (all-warming -> no adjustment). */
-    expect(mock.mock.calls[0][0]).toBe("/api/x/symbol_chip?symbol=AAPL");
-    expect(s.score).toBeCloseTo(0.5, 5);
-    expect(s.label).toBe("Cautiously Bullish");
-    expect(s.mentions).toBe(100);
-    expect(s.loading).toBe(false);
+    expect(s.gauge?.score).toBe(22.4);
+    expect(s.gauge?.rating).toBe("Extreme Fear");
+    expect(s.unavailableReason).toBeNull();
     expect(s.error).toBeNull();
+    expect(s.loading).toBe(false);
     expect(s.lastUpdated).toBeInstanceOf(Date);
   });
 
-  it("multiple symbols aggregate by mention-weighted average", async () => {
-    // 0.8 weighted 100 + (-0.4) weighted 300 = 80 - 120 = -40
-    // total mentions = 400 → score = -0.1
-    mock.mockResolvedValueOnce({
-      symbol: "A",
-      ok: true,
-      post_count: 100,
-      bullish_score: 0.8,
-    });
-    mock.mockResolvedValueOnce({
-      symbol: "B",
-      ok: true,
-      post_count: 300,
-      bullish_score: -0.4,
-    });
-    await useSentimentStore.getState().refresh(["A", "B"]);
+  it("ok:false clears any number and surfaces the reason", async () => {
+    mock.mockResolvedValueOnce(OK_BODY);
+    await useSentimentStore.getState().refresh();
+    mock.mockResolvedValueOnce({ ok: false, reason: "awareness down" });
+    await useSentimentStore.getState().refresh();
     const s = useSentimentStore.getState();
-    expect(s.mentions).toBe(400);
-    expect(s.score).toBeCloseTo(-0.1, 5);
-    expect(s.label).toBe("Neutral");
+    expect(s.gauge).toBeNull();
+    expect(s.unavailableReason).toBe("awareness down");
   });
 
-  it("symbols with zero mentions or missing score are skipped", async () => {
-    // empty/no-post chips should not poison the average
-    mock.mockResolvedValueOnce({ symbol: "A", ok: false, post_count: 0 });
-    mock.mockResolvedValueOnce({
-      symbol: "B",
-      ok: true,
-      post_count: 50,
-      bullish_score: 0.7,
-    });
-    /* Coverage floor (2026-09-16): 3-of-4 live chips clear it; the skipped
-       mention-less chip contributes nothing to the average. */
-    mock.mockResolvedValueOnce({
-      symbol: "C",
-      ok: true,
-      post_count: 50,
-      bullish_score: 0.1,
-    });
-    mock.mockResolvedValueOnce({
-      symbol: "D",
-      ok: true,
-      post_count: 50,
-      bullish_score: 0.1,
-    });
-    await useSentimentStore.getState().refresh(["A", "B", "C", "D"]);
+  it("transport failure keeps the last good reading and sets error", async () => {
+    mock.mockResolvedValueOnce(OK_BODY);
+    await useSentimentStore.getState().refresh();
+    mock.mockRejectedValueOnce(new Error("sidecar offline"));
+    await useSentimentStore.getState().refresh();
     const s = useSentimentStore.getState();
-    expect(s.mentions).toBe(150);
-    expect(s.score).toBeCloseTo(0.3, 5);
-    expect(s.label).toBe("Neutral");
+    expect(s.error).toBe("sidecar offline");
+    expect(s.gauge?.score).toBe(22.4);
+    expect(s.loading).toBe(false);
   });
 
-  it("all-warming → never fabricates 0%/Neutral (owner report)", async () => {
-    // The backend now answers instantly with warming placeholders while the
-    // chips back-fill. Before the fix this collapsed to a fake "Neutral 0%"
-    // (owner: "yanlış oran gösteriyordu ... spx %1 düşüş"). The store must
-    // instead keep the last good reading — or report the honest waiting
-    // state when nothing was ever measured.
-    mock.mockResolvedValueOnce({ symbol: "A", ok: false, post_count: 0 });
-    mock.mockResolvedValueOnce({ symbol: "B", ok: false, post_count: 0 });
-    await useSentimentStore.getState().refresh(["A", "B"]);
-    const s = useSentimentStore.getState();
-    expect(s.score).toBe(0);
-    expect(s.label).toBe("Neutral");
-    expect(s.mentions).toBe(0);
-    expect(s.error).toBe("Waiting for live sentiment");
-  });
+  it("a newer refresh aborts the older one and its answer is dropped", async () => {
+    let firstResolve!: (v: unknown) => void;
+    mock.mockReturnValueOnce(new Promise((res) => (firstResolve = res)));
+    mock.mockResolvedValueOnce({ ...OK_BODY, score: 80 });
 
-  it("warming pass after a good reading keeps the last good value", async () => {
-    mock.mockResolvedValueOnce({
-      symbol: "A",
-      ok: true,
-      post_count: 40,
-      bullish_score: -0.6,
-    });
-    await useSentimentStore.getState().refresh(["A"]);
-    expect(useSentimentStore.getState().score).toBeCloseTo(-0.6, 5);
-
-    mock.mockResolvedValueOnce({ symbol: "A", ok: false, post_count: 0 });
-    await useSentimentStore.getState().refresh(["A"]);
-    const s = useSentimentStore.getState();
-    expect(s.score).toBeCloseTo(-0.6, 5);
-    expect(s.label).toBe("Cautiously Bearish");
-    expect(s.error).toBeNull();
-    expect(s.lastUpdated).not.toBeNull();
-  });
-
-  it("error path: fetch rejects → sets error, keeps last good", async () => {
-    // First populate with a known-good aggregate
-    mock.mockResolvedValueOnce({
-      symbol: "AAPL",
-      ok: true,
-      post_count: 100,
-      bullish_score: 0.5,
-    });
-    await useSentimentStore.getState().refresh(["AAPL"]);
-    expect(useSentimentStore.getState().score).toBeCloseTo(0.5, 5);
-
-    // Now make Promise.allSettled itself throw by stubbing the impl. The cheap
-    // way is to inject a rejection that propagates as a non-allSettled path:
-    // override the global to raise.
-    const origAllSettled = Promise.allSettled;
-    Promise.allSettled = vi.fn(() => {
-      throw new Error("network exploded");
-    }) as unknown as typeof Promise.allSettled;
-    try {
-      await useSentimentStore.getState().refresh(["BAD"]);
-    } finally {
-      Promise.allSettled = origAllSettled;
-    }
-    const s = useSentimentStore.getState();
-    expect(s.error).toContain("network exploded");
-    // Last good values preserved
-    expect(s.score).toBeCloseTo(0.5, 5);
-    expect(s.mentions).toBe(100);
-    expect(s.label).toBe("Cautiously Bullish");
-  });
-
-  it("concurrent refresh aborts the previous request", async () => {
-    // First refresh: never resolves on its own — we'll cancel it via the
-    // second refresh. We use a deferred to keep it pending and assert the
-    // controller was aborted by the second call.
-    let firstResolve!: (v: XSymbolChipLike) => void;
-    const firstPromise = new Promise<XSymbolChipLike>((res) => {
-      firstResolve = res;
-    });
-    mock.mockReturnValueOnce(firstPromise);
-    // Second refresh resolves immediately.
-    mock.mockResolvedValueOnce({
-      symbol: "Z",
-      ok: true,
-      post_count: 200,
-      bullish_score: -0.8,
-    });
-
-    const p1 = useSentimentStore.getState().refresh(["A"]);
-    // Grab the controller created by the first refresh — it's on state until
-    // the second refresh replaces it.
+    const p1 = useSentimentStore.getState().refresh();
     const firstController = useSentimentStore.getState()._inflight;
     expect(firstController).not.toBeNull();
 
-    const p2 = useSentimentStore.getState().refresh(["Z"]);
-    // After kicking off p2 the first controller should be aborted.
+    const p2 = useSentimentStore.getState().refresh();
     expect(firstController!.signal.aborted).toBe(true);
 
-    // Let p1's pending fetch resolve — its post-await abort guard should
-    // bail BEFORE writing state.
-    firstResolve({
-      symbol: "A",
-      ok: true,
-      post_count: 1_000_000,
-      bullish_score: 1,
-    });
-
+    firstResolve({ ...OK_BODY, score: 5 });
     await Promise.all([p1, p2]);
-    const s = useSentimentStore.getState();
-    // Final state must be p2's, not p1's.
-    expect(s.mentions).toBe(200);
-    expect(s.score).toBeCloseTo(-0.8, 5);
-    expect(s.label).toBe("Strongly Bearish");
-  });
-
-  it("damps a bullish reading on a red tape (price-consistency guard)", async () => {
-    // Owner: a -6% NVDA day must not read "Cautiously Bullish". Raw 0.62 with
-    // a -6% mean tape -> penalty -0.5 -> 0.12 Neutral; no fabrication upward.
-    mock.mockResolvedValueOnce({ symbol: "A", ok: true, post_count: 200, bullish_score: 0.62 });
-    mock.mockResolvedValueOnce({ symbol: "B", ok: true, post_count: 200, bullish_score: 0.62 });
-    mock.mockResolvedValueOnce({ data: { change_pct: -6 } });
-    mock.mockResolvedValueOnce({ data: { change_pct: -6 } });
-    await useSentimentStore.getState().refresh(["A", "B"]);
-    const s = useSentimentStore.getState();
-    expect(s.tapePct).toBeCloseTo(-6, 5);
-    expect(s.score).toBeCloseTo(0.12, 2);
-    expect(s.label).toBe("Neutral");
-  });
-
-  it("HNT-09: a fresh external refresh re-arms the warmup retry budget after it is exhausted", async () => {
-    vi.useFakeTimers();
-    try {
-      mock.mockResolvedValue({ symbol: "A", ok: false, post_count: 0 });
-      await useSentimentStore.getState().refresh(["A"]);
-      expect(mock).toHaveBeenCalledTimes(1);
-      // Burn through the whole 10-attempt warmup budget via internal retries.
-      for (let i = 0; i < 10; i++) {
-        await vi.advanceTimersByTimeAsync(6_000);
-      }
-      expect(mock).toHaveBeenCalledTimes(11);
-      // Budget exhausted: no further retries fire, even after a long wait.
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(mock).toHaveBeenCalledTimes(11);
-      // A fresh EXTERNAL call (60 s poll) resets the budget...
-      await useSentimentStore.getState().refresh(["A"]);
-      expect(mock).toHaveBeenCalledTimes(12);
-      // ...so the fast warmup retry loop runs again.
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(mock).toHaveBeenCalledTimes(13);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(useSentimentStore.getState().gauge?.score).toBe(80);
   });
 });
-
-type XSymbolChipLike = {
-  symbol: string;
-  ok: boolean;
-  post_count: number;
-  bullish_score?: number;
-};

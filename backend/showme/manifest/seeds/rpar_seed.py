@@ -111,7 +111,7 @@ def rpar() -> FunctionManifest:
                 label="Frequency",
                 control=ControlKind.SELECT,
                 required=False,
-                description="Return sampling cadence for Σ.",
+                description="Return sampling cadence for Σ. Only 1d (daily closes) is fetched; other values return input_error.",
                 options=["1d", "1wk", "1mo"],
             ),
             InputSpec(
@@ -200,18 +200,24 @@ def rpar() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "RPAR estimates the covariance matrix Σ from the universe's "
-            "return history at the chosen frequency and lookback. The "
-            "risk-parity weights solve σ_i × w_i = c for all i, where σ_i is "
-            "the i-th asset's marginal risk contribution (Σw)_i / σ_p and c "
-            "is the parity constant. Equal-risk parity sets c = 1/N; "
-            "budgeted parity sets per-asset target shares b_i with Σb_i = 1. "
-            "The solver uses an iterative log-barrier / Newton step on the "
-            "convex relaxation; failures (singular Σ, dropped universe) "
-            "surface as warnings. Final weights are scaled so port σ matches "
-            "the risk_target. This is a research surface — paper_mode "
-            "defaults true so the weight vector cannot be wired into any "
-            "live execution path."
+            "RPAR estimates the annualized covariance matrix Σ from the universe's daily "
+            "return history with the chosen covariance_model: sample_cov (pairwise sample "
+            "covariance), ledoit_wolf (Ledoit-Wolf 2004 shrinkage toward a scaled identity), "
+            "oracle_approximating (Chen et al. 2010 shrinkage), or exp_cov (exponentially "
+            "weighted, 63-day half-life). Shrinkage estimators use complete rows; too few "
+            "rows, or an unknown model, fall back to sample_cov and say so in warnings. "
+            "The risk-parity weights solve σ_i × w_i = c for all i, where σ_i is the i-th "
+            "asset's marginal risk contribution (Σw)_i / σ_p and c is the parity constant. "
+            "Equal-risk parity sets c = 1/N. With method=erc the solver is a damped "
+            "multiplicative fixed-point iteration on the risk contributions; method=inverse_vol "
+            "is a faster approximation, not true parity. Final weights are then scaled so the "
+            "portfolio volatility equals risk_target, so they sum to gross exposure rather than "
+            "1. The lookback is the days parameter, or lookback_window (90d, 180d, 1Y, 2Y, 5Y) when days "
+            "is absent. Frequency is daily only (other values return input_error). risk_budget sets the ERC "
+            "risk shares when supplied (inverse_vol ignores it). paper_mode is reported only: RPAR has no "
+            "order path. Failures (singular Σ, "
+            "too little history) surface as warnings. This is a research surface — paper_mode "
+            "defaults true so the weight vector cannot be wired into any live execution path."
         ),
         formula_dict={
             "RiskContribution": Formula(

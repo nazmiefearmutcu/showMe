@@ -34,6 +34,7 @@ class AssetClass(str, Enum):
 
     EQUITY = "equity"
     ETF = "etf"
+    FUND = "fund"
     CRYPTO = "crypto"
     FX = "fx"
     COMMODITY = "commodity"

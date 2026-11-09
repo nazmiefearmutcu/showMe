@@ -89,8 +89,9 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
   const rows = useMemo(() => normalizeHeatmapRows(data?.data), [data]);
   const payloadStatus = payloadStatusLabel(data?.data, data?.metadata);
   // The user-requested change window (the WINDOW selector for SECT; MAP is
-  // always intraday). `requestedPeriod` is what the user asked for; the backend
-  // tells us what it actually DELIVERED via `change_pct_period` (e.g. "1D" in
+  // always a 1D change: last price vs the prior-session close). `requestedPeriod`
+  // is what the user asked for; the backend tells us what it actually DELIVERED
+  // via `change_pct_period` (e.g. "1D" in
   // live mode regardless of the request). We label every change value with the
   // DELIVERED period so an MTD request can't masquerade as MTD data.
   const requestedPeriod = isSector ? period : "1D";
@@ -300,6 +301,8 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
                     delivered={deliveredPeriod}
                     warnings={warnings}
                   />
+                ) : warnings.length > 0 ? (
+                  <WarningsNotice warnings={warnings} />
                 ) : null}
                 {payloadStatus ? <StatusNotice notice={payloadStatus} /> : null}
                 <Empty
@@ -316,6 +319,8 @@ export function MarketHeatmapPane({ code }: FunctionPaneProps) {
                     delivered={deliveredPeriod}
                     warnings={warnings}
                   />
+                ) : warnings.length > 0 ? (
+                  <WarningsNotice warnings={warnings} />
                 ) : null}
                 {payloadStatus ? <StatusNotice notice={payloadStatus} /> : null}
 
@@ -734,9 +739,33 @@ function ModelDataBadge() {
 }
 
 /**
- * SECT live mode delivers only intraday (1D) changes even when the user picks
- * MTD/QTD/YTD. This notice discloses the delivered vs. requested period and
- * surfaces any backend `warnings`, so an MTD request can't read as MTD data.
+ * Backend `warnings` shown on their own when the period header already matches
+ * the delivered values (e.g. some sector ETFs have no base close for the window,
+ * so their change is null). Without this the warning would never render.
+ */
+function WarningsNotice({ warnings }: { warnings: string[] }) {
+  return (
+    <div
+      className="wei-model-badge"
+      role="status"
+      data-testid="map-warnings-notice"
+      aria-label="Data warnings"
+    >
+      <span className="wei-model-badge__dot" aria-hidden />
+      {warnings.map((w, i) => (
+        <span key={i} className="u-text-secondary">
+          {w}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * SECT's requested window and the delivered change window can differ (for
+ * example a provider that only ships 1D). This notice discloses the delivered
+ * vs. requested period and surfaces any backend `warnings`, so an MTD request
+ * can't read as MTD data.
  */
 function PeriodMismatchNotice({
   requested,

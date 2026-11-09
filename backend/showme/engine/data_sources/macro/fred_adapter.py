@@ -24,6 +24,7 @@ from showme.engine.core.base_data_source import (
     BaseDataSource, DataKind, DataRequest, DataSourceError
 )
 from showme.engine.utils.throttle import throttle
+from showme.providers.base import get_redacted
 
 LOG = logging.getLogger("showme.engine.data_sources.fred")
 
@@ -87,8 +88,7 @@ class FREDAdapter(BaseDataSource):
             params["frequency"] = frequency
         if vintage and vintage != "latest":
             params["vintage_dates"] = vintage
-        r = await client.get("/series/observations", params=params)
-        r.raise_for_status()
+        r = await get_redacted(client, "/series/observations", params=params, secrets=(self.api_key,))
         data = r.json().get("observations") or []
         if not data:
             return pd.DataFrame(columns=["value"])
@@ -101,11 +101,12 @@ class FREDAdapter(BaseDataSource):
     @throttle(rps=5.0)
     async def info(self, series_id: str) -> dict[str, Any]:
         client = await self._client_()
-        r = await client.get(
+        r = await get_redacted(
+            client,
             "/series",
             params={"series_id": series_id, "api_key": self.api_key, "file_type": "json"},
+            secrets=(self.api_key,),
         )
-        r.raise_for_status()
         s = r.json().get("seriess") or []
         return s[0] if s else {}
 
@@ -126,17 +127,29 @@ class FREDAdapter(BaseDataSource):
         raise DataSourceError(f"unsupported kind {request.kind}")
 
     # Convenience presets for hot series ↓
-    async def yield_curve(self) -> dict[str, float]:
+    async def yield_curve_observations(self) -> dict[str, tuple[float, pd.Timestamp | None]]:
+        """Latest value and its FRED observation date per DGS id.
+
+        A failed or empty series is NaN with no date. The date is the
+        observation's own index entry, never the fetch date.
+        """
         # R3 L-1 (2026-09-09): the monthly bill ids feed CRVF's mapped
         # short end (DGS1MO/2MO/4MO -> fractional years); absent ids come
         # back NaN per-tenor and are filtered downstream.
         ids = ["DGS1MO", "DGS2MO", "DGS4MO", "DGS3MO", "DGS6MO", "DGS1",
                "DGS2", "DGS3", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30"]
-        out: dict[str, float] = {}
+        out: dict[str, tuple[float, pd.Timestamp | None]] = {}
         for sid in ids:
             try:
                 df = await self.series(sid, frequency="d")
-                out[sid] = float(df["value"].iloc[-1]) if not df.empty else float("nan")
+                if df.empty:
+                    out[sid] = (float("nan"), None)
+                else:
+                    out[sid] = (float(df["value"].iloc[-1]), pd.Timestamp(df.index[-1]))
             except Exception:
-                out[sid] = float("nan")
+                out[sid] = (float("nan"), None)
         return out
+
+    async def yield_curve(self) -> dict[str, float]:
+        observations = await self.yield_curve_observations()
+        return {sid: value for sid, (value, _when) in observations.items()}

@@ -5,6 +5,7 @@
  * ribbon for hike/cut/hold tally, full-width policy-rate history chart,
  * sparkline column, sectioned filter strip, hover-lift rows.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   DataGrid,
@@ -45,6 +46,7 @@ interface BTMMRow {
   region?: string;
   policy_rate?: number;
   as_of?: string;
+  freshness?: "fresh" | "stale" | "undated" | string;
   previous_rate?: number | null;
   previous_date?: string | null;
   change_bp?: number | null;
@@ -64,6 +66,8 @@ interface BTMMSummary {
   cuts?: number;
   holds?: number;
   largest_last_move?: BTMMRow | null;
+  range_basis?: string;
+  range_is_stale?: boolean;
 }
 
 interface BTMMPayload {
@@ -248,6 +252,11 @@ const COLS: DataGridColumn<BTMMRow>[] = [
     render: (row) => (
       <span className="terminal-grid-numeric" style={mutedNumStyle}>
         {row.as_of ?? formatMissing}
+        {row.freshness === "stale" ? (
+          <span className="u-text-warn" data-testid="btmm-stale-flag">
+            {" "}stale
+          </span>
+        ) : null}
       </span>
     ),
   },
@@ -297,8 +306,8 @@ export function BTMMPane({ code }: FunctionPaneProps) {
   // row's `source`) when it served the hardcoded snapshot. That is the clean
   // frontend signal — no backend change needed.
   const isFallback =
-    (data?.sources?.some((s) => s.toLowerCase().includes("fallback")) ?? false) ||
-    rawRows.some((r) => String(r.source ?? "").toLowerCase().includes("fallback"));
+    (data?.sources?.some((s) => foldSearchText(s).includes("fallback")) ?? false) ||
+    rawRows.some((r) => foldSearchText(String(r.source ?? "")).includes("fallback"));
   // P1.3 / P2.6: freshness honesty. "live" used to mean "the fetch succeeded"
   // even when serving a 6h cache or a 24-day-old fallback. Reflect REAL
   // freshness from `stale_seconds` (server-computed age of the freshest
@@ -519,7 +528,17 @@ function KPIRibbon({
       <StatCard
         label="Range"
         value={`${fmtPct(summary?.min_policy_rate)} – ${fmtPct(summary?.max_policy_rate)}`}
-        caption="MIN – MAX"
+        caption={
+          // BTMM#1 follow-up: when no row is fresh the backend falls back to the
+          // full set and says so; the card must not read as a current range.
+          summary?.range_is_stale ? (
+            <span data-testid="btmm-range-basis" className="u-text-warn">
+              STALE · no fresh rows, full set
+            </span>
+          ) : (
+            "MIN – MAX"
+          )
+        }
         tone="neutral"
         trend={[]}
       />
@@ -548,7 +567,16 @@ function KPIRibbon({
             ? `${largestMove.country_code ?? "—"} ${fmtBp(largestMove.change_bp)}`
             : "—"
         }
-        caption={largestMove?.central_bank ? truncate(largestMove.central_bank, 22) : "—"}
+        caption={
+          // BTMM#1: the card names the observation date, since the move is
+          // drawn from fresh rows only and must not read as undated.
+          [
+            largestMove?.central_bank ? truncate(largestMove.central_bank, 22) : null,
+            largestMove?.as_of ?? null,
+          ]
+            .filter(Boolean)
+            .join(" · ") || "—"
+        }
         tone={
           largestMove?.change_bp == null
             ? "neutral"
@@ -671,21 +699,21 @@ function realTrendSeries(row: BTMMRow): number[] {
 }
 
 function filterRows(rows: BTMMRow[], search: string): BTMMRow[] {
-  const needle = search.trim().toLowerCase();
+  const needle = foldSearchText(search.trim());
   if (!needle) return rows;
   return rows.filter((row) =>
-    [
-      row.country_code,
-      row.bis_ref_area,
-      row.country,
-      row.central_bank,
-      row.currency,
-      row.region,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase()
-      .includes(needle),
+    foldSearchText(
+      [
+        row.country_code,
+        row.bis_ref_area,
+        row.country,
+        row.central_bank,
+        row.currency,
+        row.region,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    ).includes(needle),
   );
 }
 

@@ -117,8 +117,11 @@ def test_des_provider_exhausted_engine_stamps_fallback_end_to_end() -> None:
     payload = _run(result.to_dict())
     assert payload["data_state"] == "provider_unavailable"
     assert payload["data_state"] != "live"
-    # The real provider chain is still surfaced (not wiped).
-    assert payload["sanitizer_summary"]["live"] == 3
+    # Failed providers are not cited as sources (DES#2: only a provider that
+    # produced data is a source), but the attempted chain is still surfaced.
+    assert result.sources == []
+    assert len(result.metadata["attempted_providers"]) == 3
+    assert result.metadata["provider_errors"]
 
 
 # ─── Other failure declaration forms ──────────────────────────────────────

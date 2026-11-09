@@ -4,13 +4,15 @@
  * Local persistence (Round 16 preset filesystem on Tauri, localStorage
  * fallback).
  *
- * Evaluation is best-effort, client-side polling: while this pane is open
- * (and the app is foreground — paused via `useVisibilityTick` when hidden)
- * it fetches one quote per unique symbol across the ACTIVE alerts every
- * `POLL_MS`, computes each alert's current value + status (armed /
- * triggered), and fires ONCE on a genuine new trigger — the
- * not-triggered→triggered edge for above/below, or an actual crossing
- * between the previous and current observed value for cross_up / cross_down.
+ * Evaluation is best-effort, client-side, and runs on two feeds: the live
+ * quote feed for each ACTIVE alert symbol (every tick is evaluated, so a
+ * crossing between REST samples is not missed), and a REST poll every
+ * `POLL_MS` (paused via `useVisibilityTick` when hidden) that refreshes the
+ * Current column and covers symbols without a live feed. Each observation
+ * computes the alert's current value + status (armed / triggered) and fires
+ * ONCE on a genuine new trigger — the not-triggered→triggered edge for
+ * above/below, or an actual crossing between the previous and current
+ * observed value for cross_up / cross_down.
  * A per-alert cooldown (`FIRE_COOLDOWN_MS`, derived from `last_fired_at`)
  * blocks an immediate refire. This is NOT a server-side 24/7 engine: alerts
  * only evaluate while the app is running with this pane mounted, and the UI
@@ -65,6 +67,18 @@ const POLL_MS = 45_000;
 const FIRE_COOLDOWN_MS = 5 * 60_000;
 
 type AlertStatus = "triggered" | "armed" | "none";
+
+/**
+ * One live-feed observation for an alert symbol. `at` is the local time the
+ * value was reported, so the pane can tell whether the live feed or the REST
+ * snapshot is the newer reading.
+ */
+interface LiveObservation {
+  price: number | null;
+  change_pct: number | null;
+  volume: number | null;
+  at: number;
+}
 
 /**
  * B1b — route-bound seed state. Reported by {@link LiveSeedBridge} (mounted
@@ -132,6 +146,52 @@ function evaluateAlert(
   return { status: onTriggerSide ? "triggered" : "armed", newTrigger: crossed };
 }
 
+/** The last value observed for one alert, and when it was observed. */
+export interface AlertObservation {
+  value: number;
+  at: number;
+}
+
+/**
+ * ALRT#5 — record one observation for an alert, ordered by observation time.
+ * An observation older than the newest one already recorded for that alert is
+ * reported as `stale` and ignored, so it can never move the edge state back.
+ */
+export function observeAlertEdge(
+  seen: Map<string, AlertObservation>,
+  alertId: string,
+  direction: AlertDirection,
+  threshold: number,
+  value: number | null,
+  at: number,
+): { newTrigger: boolean; stale: boolean } {
+  const last = seen.get(alertId);
+  if (last && at < last.at) return { newTrigger: false, stale: true };
+  const prev = last ? last.value : null;
+  const { newTrigger } = evaluateAlert(direction, threshold, value, prev);
+  if (value !== null && Number.isFinite(value)) seen.set(alertId, { value, at });
+  return { newTrigger, stale: false };
+}
+
+/**
+ * ALRT#5 — cooldown gate. True when the alert fired within FIRE_COOLDOWN_MS,
+ * either per its persisted `last_fired_at` or per `inFlight`, the time this pane
+ * started firing it (recorded before the async fire is awaited, so a second
+ * evaluation cannot pass while `rows` still shows the old value).
+ */
+export function isInFireCooldown(
+  lastFiredAt: string | null | undefined,
+  inFlight: number | undefined,
+  now: number,
+): boolean {
+  const persisted = lastFiredAt ? Date.parse(lastFiredAt) : NaN;
+  const latest = Math.max(
+    Number.isFinite(persisted) ? persisted : -Infinity,
+    inFlight ?? -Infinity,
+  );
+  return Number.isFinite(latest) && now - latest < FIRE_COOLDOWN_MS;
+}
+
 export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
   // B1b (campaign 2026-09-11 double) — route-bound opening. `PaneChrome`'s
   // "set alert" action navigates to `#/symbol/<sym>/ALRT`, so the pane
@@ -180,9 +240,19 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
   // timestamp — verified against `lib/alerts.ts`), so a row renders the age
   // chip only after this pane genuinely fetched its quote; never fabricated.
   const [evalStamps, setEvalStamps] = useState<Record<string, number>>({});
-  // Previous observed value per alert id, for cross detection + above/below
-  // edge tracking. A ref (not state) so updating it never re-triggers render.
-  const prevValuesRef = useRef<Map<string, number>>(new Map());
+  // Latest live-feed observation per symbol (ALRT#5). Only changed values
+  // update it, so a quiet feed never re-renders the pane.
+  const [liveObs, setLiveObs] = useState<Record<string, LiveObservation>>({});
+  // Time of the last live report per symbol, even when the value is unchanged
+  // (a ref: it feeds the stalled-evaluation check without re-rendering).
+  const liveSeenRef = useRef<Record<string, number>>({});
+  // Previous observed value per alert id (and when it was observed), for cross
+  // detection + above/below edge tracking. A ref (not state) so updating it
+  // never re-triggers render.
+  const prevValuesRef = useRef<Map<string, AlertObservation>>(new Map());
+  // Time each alert was last fired by this pane, recorded before the async fire
+  // is awaited, so overlapping evaluations honour the cooldown (ALRT#5).
+  const firedAtRef = useRef<Map<string, number>>(new Map());
   // Always-fresh `rows` for the polling callback (closure would otherwise
   // capture a stale snapshot across ticks).
   const rowsRef = useRef<AlertRow[] | null>(null);
@@ -342,11 +412,47 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
     }
   };
 
-  // P1 MARQUEE — the real evaluation loop. On every (visibility-gated) tick:
-  // fetch one quote per unique ACTIVE symbol, compute each alert's current
-  // value + status, and fire ONCE on a genuine new trigger (edge / crossing)
-  // subject to the per-alert cooldown. Best-effort + client-side: only runs
-  // while this pane is mounted and the app is foreground.
+  // Shared evaluation for one symbol's observation — a live tick or a REST
+  // sample — against that symbol's active alerts. Each alert observes the value
+  // once: the observation is recorded BEFORE the cooldown gate so crossings
+  // are tracked even when a fire is suppressed, and a fire needs a genuine new
+  // trigger (edge / crossing). An alert whose level is already passed when it
+  // is first observed records that state and does not fire until a new
+  // crossing, so arming never fires on the first tick.
+  const evaluateSymbolRows = async (
+    rowsForSym: AlertRow[],
+    readValue: (field: AlertRow["field"]) => number | null,
+    now: number,
+    isStopped: () => boolean,
+    observedAt: number,
+  ): Promise<void> => {
+    for (const row of rowsForSym) {
+      const { newTrigger, stale } = observeAlertEdge(
+        prevValuesRef.current,
+        row.id,
+        row.direction,
+        row.threshold,
+        readValue(row.field),
+        observedAt,
+      );
+      // A reading older than one already observed for this alert (e.g. a REST
+      // snapshot fetched before a live tick) never moves the edge state.
+      if (stale || !newTrigger) continue;
+      if (isInFireCooldown(row.last_fired_at, firedAtRef.current.get(row.id), now)) continue;
+      firedAtRef.current.set(row.id, now);
+      await fireAlert(row);
+      if (isStopped()) break;
+    }
+  };
+  // The live feed's callback is stable (it must not re-arm the bridges on
+  // every render), so it reaches the latest evaluator through a ref.
+  const evaluateRef = useRef(evaluateSymbolRows);
+  evaluateRef.current = evaluateSymbolRows;
+
+  // P1 MARQUEE — the real evaluation loop, REST side. On every
+  // (visibility-gated) tick: fetch one quote per unique ACTIVE symbol, refresh
+  // the Current column, and evaluate each symbol's alerts. Best-effort +
+  // client-side: only runs while this pane is mounted and the app is foreground.
   useEffect(() => {
     let cancelled = false;
     const current = rowsRef.current;
@@ -383,23 +489,19 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
         }
         return next;
       });
-      for (const row of activeRows) {
-        const snap = fresh[row.symbol];
+      for (const sym of uniqueSymbols) {
+        const snap = fresh[sym];
         if (!snap) continue;
-        const value = quoteValue(snap, row.field);
-        const prev = prevValuesRef.current.get(row.id) ?? null;
-        const { newTrigger } = evaluateAlert(row.direction, row.threshold, value, prev);
-        // Record the observation for the next tick BEFORE the cooldown gate so
-        // we always track crossings even when a fire is suppressed.
-        if (value !== null && Number.isFinite(value)) {
-          prevValuesRef.current.set(row.id, value);
-        }
-        if (!newTrigger) continue;
-        const lastFired = row.last_fired_at ? Date.parse(row.last_fired_at) : NaN;
-        const inCooldown =
-          Number.isFinite(lastFired) && now - lastFired < FIRE_COOLDOWN_MS;
-        if (inCooldown) continue;
-        await fireAlert(row);
+        const snapAt = Date.parse(snap.fetched_at);
+        // Through the ref (refreshed every render) so the tick effect neither
+        // re-arms on each render nor calls a stale closure.
+        await evaluateRef.current(
+          activeRows.filter((r) => r.symbol === sym),
+          (field) => quoteValue(snap, field),
+          now,
+          () => cancelled,
+          Number.isFinite(snapAt) ? snapAt : now,
+        );
         if (cancelled) break;
       }
     })();
@@ -410,6 +512,43 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
     // evalTick is the trigger; rows feed via rowsRef to avoid re-arming the
     // loop on every CRUD-driven re-render.
   }, [evalTick]);
+
+  // ALRT#5 — live-tick evaluation. Each report from the live feed is recorded
+  // for the Current column and evaluated against that symbol's active alerts
+  // right away, so a crossing that starts and returns between REST samples is
+  // still seen.
+  const onLiveObservation = useCallback((sym: string, obs: LiveObservation) => {
+    liveSeenRef.current[sym] = obs.at;
+    setLiveObs((prev) => {
+      const p = prev[sym];
+      if (
+        p &&
+        p.price === obs.price &&
+        p.change_pct === obs.change_pct &&
+        p.volume === obs.volume
+      ) {
+        return prev;
+      }
+      return { ...prev, [sym]: obs };
+    });
+    const rowsForSym = (rowsRef.current ?? []).filter(
+      (r) => r.active && r.symbol === sym,
+    );
+    if (rowsForSym.length === 0) return;
+    void evaluateRef.current(
+      rowsForSym,
+      (field) => liveValue(obs, field),
+      obs.at,
+      () => false,
+      obs.at,
+    );
+  }, []);
+
+  // Symbols that currently need a live feed for evaluation.
+  const liveSymbols = useMemo(
+    () => Array.from(new Set((rows ?? []).filter((r) => r.active).map((r) => r.symbol))),
+    [rows],
+  );
 
   const currentValue = quote ? quoteValue(quote, field) : null;
   const conditionPreview =
@@ -542,8 +681,7 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
         numeric: true,
         width: 100,
         render: (r) => {
-          const snap = quotes[r.symbol];
-          const value = snap ? quoteValue(snap, r.field) : null;
+          const value = observedValue(liveObs[r.symbol], quotes[r.symbol], r.field);
           return (
             <span className="terminal-grid-numeric" style={numericCellStyle}>
               {value === null ? formatMissing : formatPrice(value)}
@@ -556,23 +694,23 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
         header: "Status",
         width: 90,
         render: (r) => {
-          const snap = quotes[r.symbol];
-          const value = snap ? quoteValue(snap, r.field) : null;
+          const value = observedValue(liveObs[r.symbol], quotes[r.symbol], r.field);
           const { status } = evaluateAlert(
             r.direction,
             r.threshold,
             value,
-            prevValuesRef.current.get(r.id) ?? null,
+            prevValuesRef.current.get(r.id)?.value ?? null,
           );
           if (status === "none") {
             return <span style={{ color: "var(--text-mute)" }}>{formatMissing}</span>;
           }
           // Audit A5 ALRT [OPP]: stalled-poll edge state — the pane's own
           // last successful evaluation age surfaces on the row; nothing is
-          // shown until this pane has actually evaluated the symbol.
-          const evaluatedAt = evalStamps[r.symbol];
-          const ageMs =
-            typeof evaluatedAt === "number" ? Date.now() - evaluatedAt : null;
+          // shown until this pane has actually evaluated the symbol. A live
+          // tick counts as an evaluation (ALRT#5).
+          const liveAt = liveSeenRef.current[r.symbol] ?? 0;
+          const lastAt = Math.max(evalStamps[r.symbol] ?? 0, liveAt);
+          const ageMs = lastAt > 0 ? Date.now() - lastAt : null;
           const stalled = ageMs != null && ageMs > POLL_MS * 3;
           return (
             <span
@@ -652,11 +790,11 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
         ),
       },
     ],
-    // `quotes` drives the live Current + Status columns; `evalStamps` drives
-    // the per-row "last evaluated" age; the handler closures recreated each
-    // render ride along.
+    // `quotes` and `liveObs` drive the Current + Status columns; `evalStamps`
+    // drives the per-row "last evaluated" age; the handler closures recreated
+    // each render ride along.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [quotes, evalStamps],
+    [quotes, evalStamps, liveObs],
   );
 
   const activeCount = rows?.filter((r) => r.active).length ?? 0;
@@ -773,6 +911,11 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
           {routeSym && (
             <LiveSeedBridge symbol={routeSym} field={field} onSeed={onSeed} />
           )}
+          {/* ALRT#5 — one live feed per active alert symbol; each tick is
+              evaluated against that symbol's alerts (renders nothing). */}
+          {liveSymbols.map((sym) => (
+            <LiveEvalBridge key={sym} symbol={sym} onObservation={onLiveObservation} />
+          ))}
           {thresholdInvalid && (
             <div
               id="alrt-threshold-error"
@@ -801,8 +944,9 @@ export function ALRTPane({ code, symbol: routeSymbol }: FunctionPaneProps) {
                 : "enter symbol, threshold, then check quote"}
             </span>
             <span>
-              eval · client-side poll every {Math.round(POLL_MS / 1000)}s while
-              this pane is open (foreground)
+              eval · live quote ticks plus a {Math.round(POLL_MS / 1000)}s REST
+              poll while this pane is open (foreground); an alert already past
+              its level on first observation does not fire until a new crossing
             </span>
           </div>
           <FieldRow>
@@ -942,6 +1086,67 @@ function quoteValue(quote: QuoteSnapshot, field: AlertRow["field"]): number | nu
   if (field === "price") return quote.price ?? quote.last ?? null;
   if (field === "change_pct") return quote.change_pct ?? quote.regularMarketChangePercent ?? null;
   if (field === "volume") return quote.volume ?? null;
+  return null;
+}
+
+function liveValue(obs: LiveObservation, field: AlertRow["field"]): number | null {
+  if (field === "price") return obs.price;
+  if (field === "change_pct") return obs.change_pct;
+  if (field === "volume") return obs.volume;
+  return null;
+}
+
+/**
+ * The value the Current / Status columns show: the newer of the live
+ * observation and the REST snapshot, so a dead live feed never pins a stale
+ * number once the REST poll has moved on.
+ */
+function observedValue(
+  obs: LiveObservation | undefined,
+  snap: QuoteSnapshot | undefined,
+  field: AlertRow["field"],
+): number | null {
+  const snapAt = snap ? Date.parse(snap.fetched_at) : NaN;
+  if (obs && (!Number.isFinite(snapAt) || obs.at >= snapAt)) {
+    const live = liveValue(obs, field);
+    if (live !== null) return live;
+  }
+  return snap ? quoteValue(snap, field) : null;
+}
+
+/**
+ * ALRT#5 — live evaluation feed for one active alert symbol. Reports each
+ * change of the live price / change % / volume to the pane, deduped on the
+ * values so a quiet feed never re-renders the pane. Renders nothing.
+ */
+function LiveEvalBridge({
+  symbol,
+  onObservation,
+}: {
+  symbol: string;
+  onObservation: (sym: string, obs: LiveObservation) => void;
+}) {
+  const quote = useLiveQuote(symbol);
+  // Only a genuine live tick is an observation. When the hook has no fresher
+  // tick it falls back to the REST snapshot price; that reading is not live
+  // and is left to the 45 s poll, so it is never stamped as a fresh tick.
+  const tick = quote.sourceKind === "tick" ? quote.lastTick : null;
+  const price = tick?.price ?? null;
+  const changePct = tick?.changePct ?? null;
+  // The tick's own feed time, so ordering against REST readings is honest.
+  const tickAt = tick ? quote.lastTickAt : null;
+  useEffect(() => {
+    if (tickAt == null) return;
+    if (price == null && changePct == null) return;
+    onObservation(symbol, {
+      price,
+      change_pct: changePct,
+      // Volume is not carried by the live observation; the Current column
+      // falls back to the REST snapshot volume, labelled as such.
+      volume: null,
+      at: tickAt,
+    });
+  }, [symbol, price, changePct, tickAt, onObservation]);
   return null;
 }
 

@@ -51,6 +51,11 @@ interface EEData {
   earnings_dates?: unknown;
   methodology?: string;
   field_dictionary?: Record<string, unknown>;
+  next_report?: {
+    date?: string | null;
+    estimate?: number | null;
+    status?: string;
+  } | null;
 }
 
 const HISTORY_OPTIONS = [
@@ -94,6 +99,7 @@ export function EEPane({ code, symbol }: FunctionPaneProps) {
   );
 
   const stats = useMemo(() => deriveStats(rows), [rows]);
+  const nextReportDate = payload?.next_report?.date ?? null;
   const status = payload?.status ?? "—";
   const isUnavailable =
     rows.length > 0 &&
@@ -208,7 +214,9 @@ export function EEPane({ code, symbol }: FunctionPaneProps) {
       body={
         isUnavailable
           ? "Earnings calendar feed is unavailable for this symbol."
-          : "Switch mode to live or pick another ticker."
+          : mode !== "live"
+            ? "Model mode carries no earnings figures. Switch MODE to live."
+            : "Switch mode to live or pick another ticker."
       }
       action={
         <button onClick={refetch} className="btn">
@@ -323,6 +331,11 @@ export function EEPane({ code, symbol }: FunctionPaneProps) {
           <StatusSection label="rows" value={rows.length} />
           <StatusDivider />
           <StatusSection
+            label="next report"
+            value={nextReportDate ?? "—"}
+          />
+          <StatusDivider />
+          <StatusSection
             label="elapsed"
             value={`${data?.elapsed_ms?.toFixed(0) ?? "—"} ms`}
           />
@@ -347,6 +360,11 @@ interface EEStats {
 }
 
 function deriveStats(rows: EERow[]): EEStats {
+  // EE#1: "last reported" means the newest row that carries an actual EPS.
+  // The provider's not-yet-reported quarter has actual=null and must never
+  // stand in for the last actual, its estimate or its surprise.
+  const reported = rows.filter((r) => typeof r.actual === "number");
+  const last = reported[0];
   const surpriseList = rows
     .map((r) => (typeof r.surprisePercent === "number" ? r.surprisePercent : null))
     .filter((v): v is number => v != null && Number.isFinite(v));
@@ -355,13 +373,11 @@ function deriveStats(rows: EERow[]): EEStats {
     .filter((v): v is number => v != null && Number.isFinite(v));
   const beatCount = surpriseList.filter((v) => v > 0).length;
   return {
-    lastActual: typeof rows[0]?.actual === "number" ? rows[0].actual : null,
-    lastEstimate: typeof rows[0]?.estimate === "number" ? rows[0].estimate : null,
+    lastActual: typeof last?.actual === "number" ? last.actual : null,
+    lastEstimate: typeof last?.estimate === "number" ? last.estimate : null,
     lastSurprise:
-      typeof rows[0]?.surprisePercent === "number"
-        ? rows[0].surprisePercent
-        : null,
-    lastPeriod: (rows[0]?.period ?? rows[0]?.date ?? null) as string | null,
+      typeof last?.surprisePercent === "number" ? last.surprisePercent : null,
+    lastPeriod: (last?.period ?? last?.date ?? null) as string | null,
     beatCount,
     surpriseCount: surpriseList.length,
     beatRate: surpriseList.length ? beatCount / surpriseList.length : null,

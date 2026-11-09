@@ -46,6 +46,7 @@ import {
   formatSignedCurrency,
   formatMissing,
 } from "@/lib/format";
+import { formatTime } from "@/lib/timezone";
 import { maxOf, minOf } from "@/lib/maxOf";
 import { isKaosRecord } from "@/lib/kaos-venues";
 import { KaosEngineBadge } from "@/functions/KaosBadges";
@@ -90,8 +91,8 @@ const LEADERBOARD_CSV_COLUMNS: GridCsvColumn<LeaderboardEntry>[] = [
   { key: "win_rate", header: "Win rate", value: (e) => e.win_rate },
   { key: "total_pnl", header: "Total PnL", value: (e) => e.total_pnl },
   { key: "max_drawdown", header: "Max drawdown", value: (e) => e.max_drawdown },
-  { key: "sharpe", header: "Sharpe", value: (e) => e.sharpe ?? "" },
-  { key: "sortino", header: "Sortino", value: (e) => e.sortino ?? "" },
+  { key: "t_stat_per_trade", header: "t-stat / trade", value: (e) => e.t_stat_per_trade ?? "" },
+  { key: "sortino_t_stat_per_trade", header: "Sortino t-stat", value: (e) => e.sortino_t_stat_per_trade ?? "" },
   { key: "profit_factor", header: "Profit factor", value: (e) => e.profit_factor ?? "" },
 ];
 
@@ -352,13 +353,13 @@ function RiskMetrics({ metrics }: { metrics: PerformanceMetrics }) {
         style={{ width: "100%", fontSize: "var(--font-size-sm)" }}
       >
         <caption className="u-sr-only">
-          Computed risk ratios — Sharpe, Sortino, profit factor, expectancy
+          Computed risk ratios — per-trade t-stats, profit factor, expectancy
           and consecutive losses; sample size N={n}.
         </caption>
         <thead>
           <tr className="u-text-secondary">
-            <th scope="col" align="left">Sharpe</th>
-            <th scope="col" align="left">Sortino</th>
+            <th scope="col" align="left" title="Mean / std of trade pnl times sqrt(trades). Not an annualized Sharpe.">t-stat / trade</th>
+            <th scope="col" align="left" title="Same statistic using downside deviation. Not an annualized Sortino.">Sortino t-stat</th>
             <th scope="col" align="left">Profit factor</th>
             <th scope="col" align="left">Expectancy</th>
             <th scope="col" align="left">Max consecutive losses</th>
@@ -366,8 +367,8 @@ function RiskMetrics({ metrics }: { metrics: PerformanceMetrics }) {
         </thead>
         <tbody>
           <tr title={caveat}>
-            <td className={ratioCls} data-testid="perf-sharpe">{formatRatio(metrics.sharpe)}</td>
-            <td className={ratioCls} data-testid="perf-sortino">{formatRatio(metrics.sortino)}</td>
+            <td className={ratioCls} data-testid="perf-t-stat">{formatRatio(metrics.t_stat_per_trade)}</td>
+            <td className={ratioCls} data-testid="perf-sortino-t-stat">{formatRatio(metrics.sortino_t_stat_per_trade)}</td>
             <td className={ratioCls} data-testid="perf-profit-factor">
               {formatRatio(metrics.profit_factor)}
             </td>
@@ -553,7 +554,7 @@ export function PERFPane() {
           style={{ marginLeft: "auto", fontSize: "var(--font-size-sm)" }}
         >
           {generatedAt
-            ? `Last updated: ${new Date(generatedAt).toLocaleTimeString()}`
+            ? `Last updated: ${formatTime(generatedAt, { seconds: true })}`
             : `Last updated: ${formatMissing}`}
         </span>
         <button

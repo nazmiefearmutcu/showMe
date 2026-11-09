@@ -30,17 +30,9 @@ from showme.engine.functions.macro import eco as eco_mod
 
 @pytest.fixture(autouse=True)
 def _reset_caches():
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
     yield
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
     meet_mod._SYMBOL_NEWS_CACHE = None
-    eco_mod._ff_cache["fetched_at"] = 0.0
-    eco_mod._ff_cache["rows"] = []
 
 
 def _run(coro):
@@ -128,78 +120,14 @@ def _meet(deps=None, client=None):
     return fn
 
 
-def test_small_limit_keeps_upcoming_first():
-    """limit=10 over an old-first feed must still surface the 2 upcoming."""
-    result = _run(
-        _meet(FunctionDeps(), _OldFirstFFClient()).execute(
-            mode="calendar", limit=10, days_back=30
-        )
-    )
-    assert result.data["status"] == "ok"
-    assert result.data["upcoming_count"] == 2
-    assert [r["title"] for r in result.data["upcoming"]] == [
-        "Soon print A",
-        "Soon print B",
-    ]
-    # Upcoming-first priority fills the rest of the budget with past rows.
-    assert result.data["past_count"] == 8
-    assert len(result.data["rows"]) == 10
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
 
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
 
-def test_world_race_fast_rss_wins_over_stalled_gdelt():
-    """A stalled GDELT must not hold the pane hostage (was ~13 s serial)."""
-    gdelt = _SlowGDELT([
-        {"title": "Stale wire", "url": "https://example.test/slow",
-         "published_at": _iso_in(timedelta(hours=-3))}
-    ])
-    rss = _InstantNews([
-        {"title": "Fresh wire Russell budgets pass", "link": "https://example.test/f",
-         "published_at": _iso_in(timedelta(minutes=-10))}
-    ])
-    started = time.monotonic()
-    result = _run(
-        _meet(FunctionDeps(gdelt=gdelt, rss=rss), _OldFirstFFClient()).execute(
-            kind="world", news_timeout=2.0
-        )
-    )
-    elapsed = time.monotonic() - started
-    assert "rss" in result.sources
-    assert "gdelt" not in result.sources
-    assert elapsed < 2.0, f"race took {elapsed:.2f}s, laggard was not cut off"
-
-
-def test_world_race_gdelt_keeps_priority_when_both_ready():
-    """Two instantly-ready legs must deterministically prefer GDELT."""
-    for _ in range(5):
-        meet_mod._WORLD_CACHE = None
-        meet_mod._gdelt_429_until = 0.0
-        gdelt = _InstantNews([
-            {"title": "GDELT wire on talks", "url": "https://example.test/g",
-             "published_at": _iso_in(timedelta(hours=-1))}
-        ])
-        rss = _InstantNews([
-            {"title": "RSS wire on budgets", "link": "https://example.test/r",
-             "published_at": _iso_in(timedelta(minutes=-30))}
-        ])
-        result = _run(
-            _meet(FunctionDeps(gdelt=gdelt, rss=rss), _OldFirstFFClient()).execute(
-                kind="world"
-            )
-        )
-        assert "gdelt" in result.sources
-
-
-def test_world_race_slow_empty_gdelt_does_not_block_rss():
-    """Slow-but-empty GDELT is cancelled; RSS wins with no gdelt warning."""
-    gdelt = _SlowGDELT([])
-    rss = _InstantNews([
-        {"title": "RSS wire on budgets", "link": "https://example.test/r2",
-         "published_at": _iso_in(timedelta(minutes=-30))}
-    ])
-    result = _run(
-        _meet(FunctionDeps(gdelt=gdelt, rss=rss), _OldFirstFFClient()).execute(
-            kind="world", news_timeout=2.0
-        )
-    )
-    assert "rss" in result.sources
-    assert not any("gdelt" in w for w in result.warnings)
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

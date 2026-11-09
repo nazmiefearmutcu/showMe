@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import uuid
@@ -25,12 +26,27 @@ class PORTWhatIfFunction(BaseFunction):
     code = "PORT_WHATIF"
     name = "Portfolio What-If"
     category = "portfolio"
+    description = (
+        "Hypothetical buy or sell of one symbol at a typed cost: re-prices the book before "
+        "and after, debits or credits cash, merges into the held lot, and reports the change "
+        "in market value, unrealized P&L, total equity and position count. Research only."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("PORT_WHATIF requires instrument")
-        qty = float(params.get("quantity", 0))
-        cost = float(params.get("cost", 0))
+        # No placeholder cost: a what-if P&L is only meaningful for a cost the
+        # user actually typed. Missing inputs return an explicit state.
+        qty, cost, problem = _whatif_inputs(params)
+        if problem is not None:
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={**problem, "rows": [], "methodology": (
+                    "Clone the current portfolio state, add the hypothetical position, "
+                    "rerun portfolio analytics before and after, then display the delta."
+                )},
+                sources=[], warnings=[],
+            )
         baseline = PortfolioState()
         baseline.import_legacy_crypto()
         # HNT-17: the old fixed "/tmp/_showme_whatif.json" path created a
@@ -43,20 +59,61 @@ class PORTWhatIfFunction(BaseFunction):
             / f"_showme_whatif_{os.getpid()}_{uuid.uuid4().hex}.json"
         )
         whatif = PortfolioState(path=whatif_path)
-        whatif.positions = list(baseline.positions) + [PortfolioPosition(
-            instrument=instrument, quantity=qty, avg_cost=cost,
-        )]
+        new_positions, trade_ccy, realized, problem = _whatif_apply_trade(
+            list(baseline.positions), instrument, qty, cost,
+        )
+        if problem is not None:
+            return FunctionResult(
+                code=self.code, instrument=instrument,
+                data={**problem, "rows": [], "methodology": _WHATIF_METHODOLOGY},
+                sources=[], warnings=[],
+            )
+        whatif.positions = new_positions
         whatif.cash = dict(baseline.cash)
+        # A book that tracks no cash cannot show a funded trade: no cash is
+        # invented, so the equity change is withheld and the gap is reported.
+        cash_tracked = bool(baseline.cash)
+        cash_delta: float | None = None
+        warnings: list[str] = []
+        if cash_tracked:
+            cash_delta = -qty * cost
+            # Debit the key the book already stores (PORT upper-cases cash keys, but a
+            # stored 'usd' must not gain a second 'USD' twin that replaces its balance).
+            cash_key = _whatif_cash_key(whatif.cash, trade_ccy)
+            cash_after = float(whatif.cash.get(cash_key) or 0.0) + cash_delta
+            whatif.cash[cash_key] = cash_after
+            if cash_after < 0:
+                warnings.append(
+                    f"scenario {trade_ccy} cash would be {cash_after:,.2f}: the trade costs more "
+                    "than the cash this book holds"
+                )
+        else:
+            warnings.append(
+                "this book does not track cash, so the trade is not funded and the "
+                "total equity change is not computed"
+            )
         from showme.engine.functions.portfolio.port import PORTFunction
-        port = PORTFunction(self.deps)
+        port_deps = self.deps
+        if self.deps is not None and self.deps.yfinance is not None:
+            # Both PORT runs price the same symbols: one quote fetch serves both.
+            import dataclasses
+            port_deps = dataclasses.replace(self.deps, yfinance=_MemoQuoteAdapter(self.deps.yfinance))
+        port = PORTFunction(port_deps)
         before = await port.execute(_portfolio_override=baseline)
         after = await port.execute(_portfolio_override=whatif)
         bt = (before.data or {}).get("totals") or {}
         at = (after.data or {}).get("totals") or {}
+        equity_before = bt.get("total_equity")
+        equity_after = at.get("total_equity")
+        total_equity_delta = (
+            equity_after - equity_before
+            if equity_before is not None and equity_after is not None else None
+        )
         delta = {
             "market_value": (at.get("market_value") or 0) - (bt.get("market_value") or 0),
             "unrealized_pnl": (at.get("unrealized_pnl") or 0) - (bt.get("unrealized_pnl") or 0),
             "n_positions": (at.get("n_positions") or 0) - (bt.get("n_positions") or 0),
+            "total_equity": total_equity_delta,
         }
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"hypothetical_added": {"symbol": instrument.symbol,
@@ -71,19 +128,189 @@ class PORTWhatIfFunction(BaseFunction):
                                          "symbol": instrument.symbol,
                                          "quantity": qty,
                                          "cost": cost,
+                                         "trade_currency": trade_ccy,
                                          "market_value_delta": delta["market_value"],
                                          "unrealized_pnl_delta": delta["unrealized_pnl"],
+                                         "total_equity_delta": total_equity_delta,
+                                         "cash_delta": cash_delta,
+                                         "realized_pnl_of_trade": realized,
                                      },
-                                     "methodology": (
-                                         "Clone the current portfolio state, add the hypothetical position, "
-                                         "rerun portfolio analytics before and after, then display the delta."
-                                     ),
+                                     "methodology": _WHATIF_METHODOLOGY,
                                      "field_dictionary": {
                                          "market_value": "Change in portfolio market value after the hypothetical trade.",
-                                         "unrealized_pnl": "Change in unrealized P&L after adding the position.",
-                                         "n_positions": "Change in position count.",
+                                         "unrealized_pnl": "Change in unrealized P&L after the trade (merged lot at weighted cost).",
+                                         "n_positions": "Change in position count (a buy into a held symbol adds no position).",
+                                         "total_equity": "Change in cash plus market value; None when the book tracks no cash.",
+                                         "cash_delta": "Cash paid (negative) or received (positive) in the trade currency.",
+                                         "realized_pnl_of_trade": "P&L realized by a sell against the lot cost; 0 for a buy.",
                                      }},
-                              sources=list(set((before.sources or []) + (after.sources or []))))
+                              sources=list(set((before.sources or []) + (after.sources or []))),
+                              warnings=warnings)
+
+
+def _finite_number(raw: Any) -> float | None:
+    """Parse a user number; None when blank or not a finite number."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
+def _whatif_cash_key(cash: dict[str, Any], ccy: str) -> str:
+    """Return the key the book already uses for ``ccy`` (case-insensitive), else ``ccy``."""
+    wanted = str(ccy).upper()
+    for key in cash:
+        if str(key).upper() == wanted:
+            return key
+    return ccy
+
+
+def _whatif_inputs(params: dict[str, Any]) -> tuple[float, float, dict[str, Any] | None]:
+    """Return (quantity, cost, problem). ``problem`` is set when a trade cannot be priced."""
+    qty = _finite_number(params.get("quantity"))
+    cost = _finite_number(params.get("cost"))
+    raw_bad = [
+        name for name in ("quantity", "cost")
+        if params.get(name) not in (None, "") and _finite_number(params.get(name)) is None
+    ]
+    if raw_bad:
+        return 0.0, 0.0, {
+            "status": "input_error",
+            "reason": f"non-numeric value for {', '.join(raw_bad)}",
+            "missing": raw_bad,
+            "next_actions": ["Enter numeric quantity and cost per share."],
+        }
+    missing = []
+    if qty is None or qty == 0:
+        missing.append("quantity")
+    if cost is None or cost <= 0:
+        missing.append("cost")
+    if missing:
+        return 0.0, 0.0, {
+            "status": "needs_input",
+            "reason": (
+                "PORT_WHATIF needs an explicit non-zero quantity and a positive cost per "
+                "share; no placeholder cost is assumed, so no P&L is computed."
+            ),
+            "missing": missing,
+            "next_actions": [
+                "Enter the hypothetical quantity and the cost per share you would pay or receive.",
+            ],
+        }
+    return float(qty), float(cost), None
+
+
+_WHATIF_METHODOLOGY = (
+    "Clone the current portfolio state, apply the hypothetical trade, rerun portfolio "
+    "analytics before and after, then display the delta. A buy merges into the held lot "
+    "of the same symbol at a weighted-average cost; a sell reduces the lot and realizes "
+    "P&L against its cost. Cash is debited (buy) or credited (sell) at the typed cost. "
+    "Shorts are not modelled: a sell larger than the holding is refused."
+)
+_QTY_EPS = 1e-9
+
+
+def _whatif_apply_trade(positions: list[Any], instrument: Instrument, qty: float,
+                        cost: float) -> tuple[list[Any], str, float, dict[str, Any] | None]:
+    """Return ``(positions, trade_currency, realized_pnl, problem)`` for one trade.
+
+    Lots match by symbol and currency. A buy adds to the first matching lot at a
+    weighted-average cost, or opens a lot when none is held. A sell reduces the
+    matching lots first-in-first-out and realizes ``(cost - lot cost)`` on the sold
+    quantity. A sell larger than the holding, or any trade on a held short lot, is
+    refused, so no negative lot is ever booked.
+    """
+    from dataclasses import replace
+
+    symbol = instrument.symbol
+    held_idx = [
+        i for i, pos in enumerate(positions)
+        if pos.instrument.symbol == symbol and abs(float(pos.quantity)) > _QTY_EPS
+    ]
+    trade_ccy = positions[held_idx[0]].currency if held_idx else "USD"
+    same = [i for i in held_idx if positions[i].currency == trade_ccy]
+    if any(float(positions[i].quantity) < 0 for i in same):
+        return positions, trade_ccy, 0.0, {
+            "status": "input_error",
+            "reason": f"{symbol} is held as a short lot; what-if trades on a short are not modelled.",
+            "missing": [],
+            "next_actions": ["Pick a symbol with a long holding or none."],
+        }
+    if qty > 0:
+        if not same:
+            new_lot = PortfolioPosition(instrument=instrument, quantity=qty, avg_cost=cost,
+                                        currency=trade_ccy)
+            return [*positions, new_lot], trade_ccy, 0.0, None
+        first = same[0]
+        lot = positions[first]
+        lot_qty = float(lot.quantity)
+        new_qty = lot_qty + qty
+        new_avg = (lot_qty * float(lot.avg_cost) + qty * cost) / new_qty
+        merged = list(positions)
+        merged[first] = replace(lot, quantity=new_qty, avg_cost=new_avg)
+        return merged, trade_ccy, 0.0, None
+    sell = -qty
+    held = sum(float(positions[i].quantity) for i in same)
+    if sell > held + _QTY_EPS:
+        return positions, trade_ccy, 0.0, {
+            "status": "input_error",
+            "reason": (f"selling {sell:g} {symbol} exceeds the {held:g} held; "
+                       "short sales are not modelled."),
+            "missing": ["quantity"],
+            "next_actions": [f"Enter a sell quantity of at most {held:g}."],
+        }
+    remaining = sell
+    realized = 0.0
+    updated = list(positions)
+    closed: set[int] = set()
+    for i in same:
+        if remaining <= _QTY_EPS:
+            break
+        lot = positions[i]
+        taken = min(float(lot.quantity), remaining)
+        realized += (cost - float(lot.avg_cost)) * taken
+        remaining -= taken
+        left = float(lot.quantity) - taken
+        if left <= _QTY_EPS:
+            closed.add(i)
+        else:
+            updated[i] = replace(lot, quantity=left)
+    kept = [pos for i, pos in enumerate(updated) if i not in closed]
+    return kept, trade_ccy, realized, None
+
+
+class _MemoQuoteAdapter:
+    """Serves repeat fetches of one identical request from memory within one what-if call.
+
+    PORT runs twice (before and after the trade), so without this every quote is
+    fetched twice. Concurrent identical requests (two lots of one symbol priced in
+    one gather) share one in-flight fetch. A failed fetch is forgotten, so a later
+    request retries it.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._memo: dict[str, asyncio.Future[Any]] = {}
+
+    async def fetch(self, request: Any) -> Any:
+        key = repr(request)
+        task = self._memo.get(key)
+        if task is None:
+            task = asyncio.ensure_future(self._inner.fetch(request))
+            self._memo[key] = task
+        try:
+            # shield: one caller being cancelled must not cancel the shared fetch.
+            return await asyncio.shield(task)
+        except Exception:
+            if self._memo.get(key) is task:
+                del self._memo[key]
+            raise
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 def _twr(period_returns: list[float]) -> float:
@@ -92,6 +319,66 @@ def _twr(period_returns: list[float]) -> float:
     for r in period_returns:
         factor *= (1.0 + r)
     return factor - 1.0
+
+
+def _total_daily_returns(close: pd.Series, dividends: pd.Series | None) -> list[float]:
+    """Daily total returns (close + dividend) / prior close - 1, dividends reinvested."""
+    prev = close.shift(1)
+    cash = dividends.reindex(close.index).fillna(0.0) if dividends is not None else 0.0
+    ret = (close + cash) / prev - 1.0
+    return [float(r) for r in ret.iloc[1:].tolist() if np.isfinite(r)]
+
+
+def _max_drawdown(daily_returns: list[float]) -> float | None:
+    """Most negative peak-to-trough move of the compounded index (<= 0), or None."""
+    if not daily_returns:
+        return None
+    index = np.concatenate([[1.0], np.cumprod(1.0 + np.asarray(daily_returns, dtype=float))])
+    running_peak = np.maximum.accumulate(index)
+    return float((index / running_peak - 1.0).min())
+
+
+def _unconfirmed_split_dates(close: pd.Series) -> list[Any]:
+    """Bars whose one-day raw move matches a whole-number split ratio.
+
+    Used only when the source reported no split events: it names the candidate
+    so the user can verify it. Moves under 1.8x are never candidates.
+    """
+    raw = close.to_numpy(dtype=float)
+    found: list[Any] = []
+    for i in range(1, len(raw)):
+        prev, cur = raw[i - 1], raw[i]
+        if not (prev > 0 and cur > 0):
+            continue
+        move = max(prev, cur) / min(prev, cur)
+        if move < 1.8:
+            continue
+        nearest = round(move)
+        if nearest >= 2 and abs(move - nearest) / nearest <= 0.02:
+            found.append(close.index[i])
+    return found
+
+
+def _as_percent(value: float | None) -> float | None:
+    """A fraction as a percent, or None when the fraction is missing or not finite."""
+    if value is None:
+        return None
+    number = float(value)
+    return number * 100.0 if np.isfinite(number) else None
+
+
+def _safe_irr(cashflows: list[tuple[datetime, float]]) -> float | None:
+    """_irr that returns None instead of raising or returning a non-real rate (TRA#2)."""
+    try:
+        rate = _irr(cashflows)
+        if rate is None:
+            return None
+        value = float(rate)
+    except (OverflowError, ZeroDivisionError, ValueError, TypeError):
+        return None
+    if not np.isfinite(value) or value <= -1.0:
+        return None
+    return value
 
 
 def _irr(cashflows: list[tuple[datetime, float]],
@@ -116,75 +403,180 @@ def _irr(cashflows: list[tuple[datetime, float]],
     return rate
 
 
+def _tra_unavailable(
+    instrument: Instrument, years: int, *, status: str, reason: str, next_actions: list[str],
+) -> FunctionResult:
+    """TRA with no live history: an explicit state, never a generated price path."""
+    return FunctionResult(
+        code="TRA",
+        instrument=instrument,
+        data={
+            "status": status,
+            "reason": reason,
+            "symbol": instrument.symbol,
+            "years": years,
+            "rows": [],
+            "points": [],
+            "twr": None, "irr": None, "cagr": None, "price_return": None, "max_drawdown": None,
+            "next_actions": next_actions,
+            "methodology": "TRA computes total return from live daily closes and dividends only.",
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"live": False,
+                  "data_mode": "provider_unavailable" if status == "provider_unavailable" else "empty"},
+    )
+
+
 @FunctionRegistry.register
 class TRAFunction(BaseFunction):
     """TRA — Total Return Analysis (TWR + IRR + price + dividend)."""
     code = "TRA"
     name = "Total Return Analysis"
     category = "portfolio"
+    description = "Total return (dividends reinvested), IRR, CAGR, price return and max drawdown."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("TRA requires instrument")
         years = int(params.get("years", 5))
-        # Default-polarity flip (2026-09-08): TRA computes from the live
-        # price feed by default; ``reference=true`` opts into the labelled
-        # template history. A live-feed failure may still fall back to the
-        # template, but only WITH an explicit warning + honest data_mode.
+        # TRA computes from the live price feed only. The old labelled template
+        # history (btfw._template_history, a generated price path) is gone:
+        # reference=true, a feed failure or an empty feed is an explicit state
+        # with no total-return figures (data policy).
         live = not _truthy(params.get("reference"))
         warnings: list[str] = []
-        metadata: dict[str, Any] = {"live": False, "data_mode": "modeled"}
-        if live:
-            try:
-                if not self.deps.yfinance:
-                    raise RuntimeError("yfinance adapter unavailable")
-                import asyncio
-                df = await asyncio.wait_for(
-                    self.deps.yfinance.fetch(DataRequest(
+        if not live:
+            return _tra_unavailable(
+                instrument, years, status="input_error",
+                reason=("TRA computes total return from live price history only; reference=true asked "
+                        "for a template history, which is not offered."),
+                next_actions=["Run TRA without reference=true."],
+            )
+        try:
+            if not self.deps.yfinance:
+                raise RuntimeError("yfinance adapter unavailable")
+            import asyncio
+            df = await asyncio.wait_for(
+                self.deps.yfinance.fetch(DataRequest(
                     kind=DataKind.OHLCV, instrument=instrument,
                     start=datetime.now(timezone.utc) - timedelta(days=365 * years),
                     interval="1d",
-                    )),
-                    timeout=float(params.get("quote_timeout", 8)),
-                )
-                sources = ["yfinance"]
-                metadata = {"live": True, "data_mode": "live_yfinance"}
-            except Exception as exc:
-                from showme.engine.functions.portfolio.btfw import _template_history
-                df = _template_history(365 * years)
-                sources = ["total_return_model"]
-                metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
-                warnings.append(
-                    "TRA fell back to the labelled template history after the live "
-                    f"price feed failed: {exc}"
-                )
-        else:
-            from showme.engine.functions.portfolio.btfw import _template_history
-            df = _template_history(365 * years)
-            sources = ["total_return_model"]
-        if df.empty:
-            from showme.engine.functions.portfolio.btfw import _template_history
-            df = _template_history(365 * years)
-            sources = ["total_return_model"]
-            metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
-            if live:
-                warnings.append(
-                    "Live price feed returned no usable observations; showing the "
-                    "labelled template history instead."
-                )
+                )),
+                timeout=float(params.get("quote_timeout", 8)),
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never substituted
+            return _tra_unavailable(
+                instrument, years, status="provider_unavailable",
+                reason=f"Live price feed failed: {str(exc) or type(exc).__name__}. No total return is computed.",
+                next_actions=["Retry once the price provider recovers."],
+            )
+        if df is None or df.empty or "close" not in df.columns:
+            return _tra_unavailable(
+                instrument, years, status="provider_unavailable",
+                reason="Live price feed returned no usable observations. No total return is computed.",
+                next_actions=["Retry later or check the symbol."],
+            )
+        sources = ["yfinance"]
+        metadata: dict[str, Any] = {"live": True, "data_mode": "live_yfinance"}
         close = df["close"]
-        divs = df["dividends"] if "dividends" in df.columns else pd.Series(dtype=float)
-        price_ret = float(close.iloc[-1] / close.iloc[0] - 1)
-        # TWR (daily compounded)
-        daily_returns = close.pct_change().dropna().tolist()
+        # A source without a dividend series (e.g. the template) must not read
+        # as "no dividends paid": keep the count/total null and say so.
+        dividends_known = "dividends" in df.columns
+        divs = df["dividends"] if dividends_known else pd.Series(dtype=float)
+        if not dividends_known:
+            warnings.append(
+                "Dividend events are unavailable from this data source; dividend "
+                "fields are null and the IRR excludes dividends."
+            )
+        div_count = int((divs > 0).sum()) if dividends_known else None
+        div_total = float(divs.sum()) if dividends_known else None
+        # TRA#2/#3: the live sources (Yahoo chart and the yfinance ticker history)
+        # deliver closes and dividends already split-adjusted to the latest share
+        # basis, so they are used as delivered. Multiplying them by the split
+        # ratio again read every split as a large gain. A source with split
+        # events is labelled split_adjusted; one without is labelled too, and a
+        # one-day move that matches a split ratio is named in the warnings.
+        splits_known = "splits" in df.columns
+        split_bars: set[Any] = set()
+        if splits_known:
+            split_events = pd.to_numeric(df["splits"], errors="coerce").fillna(0.0) > 0
+            split_bars = set(close.index[split_events.to_numpy()])
+            splits_count: int | None = int(split_events.sum())
+        else:
+            splits_count = None
+        adj_close = close.astype(float).copy()
+        adj_divs = divs.astype(float).copy() if dividends_known else divs
+        # Reconciles TRA#2 and TRA#3: closes are used as delivered (already
+        # split-adjusted by the live sources), except when a reported split bar
+        # carries a one-day jump equal to the reported ratio. Then the earlier
+        # closes are evidently raw, and they (and their dividends) are put on
+        # the post-split basis by that ratio, so the split is neither a gain
+        # nor a phantom loss.
+        raw_split_fixed: list[str] = []
+        if splits_known:
+            ratios = pd.to_numeric(df["splits"], errors="coerce").fillna(0.0)
+            positions = {bar: i for i, bar in enumerate(close.index)}
+            for bar in sorted(split_bars):
+                i = positions.get(bar)
+                ratio = float(ratios.loc[bar]) if bar in ratios.index else 0.0
+                if not i or ratio <= 1.0:
+                    continue
+                prev, cur = float(adj_close.iloc[i - 1]), float(adj_close.iloc[i])
+                if prev > 0 and cur > 0 and abs((prev / cur) / ratio - 1.0) <= 0.02:
+                    adj_close.iloc[:i] = adj_close.iloc[:i] / ratio
+                    if dividends_known:
+                        adj_divs.iloc[:i] = adj_divs.iloc[:i] / ratio
+                    raw_split_fixed.append(bar.strftime("%Y-%m-%d"))
+        for stamp in raw_split_fixed:
+            warnings.append(
+                f"TRA: closes before {stamp} were not split-adjusted by the source; they were put "
+                "on the post-split basis with the reported split ratio."
+            )
+        for bar in _unconfirmed_split_dates(close):
+            stamp = bar.strftime("%Y-%m-%d")
+            if bar in split_bars:
+                continue  # reported split: handled above (adjusted or already adjusted)
+            warnings.append(
+                f"TRA: the one-day price move on {stamp} matches a stock split ratio, but "
+                "the source reported no split event. Verify it before reading total return "
+                "or drawdown."
+            )
+        price_ret = float(adj_close.iloc[-1] / adj_close.iloc[0] - 1)
+        # TRA#2: TWR is a total return: each day compounds (close + dividend) over
+        # the prior close, so dividends are reinvested at the ex-date close. With
+        # no dividend series the figure is price-only and the basis says so.
+        total_basis = (
+            "dividends_reinvested" if dividends_known else "price_only_dividends_unavailable"
+        )
+        daily_returns = _total_daily_returns(adj_close, adj_divs if dividends_known else None)
         twr = _twr(daily_returns)
+        # TRA#3: drawdown on the full daily total-return index, not on sampled points.
+        # wc3-g15: without a split column, a split-sized one-day move is an unadjusted
+        # jump, so the drawdown would report a loss that did not happen. Null, with a reason.
+        # wc3-g15 (TRA#3 review): a live adapter always sends a splits column, zeros when the
+        # source reports no event. A split-sized one-day move is only explained when a split
+        # event is reported on that same bar; otherwise it is an unadjusted jump.
+        reported_split_bars = (
+            df.index[pd.to_numeric(df["splits"], errors="coerce").fillna(0.0).to_numpy() > 0]
+            if splits_known else df.index[:0]
+        )
+        unconfirmed_splits = [
+            bar for bar in _unconfirmed_split_dates(close) if bar not in reported_split_bars
+        ]
+        max_dd = None if unconfirmed_splits else _max_drawdown(daily_returns)
+        if unconfirmed_splits:
+            warnings.append(
+                "TRA: max drawdown is not reported because a split-sized one-day move sits "
+                "inside the window with no reported split event on that bar."
+            )
         # MWR / IRR — buy 1 share at start, dividends as positive cashflows, sell at end
-        cashflows = [(close.index[0].to_pydatetime(), -float(close.iloc[0]))]
-        for d, amt in zip(divs.index, divs.values):
+        cashflows = [(adj_close.index[0].to_pydatetime(), -float(adj_close.iloc[0]))]
+        for d, amt in zip(adj_divs.index, adj_divs.values):
             if amt and amt > 0:
                 cashflows.append((d.to_pydatetime(), float(amt)))
-        cashflows.append((close.index[-1].to_pydatetime(), float(close.iloc[-1])))
-        irr = _irr(cashflows)
+        cashflows.append((adj_close.index[-1].to_pydatetime(), float(adj_close.iloc[-1])))
+        irr = _safe_irr(cashflows)
         # Audit Q3 #6: CAGR exponent must use the ACTUAL elapsed years
         # between first and last observation, not the requested window. When
         # yfinance returns 2y of history because the ticker is younger than
@@ -195,47 +587,90 @@ class TRAFunction(BaseFunction):
             )
         except Exception:
             actual_years = float(years)
+        # CAGR annualizes the same total-return growth factor as TWR (TRA#2).
+        growth_factor = 1.0 + twr
         cagr = (
-            (close.iloc[-1] / close.iloc[0]) ** (1 / actual_years) - 1
-            if actual_years > 0 and close.iloc[0] > 0
+            growth_factor ** (1 / actual_years) - 1
+            if actual_years > 0 and adj_close.iloc[0] > 0 and growth_factor > 0
             else None
         )
+        # Chart points: every Nth bar, always including the last observation so
+        # the growth readout and the "last" date agree.
+        step = max(1, len(close) // 250)
+        sample_positions = sorted(set(range(0, len(close), step)) | {len(close) - 1})
+        base_adj = float(adj_close.iloc[0])
+        cagr_out = float(cagr) if cagr is not None else None
         return FunctionResult(
             code=self.code, instrument=instrument,
             data={
                 "price_return_total": price_ret,
                 "twr_total": twr,
                 "irr_annualized": irr,
-                "cagr": float(cagr) if cagr is not None else None,
-                "dividends_count": int((divs > 0).sum()) if len(divs) else 0,
-                "dividends_total": float(divs.sum()) if len(divs) else 0.0,
+                "cagr": cagr_out,
+                "dividends_count": div_count,
+                "dividends_total": div_total,
                 "n_observations": int(len(close)),
                 "first_date": close.index[0].strftime("%Y-%m-%d"),
                 "last_date":  close.index[-1].strftime("%Y-%m-%d"),
+                "split_adjusted": splits_known,
+                "splits_count": splits_count,
                 "series": [
                     {
                         "date": idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10],
-                        "close": float(value),
-                        "growth_of_1": float(value / close.iloc[0]) if close.iloc[0] else None,
+                        "close": float(close.iloc[pos]),
+                        "split_adjusted_close": float(adj_close.iloc[pos]),
+                        "growth_of_1": float(adj_close.iloc[pos] / base_adj) if base_adj else None,
                     }
-                    for idx, value in close.iloc[:: max(1, len(close) // 250)].items()
+                    for pos in sample_positions
+                    for idx in [close.index[pos]]
                 ],
                 "summary": {
                     "symbol": instrument.symbol,
                     "price_return_total": price_ret,
                     "twr_total": twr,
                     "irr_annualized": irr,
-                    "dividends_total": float(divs.sum()) if len(divs) else 0.0,
+                    "cagr": cagr_out,
+                    "max_drawdown": max_dd,
+                    "total_return_basis": total_basis,
+                    "dividends_total": div_total,
+                    "split_adjusted": splits_known,
                 },
+                "total_return_basis": total_basis,
+                "max_drawdown": max_dd,
+                # TRA#4: card slots read top-level scalars; "_pct" keys hold the
+                # same figures as percent (132.99 means 132.99%).
+                "twr_total_pct": _as_percent(twr),
+                "irr_annualized_pct": _as_percent(irr),
+                "cagr_pct": _as_percent(cagr_out),
+                "price_return_total_pct": _as_percent(price_ret),
+                "max_drawdown_pct": _as_percent(max_dd),
                 "methodology": (
-                    "Compute price return from first and last adjusted closes, compound daily returns for "
-                    "time-weighted return, and estimate XIRR from buy, dividend, and sale cash flows."
+                    "Compute price return from the first and last closes as the source delivers them "
+                    "(dividends excluded). The source split-adjusts closes and dividends, so TRA does not "
+                    "adjust them again. Compound daily total returns "
+                    "(close plus dividend, over the prior close) for "
+                    "time-weighted return, with dividends reinvested at their ex-date close. Estimate "
+                    "IRR from buy, dividend, and sale cash flows. Max drawdown is measured on the full "
+                    "daily total-return index. Without a dividend series, TWR and CAGR are price-only "
+                    "and total_return_basis says so. Without split events, split_adjusted is false and "
+                    "a one-day move that matches a split ratio is named in the warnings."
                 ),
                 "field_dictionary": {
-                    "price_return_total": "Last close divided by first close minus one.",
-                    "twr_total": "Time-weighted return from compounded daily returns.",
+                    "split_adjusted": "True when the source reported split events; its closes and dividends are split-adjusted by the source (TRA does not re-adjust them). False when no split events were available, so the basis is not verified.",
+                    "splits_count": "Number of split events inside the window; null when the source reported none.",
+                    "split_adjusted_close": "Close as delivered by the source (split-adjusted); continuous across splits.",
+                    "price_return_total": "Last close divided by first close minus one, on the source's split-adjusted basis; excludes dividends.",
+                    "twr_total": "Time-weighted total return from daily returns with dividends reinvested; price-only when total_return_basis says so.",
                     "irr_annualized": "Money-weighted annualized return from cash flows.",
-                    "growth_of_1": "Value of one invested dollar over the selected period.",
+                    "cagr": "Annualized growth of the same basis as twr_total over the observed span.",
+                    "max_drawdown": "Most negative peak-to-trough move of the daily total-return index (<= 0).",
+                    "total_return_basis": "dividends_reinvested when a dividend series was available, else price_only_dividends_unavailable.",
+                    "growth_of_1": "Value of one invested dollar over the selected period (split-adjusted price basis, no dividends, sampled points).",
+                    "twr_total_pct": "twr_total as a percent (card value).",
+                    "irr_annualized_pct": "irr_annualized as a percent (card value).",
+                    "cagr_pct": "cagr as a percent (card value).",
+                    "price_return_total_pct": "price_return_total as a percent (card value).",
+                    "max_drawdown_pct": "max_drawdown as a percent (card value).",
                 },
             },
             sources=sources,
@@ -246,14 +681,20 @@ class TRAFunction(BaseFunction):
 
 @FunctionRegistry.register
 class MARSFunction(BaseFunction):
-    """MARS — Multi-Asset Risk (Fama-French 5-factor regression)."""
+    """MARS — Multi-Asset Risk (ETF-proxy factor regression, not Fama-French)."""
     code = "MARS"
     name = "Multi-Asset Risk"
     category = "portfolio"
+    description = (
+        "Factor-risk screen: regresses a multi-asset return series on six ETF "
+        "price-return proxies (SPY, IWM, VLUE, MTUM, QUAL, USMV) and reports "
+        "factor betas, R-squared, volatility and 95% VaR / ETL."
+    )
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        # Build factor returns from live ETF proxies by default. Only
-        # ``reference=true`` serves the local multi-asset template series.
+        # Build factor returns from live ETF proxies by default. ``reference=true``
+        # or an explicit ``live=false`` (the PortfolioAnalytics toggle) serves the
+        # local multi-asset template series.
         proxies = {
             "MKT": "SPY",      # market
             "SMB": "IWM",      # small-cap
@@ -268,27 +709,52 @@ class MARSFunction(BaseFunction):
         # factor proxies by default; ``reference=true`` opts into the
         # labelled template series.
         live = not _truthy(params.get("reference"))
+        # ``live`` is sent by PortfolioAnalytics. The router injects live=true by
+        # default, so only an explicit falsy value switches to the template.
+        if params.get("live") is not None and not _truthy(params.get("live")):
+            live = False
 
         symbols = params.get("symbols") or []
         if isinstance(symbols, str):
             symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+        requested_symbols = [str(s).strip().upper() for s in symbols if str(s).strip()]
         if not symbols:
             symbol = params.get("symbol") or (instrument.symbol if instrument else None)
-            symbols = [symbol] if symbol else ["BTCUSDT", "AAPL", "EURUSD", "GC=F"]
+            symbols = [symbol] if symbol else list(_MARS_DEFAULT_UNIVERSE)
+        # Holdings weights (SYMBOL:WEIGHT). When supplied they define the universe.
+        try:
+            holdings = _parse_mars_weights(params.get("weights"))
+        except ValueError as exc:
+            return _mars_input_error(self.code, instrument, str(exc))
+        notes: list[str] = []
+        if holdings is not None:
+            symbols = list(holdings)
+            if requested_symbols and set(requested_symbols) != set(holdings):
+                notes.append(
+                    "The supplied symbols were ignored: the weights define the universe ("
+                    + ", ".join(holdings) + ")."
+                )
+        universe = list(dict.fromkeys(str(s) for s in symbols))
+        notes.extend(_mars_weighting_notes(holdings, universe))
+        weighting = "user_weights" if holdings is not None else "equal_weight_default"
 
         if not live:
             from showme.engine.functions.portfolio.rpar import _template_returns
             factors = _template_returns(list(proxies.keys()), days)
-            port_ret = _template_returns([str(s) for s in symbols], days)
-            weights = np.ones(port_ret.shape[1]) / max(port_ret.shape[1], 1)
-            port_series = (port_ret * weights).sum(axis=1)
+            port_ret = _template_returns(universe, days)
+            leg_weights = _mars_leg_weights(port_ret.columns, holdings)
+            port_series = (port_ret * leg_weights).sum(axis=1)
             return _mars_result(
                 code=self.code,
                 instrument=instrument,
                 factors=factors,
                 port_series=port_series,
                 sources=["multi_asset_risk_model"],
-                metadata={"live": False, "data_mode": "modeled"},
+                metadata={"live": False, "data_mode": "modeled", "weighting": weighting},
+                factors_are_template=True,
+                portfolio_is_template=True,
+                warnings=notes,
+                leg_weights=_leg_weight_map(port_ret.columns, leg_weights),
             )
 
         async def _ret(sym):
@@ -308,16 +774,26 @@ class MARSFunction(BaseFunction):
             except Exception:
                 return pd.Series(dtype=float)
         import asyncio
+        fetch_budget = _mars_fetch_budget(params)
+
         async def _ret_with_timeout(sym: str) -> pd.Series:
             try:
-                return await asyncio.wait_for(_ret(sym), timeout=float(params.get("quote_timeout", 8)))
+                return await asyncio.wait_for(_ret(sym), timeout=fetch_budget)
             except Exception:
                 return pd.Series(dtype=float)
 
-        rs = await asyncio.gather(*(_ret_with_timeout(s) for s in proxies.values())) if self.deps.yfinance else []
+        # Factor proxies and universe legs are fetched concurrently: running them
+        # back to back could exceed the router's per-function budget.
+        proxy_fetch = (
+            asyncio.gather(*(_ret_with_timeout(s) for s in proxies.values()))
+            if self.deps.yfinance
+            else asyncio.sleep(0, result=[])
+        )
+        symbol_fetch = asyncio.gather(*(_ret_with_timeout(str(s)) for s in symbols))
+        rs, rets = await asyncio.gather(proxy_fetch, symbol_fetch)
         # Audit Q3 #7: pairwise covariance for factor regression universe.
         factors = align_return_series(zip(proxies.keys(), rs), policy="pairwise")
-        warnings: list[str] = []
+        warnings: list[str] = list(notes)
         # R2 M-6: ``align_return_series(policy="pairwise")`` silently drops
         # empty proxy series, so when only SOME of the six ETF factors
         # answer, the regression used to run on the survivors while wearing
@@ -327,9 +803,12 @@ class MARSFunction(BaseFunction):
         loaded_proxies = [str(c) for c in factors.columns]
         missing_proxies = sorted(set(proxies) - set(loaded_proxies))
         metadata: dict[str, Any] = {"live": True, "data_mode": "live_yfinance"}
+        factors_template = False
+        portfolio_template = False
         if factors.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
             factors = _template_returns(list(proxies.keys()), days)
+            factors_template = True
             metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
             warnings.append(
                 "Live ETF factor proxies were unavailable; factor loadings are "
@@ -345,37 +824,189 @@ class MARSFunction(BaseFunction):
                 + ", ".join(loaded_proxies) + ") only."
             )
         metadata["factor_proxies_loaded"] = loaded_proxies
-        # Build return series from explicit symbols or the saved ShowMe portfolio.
-        if not symbols:
-            portfolio = PortfolioState()
-            symbols = [p.instrument.symbol for p in portfolio.positions
-                        if p.instrument.asset_class.value not in ("CRYPTO", "MACRO")]
-        if not symbols:
-            symbols = ["SPY", "TLT", "GLD"]
-        rets = await asyncio.gather(*(_ret_with_timeout(str(s)) for s in symbols))
         port_ret = align_return_series(
             zip((str(s) for s in symbols), rets), policy="pairwise"
         )
+        requested_legs = list(dict.fromkeys(str(s) for s in symbols))
         if port_ret.empty:
             from showme.engine.functions.portfolio.rpar import _template_returns
-            port_ret = _template_returns([str(s) for s in symbols], days)
-            if "fallback" not in metadata:
-                metadata = {"live": False, "fallback": True, "data_mode": "modeled"}
+            port_ret = _template_returns(requested_legs, days)
+            portfolio_template = True
+            metadata.update({"live": False, "fallback": True, "data_mode": "modeled"})
+            metadata["legs_loaded"] = []
+            metadata["legs_missing"] = requested_legs
             warnings.append(
                 "Live symbol return series were unavailable; portfolio legs use "
                 "the labelled template series."
             )
-        weights = np.ones(port_ret.shape[1]) / max(port_ret.shape[1], 1)
-        port_series = (port_ret * weights).sum(axis=1)
+        else:
+            # The pairwise join drops any leg with no series. Disclose the drop and
+            # downgrade the label, as for a partial factor-proxy shortfall.
+            loaded_legs = [str(c) for c in port_ret.columns]
+            missing_legs = [s for s in requested_legs if s not in loaded_legs]
+            metadata["legs_loaded"] = loaded_legs
+            metadata["legs_missing"] = missing_legs
+            if missing_legs:
+                metadata.update({"live": False, "fallback": True, "data_mode": "modeled"})
+                warnings.append(
+                    "Live return series unavailable for: " + ", ".join(missing_legs)
+                    + f"; the portfolio was computed over the {len(loaded_legs)}/"
+                    + f"{len(requested_legs)} requested legs that loaded ("
+                    + ", ".join(loaded_legs) + ") only."
+                )
+        leg_weights = _mars_leg_weights(port_ret.columns, holdings)
+        port_series = (port_ret * leg_weights).sum(axis=1)
+        metadata["weighting"] = weighting
+        # MARS#3-RQ: every live series that feeds the result is attributed to
+        # yfinance, and a result that mixes live and template or dropped inputs
+        # is labelled partial_live (not modeled), so its label matches its basis.
+        live_factors = (not factors_template) and bool(loaded_proxies)
+        live_legs = (not portfolio_template) and len(port_ret.columns) > 0
+        any_live = live_factors or live_legs
+        any_template = factors_template or portfolio_template
+        if metadata.get("live") is True:
+            pass  # fully live: data_mode stays live_yfinance
+        elif any_live:
+            metadata.update({"live": False, "fallback": True, "data_mode": "partial_live"})
+        else:
+            metadata.update({"live": False, "data_mode": "modeled"})
+        series_sources: list[str] = []
+        if any_live:
+            series_sources.append("yfinance")
+        if any_template or not any_live:
+            series_sources.append("multi_asset_risk_model")
         return _mars_result(
             code=self.code,
             instrument=instrument,
             factors=factors,
             port_series=port_series,
-            sources=["yfinance"] if metadata.get("live") else ["multi_asset_risk_model"],
+            sources=series_sources,
             warnings=warnings,
             metadata=metadata,
+            factors_are_template=factors_template,
+            portfolio_is_template=portfolio_template,
+            leg_weights=_leg_weight_map(port_ret.columns, leg_weights),
         )
+
+
+_MARS_FETCH_BUDGET_SECONDS = 8.0
+# Default universe when neither symbols nor weights are supplied. It matches the
+# pane default and only Yahoo-served tickers, so the default is not a silent
+# substitute for real holdings (the equal-weight default is disclosed).
+_MARS_DEFAULT_UNIVERSE = ("SPY", "TLT", "GLD")
+
+
+def _parse_mars_weights(raw: Any) -> dict[str, float] | None:
+    """Holdings weights as ``SPY:0.6,TLT:0.4``, a mapping, or None when absent.
+
+    Negative weights are short positions. Raises ValueError on malformed input,
+    duplicate symbols or non-finite numbers, so the caller can return an explicit
+    input_error instead of silently re-weighting the book.
+    """
+    if raw is None or raw == "" or raw == [] or raw == {}:
+        return None
+    if isinstance(raw, str):
+        pairs: list[tuple[Any, Any]] = []
+        for item in (part.strip() for part in raw.split(",")):
+            if not item:
+                continue
+            if ":" not in item:
+                raise ValueError(f"weight entry {item!r} must be SYMBOL:WEIGHT, e.g. SPY:0.6")
+            symbol, value = item.rsplit(":", 1)
+            pairs.append((symbol, value))
+    elif isinstance(raw, dict):
+        pairs = list(raw.items())
+    else:
+        raise ValueError("weights must be a SYMBOL:WEIGHT list or a mapping of symbol to weight")
+    out: dict[str, float] = {}
+    for symbol_raw, value in pairs:
+        symbol = str(symbol_raw).strip().upper()
+        if not symbol:
+            raise ValueError("a weight entry has an empty symbol")
+        if symbol in out:
+            raise ValueError(f"duplicate weight for {symbol}")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"weight for {symbol} is not a number: {value!r}") from None
+        if not np.isfinite(number):
+            raise ValueError(f"weight for {symbol} must be finite, got {value!r}")
+        out[symbol] = number
+    if not out:
+        return None
+    return out
+
+
+def _mars_leg_weights(columns: Any, holdings: dict[str, float] | None) -> np.ndarray:
+    """Weight vector aligned to the return columns (equal weight when no holdings)."""
+    names = [str(c) for c in columns]
+    if holdings is None:
+        return np.ones(len(names)) / max(len(names), 1)
+    return np.array([float(holdings.get(name, 0.0)) for name in names], dtype=float)
+
+
+def _leg_weight_map(columns: Any, weights: np.ndarray) -> dict[str, float]:
+    return {str(c): float(w) for c, w in zip(columns, weights)}
+
+
+def _mars_weighting_notes(holdings: dict[str, float] | None, universe: list[str]) -> list[str]:
+    if holdings is None:
+        return [
+            "No holdings weights were supplied; the portfolio is an equal-weight basket of "
+            + ", ".join(universe)
+            + ", not your actual positions. Pass weights such as SPY:0.6,TLT:0.4 to analyse holdings."
+        ]
+    total = sum(holdings.values())
+    if abs(total - 1.0) > 1e-6:
+        return [
+            f"Weights sum to {total:.4f}; the portfolio return is the weighted sum of the legs, "
+            "so any remainder earns no return."
+        ]
+    return []
+
+
+def _mars_input_error(code: str, instrument: Instrument | None, reason: str) -> FunctionResult:
+    return FunctionResult(
+        code=code,
+        instrument=instrument,
+        data={
+            "status": "input_error",
+            "reason": reason,
+            "alpha_daily": None,
+            "alpha_annualized": None,
+            "factor_loadings": {},
+            "rows": [],
+            "r_squared": None,
+            "regression_state": "not_estimated_input",
+            "factor_vif": {},
+            "max_vif": None,
+            "collinearity_state": "not_estimated",
+            "annualized_volatility": None,
+            "var_95_daily": None,
+            "var_95_daily_loss": None,
+            "etl_95_daily": None,
+            "etl_95_daily_loss": None,
+            "samples": None,
+            "leg_weights": {},
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"live": False},
+    )
+
+
+def _mars_fetch_budget(params: dict[str, Any]) -> float:
+    """Per-series live fetch budget for MARS.
+
+    The router merges a generic ``quote_timeout=3`` into every routed call,
+    which is too tight for six ETF proxies plus the universe. MARS therefore
+    floors its budget at 8 s; a larger explicit ``quote_timeout`` still wins.
+    """
+    try:
+        requested = float(params.get("quote_timeout") or 0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    return max(_MARS_FETCH_BUDGET_SECONDS, requested)
 
 
 def _truthy(value: Any) -> bool:
@@ -395,6 +1026,9 @@ def _mars_result(
     sources: list[str],
     warnings: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    factors_are_template: bool = False,
+    portfolio_is_template: bool = False,
+    leg_weights: dict[str, float] | None = None,
 ) -> FunctionResult:
     factors = _tz_naive_frame(factors)
     port_series = _tz_naive_series(port_series)
@@ -418,16 +1052,56 @@ def _mars_result(
         metadata["fallback"] = True
         metadata["data_mode"] = "modeled"
         sources = ["multi_asset_risk_model"]
+        factors_are_template = True
+        portfolio_is_template = True
+    # A regression is only a statistic when both sides are real series. Against
+    # the labelled template the fit is exact by construction (R2 = 1, alpha = 0),
+    # so R2, alpha, loadings and the sample count are withheld and disclosed.
+    regression_valid = not (factors_are_template or portfolio_is_template)
     port_series = joined["portfolio"]
-    y = joined["portfolio"].values
-    X = joined.drop(columns="portfolio").values
-    Xc = np.column_stack([np.ones(X.shape[0]), X])
-    beta, *_ = np.linalg.lstsq(Xc, y, rcond=None)
-    alpha = float(beta[0])
-    loadings = {f: float(b) for f, b in zip(joined.columns[1:], beta[1:])}
-    resid = y - Xc @ beta
-    ss_tot = float(((y - y.mean()) ** 2).sum())
-    r2 = float(1 - (resid ** 2).sum() / ss_tot) if ss_tot else 0.0
+    alpha: float | None = None
+    loadings: dict[str, float] = {}
+    r2: float | None = None
+    samples: int | None = None
+    vifs: dict[str, float | None] = {}
+    max_vif: float | None = None
+    collinearity_state = "not_estimated"
+    if regression_valid:
+        y = joined["portfolio"].values
+        X = joined.drop(columns="portfolio").values
+        Xc = np.column_stack([np.ones(X.shape[0]), X])
+        beta, *_ = np.linalg.lstsq(Xc, y, rcond=None)
+        alpha = float(beta[0])
+        loadings = {f: float(b) for f, b in zip(joined.columns[1:], beta[1:])}
+        resid = y - Xc @ beta
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        r2 = float(1 - (resid ** 2).sum() / ss_tot) if ss_tot else 0.0
+        samples = int(len(joined))
+        vifs = _factor_vifs(joined.drop(columns="portfolio"))
+        finite_vifs = [v for v in vifs.values() if v is not None]
+        max_vif = max(finite_vifs) if finite_vifs else None
+        if any(v is None for v in vifs.values()):
+            collinearity_state = "perfect"
+        elif any(v > _VIF_COLLINEAR_THRESHOLD for v in finite_vifs):
+            collinearity_state = "high"
+        else:
+            collinearity_state = "ok"
+        if collinearity_state != "ok":
+            flagged = [f for f, v in vifs.items() if v is None or v > _VIF_COLLINEAR_THRESHOLD]
+            if collinearity_state == "perfect":
+                detail = "are perfectly collinear with the other proxies"
+            else:
+                detail = f"are collinear (max VIF {max_vif:.1f}, threshold {_VIF_COLLINEAR_THRESHOLD:g})"
+            warnings.append(
+                "Factor proxies " + ", ".join(flagged) + " " + detail + ". The ETF proxies "
+                "are long-only and largely move with the market, so individual betas are "
+                "not separable exposures; read R-squared and alpha, not single loadings."
+            )
+    else:
+        warnings.append(
+            "Regression statistics (R-squared, alpha, factor loadings) are not "
+            "estimated because the regression input is the labelled template series."
+        )
     # Audit Q3 #15 — guard annualized volatility against <30-sample noise.
     if len(port_series) < 30:
         ann_vol = None
@@ -451,7 +1125,7 @@ def _mars_result(
         instrument=instrument,
         data={
             "alpha_daily": alpha,
-            "alpha_annualized": alpha * 252,
+            "alpha_annualized": alpha * 252 if alpha is not None else None,
             "factor_loadings": loadings,
             "rows": [
                 {
@@ -463,6 +1137,14 @@ def _mars_result(
                 for factor, loading in loadings.items()
             ],
             "r_squared": r2,
+            "regression_state": "estimated" if regression_valid else "not_estimated_template",
+            "factor_vif": vifs,
+            "max_vif": max_vif,
+            "collinearity_state": collinearity_state,
+            # Weights actually applied to each return leg (equal weight when no holdings).
+            "leg_weights": dict(leg_weights or {}),
+            # Basis of the volatility and VaR figures: the portfolio series actually used.
+            "risk_basis": "template_series" if portfolio_is_template else "live_series",
             "annualized_volatility": ann_vol,
             "var_95_daily": var_95,
             "etl_95_daily": etl_95,
@@ -472,13 +1154,13 @@ def _mars_result(
             "annualized_volatility_data_state": (
                 "ok" if ann_vol is not None else "insufficient_samples"
             ),
-            "samples": int(len(joined)),
+            "samples": samples,
             "summary": {
                 "r_squared": r2,
                 "annualized_volatility": ann_vol,
                 "var_95_daily": var_95,
                 "var_95_daily_loss": port_var_95,
-                "samples": int(len(joined)),
+                "samples": samples,
             },
             "methodology": (
                 "Regress the selected multi-asset portfolio return series on ETF factor proxies. "
@@ -499,14 +1181,47 @@ def _mars_result(
 
 
 def _factor_meaning(factor: str) -> str:
+    # Each label names the ETF whose price return is the regressor. The live
+    # series come from the dividend-unadjusted chart close, so these are price
+    # returns, not total returns. These are long-only proxies, so a beta is
+    # sensitivity to that ETF, not a long-short size, value or momentum premium.
     return {
-        "MKT": "Broad equity market beta.",
-        "SMB": "Small-cap versus large-cap tilt.",
-        "HML": "Value versus growth tilt.",
-        "MOM": "Momentum factor sensitivity.",
-        "QMJ": "Quality factor sensitivity.",
-        "BAB": "Low-volatility / betting-against-beta proxy.",
+        "MKT": "Beta to SPY price return (broad US equity proxy).",
+        "SMB": "Beta to IWM price return (small-cap ETF proxy, not a long-short size premium).",
+        "HML": "Beta to VLUE price return (value ETF proxy, not a long-short value premium).",
+        "MOM": "Beta to MTUM price return (momentum ETF proxy).",
+        "QMJ": "Beta to QUAL price return (quality ETF proxy).",
+        "BAB": "Beta to USMV price return (low-volatility ETF proxy).",
     }.get(factor, "Portfolio factor sensitivity.")
+
+
+_VIF_COLLINEAR_THRESHOLD = 10.0
+
+
+def _factor_vifs(factors: pd.DataFrame) -> dict[str, float | None]:
+    """Variance inflation factor per proxy: 1 / (1 - R^2) of that proxy on the others.
+
+    None means the proxy is an exact linear combination of the others (infinite
+    VIF), which JSON cannot carry, so it is reported as None and flagged upstream.
+    """
+    values = factors.values.astype(float)
+    out: dict[str, float | None] = {}
+    for j, name in enumerate(factors.columns):
+        y = values[:, j]
+        others = np.delete(values, j, axis=1)
+        if others.shape[1] == 0:
+            out[str(name)] = 1.0
+            continue
+        Xo = np.column_stack([np.ones(others.shape[0]), others])
+        beta, *_ = np.linalg.lstsq(Xo, y, rcond=None)
+        resid = y - Xo @ beta
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        if ss_tot <= 0:
+            out[str(name)] = None
+            continue
+        slack = float((resid ** 2).sum()) / ss_tot  # 1 - R^2 of proxy on the others
+        out[str(name)] = None if slack <= 1e-9 else float(1.0 / slack)
+    return out
 
 
 def _tz_naive_series(series: pd.Series) -> pd.Series:

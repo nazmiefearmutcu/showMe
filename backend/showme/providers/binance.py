@@ -48,6 +48,8 @@ class BinanceAdapter(ProviderAdapter):
         symbol: str,
         interval: str,
         limit: int = 500,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
     ) -> list[list[Any]]:
         """Fetch historical OHLCV candles.
 
@@ -59,6 +61,8 @@ class BinanceAdapter(ProviderAdapter):
                 ``"2h"``, ``"4h"``, ``"6h"``, ``"8h"``, ``"12h"``, ``"1d"``,
                 ``"3d"``, ``"1w"``, ``"1M"``).
             limit: Max number of candles (Binance ceiling is 1000).
+            start_ms: Optional inclusive window start (epoch milliseconds).
+            end_ms: Optional inclusive window end (epoch milliseconds).
 
         Returns:
             Raw Binance kline matrix — each row is a 12-element list:
@@ -70,6 +74,10 @@ class BinanceAdapter(ProviderAdapter):
             AdapterError: on HTTP failure / non-JSON / non-list response.
         """
         params = {"symbol": symbol, "interval": interval, "limit": int(limit)}
+        if start_ms is not None:
+            params["startTime"] = int(start_ms)
+        if end_ms is not None:
+            params["endTime"] = int(end_ms)
         url = f"{_REST_BASE}/api/v3/klines"
         client = await get_client()
         t0 = time.perf_counter()
@@ -79,7 +87,7 @@ class BinanceAdapter(ProviderAdapter):
             payload = resp.json()
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"binance klines failed: {exc}") from exc
+            raise AdapterError(f"binance klines failed: {str(exc) or type(exc).__name__}") from exc
         if not isinstance(payload, list):
             err = AdapterError(f"binance klines returned non-list: {type(payload).__name__}")
             self._record_failure(err)
@@ -103,7 +111,7 @@ class BinanceAdapter(ProviderAdapter):
             payload = resp.json()
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"binance ticker_24h failed: {exc}") from exc
+            raise AdapterError(f"binance ticker_24h failed: {str(exc) or type(exc).__name__}") from exc
         if not isinstance(payload, dict):
             err = AdapterError(
                 f"binance ticker_24h returned non-dict: {type(payload).__name__}"
@@ -127,7 +135,7 @@ class BinanceAdapter(ProviderAdapter):
             payload = resp.json()
         except Exception as exc:
             self._record_failure(exc)
-            raise AdapterError(f"binance exchange_info failed: {exc}") from exc
+            raise AdapterError(f"binance exchange_info failed: {str(exc) or type(exc).__name__}") from exc
         if not isinstance(payload, dict):
             err = AdapterError(
                 f"binance exchange_info returned non-dict: {type(payload).__name__}"

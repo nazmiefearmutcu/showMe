@@ -35,7 +35,7 @@ from ..spec import (
 def trqa() -> FunctionManifest:
     return FunctionManifest(
         code="TRQA",
-        name="Transcript Q&A",
+        name="Transcript & Press Release Q&A",
         category=Category.NEWS_INTEL,
         intent=(
             "Ask natural-language questions against a transcript (text-pasted, stored, or "

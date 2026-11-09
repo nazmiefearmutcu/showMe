@@ -32,7 +32,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         logger.error(f"Config file not found: {path}")
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         config = yaml.safe_load(f) or {}
 
     errors = validate_config(config)
@@ -73,6 +73,6 @@ class ConfigWatcher:
                 self._last_mtime = current_mtime
                 return True, self.config
         except Exception as e:
-            logger.error(f"Error checking config: {e}")
+            logger.error(f"Error checking config: {str(e) or type(e).__name__}")
 
         return False, self.config

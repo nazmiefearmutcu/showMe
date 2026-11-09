@@ -14,6 +14,8 @@ Fully offline: no test performs real network I/O.
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 import sys
 from datetime import UTC, datetime, timedelta
@@ -163,50 +165,6 @@ def test_provider_carried_tags_are_union_not_overwritten():
     assert "Bitcoin" in (row["details"].get("provider_tags") or [])
 
 
-def test_symbol_view_matches_on_asset_tags():
-    gdelt_articles = [{
-        "title": "Bitcoin ETF inflows hit record",
-        "url": "https://example.test/etf1",
-        "published_at": _iso_in(timedelta(hours=-3)),
-    }]
-
-    class _FakeGDELT:
-        calls = 0
-
-        async def fetch(self, request):
-            type(self).calls += 1
-            return list(gdelt_articles)
-
-    class _FakeFFClient:
-        async def get(self, url, timeout=None):
-            class _Resp:
-                def raise_for_status(self):
-                    return None
-
-                def json(self):
-                    return []
-
-            return _Resp()
-
-    meet_mod._WORLD_CACHE = None
-    meet_mod._gdelt_429_until = 0.0
-    meet_mod._SYMBOL_NEWS_CACHE = None
-    try:
-        fn = meet_mod.MEETFunction(deps=FunctionDeps(gdelt=_FakeGDELT()))
-        fn._http_client = _FakeFFClient()
-        result = _run(fn.execute(symbols="BTC", limit=100))
-    finally:
-        meet_mod._WORLD_CACHE = None
-        meet_mod._gdelt_429_until = 0.0
-        meet_mod._SYMBOL_NEWS_CACHE = None
-    headline_rows = [
-        r for r in result.data["symbol_rows"]
-        if r.get("symbol_relevance") != "market_wide"
-    ]
-    assert len(headline_rows) == 1
-    assert "BTC" in (headline_rows[0].get("symbol_matches") or [])
-
-
 # ---------------------------------------------------------------------------
 # Hybrid hook: passive without onnxruntime
 # ---------------------------------------------------------------------------
@@ -222,3 +180,16 @@ def test_semantic_hook_passive_without_model():
     stamped = st.apply_tags(row, {"tags": [], "tag_status": "provisional"})
     assert stamped["details"]["asset_tags"] == ["BTC"]
     assert stamped["details"]["tag_status"] == "provisional"
+
+
+@pytest.fixture(autouse=True)
+def _awareness_offline(monkeypatch):
+    """Tests never hit the live awareness-markets service; injected fakes still win."""
+    from showme.engine.data_sources.awareness import AwarenessUnavailable
+    from showme.engine.functions.calendar import _common as _aw_common
+
+    class _Offline:
+        async def get(self, path, params=None):
+            raise AwarenessUnavailable("awareness disabled in tests")
+
+    monkeypatch.setattr(_aw_common, "get_awareness_client", lambda: _Offline())

@@ -206,8 +206,8 @@ def meet() -> FunctionManifest:
             "provider_mode": DataMode.LIVE_OFFICIAL.value,
         },
         provider_chain=ProviderChain(
-            primary="internal",
-            fallbacks=["tradingeconomics", "finnhub", "forex_factory", "financecalendar", "gdelt", "rss"],
+            primary="awareness",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.LIVE_OFFICIAL,
                 DataMode.CACHED_SNAPSHOT,
@@ -249,29 +249,19 @@ def meet() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "MEET composes a WORLD-EVENTS TRACKER from live providers. Scheduled"
-            " rows prefer configured TradingEconomics, then configured Finnhub,"
-            " then the keyless ForexFactory weekly calendar. FinanceCalendar.com"
-            " supplements future releases up to 92 days with visible attribution;"
-            " overlapping primary rows win. Each timed calendar row is listed with its"
-            " offset-aware timestamp parsed to UTC, impact bucket, and affected FX"
-            " pairs derived country → currency → majors (e.g. TR → USDTRY/EURTRY,"
-            " US → DXY/EURUSD/USDJPY). World rows come from the keyless GDELT"
-            " headline stream (English-language wire; RSS fallback), tagged with"
-            " a country gazetteer; a"
-            " headline may concern several countries and carries the exact matched"
-            " terms in details.matched_terms so every attribution is auditable."
-            " The window lists upcoming events ascending (from now until at least"
-            " the nearest high-impact event) plus past events descending;"
-            " seconds_to_event and age_minutes are computed server-side for UI"
-            " parity while the live countdown ticks client-side. Central-bank"
-            " decisions (Fed/TCMB/ECB/…) and wars are spot-flagged and exposed in"
-            " alerts[] with default lead times the UI can override. When every"
-            " provider fails the payload is a provider_unavailable envelope with"
-            " EMPTY rows and a reason — no events are invented. mode selects"
-            " calendar-only (the world wire is never fetched), wire-only or both"
-            " and wins over kind; tags filters titles/summaries/matched assets"
-            " and pairs; data_filter narrows calendar rows to prints carrying"
+            "MEET composes a WORLD-EVENTS TRACKER from the Awareness data service. Calendar rows come from"
+            " Awareness /calendar/economic (merged Nasdaq, ForexFactory, BEA and central-bank schedules); each timed"
+            " row carries its offset-aware UTC timestamp, impact bucket, and FX pairs derived country → currency →"
+            " majors (e.g. TR → USDTRY/EURTRY, US → DXY/EURUSD/USDJPY). Followed countries add Awareness holidays"
+            " from /calendar/holidays. World rows come from Awareness news (quality-gated, topic-tagged) for the"
+            " geopolitics, sanctions and trade-tariff topics, or the followed countries; impact follows Awareness"
+            " topics and importance. Every row keeps its source and matched terms so each attribution is auditable."
+            " The window lists upcoming events ascending plus past events descending; seconds_to_event and"
+            " age_minutes are computed server-side. Central-bank decisions and wars are spot-flagged and exposed in"
+            " alerts[]. An empty forward economic calendar is status empty, not ok. When Awareness is down the"
+            " payload is a provider_unavailable envelope with EMPTY rows and the client reason; no events are"
+            " invented. mode selects calendar-only, wire-only or both and wins over kind; tags filters"
+            " titles/summaries/matched assets and pairs; data_filter narrows calendar rows to prints carrying"
             " forecast/actual values. Wire-only requests skip calendar fetches."
             " Untimed calendar rows are counted and omitted rather than placed"
             " at an invented time; title-inferred country tags are marked."

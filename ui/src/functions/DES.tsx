@@ -40,6 +40,7 @@ import {
   formatPercent,
   formatCompactNumber,
 } from "@/lib/format";
+import { safeHref } from "@/lib/safe-href";
 
 interface DESData {
   status?: string;
@@ -73,6 +74,8 @@ interface DESData {
   currentPrice?: number;
   regularMarketPrice?: number;
   previousClose?: number;
+  /** Crypto only: last price minus the 24h-ago price (USD). previousClose is null for crypto. */
+  change_24h?: number | null;
   regularMarketChangePercent?: number;
   fiftyTwoWeekHigh?: number;
   fiftyTwoWeekLow?: number;
@@ -390,7 +393,14 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
     (last != null && typeof prev === "number" && Number.isFinite(prev) && prev > 0
       ? ((last - prev) / prev) * 100
       : null);
-  const change = last != null && prev != null ? last - prev : null;
+  // ASOF-9: crypto has no previousClose; its absolute change is the declared 24h rolling
+  // change (change_24h), never a derived prior close.
+  const change24h =
+    typeof profile?.change_24h === "number" && Number.isFinite(profile.change_24h)
+      ? profile.change_24h
+      : null;
+  const change =
+    last != null && prev != null ? last - prev : change24h;
   // S12 alignment (HP/GP already migrated): the prior `hasLive` flag was
   // derived from `payloadStatus === "ok"`, which is the same misleading
   // "real-time session" wording HP shipped before S12. Replace with the
@@ -432,7 +442,10 @@ export function DESPane({ code, symbol }: FunctionPaneProps) {
     <DESView data={profile} symbol={effectiveSymbol} />
   );
 
-  const provider = data?.sources?.[0] ?? "pending";
+  // No answering provider is a state of its own, not a request still in flight.
+  const provider =
+    data?.sources?.[0] ??
+    (payloadStatus === "provider_unavailable" ? "unavailable" : "pending");
   const cached = !!(data as { cached?: boolean } | undefined)?.cached;
 
   return (
@@ -770,11 +783,11 @@ function DESView({ data, symbol }: { data?: DESData; symbol: string }) {
               </CardHeader>
               <CardBody>
                 {summary ? <BusinessSummary summary={summary} /> : null}
-                {data.website && (
+                {safeHref(data.website) && (
                   <div style={websiteRowStyle}>
                     <span style={websiteLabelStyle}>Website</span>
                     <a
-                      href={data.website}
+                      href={safeHref(data.website)}
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-label="Company website (opens in new tab)"
@@ -785,11 +798,11 @@ function DESView({ data, symbol }: { data?: DESData; symbol: string }) {
                     </a>
                   </div>
                 )}
-                {crypto && data.github_repo && (
+                {crypto && safeHref(data.github_repo) && (
                   <div style={websiteRowStyle}>
                     <span style={websiteLabelStyle}>Repo</span>
                     <a
-                      href={data.github_repo}
+                      href={safeHref(data.github_repo)}
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-label="GitHub repository (opens in new tab)"

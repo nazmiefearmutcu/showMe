@@ -2,8 +2,9 @@
 
 FINRA ATS Transparency is the canonical source for weekly off-exchange
 share volume by venue; the handler aggregates per-venue prints into a
-single weekly ranking. yfinance volumes provide the lit-market baseline
-for the dark-pool % calculation when FINRA is unavailable.
+single weekly ranking. yfinance weekly total volume is only the
+denominator for dark-pool %; it is never a stand-in for FINRA. When FINRA
+is unavailable the handler returns provider_unavailable with empty venues.
 """
 from __future__ import annotations
 
@@ -68,17 +69,15 @@ def dark() -> FunctionManifest:
                 description="Preferred provider mode; chain may downgrade and report it.",
                 options=[
                     DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
                 ],
             ),
         ],
         defaults={"weeks": 8, "provider_mode": DataMode.DELAYED_REFERENCE.value},
         provider_chain=ProviderChain(
-            primary="yfinance",
-            fallbacks=["finra", "cached_snapshot"],
+            primary="finra",
+            fallbacks=[],
             acceptable_modes=[
                 DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
                 DataMode.PROVIDER_UNAVAILABLE,
             ],
         ),
@@ -112,12 +111,15 @@ def dark() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "DARK pulls FINRA ATS Transparency weekly aggregates (volume + trade count per venue) "
-            "and joins them against yfinance total weekly volume. Dark-pool % = ATS volume / lit + "
-            "ATS volume per week. The handler ranks venues by ATS volume within the most recent "
-            "week so the operator can see who is providing the off-exchange liquidity. When FINRA "
-            "is unreachable the chain falls back to a model that estimates dark-pool % from "
-            "off-exchange yfinance volume buckets, and warns about the fallback."
+            "DARK reads FINRA OTC Transparency weekly ATS aggregates (share volume and trade "
+            "count per reporting venue; ATS_W_SMBL rows with no venue identity are labelled "
+            "ALL_ATS). Dark-pool % = ATS weekly volume / total weekly volume for the same week, "
+            "where total weekly volume comes from yfinance weekly bars (secondary source). "
+            "Venues are ranked by ATS volume within the most recent week. A ratio above 100% is "
+            "withheld rather than capped, and a week with no yfinance total is left null with a "
+            "warning. When FINRA returns no rows, is unreachable, or its latest week is stale, the "
+            "status is provider_unavailable with empty venue rows and next_actions. No fallback "
+            "model or synthetic rows exist."
         ),
         field_dict={
             "symbol": FieldDef(description="Equity ticker.", source="instrument"),

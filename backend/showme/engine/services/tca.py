@@ -32,7 +32,11 @@ def _safe(d: dict, key: str, default=None):
     return v if v is not None else default
 
 
-def _avg_fill(metadata: dict[str, Any], fallback: float | None) -> tuple[float | None, float]:
+def _avg_fill(metadata: dict[str, Any]) -> tuple[float | None, float]:
+    """Return (avg_fill_px, executed_qty), or (None, 0.0) when no execution is recorded.
+
+    The order's limit/book price is never used as a fill price.
+    """
     fills = metadata.get("fills") or []
     if fills:
         notional = 0.0
@@ -47,9 +51,14 @@ def _avg_fill(metadata: dict[str, Any], fallback: float | None) -> tuple[float |
             qty += q
         if qty > 0:
             return notional / qty, qty
-    av = metadata.get("avg_fill") or fallback
-    return (float(av) if av is not None else None,
-            float(metadata.get("filled_qty") or 0))
+    try:
+        filled_qty = float(metadata.get("filled_qty") or 0)
+    except (TypeError, ValueError):
+        filled_qty = 0.0
+    av = metadata.get("avg_fill")
+    if av is None or filled_qty <= 0:
+        return None, 0.0
+    return float(av), filled_qty
 
 
 def _bps(numerator: float, base: float) -> float:
@@ -69,9 +78,9 @@ def analyze_order(order: dict[str, Any]) -> dict[str, Any]:
     side = (order.get("side") or "BUY").upper()
     sign = +1 if side in ("BUY", "LONG") else -1
     qty = float(order.get("quantity") or 0)
-    px_book = float(order.get("price") or 0) or None
-    arrival = float(_safe(md, "arrival_price", px_book) or 0) or None
-    avg_fill, filled_qty = _avg_fill(md, fallback=px_book)
+    # The book/limit price is intentionally not a fallback for arrival or fill.
+    arrival = float(_safe(md, "arrival_price") or 0) or None
+    avg_fill, filled_qty = _avg_fill(md)
     vwap = _safe(md, "vwap")
     close = _safe(md, "close")
     benchmark = (_safe(md, "benchmark", "arrival") or "arrival").lower()

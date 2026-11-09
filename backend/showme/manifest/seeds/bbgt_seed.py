@@ -144,15 +144,19 @@ def bbgt() -> FunctionManifest:
                 CardSlot(key="order_type", label="Type", kind="badge"),
                 CardSlot(key="tif", label="TIF", kind="badge"),
                 CardSlot(key="price", label="Price", kind="kpi", unit="quote"),
+                CardSlot(key="notional", label="Notional", kind="kpi", unit="quote"),
                 CardSlot(key="as_of", label="As of", kind="timestamp"),
             ],
         ),
         methodology=(
             "BBGT shares the EMSX engine but presents as a generalist multi-asset desk: any symbol "
             "from any asset class routes through the same broker-selection table (crypto → binance, "
-            "equity/ETF → alpaca, FX → oanda, bond/commodity/derivative → ibkr). Preview path mirrors "
-            "the request without any broker call; live submit fires only when paper_mode=False AND "
-            "submit=True AND a broker exists for the asset class. The ticket never auto-fires on mount."
+            "equity/ETF → alpaca, FX → oanda, bond/commodity/derivative → ibkr). Preview path makes no "
+            "broker call; a MARKET preview may read an indicative last quote for the notional (labelled "
+            "indicative, null with a reason when no quote is available). Side, type and TIF are validated "
+            "(input_error) and a LIMIT ticket needs a positive price (input_required). Live submit fires only "
+            "when paper_mode=False AND submit=True AND a broker exists for the asset class. The ticket never "
+            "auto-fires on mount."
         ),
         formula_dict={
             "Notional": Formula(
@@ -161,7 +165,10 @@ def bbgt() -> FunctionManifest:
             ),
         },
         field_dict={
-            "status": FieldDef(description="preview / filled / input_required / provider_unavailable.", source="bbgt"),
+            "status": FieldDef(description="preview / submitted / input_error / input_required / provider_unavailable.", source="bbgt"),
+            "notional": FieldDef(unit="quote currency", description="quantity x limit price (notional_basis=limit_price) or x indicative last quote (notional_basis=indicative_last_quote, notional_indicative=true); null with notional_reason when no reference price exists.", source="bbgt"),
+            "notional_basis": FieldDef(description="limit_price | indicative_last_quote | unavailable.", source="bbgt"),
+            "notional_currency_reason": FieldDef(description="Why notional_currency is null for a non-FX listing whose currency is not explicitly known (Instrument currency defaults to USD).", source="bbgt"),
             "broker": FieldDef(description="Broker adapter used; 'paper' on preview.", source="bbgt"),
             "side": FieldDef(description="BUY or SELL.", source="bbgt"),
             "quantity": FieldDef(unit="base", description="Order size.", source="bbgt"),

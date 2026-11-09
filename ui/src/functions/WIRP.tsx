@@ -6,10 +6,11 @@
  * is built live and keyless (FRED target range + ^IRX-implied near-term
  * rate, or the CME FedWatch adapter when wired); ECB/BoE report
  * `provider_unavailable` rather than fabricated numbers. The header pill
- * classifies on the backend's actual `source_mode` values
- * (`live_fed_funds_futures` / `cme_fedwatch` / `live_fred_target_no_irx`),
- * so live data is never mislabelled as a reference table — and unknown
- * modes never over-claim live.
+ * classifies on the backend's actual `source_mode` values (only
+ * `cme_fedwatch` earns the live pill; the keyless path emits
+ * `provider_unavailable` with anchors and no probability rows), so live data
+ * is never mislabelled as a reference table, and unknown modes never
+ * over-claim live.
  */
 import { useEffect, useMemo, type CSSProperties } from "react";
 import {
@@ -58,8 +59,8 @@ interface WIRPAnchor {
   current_target_mid?: number | null;
   current_target_upper?: number | null;
   current_target_lower?: number | null;
-  implied_near_term_rate?: number | null;
-  implied_near_term_source?: string;
+  tbill_13w_pct?: number | null;
+  tbill_as_of?: string | null;
   effr?: number | null;
   as_of?: string | null;
   effr_as_of?: string | null;
@@ -86,24 +87,37 @@ interface AnchorEntry {
 }
 
 /**
- * Meeting-to-meeting implied policy-rate path: a zero baseline (today's
- * anchor, no cumulative move yet) followed by the running sum of each
- * meeting's probability-weighted `implied_change_bp`. Meetings without a
- * finite implied move are skipped, not zeroed — a missing row must not
- * flatten a real path. No finite implied value anywhere → empty path.
+ * Implied policy-rate path vs the current-target anchor: a zero baseline
+ * (today's anchor) followed by each meeting's `implied_change_bp` as-is.
+ * The backend value is already the expected move vs the anchor at that
+ * meeting (cumulative to that date), so it is NOT summed again. Meetings
+ * without a finite implied move are skipped, not zeroed — a missing row must
+ * not flatten a real path. No finite implied value anywhere → empty path.
  */
-export function cumulativeBpPath(rows: WIRPRow[]): number[] {
+export function impliedLevelPath(rows: WIRPRow[]): number[] {
   const path = [0];
-  let acc = 0;
   let sawValue = false;
   for (const row of rows) {
     const bp = row.implied_change_bp;
     if (typeof bp !== "number" || !Number.isFinite(bp)) continue;
-    acc += bp;
-    path.push(acc);
+    path.push(bp);
     sawValue = true;
   }
   return sawValue ? path : [];
+}
+
+/**
+ * Expected move (bp) vs the anchor at the last meeting that carries a finite
+ * implied move, or null when none does. This is the cumulative move to that
+ * date; summing across meetings would double-count it.
+ */
+export function lastImpliedBp(rows: WIRPRow[]): number | null {
+  let last: number | null = null;
+  for (const row of rows) {
+    const bp = row.implied_change_bp;
+    if (typeof bp === "number" && Number.isFinite(bp)) last = bp;
+  }
+  return last;
 }
 
 /**
@@ -137,15 +151,12 @@ export function anchorEntries(anchor: WIRPAnchor | undefined): AnchorEntry[] {
       value: `${anchor.current_target_mid.toFixed(3)}%`,
     });
   }
-  if (
-    typeof anchor.implied_near_term_rate === "number" &&
-    Number.isFinite(anchor.implied_near_term_rate)
-  ) {
+  if (typeof anchor.tbill_13w_pct === "number" && Number.isFinite(anchor.tbill_13w_pct)) {
     out.push({
-      key: "near",
-      label: "Near-term",
-      value: `${anchor.implied_near_term_rate.toFixed(3)}%`,
-      title: anchor.implied_near_term_source,
+      key: "tbill",
+      label: "13w T-bill",
+      value: `${anchor.tbill_13w_pct.toFixed(3)}%`,
+      title: "13-week T-bill yield: a bill basis, not a policy-rate expectation",
     });
   }
   return out;
@@ -196,17 +207,11 @@ export function WIRPPane({ code }: FunctionPaneProps) {
     [payload.rows],
   );
 
-  // F4 fix (A6-WIRP-H): the live backend emits top-level `source_mode` values
-  // such as `live_fed_funds_futures` / `cme_fedwatch` / `live_fred_target_no_irx`.
-  // Comparing against the literal "live" mislabelled every live row as a
-  // reference table. Only the explicit live modes earn the live pill —
-  // anything else (reference table, provider outage, unknown drift) stays
-  // honestly labelled reference.
-  const LIVE_SOURCE_MODES = new Set([
-    "live_fed_funds_futures",
-    "cme_fedwatch",
-    "live_fred_target_no_irx",
-  ]);
+  // Only a real futures-implied source earns the live pill. The keyless path
+  // never emits probability rows (it reports the T-bill basis as an anchor),
+  // so the backend's live modes are CME FedWatch rows only. Anything else
+  // (reference table, provider outage, unknown drift) stays honestly labelled.
+  const LIVE_SOURCE_MODES = new Set(["cme_fedwatch"]);
   const sourceMode = payload.source_mode ?? rows[0]?.source_mode ?? "unknown";
   const status = typeof payload.status === "string" ? payload.status : "";
   const isReferenceTable =
@@ -273,13 +278,13 @@ export function WIRPPane({ code }: FunctionPaneProps) {
   );
 
   const cards = Array.isArray(payload.cards) ? payload.cards : [];
-  const totalImplied = rows.reduce(
-    (acc, r) => acc + (typeof r.implied_change_bp === "number" ? r.implied_change_bp : 0),
-    0,
+  const lastImplied = lastImpliedBp(rows);
+  const lastImpliedRow = [...rows].reverse().find(
+    (r) => typeof r.implied_change_bp === "number" && Number.isFinite(r.implied_change_bp),
   );
-  // Secondary visual (campaign C1): cumulative implied path from the real
+  // Secondary visual (campaign C1): implied path vs the anchor from the real
   // per-meeting `implied_change_bp` series + the backend `anchor` band.
-  const path = cumulativeBpPath(rows);
+  const path = impliedLevelPath(rows);
   const anchors = anchorEntries(payload.anchor);
   const pathReady = path.length >= 2;
 
@@ -299,7 +304,11 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                   tone={isReferenceTable ? "warn" : "positive"}
                   variant="soft"
                 >
-                  {isReferenceTable ? "reference table" : "live"}
+                  {status === "provider_unavailable"
+                    ? "unavailable"
+                    : isReferenceTable
+                      ? "reference table"
+                      : "live"}
                 </Pill>
               </span>
               <LoadStatePill state={state} />
@@ -321,7 +330,32 @@ export function WIRPPane({ code }: FunctionPaneProps) {
           ) : state === "error" ? (
             <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
           ) : rows.length === 0 ? (
-            <Empty title="No meetings" body={`No WIRP rows for ${bank}.`} />
+            <div className="u-grid-gap-14">
+              <Empty
+                title="No meetings — probabilities unavailable"
+                body={
+                  warningsList
+                    .map((w) => String(w))
+                    .find((w) => /unavailable/i.test(w)) ?? `No WIRP rows for ${bank}.`
+                }
+              />
+              {anchors.length ? (
+                <section style={pathPanelStyle} aria-label="WIRP reference anchors">
+                  <div style={pathMetaStyle}>
+                    <span style={pathTitleStyle}>Reference anchors</span>
+                    <span className="u-text-mute" style={pathCaptionStyle}>
+                      FRED target range and T-bill basis · not hike/cut odds
+                    </span>
+                    {anchors.map((a) => (
+                      <span key={a.key} style={anchorChipStyle} title={a.title}>
+                        <span style={anchorLabelStyle}>{a.label}</span>
+                        <span style={anchorValueStyle}>{a.value}</span>
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </div>
           ) : (
             <div className="u-grid-gap-14">
               {isReferenceTable ? (
@@ -365,19 +399,21 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                       />
                     ))
                   : null}
-                <StatCard
-                  label="Cumulative implied Δ"
-                  value={`${totalImplied >= 0 ? "+" : ""}${totalImplied.toFixed(1)} bp`}
-                  caption={`${rows.length} meetings · ${bank}`}
-                  tone={totalImplied >= 0 ? "positive" : "negative"}
-                />
+                {lastImplied != null ? (
+                  <StatCard
+                    label="Implied Δ at last meeting"
+                    value={`${lastImplied >= 0 ? "+" : ""}${lastImplied.toFixed(1)} bp`}
+                    caption={`vs ${bank} anchor · through ${lastImpliedRow?.date ?? "—"}`}
+                    tone={lastImplied >= 0 ? "positive" : "negative"}
+                  />
+                ) : null}
               </section>
               {pathReady || anchors.length ? (
                 <section style={pathPanelStyle} aria-label="WIRP implied path">
                   <div style={pathMetaStyle}>
                     <span style={pathTitleStyle}>Implied path</span>
                     <span className="u-text-mute" style={pathCaptionStyle}>
-                      Σ implied Δ from the {bank} anchor · {rows.length} meetings
+                      Implied Δ vs the {bank} anchor at each meeting · {rows.length} meetings
                     </span>
                     {anchors.map((a) => (
                       <span key={a.key} style={anchorChipStyle} title={a.title}>
@@ -392,7 +428,7 @@ export function WIRPPane({ code }: FunctionPaneProps) {
                       width={200}
                       height={40}
                       tone={path[path.length - 1] >= 0 ? "positive" : "negative"}
-                      ariaLabel="Cumulative implied policy-rate path"
+                      ariaLabel="Implied policy-rate path vs anchor"
                     />
                   ) : (
                     <span className="u-text-mute" style={pathCaptionStyle}>

@@ -35,6 +35,8 @@ use parking_lot::Mutex;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -125,6 +127,10 @@ fn boot_one(handle: &AppHandle, attempt: u32) -> Result<(), String> {
     }
 
     let mut command = build_command(handle)?;
+    // Python and the frozen backend are console executables. Keep their pipe
+    // protocol without allocating a visible terminal beside the desktop app.
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     command.env("SHOWME_AUTH_TOKEN", &token);
 
     // Bundle-id reconciliation: Tauri writes to `app.showme.terminal/`

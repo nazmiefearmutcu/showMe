@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -45,8 +46,9 @@ def _date_from_row(row: dict[str, Any]) -> datetime | None:
         return None
     lower = text.lower()
     if lower.endswith("m") and lower[:-1].lstrip("-").isdigit():
-        months = int(lower[:-1] or "0")
-        return _today() + timedelta(days=months * 30)
+        # yfinance period labels ("0m", "-1m") are relative buckets, not dates.
+        # Returning a date here stamped the request day as the as-of date (ANR#1).
+        return None
     for fmt in ("%Y-%m-%d", "%Y-%m", "%Y/%m/%d"):
         try:
             parsed = datetime.strptime(text[:10] if fmt != "%Y-%m" else text[:7], fmt)
@@ -83,18 +85,97 @@ def _consensus_score(totals: dict[str, int]) -> float | None:
     return round(weighted / total, 2)
 
 
+# One threshold table for every 1-5 score cut (ANR#6). The consensus label and
+# the crypto signal buckets both read it, so one score cannot land in two buckets.
+STRONG_BUY_MIN = 4.2
+BUY_MIN = 3.6
+HOLD_MIN = 2.8
+SELL_MIN = 2.2
+
+
 def _consensus_label(score: float | None) -> str:
     if score is None:
         return "No consensus"
-    if score >= 4.2:
+    if score >= STRONG_BUY_MIN:
         return "Strong Buy"
-    if score >= 3.6:
+    if score >= BUY_MIN:
         return "Buy-leaning"
-    if score >= 2.8:
+    if score >= HOLD_MIN:
         return "Neutral"
-    if score >= 2.2:
+    if score >= SELL_MIN:
         return "Sell-leaning"
     return "Strong Sell"
+
+
+TREND_MONTHS_DEFAULT = 12
+TREND_MONTHS_MIN = 3
+TREND_MONTHS_MAX = 36
+
+
+def _clamp_months(value: Any) -> int:
+    """Lookback window for the trend table, bounded to the manifest range (ANR#2)."""
+    try:
+        months = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: inf / 1e400 cannot become an int; treat as invalid input.
+        return TREND_MONTHS_DEFAULT
+    return max(TREND_MONTHS_MIN, min(months, TREND_MONTHS_MAX))
+
+
+def _months_back(row: dict[str, Any], today: datetime) -> int | None:
+    """How many calendar months before ``today`` a recommendation period sits.
+
+    Relative provider labels ("0m", "-3m") give their offset directly; dated
+    rows are measured from their date. Unplaceable rows return None.
+    """
+    period = str(row.get("period") or "").strip().lower()
+    relative = re.fullmatch(r"(-?\d+)m", period)
+    if relative:
+        return abs(int(relative.group(1)))
+    dated = _date_from_row(row)
+    if dated is None:
+        return None
+    return max(0, (today.year - dated.year) * 12 + (today.month - dated.month))
+
+
+def _trend_rows(
+    recs: list[dict[str, Any]],
+    months: int,
+    today: datetime,
+    consensus_ids: set[int],
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Per-period bucket trend inside the lookback window (ANR#2).
+
+    Only the periods the provider actually returned are shown. Returns the rows
+    (newest first) and the oldest provider period in months back, or None.
+    """
+    rows: list[dict[str, Any]] = []
+    offsets: list[int] = []
+    for row in recs:
+        if not isinstance(row, dict):
+            continue
+        totals = {key: _bucket_count(row, key) for key, _, _ in BUCKETS}
+        if sum(totals.values()) <= 0:
+            continue
+        back = _months_back(row, today)
+        if back is None:
+            continue
+        offsets.append(back)
+        if back > months:
+            continue
+        score = _consensus_score(totals)
+        rows.append({
+            "period": str(row.get("period") or ""),
+            "months_back": back,
+            **totals,
+            "total": sum(totals.values()),
+            "score": score,
+            "label": _consensus_label(score),
+            "in_consensus": id(row) in consensus_ids,
+            "source_mode": str(row.get("source_mode") or ""),
+        })
+    rows.sort(key=lambda r: r["months_back"])
+    return rows, (max(offsets) if offsets else None)
 
 
 def _pct(part: int, total: int) -> float:
@@ -105,11 +186,7 @@ def _pct(part: int, total: int) -> float:
 
 def _target_source(target: dict[str, Any], spot: float | None) -> tuple[str, str, bool]:
     mode = str(target.get("source_mode") or "")
-    if mode == "price_target_unavailable_no_spot":
-        return "target_price_unavailable", "Target price unavailable", True
-    if mode.startswith("price_target_reference"):
-        if spot is not None:
-            return "derived_reference_range_from_spot", "Derived reference range from spot", True
+    if mode.startswith("price_target_unavailable"):
         return "target_price_unavailable", "Target price unavailable", True
     return "live_analyst_targets", "Live analyst targets", False
 
@@ -138,7 +215,12 @@ def _latest_recommendation_rows(rows: list[dict[str, Any]]) -> list[dict[str, An
     if dated_values:
         latest = max(dated_values)
         return [row for row, dt in dated if dt is not None and dt.date() == latest.date()]
-    return [rows[0]] if rows else []
+    # Undated period buckets: the current-month bucket ("0m") is the consensus.
+    valid = [row for row in rows if isinstance(row, dict)]
+    current = [row for row in valid if str(row.get("period") or "").strip().lower() == "0m"]
+    if current:
+        return [current[0]]
+    return [valid[0]] if valid else []
 
 
 def _yfinance_recommendations(raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -169,12 +251,51 @@ def _target_from_yfinance_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "targetLow": finite(raw.get("targetLowPrice")),
         "targetMean": finite(raw.get("targetMeanPrice")),
         "targetMedian": finite(raw.get("targetMedianPrice")),
-        "lastUpdated": _today().date().isoformat(),
+        # yfinance analyst price targets carry no provider timestamp. Leave the
+        # as-of date empty rather than stamping the request day (ANR#1).
+        "lastUpdated": None,
         "source_mode": "yfinance_analyst_targets",
     }
     if any(finite(v) for k, v in target.items() if k.startswith("target")):
         return target
     return {}
+
+
+_TARGET_STATS = ("targetHigh", "targetLow", "targetMean", "targetMedian")
+
+
+def _adopt_target(state: dict[str, Any], incoming: Any, origin: str) -> bool:
+    """Per-field target merge (ANR#4).
+
+    Each target statistic comes from the first provider that supplies it, so a
+    partial Finnhub payload never hides yfinance's other statistics. The origin
+    of every statistic is recorded in ``state["target_field_sources"]``.
+    Returns True when ``incoming`` contributed at least one statistic.
+    """
+    if not isinstance(incoming, dict):
+        return False
+    current = dict(state.get("target") or {})
+    had_stats = any(finite(current.get(key)) is not None for key in _TARGET_STATS)
+    origins = state.setdefault("target_field_sources", {})
+    added = False
+    for key in _TARGET_STATS:
+        value = finite(incoming.get(key))
+        if finite(current.get(key)) is None and value is not None:
+            current[key] = value
+            origins[key] = origin
+            added = True
+    if not added:
+        return False
+    for key in _TARGET_STATS:
+        current.setdefault(key, None)
+    if had_stats:
+        current.setdefault("source_mode", incoming.get("source_mode"))
+        current.setdefault("lastUpdated", incoming.get("lastUpdated"))
+    else:
+        current["source_mode"] = incoming.get("source_mode")
+        current["lastUpdated"] = incoming.get("lastUpdated")
+    state["target"] = current
+    return True
 
 
 def _analyst_rows_from_yfinance_raw(raw: dict[str, Any], cutoff: datetime, *, limit: int = 30) -> list[dict[str, Any]]:
@@ -267,8 +388,10 @@ class ANRFunction(BaseFunction):
             "sources": [],
             "recs": [],
             "target": {},
+            "target_field_sources": {},
             "spot": None,
             "yfinance_raw": {},
+            "trend_months": _clamp_months(params.get("months")),
         }
         fh_state = {"warnings": [], "sources": [], "recs": [], "target": {}}
         yf_state = {"warnings": [], "sources": [], "recs": [], "target": {}, "spot": None, "yfinance_raw": {}}
@@ -290,15 +413,22 @@ class ANRFunction(BaseFunction):
         if fh_state["recs"]:
             state["recs"] = fh_state["recs"]
             state["sources"].extend(fh_state["sources"])
-            state["target"] = fh_state["target"]
-        else:
-            if yf_state["recs"]:
-                state["recs"] = yf_state["recs"]
-                state["sources"].extend(yf_state["sources"])
-            if yf_state["target"]:
-                state["target"] = yf_state["target"]
-                if "yfinance_targets" not in state["sources"]:
-                    state["sources"].append("yfinance_targets")
+        elif yf_state["recs"]:
+            state["recs"] = yf_state["recs"]
+            state["sources"].extend(yf_state["sources"])
+        # ANR#4: targets merge per statistic. Finnhub goes first when it supplied
+        # the recommendations (its precedence); yfinance fills whatever is missing.
+        target_providers = [
+            ("finnhub", fh_state["target"]),
+            ("yfinance_analyst_targets", yf_state["target"]),
+        ]
+        if not fh_state["recs"]:
+            target_providers.reverse()
+        for origin, incoming in target_providers:
+            if _adopt_target(state, incoming, origin):
+                source = "finnhub" if origin == "finnhub" else "yfinance_targets"
+                if source not in state["sources"]:
+                    state["sources"].append(source)
 
         state["spot"] = yf_state["spot"]
         state["yfinance_raw"] = yf_state["yfinance_raw"]
@@ -330,7 +460,7 @@ class ANRFunction(BaseFunction):
                 state["target"] = await self.deps.finnhub.price_target(instrument.symbol)
                 state["sources"].append("finnhub")
         except Exception as e:
-            state["warnings"].append(f"finnhub: {e}")
+            state["warnings"].append(f"finnhub: {str(e) or type(e).__name__}")
 
     async def _fetch_yfinance(
         self, instrument: Instrument, params: dict[str, Any], state: dict[str, Any]
@@ -368,7 +498,7 @@ class ANRFunction(BaseFunction):
             if (state["spot"] is not None or yf_recs or yf_target) and "yfinance" not in state["sources"]:
                 state["sources"].append("yfinance")
         except Exception as e:
-            state["warnings"].append(f"yfinance: {e}")
+            state["warnings"].append(f"yfinance: {str(e) or type(e).__name__}")
 
     async def _fetch_yfinance_retry(
         self, instrument: Instrument, params: dict[str, Any], state: dict[str, Any]
@@ -393,10 +523,7 @@ class ANRFunction(BaseFunction):
                 for source in ("yfinance_recommendations", "yfinance"):
                     if source not in state["sources"]:
                         state["sources"].append(source)
-            retry_target = _target_from_yfinance_raw(retry_raw)
-            target = state["target"]
-            if (not target or not any(finite(v) for v in target.values())) and retry_target:
-                state["target"] = retry_target
+            if _adopt_target(state, _target_from_yfinance_raw(retry_raw), "yfinance_analyst_targets"):
                 if "yfinance_targets" not in state["sources"]:
                     state["sources"].append("yfinance_targets")
             if state["spot"] is None:
@@ -406,37 +533,33 @@ class ANRFunction(BaseFunction):
                     or retry_raw.get("previousClose")
                 )
         except Exception as e:
-            state["warnings"].append(f"yfinance retry: {e}")
+            state["warnings"].append(f"yfinance retry: {str(e) or type(e).__name__}")
 
     def _fill_target_fallback(self, state: dict[str, Any]) -> None:
+        """Without a provider price target every target statistic stays empty.
+
+        ANR#3: the old fallback derived high/low/mean/median as spot x fixed
+        multipliers (1.28/0.82/1.08/1.06). Those numbers come from no provider,
+        so they are never reported as targets; the spot quote is kept separately.
+        """
         target = state["target"]
-        spot = state["spot"]
         if target and any(finite(v) for v in target.values()):
             return
-        if spot is not None:
-            state["target"] = {
-                "targetHigh": round(spot * 1.28, 2),
-                "targetLow": round(spot * 0.82, 2),
-                "targetMean": round(spot * 1.08, 2),
-                "targetMedian": round(spot * 1.06, 2),
-                "source_mode": "price_target_reference_from_spot",
-            }
-        else:
-            state["target"] = {
-                "targetHigh": None,
-                "targetLow": None,
-                "targetMean": None,
-                "targetMedian": None,
-                "source_mode": "price_target_unavailable_no_spot",
-            }
-        if "analyst_target_reference" not in state["sources"]:
-            state["sources"].append("analyst_target_reference")
+        state["target"] = {
+            "targetHigh": None,
+            "targetLow": None,
+            "targetMean": None,
+            "targetMedian": None,
+            "source_mode": "price_target_unavailable",
+        }
+        state["target_field_sources"] = {}
 
     def _collect_signals(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Stage 2 — apply the 365-day staleness rule and aggregate buckets."""
         recs = inputs["recs"]
         warnings = inputs["warnings"]
-        cutoff = _today() - timedelta(days=365)
+        now = _today()
+        cutoff = now - timedelta(days=365)
         consensus_recs = _latest_recommendation_rows(recs)
         dated_recs = [(row, _date_from_row(row)) for row in consensus_recs if isinstance(row, dict)]
         included = [row for row, dt in dated_recs if dt is None or dt >= cutoff]
@@ -451,8 +574,13 @@ class ANRFunction(BaseFunction):
         score = _consensus_score(totals)
         included_dates = [dt for _, dt in dated_recs if dt is not None and dt >= cutoff]
         stale_dates = [dt for _, dt in dated_recs if dt is not None and dt < cutoff]
+        # Only dated provider rows can date the consensus. Undated period buckets
+        # (yfinance "0m"/"-1m") leave these None instead of borrowing today's date.
         last_updated = max(included_dates).date().isoformat() if included_dates else None
         oldest_included = min(included_dates).date().isoformat() if included_dates else None
+        consensus_period = None
+        if consensus_recs and all(dt is None for _, dt in dated_recs):
+            consensus_period = str(consensus_recs[0].get("period") or "") or None
         stale_rule = {
             "cutoff_days": 365,
             "cutoff_date": cutoff.date().isoformat(),
@@ -463,6 +591,17 @@ class ANRFunction(BaseFunction):
             "undated_provider_rows": sum(1 for _, dt in dated_recs if dt is None),
             "rule": "Recommendation rows older than one year are excluded from consensus.",
         }
+        trend_months = int(inputs.get("trend_months") or TREND_MONTHS_DEFAULT)
+        trend, oldest_provider_back = _trend_rows(
+            recs, trend_months, now, {id(row) for row in consensus_recs}
+        )
+        if oldest_provider_back is not None and oldest_provider_back < trend_months:
+            warnings.append(
+                f"Provider history reaches {oldest_provider_back} month(s) back; the requested "
+                f"{trend_months}-month trend shows only the periods the provider returned."
+            )
+        if not trend and recs:
+            warnings.append("No recommendation period falls inside the requested trend window.")
         return {
             "cutoff": cutoff,
             "consensus_recs": consensus_recs,
@@ -471,7 +610,11 @@ class ANRFunction(BaseFunction):
             "score": score,
             "last_updated": last_updated,
             "oldest_included": oldest_included,
+            "consensus_period": consensus_period,
             "stale_rule": stale_rule,
+            "trend": trend,
+            "trend_months": trend_months,
+            "trend_oldest_provider_months_back": oldest_provider_back,
         }
 
     def _assemble_cards(
@@ -489,7 +632,12 @@ class ANRFunction(BaseFunction):
         neutral = totals["hold"]
         negative = totals["sell"] + totals["strongSell"]
         target_source_mode, target_source_label, not_analyst_target = _target_source(target, spot)
-        target_rows = _target_rows(target, target_source_mode, not_analyst_target)
+        # No provider target: no target rows at all (not rows of blank prices).
+        target_rows = (
+            []
+            if target_source_mode == "target_price_unavailable"
+            else _target_rows(target, target_source_mode, not_analyst_target)
+        )
         bucket_rows = [
             {
                 "bucket": label,
@@ -501,6 +649,15 @@ class ANRFunction(BaseFunction):
             for key, label, score_value in BUCKETS
         ]
         analyst_rows = _analyst_rows_from_yfinance_raw(inputs["yfinance_raw"], signals["cutoff"])
+        # Newest dated broker rating action: a real date from the provider's
+        # upgrades/downgrades feed, distinct from the consensus as-of date.
+        action_dates = [
+            _date_from_row({"date": row.get("date")}) for row in analyst_rows
+        ]
+        action_dates = [dt for dt in action_dates if dt is not None]
+        latest_rating_action_date = (
+            max(action_dates).date().isoformat() if action_dates else None
+        )
         if analyst_rows:
             analyst_detail_status = "broker_actions_available"
             analyst_detail_reason = (
@@ -525,6 +682,8 @@ class ANRFunction(BaseFunction):
             "included_count": analyst_count,
             "excluded_stale_count": signals["stale_rule"]["excluded_stale_count"],
             "oldest_included_rating_date": signals["oldest_included"],
+            "consensus_period": signals.get("consensus_period"),
+            "latest_rating_action_date": latest_rating_action_date,
             "target_price_source": target_source_label,
             "target_price_source_mode": target_source_mode,
             "not_analyst_target": not_analyst_target,
@@ -576,7 +735,9 @@ class ANRFunction(BaseFunction):
             {
                 "name": "target_price",
                 "status": cards["target_source_mode"],
-                "asOf": target.get("lastUpdated") or target.get("last_update") or signals["last_updated"],
+                # Only the target's own provider timestamp may date the target
+                # statistics; the consensus date is a different dataset (ANR#1).
+                "asOf": target.get("lastUpdated") or target.get("last_update"),
                 "fields": "high, mean, median, low target-price statistics",
             },
             {
@@ -624,15 +785,20 @@ class ANRFunction(BaseFunction):
                     "not_analyst_target": cards["not_analyst_target"],
                 },
                 "stale_rule": signals["stale_rule"],
+                "trend": signals["trend"],
+                "trend_months": signals["trend_months"],
+                "trend_oldest_provider_months_back": signals["trend_oldest_provider_months_back"],
+                "current_score": signals["score"],
                 "recommendations": inputs["recs"],
                 "consensus_recommendations": signals["consensus_recs"],
                 "price_target": target,
+                "target_field_sources": dict(inputs.get("target_field_sources") or {}),
                 "analyst_count": analyst_count,
                 "spot": inputs["spot"],
                 "source_details": source_details,
                 "data_notes": [
                     "Broker-level analyst rows require a provider that supplies analyst-detail recommendations.",
-                    "Derived target-price ranges are display references, not analyst targets.",
+                    "No target price is derived from the spot quote; target statistics appear only when a provider supplies them.",
                     "When aggregate analyst buckets are unavailable, ShowMe leaves consensus empty instead of reusing a static distribution.",
                 ],
                 "analyst_quality": {
@@ -668,9 +834,8 @@ class ANRFunction(BaseFunction):
                     "converted to a 1-5 consensus score. Recommendation rows older than one year are "
                     "excluded from consensus totals. Broker-level analyst rows are shown only when a "
                     "provider supplies broker/analyst detail; ShowMe does not generate fake broker rows. "
-                    "When live target-price statistics are unavailable, ShowMe labels the target range as "
-                    "derived from spot and marks it as not an analyst target. If no usable spot is "
-                    "available, ShowMe leaves target prices blank instead of using a synthetic base."
+                    "When live target-price statistics are unavailable, ShowMe leaves the target prices blank "
+                    "and reports the target source as unavailable. It does not derive a target range from spot."
                 ),
                 "field_dictionary": {
                     "broker": "Financial institution or research provider issuing the recommendation.",
@@ -685,7 +850,7 @@ class ANRFunction(BaseFunction):
                     "count": "Number of analysts in the recommendation bucket after stale exclusions.",
                     "price": "12-month price target statistic in the quote currency.",
                     "sentiment_score": "Bucket score: Strong Buy=5, Buy=4, Hold=3, Sell=2, Strong Sell=1.",
-                    "target_price_source": "Live analyst targets when available; otherwise a derived reference range explicitly marked as not an analyst target.",
+                    "target_price_source": "Live analyst targets when a provider supplies them; otherwise unavailable (no price target is derived).",
                     "included_count": "Analysts included in consensus after the one-year stale rule.",
                     "excluded_stale_count": "Analysts excluded because the recommendation row is older than one year.",
                     "oldest_included_rating_date": "Oldest rating date still included in the current consensus.",
@@ -731,9 +896,9 @@ class ANRFunction(BaseFunction):
         signal_count = len(signal_rows)
         consensus_score = _weighted_signal_score(signal_rows)
         label = _consensus_label(consensus_score)
-        positive_count = sum(1 for r in signal_rows if float(r["score"]) >= 3.6)
-        neutral_count = sum(1 for r in signal_rows if 2.8 <= float(r["score"]) < 3.6)
-        negative_count = sum(1 for r in signal_rows if float(r["score"]) < 2.8)
+        positive_count = sum(1 for r in signal_rows if float(r["score"]) >= BUY_MIN)
+        neutral_count = sum(1 for r in signal_rows if HOLD_MIN <= float(r["score"]) < BUY_MIN)
+        negative_count = sum(1 for r in signal_rows if float(r["score"]) < HOLD_MIN)
         bucket_rows = _signal_bucket_rows(signal_rows)
         last_updated = _latest_market_timestamp(frame, quote)
         reference_rows = _crypto_reference_rows(frame, spot)
@@ -824,6 +989,12 @@ class ANRFunction(BaseFunction):
                     "date",
                     "last_update",
                 ],
+                # The sell-side trend is not applicable; the declared output keys
+                # are still present so the contract holds (ANR#2).
+                "trend": [],
+                "trend_status": "not_applicable_crypto",
+                "trend_reason": "Crypto ANR has no broker recommendation history; the signal table is the current snapshot.",
+                "current_score": consensus_score,
                 "analyst_detail_status": "not_applicable_crypto",
                 "analyst_detail_reason": "Crypto pairs do not have a Bloomberg-style sell-side ANR feed in the configured providers. ShowMe uses a labelled market-consensus proxy instead.",
                 "bucket_rows": bucket_rows,
@@ -1018,14 +1189,26 @@ def _window_return(series: pd.Series, days: int) -> float | None:
 
 
 def _rsi(series: pd.Series, period: int = 14) -> float | None:
+    """Wilder's RSI (ANR#5).
+
+    The first average gain/loss is the simple mean of the first ``period``
+    changes; every later bar is smoothed as ``(prev * (period - 1) + x) / period``.
+    A plain mean over the last ``period`` changes is a different indicator and
+    does not match the standard "RSI 14" most charting tools show.
+    """
     if len(series) <= period:
         return None
     diff = series.diff().dropna()
-    gains = diff.clip(lower=0).tail(period).mean()
-    losses = (-diff.clip(upper=0)).tail(period).mean()
-    if losses == 0:
+    gains = diff.clip(lower=0)
+    losses = -diff.clip(upper=0)
+    avg_gain = float(gains.iloc[:period].mean())
+    avg_loss = float(losses.iloc[:period].mean())
+    for gain, loss in zip(gains.iloc[period:], losses.iloc[period:]):
+        avg_gain = (avg_gain * (period - 1) + float(gain)) / period
+        avg_loss = (avg_loss * (period - 1) + float(loss)) / period
+    if avg_loss == 0:
         return 100.0
-    rs = gains / losses
+    rs = avg_gain / avg_loss
     return float(100 - (100 / (1 + rs)))
 
 
@@ -1137,13 +1320,13 @@ def _signal_bucket_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     counts = {key: 0 for key, _, _ in BUCKETS}
     for row in rows:
         score = float(row.get("score") or 0)
-        if score >= 4.5:
+        if score >= STRONG_BUY_MIN:
             counts["strongBuy"] += 1
-        elif score >= 3.6:
+        elif score >= BUY_MIN:
             counts["buy"] += 1
-        elif score >= 2.8:
+        elif score >= HOLD_MIN:
             counts["hold"] += 1
-        elif score >= 2.0:
+        elif score >= SELL_MIN:
             counts["sell"] += 1
         else:
             counts["strongSell"] += 1

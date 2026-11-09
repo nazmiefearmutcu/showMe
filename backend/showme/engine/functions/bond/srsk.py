@@ -18,18 +18,50 @@ DEFAULT path return real, live data from **keyless** sources:
 
 FRED, when a key is configured, is still consulted to refine the proxy
 spread with a real ``country 10Y − UST 10Y`` reading; otherwise the
-macro composite carries the row.  A genuine network outage (World Bank
-unreachable AND no FRED) is the only path that yields
-``provider_unavailable``.
+macro composite carries the row.  When no requested sovereign can be
+priced at all, no rows are returned: ``provider_unavailable`` on a
+network outage, ``empty`` when the World Bank answered with no data.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
+from showme.engine.functions._fred_csv import fred_with_keyless_fallback
+
+
+def _last_observation(df: Any) -> tuple[float | None, str | None]:
+    """(value, ISO date) of the last finite observation in a FRED frame."""
+    try:
+        values = df["value"].astype(float)
+        values = values[values.notna()]
+        if values.empty:
+            return None, None
+        return float(values.iloc[-1]), str(values.index[-1])[:10]
+    except Exception:  # noqa: BLE001 - unreadable frame is "no observation"
+        return None, None
+
+
+def _month_mean(df: Any, iso_date: str) -> float | None:
+    """Mean of a daily FRED frame over the calendar month of ``iso_date``.
+
+    The OECD IRLTLT01 sovereign 10Y series are monthly averages of daily
+    yields, so the UST leg of the differential is the same month's average of
+    DGS10, not today's print (SRSK#5).
+    """
+    try:
+        month = str(iso_date)[:7]
+        values = df["value"].astype(float)
+        mask = [str(idx)[:7] == month for idx in values.index]
+        picked = values[mask]
+        picked = picked[picked.notna()]
+        return float(picked.mean()) if not picked.empty else None
+    except Exception:  # noqa: BLE001
+        return None
 
 # ---------------------------------------------------------------------------
 # ISO-2 → ISO-3 for the curated sovereign universe (World Bank uses ISO-3
@@ -52,6 +84,14 @@ _WB_INDICATORS: dict[str, str] = {
 }
 
 _WB_BASE = "https://api.worldbank.org/v2"
+
+# Wall-clock budget for the World Bank fan-out (Wide-12 = 48 requests). It sits
+# under the 14 s function timeout so a slow country becomes an explicit
+# unavailable row instead of failing the whole call.
+_CALL_BUDGET_S = 9.0
+
+# Upper bound for the recovery input (matches the seed's max); R near 1 blows up the Hull PD.
+_MAX_RECOVERY = 0.95
 
 
 def _latest_wb_value(payload: Any) -> tuple[float | None, str | None]:
@@ -99,6 +139,21 @@ def _leg_score(value: float | None, *, low: float, high: float, invert: bool) ->
     if invert:
         frac = 1.0 - frac
     return round(_clamp(frac, 0.0, 1.0) * 100.0, 2)
+
+
+def _is_partial(row: dict[str, Any]) -> bool:
+    """True when a scored row used fewer macro legs than the full composite."""
+    present = row.get("legs_present")
+    total = row.get("legs_total")
+    return isinstance(present, int) and isinstance(total, int) and present < total
+
+
+def _year_sort_key(text: str) -> tuple[int, str]:
+    """Sort World Bank date strings (usually a year) oldest first."""
+    try:
+        return (int(text[:4]), text)
+    except (TypeError, ValueError):
+        return (9999, text)
 
 
 class _WBUnavailable(Exception):
@@ -183,16 +238,22 @@ class SRSKFunction(BaseFunction):
             _fetch_one(k, ind) for k, ind in keys_and_indicators
         ))
 
+        leg_dates: dict[str, str] = {}
         for key, indicator, val, date, err in results:
             if err:
                 notes.append(f"{indicator} fetch failed for {iso3}: {err}")
             out[key] = val
-            if date and "as_of" not in out:
-                out["as_of"] = date
+            if date:
+                leg_dates[key] = date
             if val is None and not any(
                 n.startswith(indicator) for n in notes
             ):
                 notes.append(f"{indicator} unavailable for {iso3}")
+        # The row's as_of is the OLDEST leg date: a mixed-age row must not be
+        # labelled with whichever leg happened to answer first.
+        out["as_of_by_leg"] = leg_dates
+        if leg_dates:
+            out["as_of"] = min(leg_dates.values(), key=_year_sort_key)
         return out, notes
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
@@ -202,27 +263,61 @@ class SRSKFunction(BaseFunction):
         else:
             countries = [str(item).strip().upper() for item in raw_countries if str(item).strip()]
         countries = countries[:12] or ["TR"]
-        recovery = float(params.get("recovery", 0.4))
-        fallback_spread = float(params.get("proxy_spread_pct", 3.25))
+        recovery_raw = params.get("recovery")
+        if recovery_raw is None:
+            recovery_raw = 0.4
+        try:
+            recovery = float(recovery_raw)
+        except (TypeError, ValueError):
+            recovery = float("nan")
+        # Recovery is a probability bounded by the seed's max (0.95). Outside it the
+        # Hull denominator max(0.01, 1 - R) produces PD above 100%, so reject it.
+        if not math.isfinite(recovery) or not 0.0 <= recovery <= _MAX_RECOVERY:
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "input_error",
+                    "reason": (
+                        f"recovery must be a number between 0 and {_MAX_RECOVERY}; "
+                        f"got {recovery_raw!r}. No spread or PD was computed."
+                    ),
+                    "rows": [],
+                    "summary": {
+                        "countries": 0,
+                        "recovery": None,
+                        "formula": "PD ~= spread / (1 - recovery)",
+                    },
+                    "next_actions": [
+                        f"Pass a recovery rate between 0 and {_MAX_RECOVERY} (Hull default 0.4).",
+                    ],
+                },
+                sources=[],
+                warnings=[f"recovery out of range: {recovery_raw!r}"],
+                metadata={"live": False, "fallback": False},
+            )
 
         warnings: list[str] = []
         rows: list[dict[str, Any]] = []
 
-        # Optional FRED refinement of the proxy spread (only if a key is set).
+        # FRED refinement of the proxy spread: the keyed adapter when a key is
+        # set, else the keyless CSV (SRSK#5, same as gc3d/wb/yas).
+        fred = fred_with_keyless_fallback(self.deps.fred)
+        ust_frame: Any = None
         ust_y: float | None = None
+        ust_as_of: str | None = None
         sovereign_fred_ids: dict[str, str] = {}
-        if self.deps.fred:
-            try:
-                ust = await self.deps.fred.series("DGS10")
-                ust_y = float(ust["value"].iloc[-1])
-            except Exception as exc:  # pragma: no cover - key-gated
-                warnings.append(f"fred DGS10: {exc}")
-            try:
-                from showme.engine.functions.bond.wb import _SOVEREIGN_FRED_IDS  # type: ignore
+        try:
+            ust_frame = await fred.series("DGS10")
+            ust_y, ust_as_of = _last_observation(ust_frame)
+        except Exception as exc:  # noqa: BLE001 - outage is reported, not hidden
+            warnings.append(f"fred DGS10: {str(exc) or type(exc).__name__}")
+        try:
+            from showme.engine.functions.bond.wb import _SOVEREIGN_FRED_IDS  # type: ignore
 
-                sovereign_fred_ids = dict(_SOVEREIGN_FRED_IDS)
-            except Exception:  # pragma: no cover - sibling import optional
-                sovereign_fred_ids = {}
+            sovereign_fred_ids = dict(_SOVEREIGN_FRED_IDS)
+        except Exception:  # pragma: no cover - sibling import optional
+            sovereign_fred_ids = {}
 
         wb_network_failures = 0
         wb_success = 0
@@ -245,15 +340,37 @@ class SRSKFunction(BaseFunction):
             target_y = None
             fred_err = None
             fid = sovereign_fred_ids.get(country)
-            if self.deps.fred and ust_y is not None and fid and country != "US":
+            if ust_y is not None and fid and country != "US":
                 try:
-                    target = await self.deps.fred.series(fid)
-                    target_y = float(target["value"].iloc[-1])
-                except Exception as exc:
-                    fred_err = exc
+                    target = await fred.series(fid)
+                    value, observed = _last_observation(target)
+                    if value is not None and observed:
+                        aligned = _month_mean(ust_frame, observed)
+                        if aligned is None:
+                            fred_err = (f"{fid} {observed[:7]}: no DGS10 observations in that month "
+                                        "to align the UST leg; no differential computed")
+                        else:
+                            target_y = {"yield": value, "as_of": observed, "ust_aligned": round(aligned, 4)}
+                except Exception as exc:  # noqa: BLE001
+                    fred_err = f"{fid}: {str(exc) or type(exc).__name__}"
             return country, macro, macro_notes, wb_ok, wb_err, target_y, fred_err
 
-        results = await asyncio.gather(*(_fetch_one_country(c) for c in countries))
+        tasks = {c: asyncio.ensure_future(_fetch_one_country(c)) for c in countries}
+        await asyncio.wait(tasks.values(), timeout=_CALL_BUDGET_S)
+        results = []
+        timed_out: list[asyncio.Future] = []
+        for c in countries:
+            task = tasks[c]
+            if task.done():
+                results.append(task.result())
+            else:
+                task.cancel()
+                timed_out.append(task)
+                results.append((c, {}, [], False, _WBUnavailable(
+                    f"timed out: no answer within the {_CALL_BUDGET_S:g}s call budget"
+                ), None, None))
+        if timed_out:
+            await asyncio.gather(*timed_out, return_exceptions=True)
 
         for country, macro, macro_notes, wb_ok, wb_err, target_y, fred_err in results:
             if wb_err:
@@ -282,25 +399,69 @@ class SRSKFunction(BaseFunction):
                 source_mode = "worldbank"
                 row_note: str | None = "; ".join(macro_notes) if macro_notes else None
             else:
-                proxy_spread = fallback_spread
-                source_mode = "sovereign_risk_model"
-                row_note = f"no live World Bank macro for {country}; using fallback proxy_spread_pct={fallback_spread}"
+                # No live macro legs: there is no score to map onto a spread, so
+                # none is invented. The row stays unranked with null spread/PD.
+                proxy_spread = None
+                source_mode = "unavailable"
+                row_note = (
+                    f"no live World Bank macro for {country}; no risk score, spread or PD "
+                    "computed (unranked)"
+                )
 
-            # Refine with a real yield differential when FRED is available.
+            # Refine with a real yield differential when FRED answered.
             fid = sovereign_fred_ids.get(country)
-            if self.deps.fred and ust_y is not None and fid:
+            fred_leg: dict[str, Any] = {}
+            if ust_y is not None and fid:
                 if country == "US":
-                    proxy_spread = 0.0
-                    source_mode = "fred"
-                    row_note = (
-                        "US sovereign self-spread is zero; PD shown for completeness only "
-                        "and is not a credit-risk reading"
-                    )
+                    # The US is the UST benchmark: a UST-minus-UST differential is zero by
+                    # construction, not a credit reading. Never pin a constant spread here;
+                    # keep whatever the live macro composite produced (null when unscored).
+                    if risk_score is not None:
+                        row_note = "; ".join(
+                            [
+                                *macro_notes,
+                                "US is the UST benchmark; no FRED self-spread applied",
+                            ]
+                        )
                 elif target_y is not None:
-                    proxy_spread = round(target_y - ust_y, 4)
+                    # Same-month legs: the monthly sovereign average minus the
+                    # DGS10 average over that month.
+                    diff = round(target_y["yield"] - target_y["ust_aligned"], 4)
+                    fred_leg = {
+                        "fred_10y_pct": target_y["yield"],
+                        "ust_10y_same_month_pct": target_y["ust_aligned"],
+                        "yield_diff_vs_ust_pct": diff,
+                        "fred_as_of": target_y["as_of"],
+                    }
+                    if diff <= 0:
+                        # A yield at or below UST (DE, JP, ...) is a currency and
+                        # rates gap, not a credit spread: it would give a negative
+                        # default probability. The differential is reported, the
+                        # spread/PD stay on the macro proxy (null when unscored).
+                        warnings.append(
+                            f"{country}: 10Y yield {target_y['yield']:.2f}% is not above the same-month "
+                            f"UST average {target_y['ust_aligned']:.2f}%; the differential is not used as a "
+                            "credit spread."
+                        )
+                        target_y = None
+                    else:
+                        proxy_spread = diff
+                if target_y is not None and country != "US":
                     source_mode = "fred+worldbank" if risk_score is not None else "fred"
+                    if risk_score is None:
+                        # The spread/PD now come from a real FRED differential, but
+                        # there is still no macro score: say exactly that.
+                        row_note = (
+                            f"no live World Bank macro for {country}; no risk score computed "
+                            "(unranked); spread and PD come from the FRED 10Y differential"
+                        )
 
-            pd_1y = proxy_spread / 100 / max(0.01, (1 - recovery))
+            if proxy_spread is not None:
+                pd_1y: float | None = proxy_spread / 100 / max(0.01, (1 - recovery))
+                pd_1y_pct: float | None = pd_1y * 100
+            else:
+                pd_1y = None
+                pd_1y_pct = None
             rows.append(
                 {
                     "country": country,
@@ -311,10 +472,23 @@ class SRSKFunction(BaseFunction):
                     "risk_score": risk_score,
                     "proxy_spread_pct": proxy_spread,
                     "pd_1y_proxy": pd_1y,
-                    "pd_1y_pct": pd_1y * 100,
+                    "pd_1y_pct": pd_1y_pct,
                     "recovery": recovery,
                     "source_mode": source_mode,
                     "as_of": macro.get("as_of"),
+                    "as_of_by_leg": macro.get("as_of_by_leg", {}),
+                    **fred_leg,
+                    "pd_basis": (
+                        None
+                        if pd_1y_pct is None
+                        else (
+                            "fred_yield_differential"
+                            if source_mode.startswith("fred")
+                            else "macro_composite_proxy"
+                        )
+                    ),
+                    "legs_present": len(present),
+                    "legs_total": len(legs),
                     "note": row_note,
                 }
             )
@@ -323,8 +497,6 @@ class SRSKFunction(BaseFunction):
             sources.append("worldbank")
         if ust_y is not None and any(r["source_mode"].startswith("fred") for r in rows):
             sources.append("fred")
-        if not sources:
-            sources.append("sovereign_risk_model")
 
         # Honest outage only when NOTHING real came back.
         if wb_success == 0 and ust_y is None:
@@ -352,11 +524,73 @@ class SRSKFunction(BaseFunction):
                     "field_dictionary": self._field_dictionary(),
                     "next_actions": [
                         "Retry once World Bank api.worldbank.org is reachable.",
-                        "Optionally configure a FRED API key to add real 10Y yield differentials.",
+                        "FRED 10Y differentials need fred.stlouisfed.org reachable (keyless CSV; "
+                        "a FRED API key is optional).",
                     ],
                 },
                 sources=["worldbank"],
-                warnings=warnings or ["worldbank: no live observations returned"],
+                warnings=[
+                    *warnings,
+                    *([] if any("worldbank" in w.lower() for w in warnings)
+                      else ["worldbank: no live observations returned"]),
+                ],
+                metadata={
+                    "live": False,
+                    "fallback": False,
+                    "wb_network_failures": wb_network_failures,
+                },
+            )
+
+        # No requested sovereign was priced at all (no live World Bank macro and
+        # no FRED spread): there is no value to report, so return an explicit
+        # empty or provider_unavailable state rather than an 'ok' result.
+        if wb_success == 0 and not any(r["proxy_spread_pct"] is not None for r in rows):
+            unpriced = ", ".join(r["country"] for r in rows)
+            outage = wb_network_failures > 0
+            if outage:
+                reason = (
+                    f"World Bank Open Data was unreachable for {unpriced} and no FRED 10Y spread "
+                    "priced them; no risk score, spread or PD was computed."
+                )
+            else:
+                reason = (
+                    f"World Bank returned no live macro observations for {unpriced} and no FRED "
+                    "10Y spread priced them; no risk score, spread or PD was computed."
+                )
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "provider_unavailable" if outage else "empty",
+                    "reason": reason,
+                    "rows": [],
+                    "summary": {
+                        "countries": 0,
+                        "recovery": recovery,
+                        "formula": "PD ~= spread / (1 - recovery)",
+                    },
+                    "methodology": (
+                        "SRSK ranks sovereigns by a 0-100 composite macro risk score built from "
+                        "keyless World Bank fundamentals. No requested sovereign had a live macro "
+                        "score or a FRED spread, so no rank, spread or PD is reported."
+                    ),
+                    "field_dictionary": self._field_dictionary(),
+                    "next_actions": [
+                        (
+                            "Retry once api.worldbank.org is reachable."
+                            if outage
+                            else "Check the requested country codes (ISO-2, for example TR or DE)."
+                        ),
+                        "FRED 10Y differentials need fred.stlouisfed.org reachable (keyless CSV; "
+                        "a FRED API key is optional).",
+                    ],
+                },
+                sources=[],
+                warnings=[
+                    *warnings,
+                    *([] if any("worldbank" in w.lower() for w in warnings)
+                      else [f"worldbank: no live observations for {unpriced}"]),
+                ],
                 metadata={
                     "live": False,
                     "fallback": False,
@@ -365,17 +599,32 @@ class SRSKFunction(BaseFunction):
             )
 
         # Rank: highest risk first for the bar ladder / cards.
-        scored = [r for r in rows if r.get("risk_score") is not None]
-        highest = max(scored, key=lambda r: r["risk_score"]) if scored else (
-            max(rows, key=lambda r: r["pd_1y_pct"]) if rows else None
-        )
+        # Rows without a live risk score stay unranked and never lead the cards,
+        # even when a FRED differential gives them a spread and PD.
+        # The card is "Highest PD": pick the largest PD among scored rows, not the
+        # largest composite score (FRED spreads can reorder the two).
+        # Partial-coverage rows (fewer than all legs) are averaged over a different
+        # set of factors, so they never lead the card over a full-coverage country.
+        scored = [
+            r for r in rows
+            if r.get("risk_score") is not None
+            and r.get("pd_1y_pct") is not None
+            and not _is_partial(r)
+        ]
+        highest = max(scored, key=lambda r: r["pd_1y_pct"]) if scored else None
 
-        as_of = next((r.get("as_of") for r in rows if r.get("as_of")), None)
+        # data_mode names what actually priced the rows: live World Bank macro,
+        # or (with no macro score at all) live FRED 10Y differentials only.
+        data_mode = "live_official" if wb_success else "live"
+        # Card as-of is the stalest row date, so the KPI never overstates freshness.
+        row_dates = [r["as_of"] for r in rows if r.get("as_of")]
+        as_of = min(row_dates, key=_year_sort_key) if row_dates else None
         cards = {
             "highest_pd_country": highest["country"] if highest else None,
             "highest_pd": round(highest["pd_1y_pct"], 4) if highest else None,
+            "pd_basis": highest["pd_basis"] if highest else None,
             "recovery": recovery,
-            "data_mode": "live_official" if wb_success else "modeled",
+            "data_mode": data_mode,
             "as_of": as_of,
         }
 
@@ -386,13 +635,15 @@ class SRSKFunction(BaseFunction):
                 "status": "ok",
                 "rows": rows,
                 "cards": cards,
-                "data_mode": "live_official" if wb_success else "modeled",
+                "data_mode": data_mode,
                 "summary": {
                     "countries": len(rows),
                     "recovery": recovery,
                     "formula": "PD ~= spread / (1 - recovery)",
+                    "pd_calibration": "uncalibrated",
                     "worldbank_countries": wb_success,
-                    "fallback_countries": sum(1 for r in rows if r["source_mode"] == "sovereign_risk_model"),
+                    "unscored_countries": sum(1 for r in rows if r["risk_score"] is None),
+                    "partial_coverage_countries": sum(1 for r in rows if _is_partial(r)),
                     "highest_risk_country": highest["country"] if highest else None,
                 },
                 "methodology": (
@@ -405,9 +656,14 @@ class SRSKFunction(BaseFunction):
                     "averaged over the legs that returned data. The composite is converted into a "
                     "CDS-style proxy spread (0 score -> ~0.1%, 100 -> ~12%); when a FRED key is "
                     "present the spread is refined to a real country-10Y minus UST-10Y differential "
-                    "(US pinned to zero). The Hull approximation PD_1Y ~= spread / (1 - recovery) then "
-                    "yields a one-year default-probability proxy. Only a full World Bank outage with no "
-                    "FRED key returns provider_unavailable."
+                    "(the US is the benchmark and gets no FRED spread). The Hull approximation PD_1Y ~= spread / (1 - recovery) then "
+                    "yields a one-year default-probability proxy. A country with no live macro data is kept "
+                    "unranked with null spread and PD (source_mode 'unavailable'); no value is substituted. "
+                    "If no requested sovereign can be priced at all, no rows are returned and the status is "
+                    "provider_unavailable (World Bank unreachable) or empty (no observations). "
+                    "The PD is an UNCALIBRATED proxy: it is not implied by CDS or credit ratings and "
+                    "comes from an equal-weight macro score, so read it as a relative ranking, not a "
+                    "market-implied default probability."
                 ),
                 "field_dictionary": self._field_dictionary(),
             },
@@ -416,6 +672,7 @@ class SRSKFunction(BaseFunction):
             metadata={
                 "live": bool(wb_success),
                 "ust_10y_pct": ust_y,
+                "ust_10y_as_of": ust_as_of,
                 "worldbank_countries": wb_success,
                 "wb_network_failures": wb_network_failures,
             },
@@ -432,9 +689,13 @@ class SRSKFunction(BaseFunction):
             "risk_score": "Composite 0-100 sovereign macro risk score (higher = riskier).",
             "proxy_spread_pct": "CDS-style proxy spread in percentage points derived from the risk score (or a real FRED yield differential when available).",
             "pd_1y_proxy": "One-year default-probability proxy as a decimal.",
-            "pd_1y_pct": "One-year default-probability proxy in percent.",
+            "pd_basis": "What the PD is derived from: 'macro_composite_proxy' (linear transform of the uncalibrated World Bank composite) or 'fred_yield_differential' (country minus UST 10Y). Neither is a market-implied PD.",
+            "pd_1y_pct": "One-year default-probability proxy in percent (linear Hull approximation spread/(1-R)). It is not capped at 100; above 100 it is not a probability and only shows how large the spread is relative to the loss given default.",
             "recovery": "Assumed recovery rate in the Hull reduced-form approximation.",
-            "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'sovereign_risk_model' for the fallback spread.",
-            "as_of": "Observation year of the latest World Bank data point used.",
-            "note": "Per-row caveat: missing macro legs, US self-spread, or fallback applied.",
+            "source_mode": "'worldbank' for the macro composite, 'fred'/'fred+worldbank' when a real yield differential refines it, 'unavailable' when no live macro data exists (score, spread and PD are null, row unranked).",
+            "as_of": "Observation year of the OLDEST World Bank leg used for the row (a mixed-age row is labelled with its stalest leg).",
+            "legs_present": "How many of the four macro legs (debt, reserves, current account, inflation) fed this row's composite.",
+            "legs_total": "Number of macro legs in the composite (always 4).",
+            "as_of_by_leg": "Observation year of the latest World Bank point for each macro leg (debt_to_gdp, reserves_months, current_account_gdp, inflation_pct).",
+            "note": "Per-row caveat: missing macro legs, US benchmark note, or unscored (unavailable) row.",
         }

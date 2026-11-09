@@ -12,6 +12,7 @@ import httpx
 import pandas as pd
 
 from showme.engine.core.base_data_source import BaseDataSource, DataKind, DataRequest, DataSourceError
+from showme.providers.base import get_redacted
 
 
 class EODHDAdapter(BaseDataSource):
@@ -36,8 +37,10 @@ class EODHDAdapter(BaseDataSource):
         if not self.api_key:
             raise DataSourceError("EODHD_API_KEY not set")
         client = await self._client_()
-        r = await client.get(path, params={**params, "api_token": self.api_key, "fmt": "json"})
-        r.raise_for_status()
+        r = await get_redacted(
+            client, path, params={**params, "api_token": self.api_key, "fmt": "json"},
+            secrets=(self.api_key,),
+        )
         return r.json()
 
     async def fetch(self, request: DataRequest) -> Any:

@@ -83,7 +83,7 @@ def fts() -> FunctionManifest:
                 label="Live mode",
                 control=ControlKind.BOOLEAN,
                 required=False,
-                description="When true the handler hits the EDGAR EFTS endpoint; otherwise a template stub.",
+                description="Default true: searches the live EDGAR EFTS endpoint. false makes no provider call and returns status empty with a reason (no template data).",
             ),
             InputSpec(
                 name="provider_mode",
@@ -145,8 +145,9 @@ def fts() -> FunctionManifest:
             "optionally narrowed by form types and a [date_from, date_to] window. When a symbol "
             "is selected the issuer ticker is prepended to the query so results stay scoped. "
             "Each hit row carries (filing_date, issuer, form_type, excerpt, filing_url) so the "
-            "operator can deep-link into the document. live=false returns a small template stub "
-            "for offline panel rendering without hitting EDGAR."
+            "operator can deep-link into the document. total_hits is the match count EDGAR reports "
+            "(null when not reported). live=false (or reference=true) makes no provider call and "
+            "returns status empty with a reason; no template rows are produced."
         ),
         field_dict={
             "query": FieldDef(description="Resolved query string actually sent to EDGAR EFTS.", source="input"),

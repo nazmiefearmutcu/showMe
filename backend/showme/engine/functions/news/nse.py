@@ -1,14 +1,31 @@
-"""NSE — News Search Engine (Meilisearch backend if available)."""
+"""NSE — News Search Engine (Awareness full-text search).
+
+``q`` runs awareness full-text search over sourced stories (company names work, e.g.
+"Berkshire"). ``symbol`` filters by entity when no ``q`` is given. The quality floor
+is never lowered silently: when nothing matches at ``standard``, the response says
+how many rows sit below it (``hidden_note``) and carries a ``relax`` hint.
+"""
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
-from showme.engine.services.news_intelligence import critical_articles, enrich_articles, symbol_terms
+from showme.engine.data_sources.awareness import AwarenessClient, AwarenessUnavailable
+from showme.engine.functions.news.awareness_news import (
+    bounded_int,
+    choice,
+    client_for,
+    fetch_news,
+    filters_echo,
+    input_required_result,
+    ok_result,
+    story_detail,
+    text_param,
+    unavailable_result,
+)
+from showme.engine.functions.news.cn import normalise_symbol
 
 
 @FunctionRegistry.register
@@ -16,177 +33,79 @@ class NSEFunction(BaseFunction):
     code = "NSE"
     name = "News Search Engine"
     category = "news"
+    description = (
+        "Full-text search over sourced Awareness stories by company name, ticker or topic words, "
+        "over a configurable window, with the quality floor shown rather than silently lowered."
+    )
+
+    _awareness: AwarenessClient | None = None  # test seam; None uses the process client
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        query = params.get("query") or (instrument.symbol if instrument else "")
-        if not query:
-            return FunctionResult(code=self.code, instrument=instrument, data=[],
-                                  warnings=["empty query"])
-        symbol = str(params.get("symbol") or (instrument.symbol if instrument else "") or "").upper()
-        asset_class = str(
-            params.get("asset_class")
-            or getattr(getattr(instrument, "asset_class", None), "value", "")
-            or ""
-        ).upper()
-        sources: list[str] = []
-        results: list = []
-        warnings: list[str] = []
-        live = _truthy(params.get("live_news") or params.get("live"))
-        limit = _int_param(params, "limit", 100)
-        if not live:
-            # 2026-05-17 BugHunt S10: previously this branch emitted a single
-            # fabricated row titled "<query> news search snapshot" and shipped
-            # it as `data` with `sources=["local_news_cache"]`. The legacy
-            # source label does not match SYNTHETIC_SOURCE_MARKERS, so the
-            # server-side live-source guard let the placeholder reach the UI
-            # as a legitimate-looking article. Return an empty result set with
-            # an explicit synthetic-marked source so the response is honestly
-            # reported as "no live provider used" instead of inventing news.
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data=[],
-                sources=["local_news_template"],
-                metadata={
-                    "query": query,
-                    "provider_errors": ["live=false; NSE is search-only and needs live providers"],
-                    "live": False,
-                },
+        client = client_for(self._awareness)
+        story_id = text_param(params.get("story_id"))
+        query = text_param(params.get("q"))
+        symbol = normalise_symbol(params.get("symbol")) if not query else ""
+        if not query and not symbol and not story_id:
+            return input_required_result(
+                self.code,
+                instrument,
+                "NSE needs a search query (q), for example a company name or ticker.",
+                "Type a company name or ticker and search again.",
             )
-        # Try local index first (Meili → SQLite FTS5)
         try:
-            from showme.engine.services.news_index import NewsIndex
-            idx = NewsIndex()
-            results = await asyncio.wait_for(
-                idx.search(
-                    query, start=params.get("start"), end=params.get("end"),
-                    limit=limit,
-                ),
-                timeout=float(params.get("index_timeout", 5)),
-            )
-            if results:
-                sources.append("meilisearch" if idx.meili else "sqlite_fts")
-        except Exception as e:
-            warnings.append(f"news_index: {str(e) or type(e).__name__}")
-        if not results and self.deps.rss:
-            try:
-                timeout = float(params.get("timeout", params.get("news_timeout", 8)))
-                results = await asyncio.wait_for(
-                    self.deps.rss.fetch(DataRequest(
-                        kind=DataKind.NEWS,
-                        extra={
-                            "query": query,
-                            "terms": symbol_terms(symbol, str(query)) if symbol else _query_terms(str(query)),
-                            "optional_terms": [str(query).lower()],
-                            "feed_group": "crypto" if asset_class == "CRYPTO" else "market",
-                            "asset_class": asset_class,
-                            "symbol": symbol,
-                            "collection_timeout_seconds": min(timeout, 4.0),
-                            "per_feed_timeout_seconds": min(timeout, 3.5),
-                            "symbol_feed_timeout_seconds": min(timeout, 4.0),
-                        },
-                        limit=limit,
-                    )),
-                    timeout=timeout,
-                )
-                if results:
-                    sources.append("rss")
-            except Exception as e:
-                warnings.append(f"rss: {str(e) or type(e).__name__}")
-        # GDELT is a slow/rate-limited deep fallback, not the default path.
-        if not results and self.deps.gdelt and _truthy(params.get("include_gdelt") or params.get("deep")):
-            try:
-                results = await asyncio.wait_for(
-                    self.deps.gdelt.fetch(DataRequest(
-                        kind=DataKind.NEWS, extra={"query": query},
-                        start=params.get("start"), end=params.get("end"),
-                        limit=limit,
-                    )),
-                    timeout=float(params.get("timeout", 8)),
-                )
-                sources.append("gdelt")
-                # Index hits for next time
-                try:
-                    from showme.engine.services.news_index import NewsIndex
-                    await NewsIndex().add_articles(results)
-                except Exception:
-                    pass
-            except Exception as e:
-                warnings.append(f"gdelt: {str(e) or type(e).__name__}")
-        threshold = float(params.get("threshold", 70) or 70)
-        ranked = enrich_articles(
-            results,
-            symbol=symbol,
-            query=str(query),
-            asset_class=asset_class,
-            threshold=threshold,
-            limit=limit,
-        )
-        if live and not ranked:
-            return FunctionResult(
-                code=self.code,
-                instrument=instrument,
-                data={
-                    "status": "provider_unavailable",
-                    "reason": f"No live news rows returned for query '{query}'.",
+            if story_id:
+                story, responses = await story_detail(client, story_id)
+                data: dict[str, Any] = {
+                    "status": "ok" if story else "empty",
+                    "story": story,
                     "rows": [],
-                    "next_actions": [
-                        "Try a more specific company, ticker, or topic query.",
-                        "Click Deep to include the slower GDELT fallback when available.",
-                    ],
-                },
-                sources=sources,
-                metadata={
-                    "query": query,
-                    "provider_errors": warnings or ["news providers returned no usable rows"],
-                    "critical_count": 0,
-                    "top_importance_score": 0.0,
-                },
-            )
-        alerts = critical_articles(ranked, threshold=threshold)
-        return FunctionResult(
-            code=self.code,
-            instrument=instrument,
-            data=ranked,
-            sources=sources,
-            metadata={
-                "query": query,
-                "provider_errors": warnings,
-                "critical_count": len(alerts),
-                "top_importance_score": max([float(a.get("importance_score") or 0) for a in ranked], default=0.0),
-            },
-        )
+                    "count": 0,
+                    "next_cursor": None,
+                    "filters": {"story_id": story_id},
+                    "hidden_note": None if story else "story not found in the Awareness service",
+                }
+                return ok_result(self.code, instrument, data, responses)
+
+            hours = bounded_int(params.get("hours"), 720, 1, 1440)
+            limit = bounded_int(params.get("limit"), 50, 1, 200)
+            min_quality = choice(params.get("min_quality"), ("premium", "standard", "low"), "standard")
+            base_query: dict[str, Any] = {"hours": hours, "limit": limit, "q": query}
+            if symbol:
+                base_query["symbols"] = [symbol]
+            response, rows = await fetch_news(client, {**base_query, "min_quality": min_quality})
+            hidden_note = None
+            relax = None
+            if not rows and min_quality == "standard":
+                relax = {"min_quality": "low"}
+                hidden_note = await _lower_floor_note(client, base_query)
+        except AwarenessUnavailable as exc:
+            return unavailable_result(self.code, instrument, exc.reason)
+
+        data = {
+            "status": "ok" if rows else "empty",
+            "query": query,
+            "symbol": symbol,
+            "rows": rows,
+            "count": len(rows),
+            "next_cursor": response.meta.get("next_cursor"),
+            "filters": filters_echo(q=query, symbol=symbol, hours=hours, limit=limit, min_quality=min_quality),
+            "hidden_note": hidden_note,
+            "relax": relax,
+        }
+        if not rows:
+            data["next_actions"] = ["Try the company name instead of a ticker, or widen the hours window."]
+        return ok_result(self.code, instrument, data, [response])
 
 
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _int_param(params: dict[str, Any], name: str, default: int) -> int:
+async def _lower_floor_note(client: AwarenessClient, base_query: dict[str, Any]) -> str:
+    """How many matching rows the standard floor hides (counted, never shown as results)."""
     try:
-        return max(1, int(params.get(name, default) or default))
-    except Exception:
-        return default
-
-
-def _query_terms(query: str) -> list[str]:
-    stop = {"stock", "stocks", "market", "markets", "news", "latest", "price", "prices"}
-    terms = [
-        part.strip().lower()
-        for part in query.replace("/", " ").replace("-", " ").split()
-        if len(part.strip()) >= 3 and part.strip().lower() not in stop
-    ]
-    return terms[:6] or [query.lower()]
-
-
-def _symbol_terms(symbol: str, query: str) -> list[str]:
-    upper = symbol.upper()
-    if upper.endswith("USDT"):
-        base = upper.removesuffix("USDT")
-        names = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
-        return list(dict.fromkeys([base.lower(), names.get(base, ""), *_query_terms(query)]))
-    return list(dict.fromkeys([upper.lower(), *_query_terms(query)]))
+        _, lower_rows = await fetch_news(client, {**base_query, "min_quality": "low"})
+    except AwarenessUnavailable as exc:
+        return f"no rows at quality standard; could not count rows below it ({exc.reason})"
+    if not lower_rows:
+        return "no rows match this search at any quality level in the window"
+    return (
+        f"{len(lower_rows)} row(s) match this search but sit below the standard quality floor and "
+        "are hidden; retry with min_quality=low to include them"
+    )

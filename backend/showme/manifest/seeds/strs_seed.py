@@ -1,9 +1,10 @@
 """STRS — Stress Test Scenarios.
 
-Run portfolio P&L under a curated set of historical or custom scenarios
-(2008 Lehman, 2020 COVID, 1987 crash, Russia 1998, custom). The scenario
-multiselect and the per-scenario factor magnitudes are exposed as
-MODEL_ASSUMPTION controls — stress tests live or die by their assumptions.
+Run portfolio P&L under hand-set parametric stress scenarios or a custom shock
+vector. Bond funds in the GFC 2008 and COVID 2020 windows use their measured
+window return. The scenario multiselect and the per-scenario magnitudes are
+exposed as MODEL_ASSUMPTION controls — stress tests live or die by their
+assumptions.
 """
 from __future__ import annotations
 
@@ -41,11 +42,13 @@ def strs() -> FunctionManifest:
         name="Stress Test Scenarios",
         category=Category.PORTFOLIO,
         intent=(
-            "Replay the portfolio through a curated set of historical "
-            "stress scenarios (1987, 1998, 2008, 2020-COVID) or a custom "
-            "factor-shock vector, reporting worst-case P&L per scenario. "
-            "The scenario set and shock magnitudes are model_assumption "
-            "controls — there is no defensible default."
+            "Apply a set of hand-set parametric stress shocks (by symbol, "
+            "sector or asset class) or a custom shock vector to today's "
+            "positions, reporting P&L per scenario and the worst case. The "
+            "engine does not use return history; the one measured input is "
+            "each bond fund's own window return in the GFC 2008 and COVID 2020 "
+            "scenarios. The scenario set and shock magnitudes are "
+            "model_assumption controls — there is no defensible default."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -60,40 +63,25 @@ def strs() -> FunctionManifest:
         ],
         inputs=[
             InputSpec(
-                name="portfolio_source",
-                label="Portfolio source",
-                control=ControlKind.SELECT,
-                required=True,
-                description="PORT (live broker positions) or custom basket.",
-                options=["port", "custom"],
-            ),
-            InputSpec(
-                name="positions",
-                label="Custom positions",
-                control=ControlKind.CONSTRAINT_SET,
-                required=False,
-                description="When portfolio_source=custom.",
-                depends_on=["portfolio_source"],
-            ),
-            InputSpec(
                 name="scenarios",
                 label="Scenarios",
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
                 description=(
-                    "Curated historical stress windows plus custom shocks. "
-                    "The user must explicitly pick at least one."
+                    "Named stress scenarios to run (hand-set shocks; bond funds in "
+                    "GFC_2008 and COVID_2020 take their measured window return). "
+                    "These keys are the only scenarios the engine runs; custom shocks "
+                    "use action=custom. The user must explicitly pick at least one."
                 ),
                 options=[
-                    "black_monday_1987",
-                    "asia_1997",
-                    "russia_ltcm_1998",
-                    "dotcom_2000",
-                    "lehman_2008",
-                    "eurozone_2011",
-                    "covid_2020",
-                    "rates_2022",
-                    "custom",
+                    "GFC_2008",
+                    "COVID_2020",
+                    "CHINA_2015",
+                    "RATE_SHOCK_300BP",
+                    "TECH_BUST_2022",
+                    "USD_STRENGTH",
+                    "OIL_SPIKE",
+                    "CRYPTO_WINTER",
                 ],
             ),
             InputSpec(
@@ -102,8 +90,9 @@ def strs() -> FunctionManifest:
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
                 description=(
-                    "Per-scenario scale factor (1.0 = historical replay; "
-                    "2.0 = doubled severity). User owns the choice."
+                    "Scale factor applied to every hand-set shock (1.0 = base "
+                    "calibration; 2.0 = doubled severity; a position cannot lose "
+                    "more than 100%). User owns the choice."
                 ),
             ),
             InputSpec(
@@ -112,40 +101,30 @@ def strs() -> FunctionManifest:
                 control=ControlKind.MODEL_ASSUMPTION,
                 required=True,
                 description=(
-                    "How shocks propagate across the portfolio: factor "
-                    "model (Fama-French-style), historical replay, or "
-                    "asset-class mapping."
+                    "How shocks are looked up for each position: the first "
+                    "match of symbol, then sector, then asset class. This is the "
+                    "only method the engine runs."
                 ),
-                options=["factor_model", "historical_replay", "asset_class_map"],
+                options=["hand_set_lookup"],
             ),
             InputSpec(
                 name="horizon_days",
                 label="Horizon",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Days over which the shock unfolds.",
+                description=(
+                    "Days over which a custom shock unfolds. Named scenarios keep "
+                    "the horizon in their catalog entry and ignore this control."
+                ),
                 min=1,
                 max=60,
                 step=1,
                 unit="days",
             ),
-            InputSpec(
-                name="provider_mode",
-                label="Data mode",
-                control=ControlKind.PROVIDER_MODE,
-                required=False,
-                description="Preferred data mode for the price history.",
-                options=[
-                    DataMode.DELAYED_REFERENCE.value,
-                    DataMode.CACHED_SNAPSHOT.value,
-                ],
-            ),
         ],
         defaults={
-            "portfolio_source": "port",
-            "propagation": "historical_replay",
+            "propagation": "hand_set_lookup",
             "horizon_days": 5,
-            "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
             primary="internal",
@@ -202,28 +181,33 @@ def strs() -> FunctionManifest:
             ],
         ),
         methodology=(
-            "STRS replays each selected scenario against the current "
-            "portfolio. Historical replay extracts the actual realized "
-            "asset-class returns from the named window (e.g. 2008-09-15 to "
-            "2008-12-15 for Lehman) and applies them to today's positions, "
-            "scaled by the per-scenario magnitude. Factor model decomposes "
-            "current positions into factor exposures (equity-beta, "
-            "credit-spread, rates-duration, USD-DXY) and shocks those "
-            "factors by the scenario's realized factor moves. "
-            "asset_class_map applies one shock per asset class (e.g. SPX "
-            "-30%, credit -15%, gold +10%). All three propagation methods "
-            "are exposed so the user can compare. Worst_case is the "
-            "scenario with the largest realized loss; the manifest forces "
-            "the user to pick scenarios + magnitudes — no silent defaults."
+            "STRS applies hand-set parametric shocks to today's positions. Each "
+            "scenario holds decimal shocks keyed by symbol, sector or asset class; "
+            "a position takes the first match in that order. Treasury and "
+            "aggregate bond funds (TLT, IEF, SHY, AGG and similar) take the BOND "
+            "row in scenarios without a measured window; a scenario with no BOND "
+            "row (CRYPTO_WINTER, or a custom shock without one) leaves them unshocked "
+            "and reported as unavailable, never the equity-style ETF/FUND shock or 0. In GFC_2008 and "
+            "COVID_2020 they take their own measured window return: the price "
+            "return of that fund from the window's first to last close, fetched "
+            "from price history. If that return cannot be obtained the fund is "
+            "left unshocked and reported as unavailable, never estimated. The "
+            "shocks are calibrations to each scenario's narrative, not replays of "
+            "the named windows. Each shock is multiplied by `scale` and floored at "
+            "-100% per position; floored positions are listed in warnings. "
+            "Worst_case is the scenario with the largest loss. `scenarios` selects "
+            "which engine scenarios run (a key the engine does not run is reported "
+            "in warnings, never dropped silently); `scenario_magnitudes` is the scale. "
+            "The engine applies a single shock method."
         ),
         formula_dict={
-            "HistoricalReplay": Formula(
-                expression=r"\Delta = w^\top r_{scenario\_window} \cdot MV \cdot magnitude",
-                variables={"r": "Realized returns during scenario", "MV": "Market value"},
-            ),
-            "FactorShock": Formula(
-                expression=r"\Delta = B w^\top f_{scenario} \cdot MV \cdot magnitude",
-                variables={"B": "Factor exposure matrix", "f": "Scenario factor shocks"},
+            "ParametricShock": Formula(
+                expression=r"\Delta_i = \max(s_{k(i)} \cdot scale,\ -1) \cdot MV_i",
+                variables={
+                    "s_k": "Hand-set scenario shock for the matched symbol, sector or asset class",
+                    "k(i)": "First match of symbol, sector, then asset-class bucket",
+                    "MV": "Market value",
+                },
             ),
             "WorstCase": Formula(
                 expression=r"WC = \min_s \Delta_s",

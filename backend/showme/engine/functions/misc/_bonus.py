@@ -1,6 +1,7 @@
 """Bonus fonksiyonlar — Plan §26.2 'Spec'te olmayan' davetine cevap.
 
-LITM — Litigation Monitor (SEC EDGAR 8-K Item 1.03 / 1.04 + 10-Q legal proceedings)
+LITM — Litigation Monitor (8-K items 1.03 / 1.04 litigation; 3.03 / 5.02 / 5.03 governance, labelled apart;
+       from the Awareness SEC filing index, via CACT)
 MOSS — Most Volatile (annualized vol ranking)
 CHGS — Chart Studies preset (TECH'in hızlı çağrı sürümü)
 APPL — Applicable Industry/Sector codes (GICS lookup)
@@ -15,83 +16,298 @@ from typing import Any
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.functions.calendar._common import NO_LIVE_SOURCE, UNAVAILABLE_NEXT_ACTION
 from showme.engine.functions.equity._common import EXCHANGE_LEGEND, reference_profile
 
 
 @FunctionRegistry.register
 class LITMFunction(BaseFunction):
-    """LITM — Litigation Monitor."""
+    """LITM — Litigation Monitor. Reads only CACT's Awareness 8-K events (events_8k)."""
     code = "LITM"
     name = "Litigation Monitor"
     asset_classes = (AssetClass.EQUITY,)
     category = "equity"
-    description = "Recent 8-K Item 1.03/1.04/3.03 filings — bankruptcy, mine safety, security holder rights."
+    description = "Recent 8-K items 1.03/1.04 (bankruptcy, mine safety) within the lookback; 3.03/5.02/5.03 governance items are labelled apart."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         if instrument is None:
             raise ValueError("LITM requires an instrument symbol")
-        # Default-polarity flip (2026-09-08): LITM now hits the live SEC
-        # EDGAR feed by default; ``reference=true`` opts back into the
-        # labelled local model template.
+        # Default-polarity flip (2026-09-08): LITM now reads the live 8-K feed by default;
+        # ``reference=true`` opts back into the labelled local model template.
         live = not _truthy(params.get("reference"))
-        if not live or instrument.asset_class.value != "EQUITY" or not self.deps.sec_edgar:
-            reason = (
-                "LITM live SEC EDGAR feed is not applicable for this asset class."
-                if instrument.asset_class.value != "EQUITY"
-                else "SEC EDGAR adapter unavailable; litigation monitor is showing its labelled local model."
-            )
-            warnings = [reason] if live else []
+        if not live or instrument.asset_class.value != "EQUITY":
+            reason = "LITM live 8-K feed is not applicable for this asset class."
+            warnings = [reason] if live and instrument.asset_class.value != "EQUITY" else []
             return FunctionResult(code=self.code, instrument=instrument,
                                   data=_fallback_litm(instrument),
                                   sources=["litigation_monitor_model"],
                                   warnings=warnings,
                                   metadata={"live": False, "fallback": True,
                                             "data_mode": "modeled"})
-        from showme.engine.functions.equity.cact import CACTFunction
-        cact = CACTFunction(self.deps)
-        timeout = max(1.0, min(float(params.get("sec_timeout", 3)), 5.0))
-        res = await cact.execute(instrument=instrument, sec_timeout=timeout,
-                                 yfinance_timeout=max(1.0, min(float(params.get("yfinance_timeout", 3)), 5.0)),
-                                 max_documents=params.get("max_documents", 1))
-        events = (res.data or {}).get("events_8k", []) or []
-        # Narrow filter for litigation/governance items.
-        keep = {"1.03", "1.04", "3.03", "5.02", "5.03"}
-        litm = [e for e in events if e.get("code") in keep]
+        from showme.engine.functions.equity.cact import _FILINGS_MAX_DAYS, CACTFunction
+        # LITM#2: the lookback input bounds the scan. CACT's Awareness 8-K window is at most
+        # _FILINGS_MAX_DAYS, so a longer lookback is capped to that window and a warning says so.
+        months = _lookback_months(params.get("months"))
+        lookback_days = round(months * 30.44)
+        coverage_days = min(lookback_days, _FILINGS_MAX_DAYS)
+        window_from = (datetime.now(timezone.utc).date() - timedelta(days=coverage_days)).isoformat()
+        warnings: list[str] = []
+        if lookback_days > _FILINGS_MAX_DAYS:
+            warnings.append(f"8-K filings cover the most recent {_FILINGS_MAX_DAYS} days; "
+                            f"the {months}-month lookback is capped to that window.")
+        # Scan every 8-K filing CACT reports in the window, not just the newest one.
+        scan_limit = max(1, min(int(params.get("max_documents") or _LITM_SCAN_LIMIT), _LITM_SCAN_LIMIT))
+        res = await CACTFunction(self.deps).execute(
+            instrument=instrument,
+            days_back=coverage_days,
+            yfinance_timeout=params.get("yfinance_timeout", 3),
+        )
+        cact_data = res.data or {}
+        cact_status = str(cact_data.get("status") or "")
+        filings_error = cact_data.get("filings_error")
+        if cact_status == "provider_unavailable" or filings_error:
+            reason = str(filings_error or cact_data.get("reason") or "Awareness filings feed is unavailable.")
+            return _unavailable_result(instrument, reason)
+
+        events = cact_data.get("events_8k") or []
+        scanned = _scan_8k_candidates(events, None, scan_limit)
+        # Undated rows are kept rather than silently dropped from the scan.
+        scanned = [e for e in scanned if _on_or_after(e.get("filing_date"), window_from)]
+        unclassified = sum(1 for e in scanned if not e["item_codes"])
+        item_codes_available = unclassified < len(scanned)
+        keep = _LITM_KEEP_ITEMS
+        litm = []
+        for e in scanned:
+            matched = [c for c in e["item_codes"] if c in keep]
+            if matched:
+                # LITM#3: legal-proceeding items and governance items are labelled apart.
+                category = "litigation" if any(c in _LITM_LITIGATION_ITEMS for c in matched) else "governance"
+                litm.append({**e, "code": ",".join(matched), "matched_codes": matched, "category": category})
+        dates = sorted(str(e["filing_date"]) for e in scanned if e.get("filing_date"))
+        scan_window = {"from": dates[0], "to": dates[-1]} if dates else None
         rows = [{
             "symbol": instrument.symbol,
-            "event_type": e.get("category") or "8-K item",
+            "event_type": f"{e['category']}_item",
+            "category": e["category"],
             "item_code": e.get("code"),
             "filing_date": e.get("filing_date") or e.get("report_date"),
             "severity": "review",
-            "source_mode": "sec_edgar_8k",
+            "source_mode": "awareness_sec_8k",
             "accession": e.get("accession"),
             "document": e.get("document"),
         } for e in litm]
-        if not rows:
+        reason: str | None = None
+        if not scanned:
+            status = "empty"
+            reason = ("The Awareness filings feed has no 8-K filings in the scanned window, so there were no 8-K "
+                      "items to classify; this is not a verified absence of litigation events.")
+            rows = [{
+                "symbol": instrument.symbol,
+                "event_type": "no_8k_filings_in_window",
+                "item_code": None,
+                "filing_date": None,
+                "severity": "none",
+                "source_mode": "awareness_sec_8k",
+                "all_8k_events": 0,
+                "scanned_8k": 0,
+                "scan_window": None,
+            }]
+        elif not item_codes_available:
+            status = "provider_unavailable"
+            rows = [{
+                "symbol": instrument.symbol,
+                "event_type": "item_codes_unavailable",
+                "item_code": None,
+                "filing_date": None,
+                "severity": "unknown",
+                "source_mode": "awareness_sec_8k",
+                "all_8k_events": len(scanned),
+            }]
+            reason = ("Awareness 8-K filing rows carry no item codes, so litigation items cannot be "
+                      "classified; this is not a verified absence of events.")
+        elif not rows:
+            status = "empty"
             rows = [{
                 "symbol": instrument.symbol,
                 "event_type": "no_litigation_event_found",
                 "item_code": None,
                 "filing_date": None,
                 "severity": "none",
-                "source_mode": "sec_edgar_no_matching_8k_item",
-                "all_8k_events": len(events),
+                "source_mode": "awareness_sec_8k",
+                "all_8k_events": len(scanned),
+                "scanned_8k": len(scanned),
+                "scan_window": scan_window,
             }]
+        else:
+            status = "ok"
+        if status == "empty" and unclassified:
+            reason = (f"{unclassified} of {len(scanned)} 8-K filings carry no item codes and could not be "
+                      "classified; the empty result does not cover them.")
+        payload = {
+            "status": status,
+            "rows": rows,
+            "litigation_filings": litm,
+            "kept_item_codes": sorted(keep),
+            "litigation_codes": sorted(_LITM_LITIGATION_ITEMS),
+            "governance_codes": sorted(_LITM_GOVERNANCE_ITEMS),
+            "lookback_months": months,
+            "coverage_days": coverage_days,
+            "window_from": window_from,
+            "all_8k_events": len(scanned),
+            "scanned_8k": len(scanned),
+            "unclassified_8k": unclassified,
+            "scan_window": scan_window,
+            "item_codes_available": item_codes_available,
+            "methodology": (
+                "LITM reads the 8-K item codes of every 8-K filing CACT reports from the Awareness SEC filing "
+                "index (events_8k) dated within the lookback (months, default 24). The filing index covers the "
+                f"most recent {_FILINGS_MAX_DAYS} days, so a longer lookback is capped to that window and a "
+                "warning says so; window_from is the start of the window actually scanned. Items 1.03 and 1.04 "
+                "are kept as category litigation and 3.03, 5.02 and 5.03 as category governance (not legal "
+                "proceedings). An empty result is reported only after the full scan (scanned_8k filings); "
+                "filings without item codes are counted as unclassified, and when no filing carries item codes "
+                "the status is provider_unavailable."
+            ),
+            "field_dictionary": {
+                "item_code": "SEC 8-K item code(s) matched by the filter.",
+                "category": "litigation (items 1.03, 1.04) or governance (items 3.03, 5.02, 5.03).",
+                "event_type": "litigation_item or governance_item, per the category.",
+                "severity": "ShowMe review flag, not legal advice.",
+                "source_mode": "Evidence state for the row (awareness_sec_8k: Awareness SEC filing index).",
+                "scanned_8k": "Number of 8-K filings examined.",
+            },
+        }
+        if reason:
+            payload["reason"] = reason
+            payload["next_actions"] = ([UNAVAILABLE_NEXT_ACTION] if status == "provider_unavailable"
+                                       else ["Retry once the Awareness filings feed returns item codes."])
+        meta = dict(res.metadata or {})
+        if status == "provider_unavailable":
+            meta.update({"live": False, "fallback": True, "data_mode": "provider_unavailable"})
+        sources = [s for s in (res.sources or []) if str(s).startswith("awareness:")] or [NO_LIVE_SOURCE]
         return FunctionResult(code=self.code, instrument=instrument,
-                              data={"status": "ok" if litm else "empty",
-                                     "rows": rows,
-                                     "litigation_filings": litm,
-                                     "kept_item_codes": sorted(keep),
-                                     "all_8k_events": len(events),
-                                     "methodology": "LITM filters recent SEC 8-K event rows for litigation/governance-relevant items 1.03, 1.04, 3.03, 5.02, and 5.03. No-event rows are labelled rather than presented as a legal case.",
-                                     "field_dictionary": {
-                                         "item_code": "SEC 8-K item code.",
-                                         "event_type": "Normalized litigation/governance category.",
-                                         "severity": "ShowMe review flag, not legal advice.",
-                                         "source_mode": "SEC evidence state for the row.",
-                                     }},
-                              sources=res.sources or ["litigation_monitor_model"],
-                              metadata={"provider_errors": (res.metadata or {}).get("provider_errors", [])})
+                              data=payload,
+                              sources=sources,
+                              warnings=warnings,
+                              metadata=meta)
+
+
+def _unavailable_result(instrument: Instrument, reason: str) -> FunctionResult:
+    """Honest envelope when CACT could not read the Awareness 8-K filings at all."""
+    payload = {
+        "status": "provider_unavailable",
+        "reason": reason,
+        "rows": [{
+            "symbol": instrument.symbol,
+            "event_type": "provider_unavailable",
+            "item_code": None,
+            "filing_date": None,
+            "severity": "unknown",
+            "source_mode": "awareness_sec_8k",
+        }],
+        "litigation_filings": [],
+        "kept_item_codes": sorted(_LITM_KEEP_ITEMS),
+        "all_8k_events": 0,
+        "scanned_8k": 0,
+        "unclassified_8k": 0,
+        "scan_window": None,
+        "item_codes_available": False,
+        "next_actions": [UNAVAILABLE_NEXT_ACTION],
+    }
+    return FunctionResult(code="LITM", instrument=instrument, data=payload,
+                          sources=[NO_LIVE_SOURCE],
+                          warnings=[reason],
+                          metadata={"fallback": True, "live": False, "data_mode": "provider_unavailable",
+                                    "provider": "awareness", "provider_errors": [reason]})
+
+
+_LITM_SCAN_LIMIT = 1000
+# Narrow filter: only these 8-K item codes count as litigation/governance events.
+keep = {"1.03", "1.04", "3.03", "5.02", "5.03"}
+_LITM_KEEP_ITEMS = frozenset(keep)
+# LITM#3: 1.03 (bankruptcy/receivership) and 1.04 (mine safety) are legal-proceeding
+# items; 3.03, 5.02 and 5.03 are security-holder-rights and officer/charter changes.
+_LITM_LITIGATION_ITEMS = frozenset({"1.03", "1.04"})
+_LITM_GOVERNANCE_ITEMS = frozenset({"3.03", "5.02", "5.03"})
+_LITM_LOOKBACK_DEFAULT = 24
+_LITM_LOOKBACK_RANGE = (3, 60)
+
+
+def _lookback_months(value: Any) -> int:
+    """LITM#2: the seed's months input (3-60, default 24), clamped to that range."""
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: float('inf') parses but cannot be converted to int.
+        parsed = _LITM_LOOKBACK_DEFAULT
+    return max(_LITM_LOOKBACK_RANGE[0], min(_LITM_LOOKBACK_RANGE[1], parsed))
+
+
+def _on_or_after(value: Any, cutoff_iso: str) -> bool:
+    """True when a filing is dated on or after the lookback start. A row without a
+    parseable date is kept rather than silently dropped from the scan."""
+    text = str(value or "")[:10]
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return True
+    return text >= cutoff_iso
+
+
+def _split_item_codes(raw: Any) -> list[str]:
+    if not isinstance(raw, str):
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _scan_8k_candidates(events: list[dict[str, Any]], frame: Any, scan_limit: int) -> list[dict[str, Any]]:
+    """Every 8-K candidate with its item codes, one per accession.
+
+    ``events`` is CACT's ``events_8k`` (one entry per filing, all item codes in ``item_codes``). ``frame`` is
+    an optional EDGAR-shaped filing frame; when given, its rows win over event rows for the same accession.
+    Rows without a code list contribute no codes.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if frame is not None and hasattr(frame, "iterrows"):
+        eight_k = frame[frame["form"].astype(str).str.startswith("8-K")].head(scan_limit)
+        for _, r in eight_k.iterrows():
+            acc = str(r.get("accessionNumber") or "")
+            seen.add(acc)
+            out.append({
+                "accession": acc or None,
+                "filing_date": r.get("filingDate"),
+                "report_date": r.get("reportDate"),
+                "document": r.get("primaryDocument"),
+                "item_codes": _split_item_codes(r.get("items")),
+            })
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        # A placeholder ({status: provider_unavailable}) is not a filing and must never count as a
+        # scanned 8-K.
+        if str(e.get("status") or "").lower() in {"provider_unavailable", "unavailable", "empty"} or not (
+            e.get("accession") or e.get("filing_date") or e.get("document")
+        ):
+            continue
+        acc = str(e.get("accession") or "")
+        if acc and acc in seen:
+            continue
+        if acc:
+            seen.add(acc)
+        raw_codes = e.get("item_codes")
+        if isinstance(raw_codes, list):
+            codes = [str(c).strip() for c in raw_codes if str(c).strip()]
+        else:
+            codes = _split_item_codes(e.get("items")) or _split_item_codes(e.get("code"))
+        out.append({
+            "accession": e.get("accession"),
+            "filing_date": e.get("filing_date"),
+            "report_date": e.get("report_date"),
+            "document": e.get("document"),
+            "item_codes": codes,
+        })
+    return out[:scan_limit]
 
 
 def _fallback_litm(instrument: Instrument) -> dict[str, Any]:
@@ -114,7 +330,7 @@ def _fallback_litm(instrument: Instrument) -> dict[str, Any]:
             "status": status,
         }],
         "all_8k_events": 0,
-        "methodology": "LITM requires SEC 8-K filing/event rows and filters them by litigation/governance item code.",
+        "methodology": "LITM requires Awareness 8-K filing rows and filters them by litigation/governance item code.",
     }
 
 
@@ -212,7 +428,8 @@ class MOSSFunction(BaseFunction):
                     rets = df["close"].pct_change().dropna()
                     if rets.empty:
                         return {"symbol": s, "error": "not enough returns"}
-                    vol = float(rets.std() * (252 ** 0.5))
+                    periods = _moss_periods_per_year(inst.asset_class if inst else None)
+                    vol = float(rets.std() * (periods ** 0.5))
                     return {
                         "row": {
                             "symbol": s,
@@ -220,12 +437,13 @@ class MOSSFunction(BaseFunction):
                             "vol_annualized": vol,
                             "vol": vol,
                             "vol_pct": vol * 100,
+                            "periods_per_year": periods,
                             "samples": int(len(rets)),
                             "last_close": float(df["close"].iloc[-1]),
                             "start": _date_label(df.index[0]),
                             "end": _date_label(df.index[-1]),
                         },
-                        "history": _moss_history(df, s),
+                        "history": _moss_history(df, s, periods),
                     }
                 except Exception as exc:  # noqa: BLE001
                     return {"symbol": s, "error": str(exc)}
@@ -300,11 +518,32 @@ class MOSSFunction(BaseFunction):
         histories = {r["row"]["symbol"]: r.get("history", []) for r in good}
         top_symbol = rows[0]["symbol"]
         history = histories.get(top_symbol, [])
+        # MOSS#1: coverage is counted on the full universe before the limit cut,
+        # so a partial board can never pass as a complete ranking.
+        coverage = {
+            "universe_size": len(symbols),
+            "resolved": len(good),
+            "unavailable": len(unavailable_rows),
+            "budget_seconds": screen_timeout,
+            "complete": not unavailable_rows,
+        }
         rows = [*rows, *unavailable_rows][:limit]
+        payload = _moss_payload(rows, history, symbols, days, live=True)
+        payload["scan_coverage"] = coverage
+        if unavailable_rows:
+            payload["status"] = "partial"
+            payload["reason"] = (
+                f"Scan covered {len(good)} of {len(symbols)} symbols inside the "
+                f"{screen_timeout:g}s budget; the other {len(unavailable_rows)} are unavailable "
+                "rows and are not ranked."
+            )
+            payload["next_actions"] = [
+                "Rerun the scan to fill the remaining symbols, or narrow the universe.",
+            ]
         return FunctionResult(
             code=self.code,
             instrument=None,
-            data=_moss_payload(rows, history, symbols, days, live=True),
+            data=payload,
             sources=["yfinance"],
             metadata={
                 "universe_size": len(symbols),
@@ -339,33 +578,69 @@ class CHGSFunction(BaseFunction):
         if instrument is None:
             raise ValueError("CHGS requires an instrument symbol")
         # Default-polarity flip (2026-09-08): CHGS defers to the live TECH
-        # studies by default; ``reference=true`` serves the labelled
-        # synthetic chart template.
+        # studies by default. Honesty (CHGS#1): ``reference=true`` used to
+        # serve a synthetic 10-bar template with constant RSI/SMA values; it
+        # now returns an explicit empty state with no figures.
         if _truthy(params.get("reference")):
-            rows = _chart_template(instrument.symbol)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
                 data={
-                    "status": "reference",
-                    "data_mode": "modeled",
+                    "status": "empty",
+                    "data_mode": "empty",
                     "symbol": instrument.symbol,
-                    "last": rows[-1]["close"],
-                    "rows": rows,
-                    "rsi_14": 54.2,
-                    "sma_20": rows[-1]["close"] * 0.985,
-                    "sma_50": rows[-1]["close"] * 0.962,
+                    "rows": [],
+                    "bars": [],
+                    "indicators": {},
+                    "summary": {},
+                    "reason": "reference_mode_has_no_figures",
+                    "next_actions": ["Turn reference mode off to load live TECH studies"],
                 },
-                metadata={"alias_of": "TECH", "live": False, "data_mode": "modeled"},
-                sources=["showme_chart_model"],
+                metadata={"live": False, "data_mode": "empty"},
+                sources=[],
+                warnings=[
+                    "reference mode ships no chart figures; nothing was modelled or fabricated"
+                ],
             )
         from showme.engine.functions.chart.tech import TECHFunction
+        tech_params = dict(params)
+        # CHGS#2: the router injects a routed agent default ``limit=6`` into
+        # every call. TECH reads ``limit`` as the bar tail and clamps it to
+        # 60..5000, so a 1Y request came back as 60 bars (~3 months). CHGS has
+        # no tail/limit input of its own; its window is driven by ``days``, so
+        # the leaked limit is dropped and TECH's manifest tail default applies.
+        # An explicit ``tail``/``bars`` from the caller still wins.
+        if "tail" not in tech_params and "bars" not in tech_params:
+            tech_params.pop("limit", None)
         tech = TECHFunction(self.deps)
-        result = await tech.execute(instrument=instrument, **params)
+        result = await tech.execute(instrument=instrument, **tech_params)
+        data = result.data
+        if not data:
+            # Honesty (CHGS#5): TECH answers an empty envelope with no status
+            # when no OHLCV adapter is wired. CHGS names that outage explicitly
+            # so an empty body never reads as data.
+            data = {
+                "status": "provider_unavailable",
+                "rows": [],
+                "reason": "; ".join(result.warnings) or "no price data provider is configured",
+                "next_actions": ["Configure a price provider or try again later."],
+            }
+        else:
+            # CHGS#5: the generic card renderer reads top-level keys only, so
+            # the card slots get copies of the TECH scalars they name. Values
+            # are copied from the live TECH envelope, never derived here.
+            summary = data.get("summary") or {}
+            data = {
+                **data,
+                "last_price": summary.get("last_price"),
+                "rsi": summary.get("rsi"),
+                "data_mode": (result.metadata or {}).get("data_mode"),
+            }
+        data = _chgs_contract_keys(data)
         return FunctionResult(
             code=self.code,
             instrument=result.instrument,
-            data=result.data,
+            data=data,
             metadata={**(result.metadata or {}), "alias_of": "TECH"},
             sources=result.sources,
             warnings=result.warnings,
@@ -386,19 +661,23 @@ class APPLFunction(BaseFunction):
         # Default-polarity flip (2026-09-08): APPL resolves the live
         # provider taxonomy by default; ``reference=true`` serves the
         # bundled crosswalk.
-        live = not _truthy(params.get("reference"))
+        reference = _truthy(params.get("reference"))
+        live = (not reference) and _truthy(params.get("live", True))
         if not live or not self.deps.yfinance:
-            reason = (
-                "yfinance adapter not configured; taxonomy fell back to bundled defaults"
-                if not self.deps.yfinance
-                else "reference=true; serving bundled taxonomy crosswalk"
-            )
+            if reference:
+                reason = "reference=true; serving bundled taxonomy crosswalk"
+            elif not live:
+                reason = "live=false; serving bundled taxonomy template"
+            else:
+                reason = "yfinance adapter not configured; taxonomy fell back to bundled defaults"
             warnings = [reason] if (live and not self.deps.yfinance) else []
+            status = "reference_only" if (reference or not live) else "provider_unavailable"
+            template = _taxonomy_template(instrument, status, reason)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_taxonomy_template(instrument),
-                sources=["taxonomy_model"],
+                data=template,
+                sources=_appl_template_sources(template),
                 metadata={"live": False, "fallback": True,
                           "data_mode": "reference",
                           "provider_errors": [reason]},
@@ -415,60 +694,153 @@ class APPLFunction(BaseFunction):
                 timeout=timeout + 1,
             )
         except Exception as exc:
+            reason = f"yfinance refdata failed ({type(exc).__name__}); no live classification returned"
+            template = _taxonomy_template(instrument, "provider_unavailable", reason)
             return FunctionResult(
                 code=self.code,
                 instrument=instrument,
-                data=_taxonomy_template(instrument),
-                sources=["taxonomy_model"],
+                data=template,
+                sources=_appl_template_sources(template),
                 metadata={"live": False, "fallback": True, "data_mode": "reference",
-                          "provider_errors": [f"yfinance: {exc}"]},
+                          "provider_errors": [f"yfinance: {str(exc) or type(exc).__name__}"]},
             )
         profile = reference_profile(instrument.symbol)
         rows = _taxonomy_rows(instrument, rd.sector, rd.industry, rd.country, rd.currency, rd.exchange, profile)
+        # APPL#2: the GICS/NAICS/ICB crosswalk is bundled per symbol only.
+        crosswalk_used = any(r.get("source_mode") == "reference_taxonomy_crosswalk" for r in rows)
+        # APPL#1: CIK / SIC / fiscal year end / latest filings from SEC EDGAR.
+        sec_timeout = max(1.0, min(float(params.get("sec_timeout", 4)), 6.0))
+        ids, sec_error = await _appl_sec_identifiers(self.deps.sec_edgar, instrument.symbol, sec_timeout)
+        rows.extend(_appl_identifier_rows(ids))
+        live_sources = ["yfinance"]
+        if crosswalk_used:
+            live_sources.append("taxonomy_crosswalk_static")
+        if ids["cik"]:
+            live_sources.append("sec_edgar")
         return FunctionResult(code=self.code, instrument=instrument,
                               data={"status": "ok",
                                      "sector": rd.sector, "industry": rd.industry,
                                      "country": rd.country, "currency": rd.currency,
                                      "exchange": rd.exchange,
                                      "exchange_name": EXCHANGE_LEGEND.get(str(rd.exchange or ""), rd.exchange),
+                                     "crosswalk_status": "bundled" if crosswalk_used else "not_bundled",
+                                     "cik": ids["cik"],
+                                     "sic_code": ids["sic_code"],
+                                     "sic_description": ids["sic_description"],
+                                     "fiscal_year_end": ids["fiscal_year_end"],
+                                     "latest_filings": ids["latest_filings"],
                                      "rows": rows,
                                      "peers": [{"symbol": s, "peer_set": "reference_sector_peer"} for s in profile.get("peers", [])],
-                                     "methodology": "APPL combines live provider sector/industry fields with a labelled taxonomy crosswalk for GICS/NAICS/ICB-style hierarchy where available. Exchange codes are expanded for end-user readability.",
+                                     "methodology": "APPL combines live provider sector/industry fields and keyless SEC EDGAR identifiers (CIK, SIC, fiscal year end, latest 10-K/10-Q/8-K filings) with a labelled GICS/NAICS/ICB crosswalk only where one is bundled for the symbol (crosswalk_status). Exchange codes are expanded for end-user readability.",
                                      "field_dictionary": {
                                          "level": "Taxonomy level or provider field.",
                                          "classification": "Human-readable classification value.",
-                                         "source_mode": "live_yfinance or labelled reference taxonomy crosswalk.",
+                                         "source_mode": "live_yfinance, sec_edgar_submissions, or labelled reference taxonomy crosswalk.",
+                                         "crosswalk_status": "bundled when a static GICS/NAICS/ICB crosswalk exists for the symbol, else not_bundled.",
                                      }},
-                              sources=["yfinance"],
+                              sources=live_sources,
+                              warnings=[sec_error] if sec_error else [],
                               metadata={"live": True, "data_mode": "live_yfinance"})
 
 
-def _taxonomy_template(instrument: Instrument) -> dict[str, Any]:
-    asset_class = instrument.asset_class.value
-    if asset_class == "CRYPTO":
-        sector, industry, exchange, currency = "Digital Assets", "Cryptoasset", "Global", "USD"
-    elif asset_class == "FX":
-        sector, industry, exchange, currency = "Foreign Exchange", "Currency Pair", "OTC", None
-    elif asset_class == "COMMODITY":
-        sector, industry, exchange, currency = "Commodities", "Futures/Spot Commodity", "Global", "USD"
-    elif asset_class in {"EQUITY", "ETF"}:
-        sector, industry, exchange, currency = "Equity", "Listed Security", "Exchange", "USD"
-    else:
-        sector, industry, exchange, currency = "Market", asset_class.title(), "Global", None
+_APPL_FILING_FORMS = ("10-K", "10-Q", "8-K")
+
+
+def _appl_template_sources(template: dict[str, Any]) -> list[str]:
+    """APPL#4: template payloads name the static crosswalk only when it supplied rows."""
+    sources = ["taxonomy_model"]
+    if template.get("crosswalk_status") == "bundled":
+        sources.append("taxonomy_crosswalk_static")
+    return sources
+
+
+async def _appl_sec_identifiers(sec: Any, symbol: str, timeout: float) -> tuple[dict[str, Any], str | None]:
+    """CIK, SIC, fiscal year end and latest filings from SEC EDGAR (keyless).
+
+    Each field stays None unless its lookup succeeded: nothing is inferred or
+    stubbed. Returns (identifiers, warning-or-None).
+    """
+    out: dict[str, Any] = {"cik": None, "sic_code": None, "sic_description": None,
+                           "fiscal_year_end": None, "latest_filings": []}
+    if sec is None:
+        return out, "sec_edgar adapter not configured; CIK, SIC and fiscal year end not resolved"
+    try:
+        cik = await asyncio.wait_for(sec.cik_for(symbol), timeout=timeout)
+        if not cik:
+            return out, f"sec_edgar: no CIK found for {symbol}"
+        sub = await asyncio.wait_for(sec.submissions(str(cik)), timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - reported as a warning, never raised
+        return out, f"sec_edgar: {type(exc).__name__}: {exc}"[:200]
+    if not isinstance(sub, dict):
+        return out, "sec_edgar: submissions payload was not an object"
+    out["cik"] = str(cik)
+    out["sic_code"] = str(sub.get("sic") or "") or None
+    out["sic_description"] = sub.get("sicDescription") or None
+    out["fiscal_year_end"] = str(sub.get("fiscalYearEnd") or "") or None
+    recent = (sub.get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+
+    def _nth(key: str, i: int) -> Any:
+        lst = recent.get(key) or []
+        return lst[i] if i < len(lst) else None
+
+    filings: list[dict[str, Any]] = []
+    for i, form in enumerate(forms):
+        if str(form or "").upper() not in _APPL_FILING_FORMS:
+            continue
+        filings.append({
+            "form": form,
+            "filing_date": _nth("filingDate", i),
+            "accession": _nth("accessionNumber", i),
+            "document": _nth("primaryDocument", i),
+        })
+        if len(filings) >= 5:
+            break
+    out["latest_filings"] = filings
+    return out, None
+
+
+def _appl_identifier_rows(ids: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for level, key in (("CIK", "cik"), ("SIC", "sic_code"),
+                       ("SIC description", "sic_description"),
+                       ("Fiscal year end (MMDD)", "fiscal_year_end")):
+        value = ids.get(key)
+        if value:
+            rows.append({"level": level, "classification": value, "source_mode": "sec_edgar_submissions"})
+    return rows
+
+
+def _taxonomy_template(instrument: Instrument, status: str, reason: str) -> dict[str, Any]:
+    """Honest no-provider payload: no sector/industry/exchange is invented.
+
+    APPL#3 (review): the old template stamped placeholder classifications
+    ("Equity", "Listed Security", "Exchange", "Global") as data. Those values are
+    now null; only real bundled crosswalk rows and the instrument-registry asset
+    class remain in ``rows``.
+    """
+    profile = reference_profile(instrument.symbol)
+    rows = _taxonomy_rows(instrument, None, None, None, None, None, profile,
+                          source_mode="reference_taxonomy_template")
+    rows = [r for r in rows if r.get("classification") is not None]
     return {
-        "status": "reference_taxonomy",
-        "sector": sector,
-        "industry": industry,
-        "country": "Global",
-        "currency": currency,
-        "exchange": exchange,
-        "exchange_name": EXCHANGE_LEGEND.get(exchange, exchange),
-        "rows": _taxonomy_rows(instrument, sector, industry, "Global", currency, exchange, reference_profile(instrument.symbol)),
-        "methodology": "Fallback taxonomy is labelled as a reference model when live provider classification is unavailable.",
+        "status": status,
+        "reason": reason,
+        "next_actions": ["Retry with live=true when the yfinance refdata provider is reachable."],
+        "sector": None,
+        "industry": None,
+        "country": None,
+        "currency": None,
+        "exchange": None,
+        "exchange_name": None,
+        "crosswalk_status": "bundled" if any(
+            r.get("source_mode") == "reference_taxonomy_crosswalk" for r in rows) else "not_bundled",
+        "rows": rows,
+        "methodology": "No live provider classification was returned, so provider fields are null. Only bundled crosswalk rows and the instrument-registry asset class are shown.",
         "field_dictionary": {
             "level": "Taxonomy level or provider field.",
-            "classification": "Human-readable classification value.",
-            "source_mode": "reference taxonomy fallback.",
+            "classification": "Human-readable classification value; null fields are not available.",
+            "source_mode": "reference_taxonomy_crosswalk or instrument_registry.",
         },
     }
 
@@ -481,13 +853,16 @@ def _taxonomy_rows(
     currency: Any,
     exchange: Any,
     profile: dict[str, Any],
+    source_mode: str = "live_yfinance",
 ) -> list[dict[str, Any]]:
+    # APPL#3: the provider-field rows carry the caller's source_mode, so the
+    # reference template is never labelled as a live yfinance value.
     rows = [
-        {"level": "Provider sector", "classification": sector, "source_mode": "live_yfinance"},
-        {"level": "Provider industry", "classification": industry, "source_mode": "live_yfinance"},
-        {"level": "Exchange", "classification": EXCHANGE_LEGEND.get(str(exchange or ""), exchange), "raw_code": exchange, "source_mode": "live_yfinance"},
-        {"level": "Country", "classification": country, "source_mode": "live_yfinance"},
-        {"level": "Currency", "classification": currency, "source_mode": "live_yfinance"},
+        {"level": "Provider sector", "classification": sector, "source_mode": source_mode},
+        {"level": "Provider industry", "classification": industry, "source_mode": source_mode},
+        {"level": "Exchange", "classification": EXCHANGE_LEGEND.get(str(exchange or ""), exchange), "raw_code": exchange, "source_mode": source_mode},
+        {"level": "Country", "classification": country, "source_mode": source_mode},
+        {"level": "Currency", "classification": currency, "source_mode": source_mode},
     ]
     for key, label in [
         ("gics_sector", "GICS sector"),
@@ -505,19 +880,17 @@ def _taxonomy_rows(
     return rows
 
 
-def _chart_template(symbol: str) -> list[dict[str, Any]]:
-    base = 78000.0 if symbol.upper().endswith(("USDT", "USD")) else 100.0
-    return [
-        {
-            "date": f"template-{idx + 1:02d}",
-            "open": round(base * (1 + (idx - 5) * 0.003), 4),
-            "high": round(base * (1 + (idx - 5) * 0.003 + 0.008), 4),
-            "low": round(base * (1 + (idx - 5) * 0.003 - 0.007), 4),
-            "close": round(base * (1 + (idx - 5) * 0.003 + 0.002), 4),
-            "volume": 1_000_000 + idx * 75_000,
-        }
-        for idx in range(10)
-    ]
+def _chgs_contract_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """CHGS#5: every manifest must_have key is present on every path.
+
+    Keys a path has no figures for (outage, empty history) carry explicit
+    empty values; nothing is derived or filled with numbers here.
+    """
+    filled = dict(data)
+    filled.setdefault("bars", [])
+    filled.setdefault("indicators", {})
+    filled.setdefault("summary", {})
+    return filled
 
 
 def _parse_symbol_list(raw: Any) -> list[str]:
@@ -605,7 +978,9 @@ def _moss_payload(
         "live": live,
         "methodology": (
             "Ranks the selected universe by annualized realized volatility: "
-            "std(daily close-to-close returns) * sqrt(252). The default universe is a "
+            "std(daily close-to-close returns) * sqrt(252) for equities, FX and commodities, "
+            "and * sqrt(365) for crypto (24/7 daily closes; each row carries periods_per_year). "
+            "The default universe is a "
             "liquid cross-asset sample (equities + crypto + FX + commodities); symbols the "
             "provider does not answer inside the scan budget are emitted with vol=null "
             "(state=unavailable) rather than dropped. The chart shows the rolling 20-session "
@@ -633,10 +1008,22 @@ def _moss_unavailable(symbols: list[str], days: int, reason: str) -> dict[str, A
     }
 
 
-def _moss_history(df: Any, symbol: str) -> list[dict[str, Any]]:
+_MOSS_EXCHANGE_PERIODS = 252  # equity, FX and commodity exchange sessions
+_MOSS_CRYPTO_PERIODS = 365  # crypto trades every calendar day, so its daily closes run 365 a year
+
+
+def _moss_periods_per_year(asset_class: Any) -> int:
+    """Annualization factor for daily returns: 365 for 24/7 crypto, 252 otherwise."""
+    value = getattr(asset_class, "value", asset_class)
+    if str(value or "").upper() == AssetClass.CRYPTO.value.upper():
+        return _MOSS_CRYPTO_PERIODS
+    return _MOSS_EXCHANGE_PERIODS
+
+
+def _moss_history(df: Any, symbol: str, periods: int = _MOSS_EXCHANGE_PERIODS) -> list[dict[str, Any]]:
     rets = df["close"].pct_change().dropna()
     window = min(20, max(5, len(rets) // 2))
-    rolling = (rets.rolling(window=window).std() * (252 ** 0.5)).dropna()
+    rolling = (rets.rolling(window=window).std() * (periods ** 0.5)).dropna()
     rows: list[dict[str, Any]] = []
     for idx, value in rolling.tail(90).items():
         rows.append({

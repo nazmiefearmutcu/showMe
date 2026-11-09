@@ -5,6 +5,7 @@
  * primitive). Round 16 promotes this into a draggable handle for relocating
  * a pane inside the tree.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { LINK_GROUP_IDS as LINK_GROUPS, useWorkspace } from "@/lib/workspace";
 import { useAppStore } from "@/lib/store";
@@ -618,6 +619,8 @@ const MODE_TONE: Record<string, string> = {
   delayed_reference: "neutral",
   modeled: "warn",
   cached_snapshot: "neutral",
+  official: "neutral",
+  imported: "neutral",
   provider_unavailable: "negative",
   not_configured: "muted",
 };
@@ -628,6 +631,8 @@ const MODE_LABEL: Record<string, string> = {
   delayed_reference: "DELAYED",
   modeled: "MODELED",
   cached_snapshot: "CACHED",
+  official: "OFFICIAL RELEASE",
+  imported: "IMPORTED · LOCAL",
   provider_unavailable: "PROVIDER DOWN",
   not_configured: "NOT CONFIGURED",
 };
@@ -761,8 +766,8 @@ function Picker({
     : options
         .filter(
           (o) =>
-            o.code.toLowerCase().includes(query.toLowerCase()) ||
-            o.name.toLowerCase().includes(query.toLowerCase()),
+            foldSearchText(o.code).includes(foldSearchText(query)) ||
+            foldSearchText(o.name).includes(foldSearchText(query)),
         )
         .slice(0, 30);
   // Reset the keyboard cursor whenever the filter changes so Enter always

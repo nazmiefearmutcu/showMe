@@ -23,7 +23,6 @@ import {
   Tabs,
 } from "@/design-system";
 import { useFunction } from "@/lib/useFunction";
-import { useUtcStamp } from "@/lib/useUtcStamp";
 import { useVisibilityTick } from "@/lib/useVisibilityTick";
 import {
   FunctionControlGroup,
@@ -40,6 +39,7 @@ interface WBRow {
   as_of?: string;
   source_mode?: string;
   reference_vintage?: string;
+  stale?: boolean;
 }
 
 interface WBPayload {
@@ -49,9 +49,16 @@ interface WBPayload {
     tenor?: string;
     source_mode?: string;
     reference_vintage?: string;
+    latest_observation?: string;
+    stale_countries?: number;
   };
   methodology?: string;
   field_dictionary?: Record<string, string>;
+  /** WB#2: requested countries whose live FRED series returned nothing usable. */
+  missing_countries?: string[];
+  /** "provider_unavailable" when no live yield was usable (no rows are substituted). */
+  status?: string;
+  reason?: string;
 }
 
 // Bucket countries the engine ships today (`_SOVEREIGN_FRED_IDS` /
@@ -118,21 +125,48 @@ export function WBPane({ code }: FunctionPaneProps) {
     return allRows.filter((r) => set.has((r.country ?? "").toUpperCase()));
   }, [allRows, region]);
 
+  // WB#2: countries the backend could not supply (keyless FRED CSV 404 / no
+  // observation). They are not in the grid, so the pane must say they are missing
+  // instead of showing a shorter grid as if it were the full roster.
+  const missing = useMemo<string[]>(() => {
+    const all = (Array.isArray(payload.missing_countries) ? payload.missing_countries : [])
+      .map((c) => String(c).toUpperCase())
+      .filter(Boolean);
+    if (region === "all") return all;
+    const set = region === "dm" ? DEVELOPED : EMERGING;
+    return all.filter((c) => set.has(c));
+  }, [payload.missing_countries, region]);
+  const missingBox = missing.length ? (
+    <div style={noticeStyle} role="note">
+      <strong className="u-text-warn">Live data missing for {missing.join(", ")}</strong>
+      <span className="u-text-secondary">
+        The keyless FRED series returned no usable observation for these countries, so they are
+        not in the grid, the ranks or the spreads.
+      </span>
+    </div>
+  ) : null;
+
   // Seed contract (wb_seed.py): rank intensity / stats use the VISIBLE
   // min/max so the heat rescales when the region tab is switched.
   const stats = useMemo(() => deriveStats(rows), [rows]);
-  const utcStamp = useUtcStamp(tick);
   const sourceMode = payload.summary?.source_mode ?? rows[0]?.source_mode ?? "—";
   const isLiveSource = sourceMode === "fred";
+  // WB#1: the data date is the FRED observation date (or the template vintage),
+  // never the wall clock. Stale series are flagged, not shown as current.
+  const dataAsOf =
+    payload.summary?.latest_observation ??
+    payload.summary?.reference_vintage ??
+    null;
+  const allStale = isLiveSource && rows.length > 0 && rows.every((r) => r.stale === true);
   const modelVintage =
     payload.summary?.reference_vintage ??
     allRows.find((r) => r.reference_vintage)?.reference_vintage ??
     null;
   const noticeText =
     sourceMode === "sovereign_yield_model"
-      ? `Rows are the labelled sovereign_yield_model template${
+      ? `Rows are the labelled sovereign_yield_model reference template${
           modelVintage ? ` (reference vintage ${modelVintage})` : ""
-        } — the live FRED fetch returned no rows. Toggle \`live\` off/on to retry the live path.`
+        }, shown because \`live\` is off. They are not market data; turn \`live\` on to fetch FRED.`
       : null;
 
   const minYield = stats.min;
@@ -209,10 +243,24 @@ export function WBPane({ code }: FunctionPaneProps) {
           const bp = (r.yield - us.yield) * 100;
           if (!Number.isFinite(bp)) return "—";
           const tone = bp >= 0 ? "var(--negative)" : "var(--positive)";
+          // WB#4: US is a daily print and foreign rows are often monthly, so a
+          // spread can subtract values from different days. Say how far apart.
+          const gap = dayGap(r.as_of, us.as_of);
           return (
-            <span style={{ ...numCell, color: tone, fontWeight: 600 }}>
-              {bp >= 0 ? "+" : ""}
-              {bp.toFixed(0)} bp
+            <span style={{ display: "inline-grid", justifyItems: "end" }}>
+              <span style={{ ...numCell, color: tone, fontWeight: 600 }}>
+                {bp >= 0 ? "+" : ""}
+                {bp.toFixed(0)} bp
+              </span>
+              {gap ? (
+                <span
+                  className="u-text-secondary"
+                  style={gapNote}
+                  title={`US ${us.as_of ?? "?"} vs ${r.as_of ?? "?"}: the spread mixes observations from different dates.`}
+                >
+                  {gap}d apart
+                </span>
+              ) : null}
             </span>
           );
         },
@@ -223,7 +271,11 @@ export function WBPane({ code }: FunctionPaneProps) {
         width: 132,
         render: (r) =>
           r.source_mode === "fred" ? (
-            <Pill tone="positive" variant="soft">live FRED</Pill>
+            r.stale ? (
+              <Pill tone="warn" variant="soft">stale FRED</Pill>
+            ) : (
+              <Pill tone="positive" variant="soft">live FRED</Pill>
+            )
           ) : (
             <Pill tone="warn" variant="soft">template</Pill>
           ),
@@ -244,17 +296,17 @@ export function WBPane({ code }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title="World sovereign bonds"
-          subtitle={`${rows.length} of ${allRows.length} countries · poll ${REFRESH_MS / 1000}s · ${sourceMode}`}
+          subtitle={`${rows.length} of ${rows.length + missing.length} countries · poll ${REFRESH_MS / 1000}s · ${sourceMode}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>{rows.length} ctry</Pill>
-              <Pill tone="accent" variant="soft" withDot={false}>{utcStamp} UTC</Pill>
+              <Pill tone="accent" variant="soft" withDot={false}>data {dataAsOf ?? "—"}</Pill>
               <span data-testid="wb-mode-pill">
                 <Pill
-                  tone={isLiveSource ? "positive" : "warn"}
+                  tone={isLiveSource && !allStale ? "positive" : "warn"}
                   variant="soft"
                 >
-                  {isLiveSource ? "live" : "stub"}
+                  {isLiveSource ? (allStale ? "stale" : "live") : "stub"}
                 </Pill>
               </span>
               <button
@@ -284,7 +336,18 @@ export function WBPane({ code }: FunctionPaneProps) {
           ) : state === "error" ? (
             <Empty title="Function error" body={error?.message ?? "—"} icon="!" />
           ) : rows.length === 0 ? (
-            <Empty title="No yields" body={`No WB rows for ${region}.`} />
+            <>
+              {missingBox}
+              {payload.status === "provider_unavailable" ? (
+                <Empty
+                  title="Live yields unavailable"
+                  body={payload.reason ?? "No live FRED sovereign yield was usable."}
+                  icon="!"
+                />
+              ) : (
+                <Empty title="No yields" body={`No WB rows for ${region}.`} />
+              )}
+            </>
           ) : (
             <div className="u-grid-gap-14">
               {noticeText ? (
@@ -293,11 +356,12 @@ export function WBPane({ code }: FunctionPaneProps) {
                   <span className="u-text-secondary">{noticeText}</span>
                 </div>
               ) : null}
+              {missingBox}
               <section style={kpiGrid} aria-label="WB KPI ribbon">
                 <StatCard
                   label="Avg yield"
                   value={`${stats.avg.toFixed(2)}%`}
-                  caption={`AS OF ${utcStamp} UTC · ${stats.count} ctry`}
+                  caption={`DATA AS OF ${dataAsOf ?? "—"} · ${stats.count} ctry`}
                   tone={stats.avg >= 4 ? "negative" : "positive"}
                 />
                 <StatCard
@@ -351,6 +415,15 @@ export function WBPane({ code }: FunctionPaneProps) {
   );
 }
 
+/** Whole days between two ISO dates (0 = same day); null when either is unreadable. */
+function dayGap(a: string | undefined, b: string | undefined): number | null {
+  if (!a || !b) return null;
+  const ta = Date.parse(`${a.slice(0, 10)}T00:00:00Z`);
+  const tb = Date.parse(`${b.slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return null;
+  return Math.round(Math.abs(ta - tb) / 86_400_000);
+}
+
 interface WBStats {
   count: number;
   avg: number;
@@ -395,6 +468,12 @@ const tabBarStyle: CSSProperties = {
   padding: "8px 14px",
   borderBottom: "1px solid var(--border-subtle)",
   background: "var(--surface-2)",
+};
+
+const gapNote: CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: "var(--font-size-xs)",
+  fontVariantNumeric: "tabular-nums",
 };
 
 const numCell: CSSProperties = {

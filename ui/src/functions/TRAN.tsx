@@ -1,12 +1,14 @@
 /**
- * TRAN — Earnings Call Transcript.
+ * TRAN — Earnings Transcript or Release.
  *
- * Renders the most recent earnings-call transcript harvested by the backend
+ * Renders the most recent earnings-call transcript harvested by the backend, or the
+ * 8-K earnings press release when no transcript exists (labelled as a release)
  * (SEC 8-K exhibit flow): sections (Prepared Remarks / Q&A) of speaker+role
  * utterances, a persisted speaker filter built from the payload's distinct
  * speakers, and jump-to-section anchors. Data honesty: when the provider is
  * unavailable / not configured the pane says so explicitly — never fake text.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Empty,
@@ -52,6 +54,8 @@ interface TranEvent {
 interface TRANData {
   symbol?: string;
   status?: string;
+  /** "transcript" or "earnings_press_release" (SEC 8-K EX-99.x, not a call). */
+  document_type?: string;
   reason?: string;
   next_actions?: string[] | string;
   event?: TranEvent;
@@ -61,6 +65,7 @@ interface TRANData {
 const SECTION_LABELS: Record<string, string> = {
   prepared_remarks: "Prepared Remarks",
   qa: "Q&A",
+  document: "Earnings Release",
 };
 
 const SPEAKER_KEY = "showme.tran.speaker";
@@ -107,8 +112,9 @@ function safeHttpUrl(value: unknown): string | null {
  */
 function highlightMatches(text: string, query: string): ReactNode {
   if (!query) return text;
-  const haystack = text.toLowerCase();
-  const needle = query.toLowerCase();
+  // foldSearchText keeps the length, so the offsets below index the original text.
+  const haystack = foldSearchText(text);
+  const needle = foldSearchText(query);
   const nodes: ReactNode[] = [];
   let cursor = 0;
   let at = haystack.indexOf(needle, cursor);
@@ -208,8 +214,8 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
   const searchQuery = search.trim();
   const visible = useMemo(() => {
     if (!searchQuery) return filtered;
-    const needle = searchQuery.toLowerCase();
-    return filtered.filter((r) => (r.utterance ?? "").toLowerCase().includes(needle));
+    const needle = foldSearchText(searchQuery);
+    return filtered.filter((r) => foldSearchText(r.utterance ?? "").includes(needle));
   }, [filtered, searchQuery]);
   const sections = useMemo(() => groupBySection(visible), [visible]);
 
@@ -217,6 +223,11 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
   const eventDate = payload?.event?.event_date ?? "";
   const sourceUrl = safeHttpUrl(payload?.event?.source_url);
   const isLive = state === "ok" && status === "ok";
+  // The SEC default path returns the 8-K earnings RELEASE, not a call transcript.
+  const isRelease = payload?.document_type === "earnings_press_release";
+  const docNoun = isRelease ? "Earnings Release" : "Earnings Call Transcript";
+  // Lower-case noun for labels: a release view must not say "transcript".
+  const noun = isRelease ? "release" : "transcript";
   const totalUtterances = utterances.length;
 
   const jumpTo = (key: string) => {
@@ -255,7 +266,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
       }
       body={
         payload?.reason ??
-        "No earnings-call transcript was available for this symbol. Nothing is fabricated here — try refresh or another quarter."
+        `No ${isRelease ? "earnings release" : "earnings-call transcript"} was available for this symbol. Nothing is fabricated here — try refresh or another quarter.`
       }
       action={
         <button onClick={refetch} className="btn">
@@ -268,7 +279,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
       <Empty
         title="No utterances match"
         body={`No utterances in ${
-          speaker === "all" ? "this transcript" : `"${speaker}"'s remarks`
+          speaker === "all" ? `this ${noun}` : `"${speaker}"'s remarks`
         } contain "${searchQuery}". The search never fabricates rows — clear it to see the full ladder.`}
         action={
           <button onClick={() => setSearch("")} className="btn">
@@ -279,7 +290,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
     ) : (
       <Empty
         title="No utterances for this speaker"
-        body={`The transcript has ${totalUtterances} utterances, none from "${speaker}".`}
+        body={`The ${noun} has ${totalUtterances} utterances, none from "${speaker}".`}
         action={
           <button onClick={() => setSpeaker("all")} className="btn">
             Show all speakers
@@ -294,8 +305,8 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search transcript…"
-          aria-label="Search transcript"
+          placeholder={`Search ${noun}…`}
+          aria-label={`Search ${noun}`}
           data-testid="tran-search-input"
           style={searchInputStyle}
         />
@@ -316,7 +327,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
               type="button"
               className="btn"
               onClick={() => setSearch("")}
-              aria-label="Clear transcript search"
+              aria-label={`Clear ${noun} search`}
             >
               Clear
             </button>
@@ -324,7 +335,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
         ) : null}
       </div>
       {sections.length > 1 ? (
-        <nav style={jumpNavStyle} aria-label="Jump to transcript section">
+        <nav style={jumpNavStyle} aria-label={`Jump to ${noun} section`}>
           <span style={jumpNavLabelStyle}>JUMP</span>
           {sections.map((s) => (
             <button
@@ -343,7 +354,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
         <section
           key={s.key}
           id={sectionDomId(s.key)}
-          aria-label={`Transcript section: ${s.label}`}
+          aria-label={`${isRelease ? "Release" : "Transcript"} section: ${s.label}`}
           style={sectionStyle}
         >
           <h3 style={sectionHeadingStyle}>
@@ -379,7 +390,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
       <Pane>
         <PaneHeader
           code={code}
-          title={`Earnings Call Transcript — ${effectiveSymbol || ""}`}
+          title={`${docNoun} — ${effectiveSymbol || ""}`}
           subtitle={
             [
               effectiveSymbol || "—",
@@ -424,7 +435,7 @@ export function TRANPane({ code, symbol }: FunctionPaneProps) {
                 loading={state === "loading"}
                 onClick={refetch}
                 disabled={!effectiveSymbol}
-                title="Refresh transcript"
+                title={`Refresh ${noun}`}
               />
             </FunctionControlGroup>
           }

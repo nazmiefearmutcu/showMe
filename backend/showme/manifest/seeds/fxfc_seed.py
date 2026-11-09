@@ -1,8 +1,7 @@
-"""FXFC — FX Forecasts (covered-interest-parity forward carry).
+"""FXFC — CIP FX Forward Path (covered-interest-parity forward carry).
 
 CIP forward-path forecasts for one FX pair across a tenor ladder, with
-model volatility bands (spot · vol · √T) and a deterministic confidence
-score. Spot comes from the live tier chain (yfinance → ECB →
+model volatility bands (spot · vol · √T). Spot comes from the live tier chain (yfinance → ECB →
 Frankfurter keyless); when every tier fails the handler labels the
 fallback `reference_model` and warns, and the pane mirrors that instead
 of pretending the curve is live. The earlier manifest described a
@@ -40,12 +39,13 @@ from ..spec import (
 def fxfc() -> FunctionManifest:
     return FunctionManifest(
         code="FXFC",
-        name="FX Forecasts",
+        name="CIP FX Forward Path",
         category=Category.FX,
         intent=(
             "Covered-interest-parity forward path for an FX pair across the "
-            "tenor ladder, with model volatility bands (spot·vol·√T) and a "
-            "deterministic confidence score. The spot tier is labelled "
+            "tenor ladder (a CIP forward, not a consensus forecast), with model "
+            "volatility bands (spot·vol·√T) on live realized FX vol per tenor. "
+            "The spot tier is labelled "
             "(live_yfinance_quote / live_ecb_reference / live_official / "
             "manual_input); the reference_model fallback carries a warning "
             "and never masquerades as a live quote."
@@ -80,7 +80,11 @@ def fxfc() -> FunctionManifest:
                 label="Vol (annualized)",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Annualized vol for the model bands; defaults to 0.085.",
+                description=(
+                    "Optional flat annualized vol for the model bands. When omitted, each "
+                    "tenor uses live realized FX vol (yfinance daily closes); with no vol "
+                    "source the bands are null. No constant vol is substituted."
+                ),
                 min=0.0,
                 step=0.005,
                 unit="decimal",
@@ -90,7 +94,7 @@ def fxfc() -> FunctionManifest:
                 label="Base rate",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Base-currency policy rate override (decimal annual).",
+                description="Base-currency annual rate (decimal). Required for the CIP forward: no reference table is substituted, so the forecast is null until supplied.",
                 step=0.001,
                 unit="decimal",
             ),
@@ -99,7 +103,7 @@ def fxfc() -> FunctionManifest:
                 label="Quote rate",
                 control=ControlKind.NUMBER,
                 required=False,
-                description="Quote-currency policy rate override (decimal annual).",
+                description="Quote-currency annual rate (decimal). Required with r_base for the CIP forward; null until supplied.",
                 step=0.001,
                 unit="decimal",
             ),
@@ -125,7 +129,6 @@ def fxfc() -> FunctionManifest:
         defaults={
             "pair": "EURUSD",
             "tenors": "1M,3M,6M,12M",
-            "vol_annualized": 0.085,
             "provider_mode": DataMode.DELAYED_REFERENCE.value,
         },
         provider_chain=ProviderChain(
@@ -168,11 +171,10 @@ def fxfc() -> FunctionManifest:
         table_schema=TableSchema(
             columns=[
                 ColumnSpec(key="horizon", label="Horizon", kind="tag"),
-                ColumnSpec(key="forecast", label="Forecast", kind="number", format="%.6f"),
+                ColumnSpec(key="forecast", label="CIP forward", kind="number", format="%.6f"),
                 ColumnSpec(key="forward_points", label="F − S", kind="number", format="%.6f"),
                 ColumnSpec(key="lower_band", label="Lower band", kind="number", format="%.6f"),
                 ColumnSpec(key="upper_band", label="Upper band", kind="number", format="%.6f"),
-                ColumnSpec(key="confidence", label="Confidence", kind="percent"),
                 ColumnSpec(key="source_mode", label="Source", kind="tag"),
             ],
             sortable=False,
@@ -181,13 +183,14 @@ def fxfc() -> FunctionManifest:
         card_schema=None,
         methodology=(
             "FXFC uses covered-interest-parity forward carry as the "
-            "deterministic forecast path: forecast = spot · (1 + r_quote·T) / "
-            "(1 + r_base·T) with rates on an ACT/360 conversion. The lower / "
-            "upper bands are spot · annualized_vol · √T, so they are model "
-            "bands, not vendor analyst forecasts. Confidence is a "
-            "deterministic score that decays with tenor. Missing spot in "
-            "every provider tier yields a labelled reference spot plus a "
-            "warning — never a silent zero."
+            "deterministic forward path: forecast = spot · (1 + r_quote·T) / "
+            "(1 + r_base·T) with rates on an ACT/360 conversion. The forecast "
+            "is a no-arbitrage CIP forward level, not a consensus view. The "
+            "lower / upper bands are spot · sigma_T · √T, where sigma_T is live "
+            "realized FX vol for the tenor; they are model bands, not vendor "
+            "analyst forecasts, and are null when no vol source is available. "
+            "Missing spot in every provider tier yields a labelled reference "
+            "spot plus a warning — never a silent zero."
         ),
         formula_dict={
             "forecast": Formula(
@@ -208,7 +211,11 @@ def fxfc() -> FunctionManifest:
             "forward_points": FieldDef(unit="quote_ccy", description="Forecast − spot per tenor.", source="computed"),
             "lower_band": FieldDef(unit="quote_ccy", description="Forecast − spot·vol·√T.", source="computed"),
             "upper_band": FieldDef(unit="quote_ccy", description="Forecast + spot·vol·√T.", source="computed"),
-            "confidence": FieldDef(unit="percent", description="Deterministic model confidence; lower for longer tenors.", source="computed"),
+            "vol_annualized": FieldDef(unit="decimal", description="Band vol per tenor (live realized, user input, or null).", source="computed"),
+            "spot_fetched_at": FieldDef(description="UTC fetch time of the spot (our clock, not the quote's market time).", source="provider"),
+            "spot_quote_time": FieldDef(description="Quote's own market time (UTC) when the provider supplied it; null otherwise.", source="provider"),
+            "spot_quote_age_minutes": FieldDef(unit="minutes", description="Age of the spot quote at fetch time; null when the quote time is unknown.", source="computed"),
+            "spot_quote_status": FieldDef(description="fresh / stale / off_session / quote_time_unavailable / not_applicable.", source="computed"),
             "source_mode": FieldDef(description="Spot tier label (live_* / manual_input / reference_model).", source="provider"),
         },
         provenance=ProvenanceSpec(

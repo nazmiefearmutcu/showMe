@@ -185,7 +185,7 @@ def test_gc3d_reference_true_serves_template_without_fetch():
     assert result.sources == ["yield_curve_model"]
 
 
-def test_wb_default_live_keyless_and_offline_fallback_labelled():
+def test_wb_default_live_keyless_and_failed_fetch_is_unavailable_without_template():
     from showme.engine.functions.bond.wb import WBFunction
 
     online = WBFunction(FunctionDeps())
@@ -198,7 +198,10 @@ def test_wb_default_live_keyless_and_offline_fallback_labelled():
     offline = WBFunction(FunctionDeps())
     offline._http_client = _FakeClient(boom=True)
     result = _run(offline.execute(countries="US,DE,JP"))
-    assert result.sources == ["sovereign_yield_model"]
+    # A failed live fetch is an explicit state with no substituted template rows.
+    assert result.sources == []
+    assert result.data["status"] == "provider_unavailable"
+    assert result.data["rows"] == []
     assert result.warnings
 
 

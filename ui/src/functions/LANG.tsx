@@ -19,6 +19,7 @@
  * additionally flips the document to RTL. The sidecar-persisted value is
  * shown separately and never conflated with the active UI locale.
  */
+import { foldSearchText } from "@/lib/search-fold";
 import { useMemo, useState, type CSSProperties } from "react";
 import {
   DataGrid,
@@ -105,7 +106,7 @@ export function LANGPane({ code }: FunctionPaneProps) {
   const locales = useMemo(() => listLocales(), []);
 
   const viewRows: LangViewRow[] = useMemo(() => {
-    const needle = search.trim().toLowerCase();
+    const needle = foldSearchText(search.trim());
     return locales
       .map((loc) => ({
         loc,
@@ -116,8 +117,8 @@ export function LANGPane({ code }: FunctionPaneProps) {
       .filter(
         (row) =>
           !needle ||
-          row.loc.toLowerCase().includes(needle) ||
-          row.label.toLowerCase().includes(needle),
+          foldSearchText(row.loc).includes(needle) ||
+          foldSearchText(row.label).includes(needle),
       );
   }, [locales, labelByLang, activeLocale, search]);
 

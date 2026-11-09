@@ -226,17 +226,28 @@ def test_github_search_route_propagates_degraded_metadata(
 
 
 def test_top_function_default_timeout_is_ten_seconds() -> None:
-    """QA-fix: default ``news_timeout`` raised from 5 -> 10."""
-    src = Path(__file__).resolve().parents[1] / "showme" / "engine" / "functions" / "news" / "top.py"
-    text = src.read_text()
-    assert 'params.get("news_timeout", params.get("timeout", 10))' in text
+    """QA-fix: TOP's default budget is 10s. TOP now reads Awareness, so its real budget is the
+    Awareness client's HTTP timeout, which must stay inside that 10s ceiling."""
+    from showme.engine.data_sources.awareness import client as aw_client
+
+    assert aw_client.REQUEST_TIMEOUT <= 10.0
 
 
 def test_top_warning_carries_explicit_reason_on_empty_exc() -> None:
-    """QA-fix: bare ``rss:`` empty label is replaced by exception class name."""
-    src = Path(__file__).resolve().parents[1] / "showme" / "engine" / "functions" / "news" / "top.py"
-    text = src.read_text()
-    assert "or exc.__class__.__name__" in text
+    """QA-fix: an exception with an empty message must not yield an empty warning. The Awareness
+    client folds the exception class name into the reason, so the reason is never blank."""
+    import httpx
+
+    from showme.engine.data_sources.awareness import AwarenessClient, AwarenessUnavailable
+
+    def _raise_empty(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError("")
+
+    client = AwarenessClient("http://aw.test", transport=httpx.MockTransport(_raise_empty), autostart=False)
+    with pytest.raises(AwarenessUnavailable) as info:
+        asyncio.run(client.get("/news", {}))
+    assert info.value.reason
+    assert "ReadError" in info.value.reason
 
 
 # ── XAI handler timeouts ─────────────────────────────────────────────────

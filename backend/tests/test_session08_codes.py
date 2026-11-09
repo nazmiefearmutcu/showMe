@@ -36,7 +36,9 @@ class _DummyDeps:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro) if not asyncio.get_event_loop().is_closed() else asyncio.new_event_loop().run_until_complete(coro)
+    # asyncio.run: a fresh loop per call. ``get_event_loop()`` raises
+    # "no current event loop" on Python 3.12+/3.13 (see test_session03_codes).
+    return asyncio.run(coro)
 
 
 # ---------- GREEKS ----------
@@ -155,9 +157,10 @@ def test_ivol_non_live_marks_reference_and_live_false() -> None:
     assert res.data["status"] == "provider_unavailable"
     assert res.metadata is not None and res.metadata.get("live") is False
 
-    # Explicit opt-in reference surface stays the canonical "reference" shape.
+    # Explicit reference opt-in is retired (T10): no constant-IV template, honest unavailable state.
     ref = asyncio.run(fn.execute(instrument=inst, reference=True))
-    assert ref.data["status"] == "reference"
+    assert ref.data["status"] == "provider_unavailable"
+    assert ref.data["surface"] == [] and ref.data["rows"] == []
     assert ref.metadata is not None and ref.metadata.get("live") is False
 
 

@@ -75,6 +75,12 @@ interface WHALPayload {
   chain?: string | null;
   threshold_usd?: number;
   lookback_hours?: number;
+  window?: {
+    lookback_hours?: number;
+    covered_hours?: number | null;
+    covered_from?: string | null;
+    covered_to?: string | null;
+  };
   interval?: string;
   whale_alert_api?: string;
   native_transfer_feed?: string;
@@ -192,6 +198,15 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
     [rows, threshold],
   );
   const thresholdHits = visibleRows.filter((r) => r.threshold_crossed).length;
+  // Only rows with a USD value were tested against the floor. Say so, rather
+  // than "0 crossed", when none had one (FX impulses, SEC filings).
+  const usdRowCount = visibleRows.filter((r) => r.usd_value != null).length;
+  const testedLabel =
+    threshold <= 0
+      ? "no USD threshold set"
+      : visibleRows.length > 0 && usdRowCount === 0
+        ? `no USD basis to test ${fmtThresholdUsd(threshold)}`
+        : `${thresholdHits} of ${usdRowCount} USD rows crossed ${fmtThresholdUsd(threshold)}`;
 
   const cols = useMemo<DataGridColumn<WHALRow>[]>(
     () => [
@@ -285,7 +300,7 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
         <PaneHeader
           code={code}
           title={`Whale flow · ${resolvedSymbol}`}
-          subtitle={`${visibleRows.length} rows · ${thresholdHits} crossed ${fmtThresholdUsd(threshold)} · ${payload.provider ?? "—"}`}
+          subtitle={`${visibleRows.length} rows · ${testedLabel} · ${payload.provider ?? "—"}`}
           trailing={
             <FunctionControlGroup>
               <Pill tone="muted" variant="soft" withDot={false}>{visibleRows.length} alerts</Pill>
@@ -369,12 +384,15 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
               {visibleRows.length === 0 ? (
                 <Empty title="No alerts" body={payload.summary ?? "No public WHAL rows returned."} />
               ) : (
+                <>
+                {payload.summary ? <p className="u-text-secondary" style={summaryLine}>{payload.summary}</p> : null}
                 <DataGrid
                   columns={cols}
                   rows={visibleRows}
                   rowKey={(r, i) => `${r.timestamp ?? ""}-${r.symbol ?? ""}-${i}`}
                   density="compact"
                 />
+                </>
               )}
               {payload.methodology ? (
                 <div style={methodologyBox}>
@@ -394,6 +412,15 @@ export function WHALPane({ code, symbol }: FunctionPaneProps) {
           <StatusDivider />
           <StatusSection label="lookback" value={`${payload.lookback_hours ?? 24}h`} />
           <StatusDivider />
+          {typeof payload.window?.covered_hours === "number" ? (
+            <>
+              <StatusSection
+                label="covered"
+                value={`${payload.window.covered_hours.toFixed(1)}h of ${(payload.market ?? market) === "CRYPTO" ? "trades" : "bars"}`}
+              />
+              <StatusDivider />
+            </>
+          ) : null}
           <StatusSection
             label="transfer feed"
             value={payload.native_transfer_feed ?? "not_configured"}
@@ -538,6 +565,11 @@ const proxyNoticeStyle: CSSProperties = {
   padding: "9px 10px",
   display: "grid",
   gap: 4,
+};
+
+const summaryLine: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--font-size-xs)",
 };
 
 const warningBox: CSSProperties = {

@@ -43,11 +43,13 @@ _pin_bundled_cacert()
 import argparse
 import asyncio
 import contextlib
+import errno
 import json
 import shutil
 import importlib
 import logging
 import os
+import re
 import time
 
 try:
@@ -112,6 +114,10 @@ FX_CURRENCIES = {
 COMMODITY_FUTURES = {"GC", "SI", "CL", "BZ", "NG", "HG", "PL", "ZC", "ZW", "ZS"}
 INDEX_SYMBOLS = {"SPX", "NDX", "DJI", "RUT", "VIX", "GSPC", "IXIC", "DJIA"}
 BOND_SYMBOLS = {"US1M", "US3M", "US6M", "US1Y", "US2Y", "US3Y", "US5Y", "US7Y", "US10Y", "US20Y", "US30Y"}
+# CME Treasury futures roots (Yahoo ``ZN=F`` style). These are bond
+# instruments: TSOX ("Treasury Order Entry") defaults to ZN=F and its quick
+# picks use TU/ZF/ZB, so they must classify as BOND, not EQUITY.
+TREASURY_FUTURES_ROOTS = {"ZT", "TU", "ZF", "ZN", "TN", "ZB", "UB"}
 RUNTIME_MIRROR_SUFFIXES = {".json", ".sqlite", ".db", ".duckdb"}
 RUNTIME_MIRROR_SKIP_PREFIXES = (
     "bot.log",
@@ -364,8 +370,10 @@ _home_swr_warming: set[str] = set()
 _home_swr_inflight: dict[str, Any] = {}
 _home_swr_lock = threading.Lock()
 # Exact params the Welcome dashboard sends (keys must match the routed merge).
+# TOP mirrors Welcome.tsx NewsflowPanel `{ hours: 48, limit: 24, _epoch }`
+# (tests/test_home_prewarm_params.py pins the two together).
 HOME_PREWARM_PARAMS: dict[str, dict[str, str]] = {
-    "TOP": {"query": "market", "limit": "24", "days": "7", "_epoch": "0"},
+    "TOP": {"hours": "48", "limit": "24", "_epoch": "0"},
     "BRIEF": {"limit": "6"},
     "MOST": {"live": "true", "limit": "24"},
 }
@@ -558,7 +566,7 @@ async def _execute_showme_function_on_worker(code: str, params: dict[str, Any]) 
         factory._showme_worker_thread = threading.get_ident()
     except Exception as exc:  # noqa: BLE001
         LOG.exception("get_factory failed")
-        raise HTTPException(status_code=500, detail=f"factory: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"factory: {str(exc) or type(exc).__name__}") from exc
     upper_code = code.upper()
     local_params = dict(params)
     symbol = local_params.pop("symbol", None)
@@ -683,15 +691,29 @@ async def _execute_price_history_alias(
     rows: list[dict[str, Any]] = []
     source_name = ""
     deep = _truthy_value(params.get("deep_history", params.get("deep", True)))
+    # GP-only: fetch a warm-up before the window so overlays are not computed
+    # from the window's first bar, and report the span actually returned.
+    gp_mode = str(code).upper() == "GP"
+    fetch_days, fetch_bars = (
+        _gp_fetch_extent(days, bars, interval) if gp_mode else (days, bars)
+    )
     try:
         history = await fetch_longest_history(
             symbol=getattr(instrument, "symbol", ""),
             asset_class=str(asset_class).upper(),
             interval=interval,
-            days=days,
-            bars=bars,
+            days=fetch_days,
+            bars=fetch_bars,
             deep_history=deep,
         )
+        overlay_payload: dict[str, Any] = {}
+        span_payload: dict[str, Any] = {}
+        if history.rows and gp_mode:
+            history, overlay_payload, span_payload = _gp_window_history(
+                history, code=code, days=days, bars=bars, interval=interval
+            )
+        elif history.rows:
+            overlay_payload = _price_history_overlays(code, history.rows)
         if history.rows:
             FunctionResult = registry_mod.FunctionResult
             return FunctionResult(
@@ -728,14 +750,15 @@ async def _execute_price_history_alias(
                     "winner_first_ts_ms": history.metadata.get(
                         "winner_first_ts_ms"
                     ),
-                    **_price_history_overlays(code, history.rows),
+                    **overlay_payload,
+                    **span_payload,
                 },
                 sources=[history.source],
                 warnings=history.warnings,
                 metadata={"alias": "price_history", **history.metadata},
             )
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"longest_history: {exc}")
+        warnings.append(f"longest_history: {str(exc) or type(exc).__name__}")
     for name, adapter in adapter_candidates:
         if adapter is None:
             continue
@@ -753,7 +776,7 @@ async def _execute_price_history_alias(
                 source_name = name
                 break
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"{name}: {exc}")
+            warnings.append(f"{name}: {str(exc) or type(exc).__name__}")
     if not rows:
         warnings.append("no price history")
     FunctionResult = registry_mod.FunctionResult
@@ -787,6 +810,116 @@ async def _execute_price_history_alias(
             "selection_reason": "adapter_fallback",
         },
     )
+
+
+GP_INDICATOR_WARMUP_BARS = 200
+# A returned span shorter than this share of the requested window is reported.
+GP_SPAN_TOLERANCE = 0.9
+
+
+def _gp_bar_seconds(interval: str) -> int:
+    # Local import keeps the shared chart_history import block in this module untouched.
+    from showme.chart_history import INTERVAL_SECONDS
+
+    return INTERVAL_SECONDS.get(interval, 86_400)
+
+
+def _gp_fetch_extent(days: int, bars: int, interval: str) -> tuple[int, int]:
+    """Widen the GP history request by a warm-up before the requested window.
+
+    The extra calendar days cover ``GP_INDICATOR_WARMUP_BARS`` bars at the
+    interval (5 trading days per 7 calendar days, plus a small margin).
+    """
+    seconds = _gp_bar_seconds(interval)
+    warm_days = (GP_INDICATOR_WARMUP_BARS * seconds * 7) // (86_400 * 5) + 2
+    return days + warm_days, bars + GP_INDICATOR_WARMUP_BARS
+
+
+def _gp_row_seconds(row: dict[str, Any]) -> float | None:
+    try:
+        value = float(row.get("time"))
+        return value / 1000 if value >= 10_000_000_000 else value
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(row.get("date")).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _gp_window_history(
+    history: Any, *, code: str, days: int, bars: int, interval: str
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """GP-only: clip the widened series to the requested window.
+
+    Overlays are computed on the full series (warm-up included) and then
+    clipped to the window. The returned span is the real first/last bar, and
+    a warning is added when it is shorter than the requested window.
+    """
+    full = list(history.rows)
+    window_start = datetime.now(tz=timezone.utc).timestamp() - days * 86_400
+    in_window = sum(
+        1
+        for row in full
+        if (_gp_row_seconds(row) or 0.0) >= window_start
+    )
+    window_rows = full[len(full) - in_window:] if in_window else full
+    display = window_rows[-bars:] if bars > 0 else window_rows
+    display_start = len(full) - len(display)
+    # Warm-up bars are only the rows fetched before the window start; rows that
+    # the bars cap trims from inside the window are not warm-up.
+    warmup_bars = len(full) - len(window_rows)
+
+    first_s = _gp_row_seconds(display[0]) if display else None
+    last_s = _gp_row_seconds(display[-1]) if display else None
+    span_days = (
+        round((last_s - first_s) / 86_400, 2)
+        if first_s is not None and last_s is not None
+        else None
+    )
+
+    overlay_payload: dict[str, Any] = {}
+    indicators = _price_history_overlays(code, full).get("indicators", {})
+    if first_s is not None and indicators:
+        clipped = {
+            name: [
+                point
+                for point in series
+                if isinstance(point.get("time"), (int, float))
+                and point["time"] >= first_s
+            ]
+            for name, series in indicators.items()
+        }
+        clipped = {name: series for name, series in clipped.items() if series}
+        if clipped:
+            overlay_payload = {"indicators": clipped}
+
+    warnings = list(history.warnings)
+    # first/last bar start times miss one bar of grain; a monthly series cannot
+    # span a 1M window any closer than that, so the grain is counted as covered.
+    bar_days = _gp_bar_seconds(interval) / 86_400
+    if span_days is not None and span_days + bar_days < days * GP_SPAN_TOLERANCE:
+        warnings.append(
+            f"Returned history spans {span_days:g} days, shorter than the requested "
+            f"{days}-day window (provider limit, bar cap or first available bar)."
+        )
+    history.rows = display
+    history.warnings = warnings
+
+    span_payload: dict[str, Any] = {
+        "span_days": span_days,
+        "requested_days": days,
+        "first_bar_time": int(first_s) if first_s is not None else None,
+        "last_bar_time": int(last_s) if last_s is not None else None,
+        "indicator_warmup_bars": warmup_bars,
+    }
+    if display_start > 0:
+        # Full warm-up series so the client's RSI/MACD/ATR rail reads the same history.
+        span_payload["indicator_ohlcv"] = full
+    return history, overlay_payload, span_payload
 
 
 def _price_history_overlays(code: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -899,6 +1032,11 @@ def default_asset_class_name(symbol: str | None, requested: Any = None) -> str:
         return "COMMODITY"
     if looks_like_index_symbol(resolved):
         return "INDEX"
+    # CME Treasury futures are rates *derivatives*: classing them BOND sent
+    # them through bond margin/stress tables (15% of notional) instead of the
+    # per-contract futures rules (review of TSOX#1, 2026-11-08).
+    if looks_like_treasury_future(resolved):
+        return "DERIVATIVE"
     if looks_like_bond_symbol(resolved):
         return "BOND"
     return "EQUITY"
@@ -962,8 +1100,15 @@ def looks_like_bond_symbol(symbol: str | None) -> bool:
     """Return True for known sovereign bond tickers (``US10Y``, ``DE10Y``)."""
     if not symbol:
         return False
+    return symbol.upper().replace("-", "") in BOND_SYMBOLS
+
+
+def looks_like_treasury_future(symbol: str | None) -> bool:
+    """Return True for CME Treasury futures (``ZN=F``, ``ZB=F``, ``UB=F`` ...)."""
+    if not symbol:
+        return False
     value = symbol.upper().replace("-", "")
-    return value in BOND_SYMBOLS
+    return value.endswith("=F") and value[:-2] in TREASURY_FUTURES_ROOTS
 
 
 # Per SEC-05: Pydantic request models live in `server_routes._models` so the
@@ -1034,10 +1179,16 @@ def _install_middlewares(app: FastAPI) -> None:
           ``X-ShowMe-Token`` (or Bearer authorization) except for the two
           exempt liveness probes.
     """
+    # Extra dev origins (e.g. a second Vite port) — loopback only, opt-in via env.
+    _dev_origins = [
+        origin.strip().rstrip("/")
+        for origin in os.environ.get("SHOWME_DEV_CORS_ORIGINS", "").split(",")
+        if origin.strip().startswith(("http://127.0.0.1:", "http://localhost:"))
+    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["tauri://localhost", "http://tauri.localhost",
-                       "http://localhost:5173", "http://127.0.0.1:5173"],
+                       "http://localhost:5173", "http://127.0.0.1:5173", *_dev_origins],
         allow_methods=["*"],
         allow_headers=["*"],
         allow_credentials=False,
@@ -1045,8 +1196,8 @@ def _install_middlewares(app: FastAPI) -> None:
 
     # Per SEC-05 P1: cap inbound POST/PUT bodies so a local caller cannot
     # tip the worker pool over with a multi-megabyte JSON payload. 256 KB is
-    # comfortably above every legitimate body in this app (largest is the
-    # function-index POST which is small).
+    # comfortably above ordinary function requests. VCAP has a separate bounded
+    # 2 MB local dataset contract plus a small JSON envelope allowance.
     max_body_size_bytes = int(os.environ.get("SHOWME_MAX_BODY_BYTES", "262144"))
 
     @app.middleware("http")
@@ -1070,13 +1221,18 @@ def _install_middlewares(app: FastAPI) -> None:
                     },
                 )
             cl = request.headers.get("content-length")
-            if cl and cl.isdigit() and int(cl) > max_body_size_bytes:
+            request_limit = (
+                2_100_000
+                if request.method == "POST" and request.url.path.rstrip("/").upper() == "/API/FN/VCAP"
+                else max_body_size_bytes
+            )
+            if cl and cl.isdigit() and int(cl) > request_limit:
                 return JSONResponse(
                     status_code=413,
                     content={
                         "detail": (
                             f"request body exceeds limit "
-                            f"({cl} > {max_body_size_bytes} bytes)"
+                            f"({cl} > {request_limit} bytes)"
                         ),
                     },
                 )
@@ -1454,11 +1610,16 @@ def build_app(engine_root: Path | None) -> FastAPI:
         # happens here (inside the running loop) so the bots can actually
         # schedule themselves — build_app() runs synchronously and has no
         # loop available for asyncio.create_task().
-        try:
-            from showme.bots.lifespan import startup as bot_startup
-            await bot_startup()
-        except Exception as exc:  # noqa: BLE001 — non-fatal; log + continue
-            LOG.warning("bot runner startup skipped: %s", exc)
+        # SHOWME_DISABLE_BOTS=1: audit/smoke sidecars run against copies of
+        # (or empty) app homes and must never start a bot that could trade.
+        if os.environ.get("SHOWME_DISABLE_BOTS", "").strip().lower() in {"1", "true", "yes"}:
+            LOG.info("bot runner disabled by SHOWME_DISABLE_BOTS")
+        else:
+            try:
+                from showme.bots.lifespan import startup as bot_startup
+                await bot_startup()
+            except Exception as exc:  # noqa: BLE001 — non-fatal; log + continue
+                LOG.warning("bot runner startup skipped: %s", exc)
         try:
             yield
         finally:
@@ -1607,6 +1768,28 @@ _NON_LIVE_BLOCKLIST_MARKERS = (
     "illustrative",
     "hardcoded",
 )
+# Markers match at the start of a word only: "test_data"/"testing" are
+# blocklisted, but "local_backtest_model" (a model run on real history) and
+# "latest_close" must not be branded synthetic.
+_NON_LIVE_BLOCKLIST_RE = re.compile(r"(?<![a-z])(?:" + "|".join(_NON_LIVE_BLOCKLIST_MARKERS) + ")")
+
+
+# 2026-11-07 (strict truth audit): sources that are real but are not live
+# market data. Unknown names still default to ``live`` (real provider names
+# vary too much to enumerate), so the app's own local/computed source names
+# are listed explicitly — before this a paper-ticket preview, the local
+# portfolio book or the margin engine all pilled as LIVE.
+_LOCAL_RECORD_SOURCE_MARKERS = ("portfolio_state", "order_history", "tax_lots", "local_store")
+# In-app catalogs, registries and other static/local origins: accurate, but
+# never *live market* data. Unknown names default to live, so without these
+# the offline audit (T10, 2026-11-08) saw FLDS/LANG/BMC/BQUANT/DAPI/GRAB/BIO/
+# BTMM answer "live" with every connection refused. ("showme_quotes" is the
+# live quote aggregator, so no blanket "showme_" marker.)
+_LOCAL_STATIC_SOURCE_MARKERS = (
+    "local_", "local fallback", "_catalog", "registry", "curriculum", "manifest", "_curated",
+    "fastapi_routes", "exchange_calendars", "capture_plan",
+)
+_COMPUTED_SOURCE_MARKERS = ("paper_ticket", "margin_engine", "empty_book", "black_scholes", "heston", "_formula")
 
 
 def _classify_source_state(source: Any) -> str:
@@ -1628,12 +1811,14 @@ def _classify_source_state(source: Any) -> str:
         return "synthetic"
     if any(marker in text for marker in _REFERENCE_SOURCE_MARKERS):
         return "reference"
-    if any(marker in text for marker in _NON_LIVE_BLOCKLIST_MARKERS):
+    if _NON_LIVE_BLOCKLIST_RE.search(text):
         return "synthetic"
     if any(marker in text for marker in _OTHER_SYNTHETIC_MARKERS):
         return "synthetic"
-    if any(marker in text for marker in _MODEL_SOURCE_MARKERS):
+    if any(marker in text for marker in _MODEL_SOURCE_MARKERS + _COMPUTED_SOURCE_MARKERS):
         return "model"
+    if any(marker in text for marker in _LOCAL_RECORD_SOURCE_MARKERS + _LOCAL_STATIC_SOURCE_MARKERS):
+        return "reference"
     return "live"
 
 
@@ -1800,6 +1985,19 @@ def enforce_live_or_label_synthetic(
         data_state = "provider_unavailable"
     elif source_would_be_live and not declares_not_live:
         data_state = "live"
+    elif any(
+        isinstance(container, dict)
+        and str(container.get("status") or "").strip().lower() in _FAILURE_DATA_STATUSES
+        for container in (payload.get("data"), payload)
+    ) and not any(
+        isinstance(container, dict) and (container.get("rows") or container.get("series"))
+        for container in (payload.get("data"), payload)
+    ):
+        # An explicit failure status with no source left to cite (the provider
+        # chain failed and no failed provider is listed - DES#2) carries no data
+        # at all: it is unavailable, not synthetic. "synthetic" below stays for
+        # fallback/template rows that do carry values.
+        data_state = "provider_unavailable"
     else:
         # H-1 fix (2026-09-08): an empty / all-sentinel source summary
         # cannot prove liveness. HVT/IVOL provider-failure templates
@@ -1943,14 +2141,20 @@ def unavailable_function_data(
         asset_class: str | None = default_asset_class_name(symbol, params.get("asset_class"))
     else:
         asset_class = None
+    # ISIN#7: values the /api/fn route filled in are not the caller's request.
+    injected = set(params.get("__route_defaults") or ())
+
+    def _asked(key: str) -> Any:
+        return None if key in injected else params.get(key)
+
     requested = {
         "symbol": symbol,
         "asset_class": asset_class,
-        "query": params.get("query"),
-        "topic": params.get("topic"),
-        "limit": params.get("limit") or params.get("top_n"),
-        "range": params.get("range"),
-        "days": params.get("days"),
+        "query": _asked("query"),
+        "topic": _asked("topic"),
+        "limit": _asked("limit") or _asked("top_n"),
+        "range": _asked("range"),
+        "days": _asked("days"),
     }
     data = {
         "symbol": symbol,
@@ -1972,8 +2176,13 @@ def _function_next_actions(code: str, params: dict[str, Any], status: str) -> li
         actions.append("Use a function whose native asset class supports this symbol.")
     if upper in {"ACCT", "PORT", "MGN", "PCAS", "PVAR", "PORT_OPT", "REBA", "RPAR"}:
         actions.append("Add real positions through portfolio state or pass positions in Params JSON.")
-    if upper in {"CN", "TOP", "NI", "NSE", "READ", "TLDR", "BRIEF"}:
-        actions.append("Check network access and news/RSS providers, then retry with a specific query or symbol.")
+    if upper in {"CN", "TOP", "NI", "NSE", "NALRT", "TLDR", "BRIEF"}:
+        actions.append(
+            "Check that the Awareness service (awareness-markets, 127.0.0.1:8086) is running, "
+            "then retry with a specific query or symbol."
+        )
+    if upper == "READ":
+        actions.append("Save articles from TOP, NI, CN or NSE to fill the reading list.")
     if upper in {"GP", "HP", "TECH", "BETA", "FA", "DES", "RV"}:
         actions.append("Verify the symbol and retry with live=true or a supported provider symbol.")
     if params.get("symbol") is None and params.get("topic") is None:
@@ -2225,28 +2434,96 @@ def _kickoff_function_index_warmup() -> None:
     ).start()
 
 
-def _pick_port(requested: int) -> tuple[int, socket.socket | None]:
-    """If the user passed --port 0, reserve a port and KEEP the socket.
+class PortInUseError(RuntimeError):
+    """An explicitly requested ``--port`` cannot be bound."""
+
+
+# WSAEADDRINUSE / WSAEACCES (another socket holds the port exclusively, or
+# the port sits in an OS-reserved range such as Hyper-V's exclusions).
+_WIN_PORT_UNAVAILABLE = {10048, 10013}
+
+
+def _describe_port_owner(port: int) -> str | None:
+    """Best-effort ``"PID n (image.exe)"`` for whoever holds ``port``.
+
+    Windows only (``netstat -ano``); returns ``None`` when it cannot tell.
+    Never raises — this only decorates an error message.
+    """
+    if sys.platform != "win32":
+        return None
+    import subprocess
+
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+            errors="replace", timeout=5, creationflags=flags,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pid = None
+    for line in out.splitlines():
+        parts = line.split()
+        if (len(parts) >= 5 and parts[0].upper() == "TCP"
+                and parts[1].endswith(f":{port}") and parts[-1].isdigit() and parts[-1] != "0"):
+            pid = parts[-1]
+            break
+    if pid is None:
+        return None
+    name = None
+    try:
+        task = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, errors="replace", timeout=5, creationflags=flags,
+        ).stdout.strip()
+        if task.startswith('"'):
+            name = task.split('","', 1)[0].strip('"')
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return f"PID {pid}" + (f" ({name})" if name else "")
+
+
+def _pick_port(requested: int, host: str = "127.0.0.1") -> tuple[int, socket.socket]:
+    """Bind the listening socket up front and KEEP it; return ``(port, sock)``.
 
     HNT-10 (TOCTOU): the old flow closed the probe socket and handed only
     the port number to uvicorn — between ``close()`` and uvicorn's bind
     another process could steal the port, and the Tauri shell (which has
     already read ``SIDECAR_PORT=<p>`` from stdout) would wait forever on a
-    dead port. We now mirror ``uvicorn.Config.bind_socket``: create the
-    socket, set SO_REUSEADDR, bind it, and return it so ``main`` can hand
-    it to ``uvicorn.Server.serve(sockets=[sock])``. The OS never releases
-    the reservation; asyncio's ``create_server`` performs the ``listen()``
-    on the pre-bound socket (same path uvicorn's CLI uses).
+    dead port. We bind here and hand the socket to
+    ``uvicorn.Server.serve(sockets=[sock])``; asyncio's ``create_server``
+    performs the ``listen()`` on the pre-bound socket.
+
+    2026-11-07: explicit ports are pre-bound too. Previously ``--port N``
+    printed ``SIDECAR_PORT=N`` *before* binding and booted the whole app,
+    then died inside uvicorn — anything reading the discovery line talked
+    to whichever process really owned N. On Windows the socket uses
+    ``SO_EXCLUSIVEADDRUSE``: ``SO_REUSEADDR`` there lets a bind succeed on a
+    port another socket is already using. A taken explicit port raises
+    :class:`PortInUseError`.
     """
-    if requested != 0:
-        return requested, None
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Parity with uvicorn.Config.bind_socket (Windows-safe: no SO_REUSEPORT).
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
+    if sys.platform == "win32":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        # Parity with uvicorn.Config.bind_socket (POSIX semantics are safe).
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, requested))
+    except OSError as exc:
+        sock.close()
+        in_use = (getattr(exc, "winerror", None) in _WIN_PORT_UNAVAILABLE
+                  or exc.errno in {errno.EADDRINUSE, errno.EACCES})
+        if requested != 0 and in_use:
+            owner = _describe_port_owner(requested)
+            holder = f"already in use by {owner}" if owner else "already in use or reserved by the OS"
+            raise PortInUseError(
+                f"port {requested} on {host} is unavailable ({holder}); "
+                "pass --port 0 to let the OS pick a free port"
+            ) from None
+        raise
     sock.set_inheritable(True)
-    port = sock.getsockname()[1]
-    return port, sock
+    return sock.getsockname()[1], sock
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2266,6 +2543,13 @@ def main(argv: list[str] | None = None) -> int:
     from showme.logging_setup import configure_logging, install_crash_hook
     configure_logging(args.log_level)
     install_crash_hook()
+    # Bind before anything heavy: a taken --port must fail fast, before the
+    # engine boots and before any discovery line is printed.
+    try:
+        port, reserved_sock = _pick_port(args.port, host=args.host)
+    except PortInUseError as exc:
+        print(f"showme.server: error: {str(exc) or type(exc).__name__}", file=sys.stderr, flush=True)
+        return 2
     app_home = prepare_writable_cwd() or ensure_app_home_env()
     if app_home:
         LOG.info("Using app home at %s", app_home)
@@ -2276,7 +2560,6 @@ def main(argv: list[str] | None = None) -> int:
         LOG.warning("ShowMe engine not found; sidecar will run with limited capabilities.")
 
     app = build_app(engine_root)
-    port, reserved_sock = _pick_port(args.port)
 
     config = uvicorn.Config(app, host=args.host, port=port, log_level=args.log_level,
                             access_log=False, lifespan="on")
@@ -2285,7 +2568,7 @@ def main(argv: list[str] | None = None) -> int:
     # The Tauri shell discovers us via this exact stdout line.
     print(f"SIDECAR_PORT={port}", flush=True)
 
-    asyncio.run(_serve(server, [reserved_sock] if reserved_sock else None))
+    asyncio.run(_serve(server, [reserved_sock]))
     return 0
 
 

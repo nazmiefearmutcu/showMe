@@ -334,3 +334,31 @@ describe("GREEKS pane — persisted book editor", () => {
     expect(localStorage.getItem("showme.greeks.book")).toContain("TSLA 300P");
   });
 });
+
+describe("GREEKS pane — no demo book (strict truth audit 2026-11-07)", () => {
+  it("starts with an empty book: nothing is priced until the user enters positions", () => {
+    mockFn.state = "ok";
+    mockFn.data = {
+      data: { status: "input_required", reason: "No option positions were supplied.", positions: [], n: 0 },
+    };
+    render(<GreeksPane code="GREEKS" />);
+    const first = lastArgs.find((a) => a.params?.positions != null);
+    expect(first?.params?.positions).toEqual([]);
+    const editor = screen.getByLabelText("Option book JSON") as HTMLTextAreaElement;
+    expect(editor.value.trim()).toBe("[]");
+    expect(editor.placeholder).toContain("expiry");
+  });
+
+  it("treats a stored copy of the old demo book as empty", () => {
+    const legacy = [
+      { symbol: "AAPL 240C", kind: "call", quantity: 10, contract_size: 100, spot: 250, strike: 240, vol: 0.28, T: 0.5, r: 0.04 },
+      { symbol: "SPY 600P", kind: "put", quantity: -5, contract_size: 100, spot: 610, strike: 600, vol: 0.18, T: 0.25, r: 0.04 },
+    ];
+    localStorage.setItem("showme.greeks.book", JSON.stringify(legacy, null, 2));
+    mockFn.state = "idle";
+    mockFn.data = undefined;
+    render(<GreeksPane code="GREEKS" />);
+    const first = lastArgs.find((a) => a.params?.positions != null);
+    expect(first?.params?.positions).toEqual([]);
+  });
+});

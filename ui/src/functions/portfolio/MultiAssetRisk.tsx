@@ -26,8 +26,12 @@ import {
 } from "../function-controls";
 import type { FunctionPaneProps } from "../registry-types";
 import {
+  PortfolioDataBadge,
+  type PortfolioDataQuality,
+  portfolioDataMode,
+} from "../PortfolioAnalytics";
+import {
   asRows,
-  DataQualityBadge,
   emptyCopy,
   fmtNum,
   fmtPct,
@@ -83,6 +87,7 @@ interface MarsPayload {
   factor_loadings?: Record<string, number>;
   rows?: Row[];
   r_squared?: number | null;
+  regression_state?: string;
   annualized_volatility?: number | null;
   var_95_daily_loss?: number | null;
   etl_95_daily_loss?: number | null;
@@ -132,7 +137,8 @@ const LOADING_COLUMNS: DataGridColumn<Row>[] = [
 ];
 
 export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
-  const [symbolsInput, setSymbolsInput] = useState("SPY,TLT,GLD,BTCUSDT");
+  const [symbolsInput, setSymbolsInput] = useState("SPY,TLT,GLD");
+  const [weightsInput, setWeightsInput] = useState("");
   const [reference, setReference] = useState(false);
 
   const symbols = useMemo(
@@ -143,9 +149,11 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
         .filter(Boolean),
     [symbolsInput],
   );
+  // Holdings weights (SYMBOL:WEIGHT). The backend uses them as the universe when
+  // present; otherwise the universe is an equal-weight basket, which it discloses.
   const params = useMemo(
-    () => ({ symbols: symbols.join(","), reference }),
-    [symbols, reference],
+    () => ({ symbols: symbols.join(","), weights: weightsInput.trim(), reference }),
+    [symbols, weightsInput, reference],
   );
   const { state, data, error, refetch } = useFunction<MarsPayload>({ code, params });
   const payload = data?.data;
@@ -154,7 +162,10 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
   const waterfall = useMemo(() => deriveFactorWaterfall(asRows(payload?.rows)), [payload]);
   const warnings = data?.warnings ?? [];
   const status = str(payload?.status) ?? data?.status ?? "ok";
-  const isEmpty = !payload || rows.length === 0;
+  // A template-only regression withholds R2/alpha/loadings on purpose. That is a
+  // disclosed state, not an empty response, so the risk figures still render.
+  const regressionEstimated = payload?.regression_state !== "not_estimated_template";
+  const isEmpty = !payload || (rows.length === 0 && regressionEstimated);
 
   const alpha = typeof payload?.alpha_annualized === "number" ? payload.alpha_annualized : null;
   const proxiesLoaded = Array.isArray(data?.metadata?.factor_proxies_loaded)
@@ -163,13 +174,18 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
       )
     : [];
 
-  const badge = (
-    <DataQualityBadge
-      payload={payload as Row | undefined}
-      metadata={data?.metadata}
-      sources={data?.sources}
-    />
+  // MARS#3-RQ: a partial_live result mixes live series with a dropped or
+  // template leg or factor proxy. It is a partial-live state, not a model;
+  // the warning strip names what was dropped. data_mode sits in the metadata
+  // envelope, which the generic classifier does not read for MARS.
+  const quality = useMemo<PortfolioDataQuality>(
+    () =>
+      String(data?.metadata?.data_mode ?? "").toLowerCase() === "partial_live"
+        ? { mode: "degraded", reason: "a leg or factor proxy was not live" }
+        : portfolioDataMode(payload as Row | undefined, data?.metadata, data?.sources),
+    [payload, data?.metadata, data?.sources],
   );
+  const badge = <PortfolioDataBadge quality={quality} />;
   const empty = emptyCopy(payload as Row | undefined);
 
   const body = (
@@ -244,13 +260,19 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
           <div className="portfolio-analytics-grid">
             <section className="portfolio-table-panel">
               <SectionHead title="Factor loadings" meta="regression beta against ETF proxies" />
-              <DataGrid
-                columns={LOADING_COLUMNS}
-                rows={rows}
-                rowKey={(row, idx) => `${String(row.factor ?? idx)}-${idx}`}
-                density="compact"
-                ariaLabel="MARS factor loading table"
-              />
+              {regressionEstimated ? (
+                <DataGrid
+                  columns={LOADING_COLUMNS}
+                  rows={rows}
+                  rowKey={(row, idx) => `${String(row.factor ?? idx)}-${idx}`}
+                  density="compact"
+                  ariaLabel="MARS factor loading table"
+                />
+              ) : (
+                <p className="portfolio-analytics-muted" role="note">
+                  Regression not estimated: the regression input is the labelled template series.
+                </p>
+              )}
             </section>
 
             <aside className="portfolio-analytics-rail">
@@ -287,6 +309,16 @@ export function MultiAssetRiskPane({ code }: FunctionPaneProps) {
                   id={`mars-${code}-universe`}
                   value={symbolsInput}
                   onChange={(event) => setSymbolsInput(event.target.value.toUpperCase())}
+                  spellCheck={false}
+                />
+              </label>
+              <label className="portfolio-control-field portfolio-control-field--wide" htmlFor={`mars-${code}-weights`}>
+                <span>Holdings weights</span>
+                <input
+                  id={`mars-${code}-weights`}
+                  value={weightsInput}
+                  onChange={(event) => setWeightsInput(event.target.value.toUpperCase())}
+                  placeholder="SPY:0.6,TLT:0.4"
                   spellCheck={false}
                 />
               </label>

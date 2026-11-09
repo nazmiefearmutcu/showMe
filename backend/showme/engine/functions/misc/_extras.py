@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -27,14 +28,14 @@ class GRABFunction(BaseFunction):
             {
                 "step": "capture",
                 "target": target,
-                "status": "ready",
-                "output": "local screenshot artifact",
+                "status": "planned",
+                "output": "capture plan only: no screenshot is taken by this function",
                 "transmits_data": False,
             },
             {
                 "step": "email",
                 "target": recipient or "not configured",
-                "status": "draft_only" if recipient else "not_configured",
+                "status": "planned" if recipient else "not_configured",
                 "output": "requires user-confirmed mail integration",
                 "transmits_data": True,
             },
@@ -46,13 +47,16 @@ class GRABFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
-                "status": "draft_only",
+                # No draft object is ever created here, so the top-level status
+                # reports a plan: "planned" with a recipient, "not_configured"
+                # without one. The email row keeps its documented contract.
+                "status": "planned" if recipient else "not_configured",
                 "target": target,
                 "recipient": recipient or None,
                 "rows": rows,
                 "cards": [
-                    {"label": "Capture", "value": "local"},
-                    {"label": "Email", "value": "draft only"},
+                    {"label": "Capture", "value": "plan only"},
+                    {"label": "Email", "value": "plan only" if recipient else "not configured"},
                 ],
                 "methodology": (
                     "GRAB prepares a local screenshot-capture plan and separates it from email delivery. "
@@ -83,12 +87,29 @@ class LANGFunction(BaseFunction):
     category = "misc"
     SUPPORTED = ("tr", "en", "de", "fr", "es", "it", "pt", "ru", "zh", "ja", "ko", "ar")
 
+    _SUPPORTED_ACTION = (
+        "Use one of the supported language codes: " + ", ".join(SUPPORTED) + "."
+    )
+
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        target = (params.get("lang") or "tr").lower()
-        if target not in self.SUPPORTED:
+        raw = params.get("lang")
+        # LANG#1: the preference is written only from an explicit code. A call
+        # without one must not overwrite the saved runtime/lang.txt.
+        if raw is None or not str(raw).strip():
+            reason = "lang is required: pass one supported language code to persist."
             return FunctionResult(code=self.code, instrument=None,
-                                  data={"status": "input_error", "supported": list(self.SUPPORTED)},
-                                  warnings=[f"unsupported language {target}"])
+                                  data={"status": "input_error", "reason": reason,
+                                        "supported": list(self.SUPPORTED),
+                                        "next_actions": [self._SUPPORTED_ACTION]},
+                                  warnings=[reason])
+        target = str(raw).strip().lower()
+        if target not in self.SUPPORTED:
+            reason = f"unsupported language {target}"
+            return FunctionResult(code=self.code, instrument=None,
+                                  data={"status": "input_error", "reason": reason,
+                                        "supported": list(self.SUPPORTED),
+                                        "next_actions": [self._SUPPORTED_ACTION]},
+                                  warnings=[reason])
         from showme.app_paths import runtime_path
         runtime_path("lang.txt").write_text(target)
         rows = [
@@ -96,7 +117,9 @@ class LANGFunction(BaseFunction):
                 "lang": code,
                 "label": _language_label(code),
                 "selected": code == target,
-                "coverage": "core_labels",
+                # LANG#2: the sidecar does not read the UI catalogs, so it does
+                # not claim a coverage tier. The pane computes shell coverage.
+                "coverage": None,
                 "requires_reload": code == target,
             }
             for code in self.SUPPORTED
@@ -113,17 +136,20 @@ class LANGFunction(BaseFunction):
                     {"label": "Languages", "value": len(self.SUPPORTED)},
                 ],
                 "methodology": (
-                    "LANG persists the selected runtime language in runtime/lang.txt and reports supported "
-                    "language coverage. Shell-wide text changes require preference-aware UI surfaces to read "
-                    "the saved value and may require pane reload."
+                    "LANG persists the selected runtime language in runtime/lang.txt and lists the supported "
+                    "language codes. It does not read the UI translation catalogs, so coverage is null here; "
+                    "the pane computes shell coverage from those catalogs. Shell-wide text changes require "
+                    "preference-aware UI surfaces to read the saved value and may require pane reload."
                 ),
                 "field_dictionary": {
                     "lang": "IETF-style language code.",
-                    "coverage": "Translation coverage currently available in ShowMe.",
+                    "coverage": "Not computed by the sidecar (null); the UI derives shell coverage from its catalogs.",
                     "requires_reload": "Whether the selected preference needs a pane reload to become visible.",
                 },
             },
-            sources=["showme_i18n_registry"],
+            # LANG#2: the labels come from the static _language_label table and
+            # the UI catalogs are not read here, so no source is cited.
+            sources=[],
         )
 
 
@@ -135,15 +161,38 @@ class BIOFunction(BaseFunction):
     category = "misc"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
+        # BIO-1: the LocalAuthentication bridge exists only on macOS. This
+        # sidecar cannot probe the Tauri shell, so the rows describe what the
+        # host platform allows rather than claiming an available bridge.
+        host = sys.platform
+        is_macos = host == "darwin"
+        if is_macos:
+            capability_status = "native_bridge_expected"
+            verify_status = "user_initiated"
+            prompt_value = "native"
+            reason = None
+            next_actions: list[str] = []
+            warnings: list[str] = []
+        else:
+            capability_status = "unavailable_non_macos"
+            verify_status = "denied_non_macos"
+            prompt_value = "unavailable"
+            reason = (
+                f"BIO needs the macOS LocalAuthentication bridge; this host is {host}, "
+                "so every verify is denied."
+            )
+            next_actions = ["Run ShowMe on macOS to use Touch ID or device-passcode gating."]
+            warnings = [reason]
         rows = [
             {
                 "action": "capabilities",
-                "status": "native_bridge_available",
-                "mechanism": "macOS LocalAuthentication via Tauri command biometric_capabilities",
+                "status": capability_status,
+                "mechanism": "macOS LocalAuthentication via Tauri command biometric_capabilities "
+                             "(the Tauri shell reports the runtime result)",
             },
             {
                 "action": "verify",
-                "status": "user_initiated",
+                "status": verify_status,
                 "mechanism": "request_biometric opens the OS biometric/passcode prompt from the native pane",
             },
             {
@@ -156,15 +205,23 @@ class BIOFunction(BaseFunction):
             code=self.code,
             instrument=None,
             data={
-                "status": "ready",
+                "status": "ready" if is_macos else "unavailable",
+                "reason": reason,
+                "host_platform": host,
                 "rows": rows,
                 "cards": [
-                    {"label": "Prompt", "value": "native"},
+                    {"label": "Prompt", "value": prompt_value},
                     {"label": "Secrets", "value": "not exported"},
                 ],
+                "next_actions": next_actions,
                 "methodology": (
-                    "BIO uses the native macOS LocalAuthentication bridge exposed by the Tauri shell. "
-                    "The backend only documents the auth flow; the actual biometric prompt is initiated "
+                    (
+                        "BIO uses the native macOS LocalAuthentication bridge exposed by the Tauri shell. "
+                        if is_macos else
+                        f"The macOS LocalAuthentication bridge is not available on this host ({host}); "
+                        "every verify is denied. "
+                    )
+                    + "The backend only documents the auth flow; the actual biometric prompt is initiated "
                     "by the BIO pane after the user clicks Verify."
                 ),
                 "field_dictionary": {
@@ -173,7 +230,10 @@ class BIOFunction(BaseFunction):
                     "mechanism": "Local system API used for the step.",
                 },
             },
-            sources=["macos_local_auth_bridge"],
+            # Static documentation, not a live probe: labeled as reference.
+            sources=["static_reference_documentation"],
+            warnings=warnings,
+            metadata={"live": False, "mode": "reference", "host_platform": host},
         )
 
 
@@ -198,8 +258,8 @@ class BMCFunction(BaseFunction):
                     {"label": "Lessons", "value": len(rows)},
                 ],
                 "methodology": (
-                    "BMC is a local market-concepts curriculum. Each row is a concrete lesson with topic, "
-                    "learning objective, example, quiz prompt, and completion state instead of a static module count."
+                    "BMC is a local market-concepts curriculum. Each row is a concrete lesson with module, "
+                    "learning objective, example, and quiz prompt. Completion is tracked in the browser, not here."
                 ),
                 "field_dictionary": {
                     "module": "Curriculum module.",
@@ -223,7 +283,17 @@ class FLYFunction(BaseFunction):
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
         callsign_filter = str(params.get("callsign") or params.get("flight") or "").strip().upper()
         country_filter = str(params.get("country") or "").strip().lower()
-        limit = max(1, min(int(params.get("limit") or 25), 100))
+        # Input validation happens before any provider call so a bad value is
+        # reported as an input error, never as an OpenSky outage.
+        try:
+            limit = max(1, min(int(params.get("limit") or 25), 100))
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: JSON 1e400 parses to float('inf'), which int() rejects.
+            return _flight_input_error(self.code, "limit", params.get("limit"), "a whole number from 1 to 100")
+        try:
+            timeout = max(1.0, min(float(params.get("flight_timeout", params.get("timeout", 3))), 5.0))
+        except (TypeError, ValueError):
+            return _flight_input_error(self.code, "flight_timeout", params.get("flight_timeout"), "a number of seconds")
         # Default-polarity flip (2026-09-08): FLY polls the live OpenSky
         # feed by default; ``reference=true`` skips the provider and every
         # failure path stays honest (no sample aircraft, ever).
@@ -242,17 +312,17 @@ class FLYFunction(BaseFunction):
                                   metadata={"live": False, "fallback": True,
                                             "data_mode": "provider_unavailable"})
         try:
-            timeout = max(1.0, min(float(params.get("flight_timeout", params.get("timeout", 3))), 5.0))
             data = await asyncio.wait_for(self.deps.opensky.fetch(None), timeout=timeout)
         except Exception as exc:
             payload = _flight_unavailable(callsign_filter, country_filter)
-            payload["reason"] = f"OpenSky request failed: {exc}"
+            payload["reason"] = f"OpenSky request failed: {str(exc) or type(exc).__name__}"
             return FunctionResult(code=self.code, instrument=None, data=payload,
                                   sources=["no_live_source"],
                                   metadata={"live": False, "fallback": True,
                                             "data_mode": "provider_unavailable",
-                                            "provider_errors": [f"opensky: {exc}"]})
+                                            "provider_errors": [f"opensky: {str(exc) or type(exc).__name__}"]})
         rows = _normalize_opensky(data, callsign_filter, country_filter, limit)
+        source_time = _unix_to_iso(data.get("time")) if isinstance(data, dict) else None
         if not rows:
             payload = _flight_unavailable(callsign_filter, country_filter)
             payload["status"] = "empty"
@@ -275,9 +345,13 @@ class FLYFunction(BaseFunction):
                     for row in rows
                     if row.get("altitude_ft") is not None
                 ],
+                # Top-level keys mirror the seed's card_schema slot keys
+                # (aircraft_count, source_time); cards carry the same keys.
+                "aircraft_count": len(rows),
+                "source_time": source_time,
                 "cards": [
-                    {"label": "Aircraft", "value": len(rows)},
-                    {"label": "Source time", "value": data.get("time") if isinstance(data, dict) else None},
+                    {"key": "aircraft_count", "label": "Aircraft", "value": len(rows)},
+                    {"key": "source_time", "label": "Source time", "value": source_time},
                 ],
                 "methodology": (
                     "FLY reads OpenSky /states/all and normalizes aircraft state vectors into callsign, "
@@ -299,39 +373,74 @@ class FLYFunction(BaseFunction):
 
 @FunctionRegistry.register
 class DINEFunction(BaseFunction):
-    """DINE — Restaurant info (Yelp Fusion)."""
+    """DINE — Restaurant lookup via OpenStreetMap Nominatim (no ratings or prices)."""
     code = "DINE"
     name = "Restaurants"
     category = "misc"
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        location = str(params.get("location") or "New York").strip()
+        location = str(params.get("location") or "").strip()
+        if not location:
+            # No default place: an unknown location must not be silently
+            # replaced by another city's restaurants.
+            return FunctionResult(
+                code=self.code,
+                instrument=None,
+                data={
+                    "status": "needs_input",
+                    "reason": "No location given; DINE does not guess a city.",
+                    "rows": [],
+                    "next_actions": ["Enter a place name such as 'SoHo New York' or 'Istanbul'."],
+                },
+                sources=[],
+            )
         query = str(params.get("query") or "restaurant").strip()
+        cuisine = str(params.get("cuisine") or "any").strip().casefold()
         # Nominatim's documented maximum is 40 (provider policy, not a
         # local choice) — request denser result sets up to that cap.
         limit = max(1, min(int(params.get("limit") or 25), _NOMINATIM_MAX_LIMIT))
+        geo_match: dict[str, Any] = {}
         try:
-            rows = await _nominatim_restaurants(query, location, limit)
+            rows = await _nominatim_restaurants(query, location, limit, geo_out=geo_match)
         except Exception as exc:
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data={
                     "status": "provider_unavailable",
-                    "reason": f"OpenStreetMap lookup failed: {exc}",
+                    "reason": f"OpenStreetMap lookup failed: {str(exc) or type(exc).__name__}",
                     "rows": [],
-                    "next_actions": ["Try a more specific location such as 'SoHo New York' or connect a restaurant ratings provider."],
+                    "next_actions": ["Retry shortly (Nominatim allows about one request per second).", "Try a more specific location such as 'SoHo New York'."],
                 },
                 sources=["openstreetmap_nominatim"],
             )
+        cuisine_filter: dict[str, Any] | None = None
+        if cuisine and cuisine != "any":
+            # OSM only carries cuisine as a mapper-supplied tag, so the
+            # filter is applied to the places Nominatim returned for this
+            # search (up to ``limit``) — it never invents a match.
+            matched_rows = [row for row in rows if _dine_matches_cuisine(row, cuisine)]
+            cuisine_filter = {
+                "requested": cuisine,
+                "matched": len(matched_rows),
+                "scope": "places returned by Nominatim for this search (up to the requested limit)",
+            }
+            rows = matched_rows
         if not rows:
+            reason = f"No OpenStreetMap restaurants matched {query!r} near {location!r}."
+            if cuisine_filter is not None:
+                reason = (
+                    f"No returned OpenStreetMap place for {query!r} near {location!r} carries "
+                    f"cuisine {cuisine!r} (OSM cuisine tag or type)."
+                )
             return FunctionResult(
                 code=self.code,
                 instrument=None,
                 data={
                     "status": "empty",
-                    "reason": f"No OpenStreetMap restaurants matched {query!r} near {location!r}.",
+                    "reason": reason,
                     "rows": [],
+                    **({"cuisine_filter": cuisine_filter} if cuisine_filter else {}),
                 },
                 sources=["openstreetmap_nominatim"],
             )
@@ -342,6 +451,11 @@ class DINEFunction(BaseFunction):
                 "status": "live",
                 "location": location,
                 "query": query,
+                "location_match": {
+                    "display_name": geo_match.get("geocoded_as"),
+                    "addresstype": geo_match.get("geocoded_addresstype"),
+                },
+                "cuisine_filter": cuisine_filter,
                 "rows": rows,
                 "surface": [
                     {"name": row["name"], "distance_km": row.get("distance_km"), "value": row.get("distance_km")}
@@ -354,12 +468,14 @@ class DINEFunction(BaseFunction):
                 ],
                 "methodology": (
                     "DINE searches OpenStreetMap Nominatim bounded to a viewbox around the requested "
-                    "location (the city is geocoded first, then the place query runs with bounded=1 so "
-                    "results are inside the area, not name matches anywhere on the planet). Amenity "
-                    "keywords such as 'restaurant' use Nominatim's tagged-object search; other keywords "
-                    "fall back to text matching. Results are cached ~5 minutes in-process, requests are "
-                    "throttled to the provider's 1 req/sec policy, and ratings/prices are never fabricated "
-                    "— those fields stay blank unless a ratings provider is connected."
+                    "location (the place is geocoded first; a city-level match is preferred over a "
+                    "state or country match; the place query runs with bounded=1 so results are inside "
+                    "the area, not name matches anywhere on the planet). Amenity keywords such as "
+                    "'restaurant' use Nominatim's tagged-object search; other keywords fall back to text "
+                    "matching. Distances are measured from the geocoded point of the chosen match. "
+                    "Results are cached ~5 minutes in-process, requests are throttled to the provider's "
+                    "1 req/sec policy, and ratings/prices are never fabricated — the rating and price "
+                    "fields stay blank because OSM does not carry them."
                 ),
                 "field_dictionary": {
                     "name": "Restaurant/place name from OSM.",
@@ -372,11 +488,20 @@ class DINEFunction(BaseFunction):
                     "cuisine": "OSM cuisine tag when the mapper supplied one.",
                     "opening_hours": "OSM opening_hours tag when the mapper supplied one.",
                     "osm_type": "OSM object type.",
-                    "distance_km": "Approximate distance from the bounded search area's centre (city centre).",
+                    "distance_km": "Approximate great-circle distance from the geocoded point of the location match (not a route).",
                 },
             },
             sources=["openstreetmap_nominatim"],
         )
+
+
+def _dine_matches_cuisine(row: dict[str, Any], cuisine: str) -> bool:
+    """True when the OSM cuisine tag (``;``-separated list) or OSM type equals ``cuisine``."""
+    tag = str(row.get("cuisine") or "")
+    tags = {part.strip().casefold() for part in tag.split(";") if part.strip()}
+    if cuisine in tags:
+        return True
+    return str(row.get("type") or "").casefold() == cuisine
 
 
 def _truthy(value: Any) -> bool:
@@ -440,9 +565,25 @@ def _bmc_lessons() -> list[dict[str, str]]:
                 "objective": objective,
                 "example": example,
                 "quiz": quiz,
-                "progress": "not_started",
             })
     return rows
+
+
+def _flight_input_error(code: str, field_name: str, raw: Any, expected: str) -> FunctionResult:
+    reason = f"FLY input {field_name} must be {expected} (got {raw!r})."
+    return FunctionResult(
+        code=code,
+        instrument=None,
+        data={
+            "status": "input_error",
+            "reason": reason,
+            "rows": [],
+            "next_actions": [f"Set {field_name} to {expected}."],
+        },
+        sources=[],
+        warnings=[reason],
+        metadata={"live": False, "data_mode": "explicit_unavailable"},
+    )
 
 
 def _flight_unavailable(callsign_filter: str, country_filter: str) -> dict[str, Any]:
@@ -583,27 +724,55 @@ async def _nominatim_get(params: dict[str, Any]) -> list[dict[str, Any]]:
     return payload if isinstance(payload, list) else []
 
 
-async def _nominatim_viewbox(location: str) -> dict[str, Any]:
-    """Geocode ``location`` once → ``{"viewbox": ..., "center": (lat, lon)}``.
+# Nominatim ``addresstype`` values that name a city-level place, most specific
+# first. A free-text "New York" otherwise matches both the city and the state.
+_NOMINATIM_CITY_ADDRESSTYPES = ("city", "town", "village", "municipality", "borough")
 
+
+def _nominatim_pick_match(payload: list[Any]) -> dict[str, Any] | None:
+    """Choose the geocode match: a city-level result with a usable bbox, else the first usable one."""
+    candidates = [item for item in payload if isinstance(item, dict)]
+
+    def _rank(item: dict[str, Any]) -> int:
+        addresstype = str(item.get("addresstype") or "")
+        if addresstype in _NOMINATIM_CITY_ADDRESSTYPES:
+            return _NOMINATIM_CITY_ADDRESSTYPES.index(addresstype)
+        return len(_NOMINATIM_CITY_ADDRESSTYPES)
+
+    # ``sorted`` is stable, so provider order breaks ties within a rank.
+    for item in sorted(candidates, key=_rank):
+        bbox = item.get("boundingbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            return item
+    return None
+
+
+async def _nominatim_viewbox(location: str) -> dict[str, Any]:
+    """Geocode ``location`` once → ``{"viewbox", "center": (lat, lon), "geocoded_as", "geocoded_addresstype"}``.
+
+    ``center`` is the geocoded point of the chosen match (not the bbox midpoint).
     Empty dict when Nominatim has no usable bounding box for the string,
     in which case the caller falls back to the legacy free-text search.
     """
-    payload = await _nominatim_get({"q": location, "format": "jsonv2", "limit": 1})
-    if not payload or not isinstance(payload[0], dict):
+    payload = await _nominatim_get({"q": location, "format": "jsonv2", "limit": 5})
+    match = _nominatim_pick_match(payload)
+    if match is None:
         return {}
-    bbox = payload[0].get("boundingbox")
-    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
-        return {}
+    bbox = match.get("boundingbox")
     south = _num(bbox[0])
     north = _num(bbox[1])
     west = _num(bbox[2])
     east = _num(bbox[3])
     if None in (south, north, west, east) or south >= north or west >= east:
         return {}
+    point_lat = _num(match.get("lat"))
+    point_lon = _num(match.get("lon"))
+    center = (point_lat, point_lon) if point_lat is not None and point_lon is not None else None
     return {
         "viewbox": f"{west},{south},{east},{north}",
-        "center": ((south + north) / 2.0, (west + east) / 2.0),
+        "center": center,
+        "geocoded_as": match.get("display_name"),
+        "geocoded_addresstype": match.get("addresstype"),
     }
 
 
@@ -631,12 +800,21 @@ def _nominatim_address(item: dict[str, Any]) -> str | None:
     return compact or None
 
 
-async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[dict[str, Any]]:
+async def _nominatim_restaurants(
+    query: str,
+    location: str,
+    limit: int,
+    geo_out: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Bounded Nominatim place search. ``geo_out`` (if given) receives the geocode match used."""
     limit = max(1, min(int(limit or 25), _NOMINATIM_MAX_LIMIT))
     cache_key = f"search|{query.casefold()}|{location.casefold()}|{limit}"
     cached = _nominatim_cache_get(cache_key)
     if cached is not None:
-        return [dict(row) for row in cached]
+        cached_rows, cached_geo = cached
+        if geo_out is not None:
+            geo_out.update(cached_geo)
+        return [dict(row) for row in cached_rows]
 
     # 1) Geocode the location (cached separately) so the place search can
     #    be bounded to the area instead of name-matching the whole planet.
@@ -645,6 +823,12 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
     if geo is None:
         geo = await _nominatim_viewbox(location)
         _nominatim_cache_set(geo_key, geo)
+    geo_info = {
+        "geocoded_as": geo.get("geocoded_as") if isinstance(geo, dict) else None,
+        "geocoded_addresstype": geo.get("geocoded_addresstype") if isinstance(geo, dict) else None,
+    }
+    if geo_out is not None:
+        geo_out.update(geo_info)
 
     keyword = query.strip().casefold().replace(" ", "_")
     viewbox = geo.get("viewbox") if isinstance(geo, dict) else None
@@ -677,12 +861,11 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
             "limit": limit,
         })
 
+    # Distances originate at the geocoded point of the location match. With no
+    # geocode point there is no honest origin, so distance_km stays None.
     center = geo.get("center") if isinstance(geo, dict) else None
     if center:
         origin_lat, origin_lon = center
-    elif payload:
-        origin_lat = _num(payload[0].get("lat"))
-        origin_lon = _num(payload[0].get("lon"))
     else:
         origin_lat, origin_lon = None, None
 
@@ -724,7 +907,9 @@ async def _nominatim_restaurants(query: str, location: str, limit: int) -> list[
         })
         if len(rows) >= limit:
             break
-    _nominatim_cache_set(cache_key, rows)
+    _nominatim_cache_set(cache_key, (rows, geo_info))
+    if geo_out is not None:
+        geo_out.update(geo_info)
     return [dict(row) for row in rows]
 
 

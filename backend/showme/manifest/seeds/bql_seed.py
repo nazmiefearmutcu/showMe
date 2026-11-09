@@ -1,9 +1,9 @@
 """BQL — ShowMe Query Language editor.
 
-Bloomberg-BQL-inspired DSL editor for ad-hoc field queries. Primary mode
-is the templated computed_model surface (local parse + provider-shaped
-rows from the BQL templates); live mode requires yfinance and may report
-not_configured if the live adapter is absent.
+Bloomberg-BQL-inspired DSL editor for ad-hoc field queries. Rows come only
+from the yfinance OHLCV adapter (live mode). There is no offline price model:
+live=false returns provider_unavailable with no rows, and a query without a
+universe returns input_required.
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def bql() -> FunctionManifest:
         category=Category.API_DEV,
         intent=(
             "Run BQL-style queries like get(close, volume) for(['AAPL','MSFT']) by(date) against the "
-            "local field templates or, when live mode is armed, the yfinance market-data adapter."
+            "yfinance OHLCV adapter. No synthetic rows are produced."
         ),
         asset_classes=[
             AssetClass.EQUITY,
@@ -58,7 +58,8 @@ def bql() -> FunctionManifest:
                 required=True,
                 description=(
                     "BQL-style DSL: get(field, ...) for([symbol, ...]) by(date) "
-                    "[start=YYYY-MM-DD end=YYYY-MM-DD interval=1d]."
+                    "[with(start='YYYY-MM-DD', end='YYYY-MM-DD', interval='1d')]. "
+                    "The window and bar size are set in the query text; the pane has no separate controls."
                 ),
             ),
             InputSpec(
@@ -67,59 +68,24 @@ def bql() -> FunctionManifest:
                 control=ControlKind.BOOLEAN,
                 required=False,
                 description=(
-                    "False (default) returns templated rows from the local field model; "
-                    "True attempts a live yfinance fetch and reports not_configured if absent."
+                    "True (default) fetches yfinance OHLCV rows. False returns no rows "
+                    "(provider_unavailable): BQL has no offline data model."
                 ),
-            ),
-            InputSpec(
-                name="limit",
-                label="Row limit",
-                control=ControlKind.NUMBER,
-                required=False,
-                description="Cap on rows returned.",
-                min=1.0,
-                max=10000.0,
-                step=50.0,
-            ),
-            InputSpec(
-                name="start",
-                label="Start date",
-                control=ControlKind.DATE_RANGE,
-                required=False,
-                description="Optional start date for time-axis queries.",
-            ),
-            InputSpec(
-                name="end",
-                label="End date",
-                control=ControlKind.DATE_RANGE,
-                required=False,
-                description="Optional end date for time-axis queries.",
-            ),
-            InputSpec(
-                name="interval",
-                label="Interval",
-                control=ControlKind.SELECT,
-                required=False,
-                description="Bar interval for the by(date) axis when live_query=True.",
-                options=["1d", "1wk", "1mo"],
             ),
         ],
         defaults={
             "query": "get(close, volume) for(['AAPL']) by(date)",
-            "live_query": False,
-            "limit": 200,
-            "interval": "1d",
+            "live_query": True,
         },
-        # Editor-style surface — primary is internal (templated model). Live
-        # mode falls through to yfinance when armed, and degrades to
-        # not_configured rather than silently returning synthetic rows.
+        # Editor-style surface — primary is internal (query parser). Rows come
+        # from yfinance; without provider data the function degrades to an
+        # honest empty state rather than returning synthetic rows.
         provider_chain=ProviderChain(
             primary="internal",
-            fallbacks=["yfinance", "cached_snapshot"],
+            fallbacks=["yfinance"],
             acceptable_modes=[
-                DataMode.MODELED,
                 DataMode.DELAYED_REFERENCE,
-                DataMode.CACHED_SNAPSHOT,
+                DataMode.PROVIDER_UNAVAILABLE,
                 DataMode.NOT_CONFIGURED,
             ],
         ),
@@ -153,13 +119,12 @@ def bql() -> FunctionManifest:
         ),
         methodology=(
             "BQL parses the user's get(...) for([...]) by(...) DSL into a structured query record "
-            "(universe + fields + axis + runtime params). When live_query=False (default), it returns "
-            "templated rows generated from a local provider-shaped model so the editor surfaces a "
-            "consistent shape for FLDS-listed fields without requiring network. When live_query=True, "
-            "BQL invokes the yfinance adapter for the universe with interval/start/end, returning rows "
-            "with mode='live'; if the adapter is unavailable, BQL returns status=provider_unavailable "
-            "with rows=[] and mode='unavailable' rather than synthesising. Cross-reference with FLDS "
-            "for the available field catalog."
+            "(universe + fields + axis + runtime params). When live (the default), BQL invokes the "
+            "yfinance adapter for the universe with interval/start/end, returning rows with mode='live'. "
+            "Requested fields that yfinance OHLCV does not provide are listed in warnings and omitted. "
+            "With live_query=False, BQL returns status=provider_unavailable with rows=[] and "
+            "mode='unavailable'; with no universe it returns status=input_required. Nothing is synthesised. "
+            "Cross-reference with FLDS for the available field catalog."
         ),
         formula_dict={
             "DSL": Formula(
@@ -170,10 +135,14 @@ def bql() -> FunctionManifest:
         },
         field_dict={
             "query": FieldDef(description="Echo of the DSL string sent to the parser.", source="bql"),
-            "mode": FieldDef(description="computed_model / live / unavailable.", source="bql"),
+            "mode": FieldDef(description="live / unavailable.", source="bql"),
             "rows[].symbol": FieldDef(description="Instrument symbol from the for([...]) clause.", source="bql"),
             "rows[].date": FieldDef(description="Provider timestamp for the OHLCV row.", source="provider"),
-            "rows[].close": FieldDef(unit="quote", description="Closing/last price.", source="provider"),
+            "rows[].close": FieldDef(
+                unit="quote",
+                description="Closing price from the yfinance OHLCV row (px_last, last and price alias to close).",
+                source="yfinance",
+            ),
             "rows[].volume": FieldDef(unit="shares_or_base", description="Session volume.", source="provider"),
         },
         provenance=ProvenanceSpec(
@@ -187,12 +156,13 @@ def bql() -> FunctionManifest:
         ),
         semantic_tests=[
             SemanticTest(
-                name="bql_template_mode_returns_rows_without_network",
-                description="Default live_query=False returns templated rows with mode='computed_model'.",
-                inputs={"query": "get(close, volume) for(['AAPL']) by(date)"},
+                name="bql_offline_mode_returns_no_rows",
+                description="live_query=False returns status=provider_unavailable with rows=[] and no synthetic prices.",
+                inputs={"query": "get(close, volume) for(['AAPL']) by(date)", "live_query": False},
                 assertions=[
-                    "mode == 'computed_model'",
-                    "rows_length_at_least_1",
+                    "status == 'provider_unavailable'",
+                    "rows == []",
+                    "mode == 'unavailable'",
                 ],
             ),
             SemanticTest(

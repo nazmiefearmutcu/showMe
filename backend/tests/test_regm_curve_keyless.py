@@ -22,6 +22,7 @@ if str(_BACKEND_DIR) not in sys.path:
 
 import pytest  # noqa: E402
 
+from showme.engine.core.base_function import FunctionDeps  # noqa: E402
 from showme.engine.functions._fred_csv import (  # noqa: E402
     reset_fred_csv_cache,
 )
@@ -37,6 +38,17 @@ class _FakeResp:
 
     def raise_for_status(self):
         return None
+
+
+class _BenchmarkYahoo:
+    """yfinance-shaped fake: a rising close series so REGM has a benchmark."""
+
+    async def fetch(self, request):
+        import pandas as pd
+
+        closes = [100.0 + i * 0.5 for i in range(300)]
+        idx = pd.date_range(end="2026-09-20", periods=len(closes), freq="D")
+        return pd.DataFrame({"close": closes}, index=idx)
 
 
 class _FakeFredClient:
@@ -66,12 +78,10 @@ def _clean_caches():
 def test_regm_curve_alive_via_keyless_fred_when_no_keyed_adapter() -> None:
     from showme.engine.functions.macro.regm import REGMFunction
 
-    fn = REGMFunction()
+    fn = REGMFunction(FunctionDeps(yfinance=_BenchmarkYahoo()))
     fn._http_client = _FakeFredClient(dgs10="3.40", dgs2="4.20")
-    out = asyncio.run(fn.execute(symbol="SPY", allow_model=True))
+    out = asyncio.run(fn.execute(symbol="SPY"))
 
-    # The regression fixture needs allow_model (no yfinance dep here); the
-    # curve leg under test runs BEFORE the benchmark leg either way.
     current = out.data["current"]
     assert current.get("curve") == "INVERTED", (
         f"(3.40 - 4.20) * 100 = -80bp must classify INVERTED, got "
@@ -89,9 +99,9 @@ def test_regm_curve_falls_back_to_unknown_when_keyless_fails() -> None:
         async def get(self, url, timeout=None):  # noqa: ANN001 - fake seam
             raise RuntimeError("network down")
 
-    fn = REGMFunction()
+    fn = REGMFunction(FunctionDeps(yfinance=_BenchmarkYahoo()))
     fn._http_client = _BoomClient()
-    out = asyncio.run(fn.execute(symbol="SPY", allow_model=True))
+    out = asyncio.run(fn.execute(symbol="SPY"))
 
     current = out.data["current"]
     assert current.get("curve") == "UNKNOWN"

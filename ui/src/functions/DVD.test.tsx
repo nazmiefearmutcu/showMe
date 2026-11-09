@@ -1,220 +1,108 @@
 /**
- * DVD pane — Model mode honesty (F6).
+ * DVD pane — awareness contract tests.
  *
- * The backend Model branch used to return a bare template dict with no
- * `rows`, so the toggle rendered "No corporate actions" (dead mode). These
- * tests pin the labelled reference-row contract: model rows render with the
- * "modeled" pill, a visible notice and no "live" claim; the live path and the
- * provider-outage path keep their own states.
+ * Pins: no fabricated template rows; provider_unavailable renders the backend
+ * reason; an empty payload says "No dividends returned"; declared (upcoming)
+ * and historical rows render in their own sections; summary values render.
  */
-import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { DVDPane } from "./DVD";
 
 interface MockFnState {
   state: "idle" | "loading" | "ok" | "error" | "refreshing";
-  data?:
-    | {
-        data?: unknown;
-        status?: string;
-        sources?: string[];
-        elapsed_ms?: number;
-        metadata?: Record<string, unknown>;
-      }
-    | undefined;
+  data?: Record<string, unknown> | undefined;
   error?: Error | null;
 }
 
 const mockFn: MockFnState = { state: "idle", data: undefined, error: null };
+const calls: unknown[] = [];
 
 vi.mock("@/lib/useFunction", () => ({
-  useFunction: () => ({
-    state: mockFn.state,
-    data: mockFn.data,
-    error: mockFn.error,
-    refetch: vi.fn(),
-  }),
+  useFunction: (args: unknown) => {
+    calls.push(args);
+    return {
+      state: mockFn.state,
+      data: mockFn.data,
+      error: mockFn.error,
+      refetch: vi.fn(),
+    };
+  },
 }));
-vi.mock("@/lib/router", () => ({ navigate: vi.fn() }));
 
-import { DVDPane } from "./DVD";
-
-function liveData() {
-  return {
-    status: "ok",
-    data: {
-      status: "ok",
-      rows: [
-        {
-          symbol: "AAPL",
-          action_type: "dividend",
-          date: "2026-08-08",
-          amount: 0.25,
-          source_mode: "live_yfinance_dividends",
-        },
-      ],
-    },
-    sources: ["yfinance"],
-    metadata: {},
-    elapsed_ms: 9,
-  };
-}
-
-function modelData() {
-  return {
-    status: "ok",
-    data: {
-      status: "modeled",
-      rows: [
-        {
-          symbol: "AAPL",
-          action_type: "dividend",
-          date: "2026-09-11",
-          amount: 0.24,
-          source_mode: "model",
-          reason: "modelled_latest",
-        },
-        {
-          symbol: "AAPL",
-          action_type: "dividend",
-          date: "2026-09-11",
-          amount: 0.23,
-          source_mode: "model",
-          reason: "modelled_prior",
-        },
-      ],
-    },
-    sources: ["dividend_calendar_model"],
-    metadata: { live: false, data_mode: "modeled" },
-    elapsed_ms: 4,
-  };
-}
-
-function outageData() {
-  return {
-    status: "ok",
-    data: {
-      status: "provider_unavailable",
-      rows: [
-        {
-          symbol: "AAPL",
-          action_type: "provider_unavailable",
-          date: null,
-          amount: null,
-          source_mode: "yfinance_events_empty",
-          reason: "Yahoo events returned no dividend or split rows.",
-        },
-      ],
-    },
-    sources: ["yfinance"],
-    metadata: {},
-    elapsed_ms: 7,
-  };
+function setMockFn(next: MockFnState) {
+  mockFn.state = next.state;
+  mockFn.data = next.data;
+  mockFn.error = next.error ?? null;
 }
 
 beforeEach(() => {
-  localStorage.clear();
-  mockFn.state = "idle";
-  mockFn.data = undefined;
-  mockFn.error = null;
+  calls.length = 0;
+  setMockFn({ state: "idle" });
 });
+afterEach(() => cleanup());
 
-afterEach(() => {
-  cleanup();
-});
-
-describe("DVD pane — Model mode honesty", () => {
-  it("renders a skeleton while loading", () => {
-    mockFn.state = "loading";
-    const { container } = render(<DVDPane code="DVD" symbol="AAPL" />);
-    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
-  });
-
-  it("renders the error state with a retry", () => {
-    mockFn.state = "error";
-    mockFn.error = new Error("sidecar exploded");
+describe("DVDPane", () => {
+  it("sends only the history parameter (no live/model toggle)", () => {
+    setMockFn({ state: "loading" });
     render(<DVDPane code="DVD" symbol="AAPL" />);
-    expect(screen.getByText(/sidecar exploded/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    const args = calls[0] as { params: Record<string, unknown> };
+    expect(args.params).toEqual({ history: true });
   });
 
-  it("shows the live pill for a genuine provider payload", () => {
-    mockFn.state = "ok";
-    mockFn.data = liveData();
-    const { container } = render(<DVDPane code="DVD" symbol="AAPL" />);
-    const header = container.querySelector(".ds-pane-header") as HTMLElement;
-    expect(within(header).getByText("live")).toBeInTheDocument();
-    expect(screen.getByText("live_yfinance_dividends")).toBeInTheDocument();
-  });
-
-  it("renders labelled model rows instead of the dead 'No corporate actions' state", () => {
-    mockFn.state = "ok";
-    mockFn.data = modelData();
-    const { container } = render(<DVDPane code="DVD" symbol="AAPL" />);
-    const header = container.querySelector(".ds-pane-header") as HTMLElement;
-    expect(screen.queryByText(/No corporate actions/i)).toBeNull();
-    // The header status pill must read "modeled", never "live" (both the
-    // status pill and the LoadStatePill can carry the label).
-    expect(within(header).queryByText("live")).toBeNull();
-    expect(within(header).getAllByText("modeled").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByTestId("dvd-model-notice")).toBeInTheDocument();
-    // Both reference rows render in the grid with the model source pill.
-    expect(screen.getAllByText("dividend").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("model").length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("keeps the provider-outage empty state", () => {
-    mockFn.state = "ok";
-    mockFn.data = outageData();
-    const { container } = render(<DVDPane code="DVD" symbol="AAPL" />);
-    const header = container.querySelector(".ds-pane-header") as HTMLElement;
-    expect(within(header).queryByText("live")).toBeNull();
-    expect(screen.getByText(/Provider unavailable/i)).toBeInTheDocument();
-  });
-
-  it("computes YoY against the dated ~1y-prior dividend, not the 5th row", () => {
-    mockFn.state = "ok";
-    mockFn.data = {
-      status: "ok",
+  it("renders the backend reason when awareness is unavailable and no rows", () => {
+    setMockFn({
+      state: "ok",
       data: {
-        status: "ok",
-        rows: [
-          { symbol: "AAPL", action_type: "dividend", date: "2026-08-08", amount: 0.3, source_mode: "live_yfinance_dividends" },
-          { symbol: "AAPL", action_type: "dividend", date: "2025-08-08", amount: 0.25, source_mode: "live_yfinance_dividends" },
-        ],
+        data: {
+          status: "provider_unavailable",
+          reason: "awareness down",
+          upcoming: [],
+          history: [],
+        },
       },
-      sources: ["yfinance"],
-      metadata: {},
-      elapsed_ms: 5,
-    };
+    });
     render(<DVDPane code="DVD" symbol="AAPL" />);
-    // The YoY stat card + the row's Δ-vs-prev chip both show +20.00%.
-    expect(screen.getAllByText("+20.00%").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("LATEST VS 1Y PRIOR")).toBeInTheDocument();
-    // The caption is date-sliced like the grid cells (caption + grid cell).
-    expect(screen.getAllByText("2026-08-08").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("alert").textContent).toContain("awareness down");
+    expect(screen.queryByLabelText("Dividend history")).toBeNull();
   });
 
-  it("renders '—' for YoY when there is no genuine ~1y-prior comparison", () => {
-    mockFn.state = "ok";
-    mockFn.data = {
-      status: "ok",
-      data: {
-        status: "ok",
-        rows: [
-          { symbol: "AAPL", action_type: "dividend", date: "2026-08-01", amount: 0.3, source_mode: "live_yfinance_dividends" },
-          { symbol: "AAPL", action_type: "dividend", date: "2026-07-01", amount: 0.29, source_mode: "live_yfinance_dividends" },
-          { symbol: "AAPL", action_type: "dividend", date: "2026-06-01", amount: 0.28, source_mode: "live_yfinance_dividends" },
-          { symbol: "AAPL", action_type: "dividend", date: "2026-05-01", amount: 0.27, source_mode: "live_yfinance_dividends" },
-          { symbol: "AAPL", action_type: "dividend", date: "2026-04-01", amount: 0.26, source_mode: "live_yfinance_dividends" },
-        ],
-      },
-      sources: ["yfinance"],
-      metadata: {},
-      elapsed_ms: 5,
-    };
+  it("says no dividends were returned rather than inventing a schedule", () => {
+    setMockFn({
+      state: "ok",
+      data: { data: { status: "empty", upcoming: [], history: [] } },
+    });
     render(<DVDPane code="DVD" symbol="AAPL" />);
-    const yoyCard = screen.getByText("YoY Δ").closest(".stat-card");
-    expect(yoyCard?.textContent).toContain("—");
-    expect(yoyCard?.textContent).not.toMatch(/\d+\.\d+%/);
+    expect(screen.getByText("No dividends returned")).toBeTruthy();
+    expect(screen.queryByText(/0\.24|0\.23/)).toBeNull();
+  });
+
+  it("renders upcoming and historical sections with the summary", () => {
+    setMockFn({
+      state: "ok",
+      data: {
+        data: {
+          status: "ok",
+          upcoming: [
+            { ex_date: "2026-12-05", amount: 0.26, sources: [{ provider: "awareness" }] },
+          ],
+          history: [
+            { ex_date: "2026-08-08", amount: 0.25, source: "yfinance" },
+            { ex_date: "2026-05-09", amount: 0.24, source: "yfinance" },
+          ],
+          summary: {
+            annual_amount: 1.04,
+            last_amount: 0.25,
+            last_ex_date: "2026-08-08",
+            frequency_guess: "quarterly",
+          },
+        },
+      },
+    });
+    render(<DVDPane code="DVD" symbol="AAPL" />);
+    expect(screen.getByLabelText("Upcoming dividends")).toBeTruthy();
+    expect(screen.getByLabelText("Dividend history")).toBeTruthy();
+    expect(screen.getByText("quarterly")).toBeTruthy();
+    expect(screen.getAllByText("$1.04").length).toBeGreaterThan(0);
   });
 });

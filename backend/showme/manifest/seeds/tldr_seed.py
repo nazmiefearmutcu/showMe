@@ -59,7 +59,11 @@ def tldr() -> FunctionManifest:
                 label="Symbols",
                 control=ControlKind.MULTISELECT,
                 required=False,
-                description="Symbols to summarize. Empty = read from PortfolioState + fallback default set.",
+                description=(
+                    "Symbols to summarize. Empty = the holdings in PortfolioState. With no holdings "
+                    "the symbol list is empty and the result carries a portfolio_empty or "
+                    "portfolio_unavailable watchlist_source; no default symbols are substituted."
+                ),
             ),
             InputSpec(
                 name="bullets",
@@ -154,22 +158,22 @@ def tldr() -> FunctionManifest:
             "TLDR composes the summary in two phases. (1) Evidence collection: for each symbol, "
             "pull the current quote snapshot via fetch_quote_snapshot (the same path /api/quote "
             "uses, so the TL;DR cannot disagree with the WATCH ticker) and the top recent "
-            "headlines via the CN feed. (2) Bullet composition: when an LLM router is configured, "
-            "the evidence rows are passed as context with a strict 'cite or omit' system prompt — "
-            "every bullet MUST include the article URLs/quote ids it draws from. When no LLM is "
-            "configured, the deterministic extractive summarizer picks the top-N evidence rows by "
-            "absolute price move + critical-article score and emits one bullet per row with a "
-            "verbatim source title + link. Either way, the bullets array carries (bullet_text, "
-            "evidence_links[]) so a downstream caller can see the citation. composer_mode in the "
-            "payload reports which path produced the bullets (llm / extractive). The summary "
-            "NEVER invents prose without an evidence row to back it; bullets with no available "
-            "evidence are dropped with a warning."
+            "headlines via the TOP feed. (2) Bullet composition: bullets[] is built deterministically "
+            "from those rows (composer_mode = extractive): top up-movers, top down-movers, quote "
+            "coverage, news themes and calendar items, each citing the rows it was built from. "
+            "The bullets input caps the count (3..8) and evidence_per_bullet caps the rows cited per "
+            "bullet (1..5). evidence_links holds only the HTTP(S) URLs a row carries; quote and "
+            "calendar rows carry none, so their bullets have an empty evidence_links. A candidate "
+            "with no evidence rows is omitted, never filled in. When an LLM answers, it writes the "
+            "markdown briefing only; bullets[] stays extractive. The summary NEVER invents prose or "
+            "a bullet without an evidence row behind it."
         ),
         field_dict={
             "status": FieldDef(description="ok / reference / provider_unavailable.", source="derived"),
-            "markdown": FieldDef(description="Markdown rendering of the bullets with inline evidence links.", source="composed"),
-            "bullets[].bullet_text": FieldDef(description="The bullet text — either an LLM cite-and-paraphrase or a deterministic extract.", source="composer"),
-            "bullets[].evidence_links": FieldDef(description="Array of HTTPS links to the evidence rows for this bullet (>=1 link required).", source="composer"),
+            "markdown": FieldDef(description="Markdown briefing: the LLM text when it answered, otherwise the template built from the same rows.", source="composed"),
+            "bullets[].bullet_text": FieldDef(description="Bullet text built from the cited evidence rows (no LLM prose).", source="composer"),
+            "bullets[].evidence": FieldDef(description="The evidence rows (quote, news or calendar) this bullet cites.", source="composer"),
+            "bullets[].evidence_links": FieldDef(description="HTTP(S) URLs carried by the cited rows. Empty for quote and calendar evidence, which have no per-row URL.", source="composer"),
             "bullets[].evidence_count": FieldDef(unit="count", description="Number of evidence rows cited.", source="derived"),
             "bullets[].symbols": FieldDef(description="Symbols this bullet touches.", source="composer"),
             "composer_mode": FieldDef(description="llm / extractive — which path produced the bullets.", source="derived"),
@@ -184,10 +188,10 @@ def tldr() -> FunctionManifest:
         semantic_tests=[
             SemanticTest(
                 name="tldr_every_bullet_has_evidence_link",
-                description="Asserts every bullet in `bullets[]` has at least one entry in evidence_links and every link is http(s). The summary must cite, never summarize without evidence.",
+                description="Asserts every bullet in `bullets[]` cites at least one evidence row (evidence_count >= 1) and every evidence link that is present is http(s). The summary must cite, never summarize without evidence.",
                 inputs={"symbols": ["AAPL", "MSFT"]},
                 assertions=[
-                    "every_bullet_has_at_least_one_evidence_link",
+                    "every_bullet_cites_at_least_one_evidence_row",
                     "every_evidence_link_is_http_or_https",
                 ],
             ),

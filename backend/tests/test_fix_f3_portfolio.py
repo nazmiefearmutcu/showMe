@@ -44,18 +44,17 @@ def equity() -> Instrument:
 # ── MGN: sample book disclosure ─────────────────────────────────────────
 
 
-def test_mgn_sample_book_is_labelled_on_every_surface(deps):
-    """No positions supplied → the fabricated book must be unmistakably SAMPLE."""
+def test_mgn_without_positions_never_fabricates_a_sample_book(deps, monkeypatch):
+    """2026-11-07 (strict truth audit): the labelled SAMPLE book is gone; an
+    empty portfolio is an honest empty state with a next action."""
+    import showme.engine.portfolio.state as state_mod
+
+    monkeypatch.setattr(state_mod, "PortfolioState", lambda: type("S", (), {"positions": []})())
     res = _run(MGNFunction(deps).execute())
-    assert res.data["status"] == "sample"
-    assert res.data["is_sample"] is True
-    assert res.data["source_mode"] == "sample_margin_positions"
-    assert "sample_margin_positions" in res.sources
-    assert res.metadata["live"] is False
-    assert res.metadata["is_sample"] is True
-    assert res.warnings and "illustrative SAMPLE position" in res.warnings[0]
-    # The table still renders — disclosure must not require wiping the rows.
-    assert res.data["rows"]
+    assert res.data["status"] == "empty"
+    assert res.data["rows"] == []
+    assert res.data["next_actions"]
+    assert "sample_margin_positions" not in res.sources
 
 
 def test_mgn_supplied_positions_are_not_labelled_sample(deps):
@@ -79,9 +78,9 @@ def test_mgn_supplied_positions_are_not_labelled_sample(deps):
 # ── BTFW: synthetic-history admission ───────────────────────────────────
 
 
-def test_btfw_live_without_provider_flags_synthetic_history(deps):
-    """live=true with no yfinance runs real folds on a SYNTHETIC sine ramp —
-    that substitution must be a machine-readable flag + visible warning."""
+def test_btfw_live_without_provider_is_unavailable_not_synthetic(deps):
+    """live=true with no OHLCV must NOT run folds on a synthetic sine ramp
+    (DATA POLICY). It reports an explicit provider_unavailable state instead."""
     res = _run(
         BTFWFunction(deps).execute(
             instrument=Instrument(symbol="TEST", asset_class=AssetClass.EQUITY),
@@ -89,10 +88,10 @@ def test_btfw_live_without_provider_flags_synthetic_history(deps):
             strategy="sma_crossover",
         )
     )
-    assert res.data["status"] == "ok"
-    assert res.metadata.get("synthetic_history") is True
-    assert any("synthetic placeholder history" in w for w in (res.warnings or []))
-    assert "local_backtest_model" in res.sources
+    assert res.data["status"] == "provider_unavailable"
+    assert res.metadata.get("synthetic_history") is False
+    assert res.data["equity_curve"] == []
+    assert "local_backtest_model" not in res.sources
 
 
 # ── BTUNE: params dict shipped verbatim ─────────────────────────────────
@@ -102,7 +101,7 @@ def test_btune_model_rows_carry_params_dict(deps, equity):
     """The pane renders rows[].params; it must be a dict (never flattened to
     a string on the backend)."""
     res = _run(BTUNEFunction(deps).execute(instrument=equity))
-    assert res.data["status"] == "reference"
+    assert res.data["status"] == "needs_input"
     first = res.data["rows"][0]
     assert isinstance(first["params"], dict)
     assert {"fast", "slow"} <= set(first["params"])

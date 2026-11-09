@@ -1,27 +1,44 @@
-"""NI — News by Topic (NI BANKS, NI EARN, NI FED, ...)."""
+"""NI — News by Topic (BANKS, EARN, FED, CHIPS, OIL, TECH, MACRO, WAR, M&A, IPO, CRYPTO).
+
+Each preset maps onto awareness taxonomy tags (``topics`` and ``asset_classes``
+filters, OR within a list, AND across the two). Awareness has no semiconductor or
+bank tag, so CHIPS, TECH and BANKS are the nearest tags and are labelled as such
+in the methodology.
+"""
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import Instrument
-from showme.engine.services.news_intelligence import critical_articles, enrich_articles, symbol_terms
-from showme.finbert_analyzer import stamp_items as _finbert_stamp_items
+from showme.engine.data_sources.awareness import AwarenessClient, AwarenessUnavailable
+from showme.engine.functions.news.awareness_news import (
+    bounded_int,
+    client_for,
+    fetch_news,
+    filters_echo,
+    ok_result,
+    story_detail,
+    text_param,
+    unavailable_result,
+)
 
-_TOPIC_QUERIES = {
-    "BANKS": "bank OR banking OR JPMorgan OR Citi OR Goldman",
-    "EARN":  "earnings OR \"earnings call\" OR \"quarterly results\"",
-    "FED":   "Federal Reserve OR FOMC OR Powell",
-    "CHIPS": "semiconductor OR TSMC OR ASML OR NVIDIA OR chips",
-    "OIL":   "OPEC OR crude OR Brent OR WTI OR oil prices",
-    "TECH":  "technology OR Apple OR Microsoft OR cloud OR AI",
-    "MACRO": "GDP OR CPI OR inflation OR unemployment",
-    "WAR":   "war OR conflict OR sanctions",
-    "M&A":   "acquisition OR merger OR \"agreed to acquire\"",
-    "IPO":   "IPO OR \"initial public offering\" OR direct listing",
+DEFAULT_TOPIC = "MACRO"
+
+# Preset key -> awareness taxonomy filters (topics = OR, asset_classes = AND with topics).
+TOPIC_PRESETS: dict[str, dict[str, list[str]]] = {
+    "BANKS": {"topics": ["funding_liquidity", "credit_stress", "earnings"], "asset_classes": ["equities"]},
+    "EARN": {"topics": ["earnings", "guidance"]},
+    "FED": {"topics": ["central_bank"]},
+    "CHIPS": {"topics": ["supply_chain", "trade_tariffs", "product_launch"], "asset_classes": ["equities"]},
+    "OIL": {"topics": ["energy"]},
+    "TECH": {"topics": ["product_launch", "cyber_outage"], "asset_classes": ["equities"]},
+    "MACRO": {"topics": ["inflation", "employment", "growth_recession", "fiscal_policy"]},
+    "WAR": {"topics": ["geopolitics", "sanctions"]},
+    "M&A": {"topics": ["m_and_a"]},
+    "IPO": {"topics": ["ipo"]},
+    "CRYPTO": {"topics": ["crypto_market"], "asset_classes": ["crypto"]},
 }
 
 
@@ -30,213 +47,61 @@ class NIFunction(BaseFunction):
     code = "NI"
     name = "News by Topic"
     category = "news"
+    description = (
+        "Sourced news for one topic preset (earnings, Fed, oil, M&A, IPO and more) from the "
+        "Awareness taxonomy, one row per story at quality standard or better."
+    )
+
+    _awareness: AwarenessClient | None = None  # test seam; None uses the process client
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        explicit_query = str(params.get("query") or "").strip()
-        topic = (params.get("topic") or explicit_query or "MACRO").upper()
-        mapped_query = _TOPIC_QUERIES.get(topic)
-        # 2026-09-17: the UI mirrors the topic text into `query`
-        # (topicParams = {topic: "MACRO", query: "MACRO"}). Taking that as an
-        # explicit query bypassed the curated preset mapping and searched
-        # for the literal word — "macro" matches nothing in a day's
-        # headlines, so the pane rendered "No headlines yet" forever. A
-        # query that merely repeats the topic keeps the mapped query; any
-        # genuinely different explicit text still wins.
-        if mapped_query and (not explicit_query
-                             or explicit_query.upper() == topic):
-            query = mapped_query
-        else:
-            query = explicit_query or mapped_query or topic
-        asset_class = str(
-            params.get("asset_class")
-            or getattr(getattr(instrument, "asset_class", None), "value", "")
-            or ""
-        ).upper()
-        symbol = str(params.get("symbol") or (instrument.symbol if instrument else "") or "").upper()
-        sources: list[str] = []
-        results: list = []
-        warnings: list[str] = []
-        live = _truthy(params.get("live_news") or params.get("live"))
-        # BugHunt 2026-05-24: NI used to forward `params.get("limit", 50)` raw
-        # into DataRequest(limit=...) and TOPFunction(limit=...). When the UI
-        # serialised query strings as text (`?limit=50`), the downstream RSS
-        # adapter executed `articles[: request.limit]` and crashed with
-        # `TypeError: slice indices must be integers or None`. The error
-        # bubbled into NI's `provider_errors` field and topic-mode silently
-        # returned no rows. Coerce once at the top so every downstream call
-        # sees a real int.
-        limit = _coerce_int(params.get("limit"), default=50, min_value=1, max_value=500)
-        threshold = _coerce_float(params.get("threshold"), default=70.0, min_value=0.0, max_value=100.0)
-        if live and self.deps.rss:
-            try:
-                timeout = _coerce_float(
-                    params.get("news_timeout", params.get("timeout", 5)),
-                    default=5.0,
-                    min_value=0.5,
-                    max_value=30.0,
-                )
-                extra = {
-                    "query": query,
-                    "terms": symbol_terms(symbol, query) if symbol else _query_terms(query),
-                    "optional_terms": [topic.lower()],
-                    "feed_group": "crypto" if asset_class == "CRYPTO" else "market",
-                    "asset_class": asset_class,
-                    "symbol": symbol,
-                    "collection_timeout_seconds": min(timeout, 4.0),
-                    "per_feed_timeout_seconds": min(timeout, 3.5),
-                    "symbol_feed_timeout_seconds": min(timeout, 4.0),
-                }
-                results = await asyncio.wait_for(
-                    self.deps.rss.fetch(DataRequest(
-                        kind=DataKind.NEWS, extra=extra, limit=limit,
-                    )),
-                    timeout=timeout,
-                )
-                if results:
-                    sources.append("rss")
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"rss: {exc}")
-        if not results and live and self.deps.gdelt and _truthy(params.get("include_gdelt") or params.get("deep")):
-            try:
-                gdelt_timeout = _coerce_float(
-                    params.get("timeout", 8),
-                    default=8.0,
-                    min_value=0.5,
-                    max_value=30.0,
-                )
-                results = await asyncio.wait_for(
-                    self.deps.gdelt.fetch(DataRequest(
-                        kind=DataKind.NEWS, extra={"query": query}, limit=limit,
-                    )),
-                    timeout=gdelt_timeout,
-                )
-                sources.append("gdelt")
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"gdelt: {exc}")
-        if not results and live:
-            try:
-                from showme.engine.functions.news.top import TOPFunction
-
-                outer_timeout = _coerce_float(
-                    params.get("news_timeout", params.get("timeout", 5)),
-                    default=5.0,
-                    min_value=0.5,
-                    max_value=30.0,
-                ) + 1.0
-                top = await asyncio.wait_for(
-                    TOPFunction(self.deps).execute(
-                        instrument,
-                        symbol=symbol,
-                        asset_class=asset_class,
-                        query=query,
-                        topic=topic,
-                        limit=limit,
-                        __explicit_symbol=bool(symbol),
-                        news_timeout=params.get("news_timeout", params.get("timeout", 5)),
-                    ),
-                    timeout=outer_timeout,
-                )
-                if top.data:
-                    # TOPFunction now returns dict {items, alerts, status} per
-                    # FUNC-10 P1; unwrap to the bare list enrich_articles wants.
-                    if isinstance(top.data, dict):
-                        results = list(top.data.get("items") or [])
-                    elif isinstance(top.data, list):
-                        results = top.data
-                    sources.extend(top.sources or [])
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"top: {exc}")
-        ranked = enrich_articles(
-            results,
-            symbol=symbol,
-            query=query,
-            asset_class=asset_class,
-            threshold=threshold,
-            limit=limit,
-        )
-        # FinBERT sentiment pass — see TOPFunction for the rationale. When
-        # NI falls through to TOP (third branch above), TOP has already
-        # stamped sentiment, and stamp_items leaves those rows alone
-        # because they already carry sentiment + sentiment_score.
-        _, finbert_warning = await _finbert_stamp_items(ranked)
-        if finbert_warning:
-            warnings.append(finbert_warning)
-        alerts = critical_articles(ranked, threshold=threshold)
-        # Per FUNC-10 P1: wrap list payload as ``{items: ...}`` so the shared
-        # contract envelope works (was a bare list which silently bypassed
-        # status injection in function_contracts._attach_data_status).
-        return FunctionResult(
-            code=self.code, instrument=None,
-            data={
-                "items": ranked,
-                "alerts": alerts,
-                "status": "ok" if ranked else "empty",
-            },
-            sources=sources, metadata={
-                "topic": topic,
-                "query": query,
-                "live": live,
-                "provider_errors": warnings,
-                "critical_count": len(alerts),
-                "top_importance_score": max([float(a.get("importance_score") or 0) for a in ranked], default=0.0),
-                "sentiment_model": "finbert" if finbert_warning is None else "neutral_fallback",
-            },
-        )
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _coerce_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
-    """Coerce ``value`` to a clamped int. Falls back to ``default`` on any error.
-
-    BugHunt 2026-05-24: NI used to forward query-string limits verbatim to
-    DataRequest, which crashed the RSS adapter with
-    ``TypeError: slice indices must be integers or None`` when the caller
-    passed ``limit="50"``. This helper guarantees we never hand a non-int
-    downstream.
-    """
-    if value is None or value == "":
-        return max(min_value, min(default, max_value))
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
+        client = client_for(self._awareness)
+        story_id = text_param(params.get("story_id"))
         try:
-            parsed = int(float(value))
-        except (TypeError, ValueError):
-            parsed = default
-    return max(min_value, min(parsed, max_value))
+            if story_id:
+                story, responses = await story_detail(client, story_id)
+                data: dict[str, Any] = {
+                    "status": "ok" if story else "empty",
+                    "story": story,
+                    "rows": [],
+                    "count": 0,
+                    "next_cursor": None,
+                    "filters": {"story_id": story_id},
+                    "hidden_note": None if story else "story not found in the Awareness service",
+                }
+                return ok_result(self.code, instrument, data, responses)
 
+            requested = text_param(params.get("topic")).upper() or DEFAULT_TOPIC
+            hidden_note = None
+            topic = requested
+            if topic not in TOPIC_PRESETS:
+                hidden_note = f"unknown topic '{requested}'; showing {DEFAULT_TOPIC}"
+                topic = DEFAULT_TOPIC
+            preset = TOPIC_PRESETS[topic]
+            hours = bounded_int(params.get("hours"), 48, 1, 168)
+            limit = bounded_int(params.get("limit"), 50, 1, 200)
+            response, rows = await fetch_news(
+                client,
+                {
+                    "hours": hours,
+                    "limit": limit,
+                    "min_quality": "standard",
+                    "topics": preset.get("topics", []),
+                    "asset_classes": preset.get("asset_classes", []),
+                },
+            )
+        except AwarenessUnavailable as exc:
+            return unavailable_result(self.code, instrument, exc.reason)
 
-def _coerce_float(value: Any, *, default: float, min_value: float, max_value: float) -> float:
-    if value is None or value == "":
-        return max(min_value, min(default, max_value))
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        parsed = default
-    return max(min_value, min(parsed, max_value))
-
-
-def _query_terms(query: str) -> list[str]:
-    stop = {"stock", "stocks", "market", "markets", "news", "latest", "price", "prices"}
-    terms = [
-        part.strip().lower()
-        for part in query.replace("/", " ").replace("-", " ").split()
-        if len(part.strip()) >= 3 and part.strip().lower() not in stop
-    ]
-    return terms[:6] or [query.lower()]
-
-
-def _symbol_terms(symbol: str, query: str) -> list[str]:
-    upper = symbol.upper()
-    if upper.endswith("USDT"):
-        base = upper.removesuffix("USDT")
-        names = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
-        return list(dict.fromkeys([base.lower(), names.get(base, ""), *_query_terms(query)]))
-    return list(dict.fromkeys([upper.lower(), *_query_terms(query)]))
+        data = {
+            "status": "ok" if rows else "empty",
+            "topic": topic,
+            "rows": rows,
+            "count": len(rows),
+            "next_cursor": response.meta.get("next_cursor"),
+            "filters": filters_echo(hours=hours, limit=limit, **preset),
+            "hidden_note": hidden_note,
+        }
+        if not rows:
+            data["next_actions"] = ["Widen the hours window or pick another topic."]
+        return ok_result(self.code, instrument, data, [response])

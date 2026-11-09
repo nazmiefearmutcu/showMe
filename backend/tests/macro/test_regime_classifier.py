@@ -36,8 +36,8 @@ def test_classify_short_series_returns_null_regime() -> None:
     assert out["curve"] == "UNKNOWN"
     assert out["regime"] is None
     assert out["data_state"] == "insufficient_history"
-    # 0/4 inputs resolved → confidence 0.0.
-    assert out["confidence"] == pytest.approx(0.0)
+    # 0/4 inputs resolved → input_coverage 0.0 (REGM#3: not a probability).
+    assert out["input_coverage"] == pytest.approx(0.0)
 
 
 def test_classify_full_series_returns_real_regime() -> None:
@@ -49,16 +49,17 @@ def test_classify_full_series_returns_real_regime() -> None:
     assert out["regime"] is not None
     assert out["data_state"] == "ok"
     # 3 of 4 inputs resolved (curve still UNKNOWN) → 0.75
-    assert out["confidence"] == pytest.approx(0.75)
+    assert out["input_coverage"] == pytest.approx(0.75)
 
 
-def test_classify_with_curve_input_hits_full_confidence() -> None:
+def test_classify_with_curve_input_hits_full_coverage() -> None:
     rng = np.random.default_rng(11)
     rets = rng.normal(0.0005, 0.01, size=300)
     close = 100 * np.exp(np.cumsum(rets))
     out = rgm.classify(close, spread_2s10s_bp=42.0)
     assert out["curve"] == "FLAT"
-    assert out["confidence"] == pytest.approx(1.0)
+    assert out["input_coverage"] == pytest.approx(1.0)
+    assert "confidence" not in out
 
 
 def test_composite_returns_none_when_trend_unknown() -> None:

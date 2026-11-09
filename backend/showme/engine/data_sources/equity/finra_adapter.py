@@ -2,14 +2,23 @@
 
 DATA PIPELINE:
     Source: https://api.finra.org/data/group/otcMarket
-    Free, T+1 reporting; ATS_W_AGG (weekly aggregate) and ATS_NMS files.
+    Free, T+1 reporting; ATS_W_SMBL (per-symbol weekly ATS aggregate) and ATS_NMS files.
     Auth: optional OAuth client credentials via FINRA_API_KEY/SECRET.
+
+QUERY SEMANTICS (verified against the live weeklySummary endpoint):
+    * Rows come back OLDEST-FIRST and a bare ``limit`` returns the oldest rows
+      of the symbol's history, not the newest. Every pull therefore carries a
+      ``dateRangeFilters`` window on ``weekStartDate`` ending today.
+    * ``sortFields`` is rejected (HTTP 400) unless the partition keys
+      (``weekStartDate`` and ``tierIdentifier``) are pinned with EQUAL filters,
+      so the newest weeks are selected by window, not by sort.
 """
 
 from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -25,6 +34,90 @@ from showme.engine.core.base_data_source import (
 # endpoint is not hammered at the adapter's 1 rps budget.
 _CACHE_TTL_S = 900.0
 _FAILURE_COOLDOWN_S = 60.0
+
+FINRA_WEEKLY_URL = "https://api.finra.org/data/group/otcMarket/name/weeklySummary"
+ATS_WEEKLY_TYPE = "ATS_W_SMBL"
+# Page size requested from FINRA; a short page means the window is exhausted.
+ATS_PAGE_LIMIT = 5000
+# FINRA publishes with a lag of a few weeks; the window keeps this many extra
+# days beyond the requested weeks so the newest published weeks always fall
+# inside it.
+_PUBLICATION_SLACK_DAYS = 42
+_MAX_PAGES = 4
+
+
+def ats_window_days(weeks: int) -> int:
+    """Length of the lookback window that holds ``weeks`` published weeks."""
+    return max(1, int(weeks)) * 7 + _PUBLICATION_SLACK_DAYS
+
+
+def ats_weekly_body(symbol: str | None, *, weeks: int, today: Any,
+                    offset: int = 0) -> dict[str, Any]:
+    """Build the POST body for one page of the ATS weekly summary."""
+    start = today - timedelta(days=ats_window_days(weeks))
+    compare: list[dict[str, Any]] = [
+        {"fieldName": "summaryTypeCode", "fieldValue": ATS_WEEKLY_TYPE, "compareType": "EQUAL"},
+    ]
+    if symbol:
+        compare.append({"fieldName": "issueSymbolIdentifier",
+                        "fieldValue": symbol.upper(), "compareType": "EQUAL"})
+    body: dict[str, Any] = {
+        "compareFilters": compare,
+        "dateRangeFilters": [{
+            "fieldName": "weekStartDate",
+            "startDate": start.isoformat(),
+            "endDate": today.isoformat(),
+        }],
+        "limit": ATS_PAGE_LIMIT,
+    }
+    if offset:
+        body["offset"] = int(offset)
+    return body
+
+
+def newest_weeks(rows: list[dict[str, Any]], weeks: int) -> list[dict[str, Any]]:
+    """Keep every row of the ``weeks`` most recent weeks (never a partial week)."""
+    dated = [r for r in rows if r.get("weekStartDate")]
+    keep = set(sorted({str(r["weekStartDate"])[:10] for r in dated}, reverse=True)[: max(1, int(weeks))])
+    return [r for r in dated if str(r["weekStartDate"])[:10] in keep]
+
+
+async def fetch_ats_weekly_pages(client: Any, symbol: str | None, *, weeks: int,
+                                 headers: dict[str, str] | None = None,
+                                 timeout: float = 8.0,
+                                 today: Any = None) -> list[dict[str, Any]]:
+    """Fetch every raw ATS row inside the window, following offset paging.
+
+    Raises when the window does not fit the paging budget so a caller never
+    sums an incomplete set of weeks.
+    """
+    day = today or datetime.now(timezone.utc).date()
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    for _ in range(_MAX_PAGES):
+        resp = await client.post(
+            FINRA_WEEKLY_URL,
+            json=ats_weekly_body(symbol, weeks=weeks, today=day, offset=offset),
+            headers=headers or {"Accept": "application/json"},
+            timeout=timeout,
+        )
+        if resp.status_code == 401:
+            raise DataSourceError("FINRA auth required for this dataset")
+        resp.raise_for_status()
+        body = resp.json()
+        if isinstance(body, list):
+            page = body
+        elif isinstance(body, dict):
+            page = body.get("data") or body.get("rows") or []
+        else:
+            page = []
+        rows.extend(r for r in page if isinstance(r, dict))
+        if len(page) < ATS_PAGE_LIMIT:
+            return rows
+        offset += len(page)
+    raise DataSourceError(
+        f"finra: ATS window for {symbol or '*'} exceeds {_MAX_PAGES} pages; refusing a partial read"
+    )
 
 
 class FINRAAdapter(BaseDataSource):
@@ -67,20 +160,18 @@ class FINRAAdapter(BaseDataSource):
             self._token = None
 
     async def ats_weekly(self, symbol: str | None = None,
-                         limit: int = 200) -> pd.DataFrame:
-        """Last weeks of FINRA ATS (Alternative Trading System) volume.
+                         limit: int = 26) -> pd.DataFrame:
+        """The newest ``limit`` published weeks of FINRA ATS (Alternative Trading System) volume.
 
-        Anonymous endpoint returns JSON with columns: weekStartDate, ATSCode,
-        issueSymbolIdentifier, totalWeeklyShareQuantity, totalWeeklyTradeCount, ...
+        ``limit`` is a count of WEEKS, not rows: every row of each returned week
+        is kept so a week's ATS volume is never summed from a partial set.
+        The request is bounded to a lookback window ending today (see
+        ``ats_weekly_body``) because the endpoint returns the oldest history
+        first when unbounded.
 
-        ``weeklySummary`` groups MANY summary types behind one path. The old
-        request filtered on ``issueSymbolIdentifier`` ONLY (no
-        ``summaryTypeCode``) and passed ``compareFilters`` as a GET query-string
-        param — that combination silently returned a stale/mixed slice that
-        topped out at 2023-11-06 even though FINRA had current weeks. Filtering
-        by the ``ATS_W_SMBL`` (per-symbol weekly ATS) type AND the symbol via
-        the documented POST ``compareFilters`` body returns the freshest rows
-        (verified 2026-06-01: newest week 2026-05-04 for AAPL).
+        Columns follow the FINRA record: weekStartDate, summaryTypeCode,
+        issueSymbolIdentifier, tierIdentifier, totalWeeklyShareQuantity,
+        totalWeeklyTradeCount, ...
         """
         await self._maybe_auth()
         # TTL cache + failure backoff (L9): a repeated pull for the same
@@ -88,7 +179,8 @@ class FINRAAdapter(BaseDataSource):
         # cannot mutate the cached frame); after a failed pull the adapter
         # refuses to retry until the cooldown expires instead of hammering
         # the anonymous endpoint.
-        cache_key = (symbol.upper() if symbol else "*", int(limit))
+        weeks = max(1, int(limit))
+        cache_key = (symbol.upper() if symbol else "*", weeks)
         now = time.monotonic()
         cached = self._cache.get(cache_key)
         if cached is not None and (now - cached[0]) < _CACHE_TTL_S:
@@ -99,30 +191,20 @@ class FINRAAdapter(BaseDataSource):
                 f"finra: cooling down after a failed pull ({remaining:.0f}s left)"
             )
         client = await self._client_()
-        compare: list[dict[str, Any]] = [
-            {"fieldName": "summaryTypeCode", "fieldValue": "ATS_W_SMBL", "compareType": "EQUAL"},
-        ]
-        if symbol:
-            compare.append({"fieldName": "issueSymbolIdentifier",
-                            "fieldValue": symbol.upper(), "compareType": "EQUAL"})
-        body: dict[str, Any] = {"compareFilters": compare, "limit": limit}
         headers = {"Accept": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         try:
-            r = await client.post(f"{self.BASE}/name/weeklySummary", json=body,
-                                  headers=headers)
-            if r.status_code == 401:
-                raise DataSourceError("FINRA auth required for this dataset")
-            r.raise_for_status()
-            data = r.json()
+            raw = await fetch_ats_weekly_pages(
+                client, symbol.upper() if symbol else None,
+                weeks=weeks, headers=headers,
+            )
+        except DataSourceError:
+            raise
         except httpx.HTTPError as e:
             self._cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_S
-            raise DataSourceError(f"finra: {e}")
-        rows = data if isinstance(data, list) else (
-            (data.get("data") or data.get("rows") or []) if isinstance(data, dict) else []
-        )
-        frame = pd.DataFrame(rows) if isinstance(rows, list) else pd.DataFrame()
+            raise DataSourceError(f"finra: {str(e) or type(e).__name__}")
+        frame = pd.DataFrame(newest_weeks(raw, weeks))
         self._cache[cache_key] = (time.monotonic(), frame)
         self._cooldown_until = 0.0
         return frame.copy()
@@ -131,4 +213,4 @@ class FINRAAdapter(BaseDataSource):
         sym = (request.instrument.symbol if request.instrument else None) or (
             request.symbols[0] if request.symbols else None
         )
-        return await self.ats_weekly(sym, limit=request.limit or 100)
+        return await self.ats_weekly(sym, limit=request.limit or 26)

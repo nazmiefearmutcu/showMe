@@ -83,5 +83,9 @@ def test_crypto_position_falls_back_when_provider_errors(tmp_path: Path) -> None
     result = asyncio.run(fn.execute(_portfolio_override=portfolio))
 
     row = result.data["positions"][0]
-    # No live quote → graceful fallback to avg_cost, never garbage.
-    assert row["last"] == 50_000.0
+    # No live quote and no recorded price → the row is unpriced. The old
+    # behaviour marked it at avg_cost (zero unrealized P&L), which hid the
+    # missing quote. PORT#3: never substitute the cost basis for a price.
+    assert row["last"] is None
+    assert row["quote_missing"] is True
+    assert row["market_value"] is None

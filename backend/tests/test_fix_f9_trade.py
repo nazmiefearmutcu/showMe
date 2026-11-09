@@ -96,7 +96,7 @@ def test_bbgt_default_params_cannot_place_live_order() -> None:
     Red on the old engine: the recording broker received a live order here.
     """
     fn, broker = _armed_fn(BBGTFunction)
-    res = _run(fn.execute(instrument=AAPL, quantity=1, submit=True))
+    res = _run(fn.execute(instrument=AAPL, quantity=1, side="BUY", type="MARKET", tif="GTC", submit=True))
     assert broker.placed == [], "default params must never reach the broker"
     assert res.data["status"] == "preview"
     assert res.data["broker"] == "paper"
@@ -106,7 +106,7 @@ def test_bbgt_default_params_cannot_place_live_order() -> None:
 
 def test_bbgt_explicit_paper_mode_true_cannot_place_live_order() -> None:
     fn, broker = _armed_fn(BBGTFunction)
-    res = _run(fn.execute(instrument=AAPL, quantity=1, submit=True, paper_mode=True))
+    res = _run(fn.execute(instrument=AAPL, quantity=1, side="BUY", type="MARKET", tif="GTC", submit=True, paper_mode=True))
     assert broker.placed == []
     assert res.data["status"] == "preview"
     assert res.data["paper_mode"] is True
@@ -115,7 +115,7 @@ def test_bbgt_explicit_paper_mode_true_cannot_place_live_order() -> None:
 def test_bbgt_garbage_paper_mode_fails_closed_to_preview() -> None:
     fn, broker = _armed_fn(BBGTFunction)
     res = _run(
-        fn.execute(instrument=AAPL, quantity=1, submit=True, paper_mode="maybe")
+        fn.execute(instrument=AAPL, quantity=1, side="BUY", type="MARKET", tif="GTC", submit=True, paper_mode="maybe")
     )
     assert broker.placed == []
     assert res.data["status"] == "preview"
@@ -133,7 +133,7 @@ def test_explicit_arm_without_broker_is_provider_unavailable() -> None:
     fn = BBGTFunction()
     fn.deps = FunctionDeps()  # no broker adapters wired
     res = _run(
-        fn.execute(instrument=AAPL, quantity=1, submit=True, paper_mode=False)
+        fn.execute(instrument=AAPL, quantity=1, side="BUY", type="MARKET", tif="GTC", submit=True, paper_mode=False)
     )
     assert res.data["status"] == "provider_unavailable"
     assert res.data["broker"] is None

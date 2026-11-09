@@ -127,6 +127,12 @@ export function TAUCPane({ code }: FunctionPaneProps) {
     () => rows.reduce((acc, r) => acc + toNum(r.offering_amount), 0),
     [rows],
   );
+  // A size is only shown when the row carries one. The labelled model has no
+  // sizes, so the total is "—" rather than a sum of zeros.
+  const sizesKnown = useMemo(
+    () => rows.some((r) => hasSize(r.offering_amount)),
+    [rows],
+  );
 
   const actionTag = action === "recent" ? "Recent" : "Upcoming";
   const nextRow = rows[0];
@@ -175,7 +181,9 @@ export function TAUCPane({ code }: FunctionPaneProps) {
         numeric: true,
         width: 128,
         render: (r) => (
-          <span style={monoStrongStyle}>{fmtUsd(r.offering_amount)}</span>
+          <span style={monoStrongStyle}>
+            {hasSize(r.offering_amount) ? fmtUsd(r.offering_amount) : "—"}
+          </span>
         ),
       },
       {
@@ -219,7 +227,9 @@ export function TAUCPane({ code }: FunctionPaneProps) {
         title="No auctions returned"
         body={
           payload?.reason ??
-          `No ${action} Treasury auctions in the ${horizon}-day window.`
+          (sourceMode === "treasurydirect"
+            ? `TreasuryDirect returned no ${action} auction rows that fall in the ${horizon}-day window.`
+            : `No ${action} auction rows were produced for the ${horizon}-day window.`)
         }
         icon="⌦"
         action={
@@ -250,8 +260,8 @@ export function TAUCPane({ code }: FunctionPaneProps) {
           />
           <StatCard
             label="Total offering"
-            value={fmtUsd(totalOffering)}
-            caption={`${typeAgg.length} TYPES`}
+            value={sizesKnown ? fmtUsd(totalOffering) : "—"}
+            caption={sizesKnown ? `${typeAgg.length} TYPES` : "SIZES NOT MODELED"}
             tone="neutral"
           />
           <StatCard
@@ -300,7 +310,7 @@ export function TAUCPane({ code }: FunctionPaneProps) {
               type="button"
               aria-pressed={typeFilter === t.type}
               onClick={() => setTypeFilter(t.type)}
-              title={`${t.type}: ${t.count} auctions · ${fmtUsd(t.total)} offering`}
+              title={`${t.type}: ${t.count} auctions · ${t.total > 0 ? `${fmtUsd(t.total)} offering` : "offering size not modelled"}`}
               style={chipStyle(typeFilter === t.type)}
             >
               {t.type} {t.count}
@@ -420,6 +430,11 @@ function auctionStatus(r: TAUCRow): StatusInfo {
 function dateKey(r: TAUCRow): number {
   const t = Date.parse(String(r.auction_date ?? ""));
   return Number.isFinite(t) ? t : 0;
+}
+
+function hasSize(v: unknown): boolean {
+  if (v === null || v === undefined || v === "") return false;
+  return Number.isFinite(Number(v));
 }
 
 function toNum(v: unknown): number {

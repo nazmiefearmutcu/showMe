@@ -779,7 +779,13 @@ async def test_risk_fire_keeps_strong_task_reference():
 
     rm = RiskMonitor(notifiers=[notifier])
     rm._fire("drawdown", "portfolio.drawdown <= -10%", {"v": -11})
-    await asyncio.sleep(0.15)
+    # Poll instead of a fixed 0.15 s sleep (flaky on a loaded machine): a task
+    # that was GC'd never finishes, so the 5 s ceiling still catches the bug.
+    for _ in range(250):
+        if done:
+            break
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0)  # let the done-callback discard the finished task
 
     assert done == ["drawdown"], "fire-and-forget task was GC'd before finishing"
     assert not rm._bg, "done callback must discard finished tasks"

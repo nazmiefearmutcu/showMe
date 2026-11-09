@@ -19,20 +19,14 @@ import pandas as pd
 
 from showme.engine.core.base_function import BaseFunction, FunctionRegistry, FunctionResult
 from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.data_sources.equity.finra_adapter import fetch_ats_weekly_pages, newest_weeks
 from showme.engine.functions.equity._common import FIELD_DICTIONARIES, finite
-
-# FINRA OTC Transparency — keyless public Query API.
-_FINRA_WEEKLY_URL = (
-    "https://api.finra.org/data/group/otcMarket/name/weeklySummary"
-)
-# ATS (Alternative Trading System) weekly, broken out by symbol.
-_FINRA_ATS_TYPE = "ATS_W_SMBL"
 
 _METHODOLOGY = (
     "DARK pulls FINRA OTC Transparency weekly ATS aggregates (off-exchange share "
     "volume + trade count per reporting venue/MPID) and joins them against yfinance "
     "weekly total volume. dark_pool_pct = ATS weekly volume / total weekly volume "
-    "for the matching week (capped at 100). Venues are ranked by ATS volume inside "
+    "for the matching week (withheld, not capped, when the ratio exceeds 100). Venues are ranked by ATS volume inside "
     "the most-recent reported week so the operator can see who provides the "
     "off-exchange liquidity. When FINRA is unreachable the handler returns "
     "status=provider_unavailable with empty venues and next_actions instead of "
@@ -43,7 +37,7 @@ _FIELD_DICTIONARY = {
     "venue": "FINRA reporting MPID / ATS venue identifier for the off-exchange prints.",
     "ats_share_volume": "Weekly off-exchange ATS share volume reported by the venue.",
     "ats_trade_count": "Weekly off-exchange ATS trade count reported by the venue.",
-    "dark_pool_pct": "ATS weekly volume divided by total weekly volume (lit + ATS), capped at 100.",
+    "dark_pool_pct": "ATS weekly volume divided by total weekly volume; null when the total is missing or the ratio exceeds 100.",
     "weekStartDate": "FINRA reporting week start date (week the prints settled).",
     "top_venue_share_pct": "Largest venue's share of aggregate ATS volume in the latest week.",
 }
@@ -58,26 +52,33 @@ class DARKFunction(BaseFunction):
     description = "FINRA ATS (Alternative Trading System) weekly off-exchange volume by venue."
 
     async def execute(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        sym = (instrument.symbol if instrument else
-               params.get("symbol") or "AAPL").upper()
+        sym = _requested_symbol(instrument, params)
         try:
             return await asyncio.wait_for(
                 self._execute_inner(instrument, **params),
                 timeout=9.0,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            reason = f"DARK execution timed out: {exc}"
+            reason = f"DARK execution timed out: {str(exc) or type(exc).__name__}"
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data=_unavailable(sym, reason, [reason]),
-                sources=["finra"],
+                sources=[],
                 warnings=[reason],
                 metadata={"provider_errors": [reason]},
             )
 
     async def _execute_inner(self, instrument: Instrument | None = None, **params: Any) -> FunctionResult:
-        sym = (instrument.symbol if instrument else
-               params.get("symbol") or "AAPL").upper()
+        sym = _requested_symbol(instrument, params)
+        if not sym:
+            # No silent default ticker: ask for one and make no FINRA request.
+            return FunctionResult(
+                code=self.code, instrument=None,
+                data=_input_required(),
+                sources=[],
+                warnings=[_INPUT_REASON],
+                metadata={},
+            )
         try:
             weeks = int(params.get("weeks", 8))
         except (TypeError, ValueError):
@@ -92,16 +93,16 @@ class DARKFunction(BaseFunction):
 
         async def _safe_finra():
             try:
-                return await self._fetch_finra_ats(sym)
+                return await self._fetch_finra_ats(sym, weeks)
             except Exception as exc:
-                provider_errors.append(f"finra: {exc}")
+                provider_errors.append(f"finra: {str(exc) or type(exc).__name__}")
                 return []
 
         async def _safe_weekly():
             try:
                 return await self._weekly_total_volume(sym)
             except Exception as exc:
-                provider_errors.append(f"yfinance weekly volume: {exc}")
+                provider_errors.append(f"yfinance weekly volume: {str(exc) or type(exc).__name__}")
                 return {}
 
         raw_rows, week_total_volume = await asyncio.gather(
@@ -117,7 +118,7 @@ class DARKFunction(BaseFunction):
             return FunctionResult(
                 code=self.code, instrument=instrument,
                 data=_unavailable(sym, reason, provider_errors),
-                sources=["finra"],
+                sources=[],
                 warnings=[reason],
                 metadata={"provider_errors": provider_errors},
             )
@@ -128,6 +129,8 @@ class DARKFunction(BaseFunction):
         df["ats_share_volume"] = df["ats_share_volume"].apply(lambda v: finite(v) or 0.0)
         df["ats_trade_count"] = df["ats_trade_count"].apply(lambda v: finite(v) or 0.0)
 
+        over_weeks: list[str] = []
+        missing_weeks: list[str] = []
         by_week = (
             df.groupby("weekStartDate")
             .agg(
@@ -143,9 +146,11 @@ class DARKFunction(BaseFunction):
             wk = str(rec["weekStartDate"])[:10]
             ats_vol = float(rec["ats_share_volume"] or 0.0)
             total_vol = week_total_volume.get(wk)
-            dark_pct: float | None = None
-            if total_vol and total_vol > 0:
-                dark_pct = round(min(100.0, ats_vol / total_vol * 100.0), 2)
+            if total_vol and total_vol > 0 and ats_vol / total_vol * 100.0 > 100.0:
+                over_weeks.append(wk)
+            if not (total_vol and total_vol > 0):
+                missing_weeks.append(wk)
+            dark_pct = _ratio_pct(ats_vol, total_vol)
             week_records.append({
                 "weekStartDate": wk,
                 "ats_share_volume": round(ats_vol),
@@ -175,9 +180,7 @@ class DARKFunction(BaseFunction):
         venue_records: list[dict[str, Any]] = []
         for rec in by_venue.to_dict(orient="records"):
             vol = float(rec["ats_share_volume"] or 0.0)
-            v_dark_pct: float | None = None
-            if latest_week_total_vol and latest_week_total_vol > 0:
-                v_dark_pct = round(min(100.0, vol / latest_week_total_vol * 100.0), 2)
+            v_dark_pct = _ratio_pct(vol, latest_week_total_vol)
             venue_records.append({
                 "venue": str(rec["venue"]),
                 "ats_share_volume": round(vol),
@@ -200,6 +203,18 @@ class DARKFunction(BaseFunction):
         next_actions: list[str] = []
         visible_records: list[dict[str, Any]] = venue_records
         visible_weeks: list[dict[str, Any]] = week_records
+        if not stale:
+            if over_weeks:
+                warnings.append(
+                    f"ATS volume exceeds the yfinance weekly total for {len(over_weeks)} week(s) "
+                    f"({', '.join(over_weeks)}); dark-pool % is withheld for those weeks because "
+                    "the two sources do not describe the same volume."
+                )
+            if missing_weeks:
+                warnings.append(
+                    f"yfinance weekly total volume is missing for {len(missing_weeks)} of "
+                    f"{len(week_records)} week(s); dark_pool_pct is null for those weeks."
+                )
         if stale:
             warnings.append(stale)
             next_actions = [
@@ -226,8 +241,15 @@ class DARKFunction(BaseFunction):
                 "status": status,
                 "reason": stale,
                 "symbol": sym,
+                # Observation date: the latest FINRA reporting week (published with
+                # FINRA's 2-4 week delay), never the fetch time.
+                "as_of": None if stale else latest_week,
                 "n_rows": int(len(df)),
-                "total_shares_off_exchange": round(float(df["ats_share_volume"].sum() or 0.0)),
+                # Only the weeks in the requested window, matching the KPI caption.
+                # A stale latest week ships no rows, so it ships no total either.
+                "total_shares_off_exchange": 0 if stale else round(
+                    float(sum(float(rec["ats_share_volume"] or 0.0) for rec in week_records))
+                ),
                 "top_venue_share_pct": None if stale else top_venue_share,
                 "rows": visible_records,
                 "venues": visible_records,
@@ -247,13 +269,19 @@ class DARKFunction(BaseFunction):
                     **_FIELD_DICTIONARY,
                 },
             },
-            sources=["finra", "yfinance"],
+            # yfinance is listed only when its weekly volume fed dark_pool_pct.
+            sources=["finra", *(["yfinance"] if week_total_volume else [])],
             warnings=warnings,
             metadata={"provider_errors": provider_errors} if provider_errors else {},
         )
 
-    async def _fetch_finra_ats(self, symbol: str) -> list[dict[str, Any]]:
+    async def _fetch_finra_ats(self, symbol: str, weeks: int = 26) -> list[dict[str, Any]]:
         """Fetch keyless FINRA OTC Transparency weekly ATS rows for ``symbol``.
+
+        Returns the rows of the ``weeks`` most recent published weeks. FINRA
+        returns oldest-first, so the request is bounded to a date window ending
+        today (shared with the adapter) instead of a bare row limit that would
+        only ever see the symbol's oldest history.
 
         Prefers a wired ``self.deps.finra`` adapter if it exposes ``ats_weekly``;
         otherwise queries the public FINRA Query API directly. Returns a list of
@@ -261,41 +289,21 @@ class DARKFunction(BaseFunction):
         or an empty list when nothing is reported.
         """
         # Wired adapter path (kept for parity with existing wiring / tests).
+        # The adapter is the FINRA query: an empty frame is the answer, so do
+        # not re-request the same endpoint (DARK-R1). Errors still propagate.
         adapter = getattr(self.deps, "finra", None)
         if adapter is not None and hasattr(adapter, "ats_weekly"):
-            df = await adapter.ats_weekly(symbol=symbol, limit=200)
-            if df is not None and len(df) > 0:
-                return _normalise_adapter_frame(df)
+            df = await adapter.ats_weekly(symbol=symbol, limit=weeks)
+            if df is None or len(df) == 0:
+                return []
+            return _normalise_adapter_frame(df)
 
-        # Direct keyless FINRA Query API.
+        # Direct keyless FINRA Query API (no adapter wired).
         from showme.providers._http import get_client
 
         client = await get_client()
-        payload = {
-            "compareFilters": [
-                {
-                    "fieldName": "summaryTypeCode",
-                    "fieldValue": _FINRA_ATS_TYPE,
-                    "compareType": "EQUAL",
-                },
-                {
-                    "fieldName": "issueSymbolIdentifier",
-                    "fieldValue": symbol,
-                    "compareType": "EQUAL",
-                },
-            ],
-            "limit": 200,
-        }
-        resp = await client.post(
-            _FINRA_WEEKLY_URL,
-            json=payload,
-            headers={"Accept": "application/json"},
-            timeout=8.0,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        rows = body if isinstance(body, list) else body.get("data") or body.get("rows") or []
-        return _normalise_finra_rows(rows)
+        raw = await fetch_ats_weekly_pages(client, symbol, weeks=weeks, timeout=8.0)
+        return _normalise_finra_rows(newest_weeks(raw, weeks))
 
     async def _weekly_total_volume(self, symbol: str) -> dict[str, float]:
         """Return {weekStartDate(Mon iso): total_volume} from yfinance weekly bars.
@@ -309,7 +317,9 @@ class DARKFunction(BaseFunction):
             hist = await asyncio.wait_for(
                 asyncio.to_thread(
                     lambda: yf.Ticker(symbol).history(
-                        period="6mo", interval="1wk", auto_adjust=False
+                        # 1y: the FINRA window (26 weeks + publication slack, ~224 days)
+                        # must be covered, or the oldest weeks get no denominator.
+                        period="1y", interval="1wk", auto_adjust=False
                     )
                 ),
                 timeout=4.0,
@@ -333,17 +343,60 @@ class DARKFunction(BaseFunction):
             return {}
 
 
+_INPUT_REASON = "DARK requires an equity or ETF symbol (instrument or params.symbol)."
+
+
+def _requested_symbol(instrument: Instrument | None, params: dict[str, Any]) -> str:
+    """The ticker the caller asked for; empty when none was given (no default ticker).
+
+    The production router injects a default symbol (AAPL for equity routes) and
+    flags it ``__explicit_symbol=False``; the worker then turns it into the
+    Instrument. That injected symbol is not a request, so it is ignored here.
+    """
+    if params.get("__explicit_symbol") is False and not str(params.get("symbol") or "").strip():
+        return ""
+    raw = instrument.symbol if instrument else params.get("symbol")
+    return str(raw or "").strip().upper()
+
+
+def _ratio_pct(part: float, total: float | None) -> float | None:
+    """part / total as a percent. None when the total is missing or the ratio exceeds 100.
+
+    A ratio above 100 means the two sources disagree about the volume, so it is
+    withheld instead of being capped to a plausible-looking 100.
+    """
+    if not total or total <= 0:
+        return None
+    pct = part / total * 100.0
+    if pct > 100.0:
+        return None
+    return round(pct, 2)
+
+
+def _input_required() -> dict[str, Any]:
+    payload = _unavailable("", _INPUT_REASON, [])
+    payload.update({
+        "status": "input_required",
+        "next_actions": ["Provide an equity or ETF ticker in the symbol field or Params JSON."],
+    })
+    payload["cards"] = {**payload["cards"], "data_mode": "empty"}
+    payload["provider_errors"] = []
+    return payload
+
+
 def _normalise_finra_rows(rows: list[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in rows:
         if not isinstance(r, dict):
             continue
+        # ATS_W_SMBL rows are per-symbol, per-tier aggregates with no venue
+        # identity (MPID is null on the live feed). The tier code is not a venue,
+        # so the aggregate is labelled ALL_ATS instead.
         venue = (
             r.get("MPID")
             or r.get("mpid")
             or r.get("firmCRDNumber")
             or r.get("marketParticipantName")
-            or r.get("tierIdentifier")
             or "ALL_ATS"
         )
         week = (

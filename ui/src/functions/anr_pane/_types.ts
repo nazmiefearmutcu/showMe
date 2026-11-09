@@ -11,6 +11,8 @@ export interface ANRSummary {
   neutral_pct?: number;
   negative_pct?: number;
   last_updated?: string | null;
+  consensus_period?: string | null;
+  latest_rating_action_date?: string | null;
   included_count?: number;
   excluded_stale_count?: number;
   oldest_included_rating_date?: string | null;
@@ -50,6 +52,22 @@ export interface BucketRow {
   pct_of_consensus?: number;
 }
 
+/** One provider recommendation period inside the requested trend window (ANR#2). */
+export interface TrendRow {
+  period?: string;
+  months_back?: number;
+  strongBuy?: number;
+  buy?: number;
+  hold?: number;
+  sell?: number;
+  strongSell?: number;
+  total?: number;
+  score?: number | null;
+  label?: string;
+  in_consensus?: boolean;
+  source_mode?: string;
+}
+
 export interface TargetRow {
   metric?: string;
   price?: number | null;
@@ -87,6 +105,10 @@ export interface ANRData {
   analyst_detail_status?: string;
   analyst_detail_reason?: string;
   bucket_rows?: BucketRow[];
+  trend?: TrendRow[];
+  trend_months?: number;
+  trend_oldest_provider_months_back?: number | null;
+  current_score?: number | null;
   target_rows?: TargetRow[];
   target_price_source?: {
     mode?: string;
