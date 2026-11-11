@@ -5,6 +5,18 @@ All notable changes to showMe are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-11
+
+### Fixed
+- **Flowmap:** a cancelled WebSocket connection no longer leaves its hub
+  session and upstream feed open with no client attached.
+- **MGN:** a crypto pair with no product marker is still margined at the spot
+  rate, and the row and a warning now say that spot was assumed.
+- **Live audit tool:** each function is sent its required inputs, so honest
+  "input required" answers are no longer graded RED.
+- Backend lint is clean; date-bound GEX and TCA tests and a test that left
+  another project's virtualenv on `sys.path` were fixed.
+
 ## [0.3.0] - 2026-11-09
 
 ### Added
