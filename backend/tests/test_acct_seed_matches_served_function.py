@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 
 from showme.engine.core.base_function import FunctionDeps
-from showme.engine.core.quote import Quote, utcnow
 from showme.engine.functions.portfolio import acct as acct_mod
 from showme.manifest import REGISTRY, load_seeds
 

@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any
 
 _HERE = Path(__file__).resolve()
 _BACKEND_DIR = _HERE.parents[1]

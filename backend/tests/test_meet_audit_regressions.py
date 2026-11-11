@@ -6,7 +6,6 @@ import pytest
 
 from showme.engine.functions.comm import meet
 from showme.engine.services import world_events as we
-from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.data_sources.news.rss_adapter import RSSAdapter
 

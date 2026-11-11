@@ -72,6 +72,11 @@ target-version = "py311"
 # and unused-import warnings off there to avoid a mass-rewrite. The
 # real `select`/`ignore` policy lives at the project default.
 "showme/engine/**" = ["E501", "E701", "E702", "E731", "E741", "F401", "F403", "F405", "F811", "F841", "E402"]
+# flowmap is a port that keeps upstream's OHLC names (o, h, l, c).
+"showme/flowmap/**" = ["E741"]
+"showme/server_routes/bars.py" = ["E741"]
+# Tests import after sys.path / env setup on purpose.
+"tests/**" = ["E402"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

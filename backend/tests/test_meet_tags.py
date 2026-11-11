@@ -26,8 +26,6 @@ _BACKEND_DIR = _HERE.parents[1]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from showme.engine.core.base_function import FunctionDeps
-from showme.engine.functions.comm import meet as meet_mod
 from showme.engine.services import news_intelligence as ni
 from showme.engine.services import semantic_tagger as st
 from showme.engine.services import world_events as we

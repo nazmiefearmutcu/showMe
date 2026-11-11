@@ -17,7 +17,6 @@ from ..enums import (
 )
 from ..registry import manifest
 from ..spec import (
-    AlertingSpec,
     CachingPolicy,
     CardSchema,
     CardSlot,

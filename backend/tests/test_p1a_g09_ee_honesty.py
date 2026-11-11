@@ -21,7 +21,6 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 ENGINE = ROOT / "backend"

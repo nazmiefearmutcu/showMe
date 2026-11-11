@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from showme.engine.core.base_function import FunctionDeps
-from showme.engine.core.instrument import AssetClass, Instrument
+from showme.engine.core.instrument import AssetClass
 from showme.engine.functions.equity.pib import PIBFunction
 
 

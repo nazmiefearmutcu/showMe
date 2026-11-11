@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from showme.bots.runner import BotRunner
 from showme.bots.store import BotStore, UnknownBot
+
+if TYPE_CHECKING:
+    from showme.bots.record import BotRecord
 
 LOG = logging.getLogger("showme.bots.lifespan")
 

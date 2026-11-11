@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 from datetime import date
 
-import pandas as pd
 
 import showme.engine.functions.macro.coun as coun_mod
 import showme.engine.functions.macro.ecst as ecst_mod

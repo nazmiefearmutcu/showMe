@@ -8,7 +8,6 @@ httpx.MockTransport, so no network is used.
 from __future__ import annotations
 
 import asyncio
-import json
 
 import httpx
 

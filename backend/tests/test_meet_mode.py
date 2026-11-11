@@ -30,7 +30,6 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from showme.engine.core.base_function import FunctionDeps  # noqa: E402
 from showme.engine.functions.comm import meet as meet_mod  # noqa: E402
-from showme.engine.functions.macro import eco as eco_mod  # noqa: E402
 
 _TZ_TR = timezone(timedelta(hours=3))
 

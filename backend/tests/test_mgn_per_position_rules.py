@@ -7,11 +7,9 @@ margined at 50% instead of the module's own crypto_spot rule (100%).
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
-import showme.engine.portfolio.state as state_mod
 import showme.engine.services.margin_engine as me
 from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.instrument import AssetClass, Instrument

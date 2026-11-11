@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.base_data_source import DataKind, DataRequest
 from showme.engine.data_sources.news import rss_adapter
 from showme.engine.functions.comm import meet as meet_mod
-from showme.engine.functions.macro import eco as eco_mod
 from showme.engine.services import world_events as we
 
 

@@ -11,7 +11,6 @@ Fully offline (synthetic frames, no network).
 """
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace

@@ -15,7 +15,6 @@ import asyncio
 import pytest
 
 from showme.engine.core.base_function import FunctionDeps
-from showme.engine.functions.misc import _extras
 from showme.engine.functions.misc._extras import LANGFunction
 from showme.function_contracts import normalize_function_contract
 
