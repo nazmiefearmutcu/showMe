@@ -62,12 +62,33 @@ BAR_NS = 900 * 1_000_000_000  # 15-minute bars, like the live runner
 SYM = "TESTUSDT-PERP"
 
 
-def _try_import_entropy() -> bool:
-    """Best-effort Entropy import (append-only path setup, never removes)."""
+def _add_entropy_paths() -> list[str]:
+    added = []
     for p in (ENTROPY_SRC, ENTROPY_SITE):
         sp = str(p)
         if p.exists() and sp not in sys.path:
             sys.path.append(sp)
+            added.append(sp)
+    return added
+
+
+def _remove_paths(paths: list[str]) -> None:
+    for sp in paths:
+        while sp in sys.path:
+            sys.path.remove(sp)
+
+
+def _try_import_entropy() -> bool:
+    """Best-effort Entropy import.
+
+    The Entropy venv's site-packages must not stay on sys.path: this module is
+    imported at collection time, and a foreign venv on the path made every
+    later test resolve packages this venv lacks (PIL) from an incompatible
+    build, so FinBERT failed to load for the whole session (TSAR tests).
+    The paths are on sys.path only during the probe and during this module's
+    own tests (see the fixture below).
+    """
+    added = _add_entropy_paths()
     try:
         from entropy.bot.costs import CostModel  # noqa: F401
         from entropy.bot.strategies.consensus import (  # noqa: F401
@@ -75,10 +96,19 @@ def _try_import_entropy() -> bool:
         )
     except Exception:  # noqa: BLE001 — deliberate probe, any failure skips
         return False
+    finally:
+        _remove_paths(added)
     return True
 
 
 HAS_ENTROPY = _try_import_entropy()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _entropy_paths_for_this_module_only():
+    added = _add_entropy_paths() if HAS_ENTROPY else []
+    yield
+    _remove_paths(added)
 
 ENTROPY_SKIP = pytest.mark.skipif(
     not HAS_ENTROPY,
