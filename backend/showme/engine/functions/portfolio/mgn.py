@@ -114,6 +114,7 @@ class MGNFunction(BaseFunction):
                 sources=["margin_engine"],
                 warnings=([f"Marked at average cost (no 'last' price supplied): {', '.join(at_cost)}."]
                           if at_cost else [])
+                + list(account.get("warnings") or [])
                 + ([] if "cash" in params else _cash_warnings({"paper": "none"}, 0.0)),
                 # MGN#1: same rule as the saved-book branch; an at-cost line makes the book degraded.
                 metadata={"live": False, "positions_source": "supplied", "marked_at_cost": at_cost,
@@ -159,6 +160,10 @@ class MGNFunction(BaseFunction):
         cash_sources = result.get("cash_sources", {}) if isinstance(result, dict) else {}
         unallocated = float(result.get("unallocated_cash_usd", 0) or 0) if isinstance(result, dict) else 0.0
         warnings.extend(_cash_warnings(cash_sources, unallocated))
+        # MGN#3-RQ: unmarked crypto pairs are margined as spot; say so.
+        for acct in (result.get("accounts") or []) if isinstance(result, dict) else []:
+            if isinstance(acct, dict):
+                warnings.extend(acct.get("warnings") or [])
         sources = ["portfolio_state", "margin_engine"] + (["yfinance"] if prices else [])
         # MGN#1: a book with any position marked at average cost is partial-live, not live.
         # `degraded` makes the pane show a data-quality badge; `live` is deliberately not
