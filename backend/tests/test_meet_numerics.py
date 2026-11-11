@@ -9,7 +9,6 @@ import pytest
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from showme.engine.core.base_function import FunctionDeps
 from showme.engine.functions.comm import meet as meet_mod
 from showme.engine.services import world_events as we
 

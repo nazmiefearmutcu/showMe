@@ -19,7 +19,7 @@ import pytest
 from showme import quotes
 from showme.engine.functions.screen import _funcs as screen_funcs
 from showme.engine.functions.screen._funcs import SRCHFunction
-from tests.test_map_prior_session_change import _CLOSES, _MARKET_TIME_11_06, _TS, _chart_payload, _patch_chart
+from tests.test_map_prior_session_change import _MARKET_TIME_11_06, _chart_payload, _patch_chart
 
 
 def _iso(epoch: int) -> str:

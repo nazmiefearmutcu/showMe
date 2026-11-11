@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
-from types import SimpleNamespace
 
 import showme.providers._http as http_mod
 from showme.engine.core.base_function import FunctionDeps

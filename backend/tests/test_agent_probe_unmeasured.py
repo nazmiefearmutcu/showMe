@@ -30,7 +30,11 @@ def _probe(code: str, symbol: str = "AAPL", asset_class: str = "EQUITY") -> dict
 
 
 def _assert_no_invented_values(payload: dict[str, Any]) -> None:
-    flat = repr(payload)
+    # Timestamps are stripped first: a clock value such as ...19.931846 contains
+    # digits that matched a profile constant ("84") and failed this by chance.
+    import re
+
+    flat = re.sub(r"\d{4}-\d{2}-\d{2}T[0-9:.+\-Z]+", "<ts>", repr(payload))
     assert "long_bias" not in flat
     assert "short_bias" not in flat
     assert "positive_risk_balance" not in flat

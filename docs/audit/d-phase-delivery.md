@@ -102,3 +102,29 @@ Awareness oturumunun sahip olduğu fonksiyonlar (TOP, NI, CN, NALRT, NSE, SOSC, 
 MEET, DVD, CACT, TRDH) yönlendirici politikasında `_LEGACY_PROBE_ROUTE_CODES` ile muaf
 tutuldu; o oturum birleştirmede kendi kodlarını politikaya alacağını ve kendi modüllerindeki
 hata metni taramasını yapacağını bildirdi.
+
+## v0.3.0 sonrası (2026-11-11, dal `fix/post-0.3.0-followups`)
+
+Yukarıdaki "kararsız test" ve "KIRMIZI" notlarının yerine geçer:
+
+- **flowmap WS oturum sızıntısı (gerçek hata).** Bağlantı görevi iptal edilince `run()`
+  içindeki `finally` bloğunun ilk `await`'i hata veriyor, `_drop_session` hiç çalışmıyordu:
+  hub oturumu ve üst akış istemcisiz açık kalıyordu. Temizlik artık korumalı kapsamda
+  çalışıyor. `test_disconnect_tears_feed_down` CPU yükü altında 4/6 düşüyordu, şimdi 0/6.
+  "Zamanlama kaynaklı kararsız test" tanısı yanlıştı.
+- **TSAR testleri.** Neden ne bellek baskısı ne de model kilidiydi. `test_kaos_parity`
+  test toplama sırasında başka bir projenin (Entropy) sanal ortamını `sys.path`'e ekliyor ve
+  hiç kaldırmıyordu; bu ortamda bulunmayan PIL oradaki uyumsuz derlemeden çözülünce FinBERT
+  oturumun geri kalanında yüklenemiyordu. Yol artık yalnızca o modülün testleri sırasında
+  ekli. Eski dosyayla hata yeniden üretildi (2 başarısız), düzeltmeyle geçti. Ayrıca
+  `conftest` her testten önce model hata kilidini temizliyor. Yukarıdaki "sıraya bağlı bir
+  sızıntı değil" ifadesi yanlıştı.
+- **Tarihe bağlı testler.** GEX testlerindeki sabit vade (2026-11-09) geçti, TCA testindeki
+  sabit işlem gün içi veri saklama süresini aştı; testler artık koşulduğu güne göre çalışıyor.
+- **Canlı strict denetim.** 10 "girdi gerekli" KIRMIZI'nın nedeni denetim aracının genel
+  isteğiydi. Araç artık her fonksiyona zorunlu girdisini gönderiyor. Önceki 13 KIRMIZI'nın
+  canlı yeniden koşusu: **0 KIRMIZI** (11 SARI, DARK ve DPF YEŞİL; SRSK'de negatif olasılık yok).
+- **MGN#2/#3.** Ürün işaretçisi olmayan kripto çifti hâlâ spot oranıyla teminatlandırılıyor
+  (büyük olan gereksinim), ama artık satırda `product_assumed=spot` ve MGN uyarısıyla
+  açıkça belirtiliyor.
+- **Lint.** Backend'de ruff temiz (55 kullanılmayan import, 3 tanımsız ad düzeltildi).

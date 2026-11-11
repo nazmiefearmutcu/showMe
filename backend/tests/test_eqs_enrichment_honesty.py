@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import pandas as pd
 import pytest
 
 from showme.engine.core.base_function import FunctionDeps

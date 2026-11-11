@@ -8,7 +8,6 @@ seed to the handler's real inputs, sources and output keys.
 from __future__ import annotations
 
 import asyncio
-import re
 
 from showme.engine.functions.misc import sat as sat_handler
 from showme.manifest.seeds.sat_seed import sat

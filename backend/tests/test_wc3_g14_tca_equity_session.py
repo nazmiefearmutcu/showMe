@@ -74,6 +74,12 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "runtime").mkdir(parents=True, exist_ok=True)
     _FakeTicker.requests = []
     monkeypatch.setattr(yfinance, "Ticker", _FakeTicker)
+    # The fixture fill is a fixed 2026-09 date; once it is older than the
+    # provider's intraday retention the handler (rightly) asks for no bars.
+    # The session-window logic under test does not depend on the fill's age.
+    from showme.engine.functions.trade import tca as tca_mod
+
+    monkeypatch.setattr(tca_mod, "_INTRADAY_RETENTION_DAYS", 10**6)
     yield
 
 

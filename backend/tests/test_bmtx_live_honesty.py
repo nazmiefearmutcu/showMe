@@ -8,7 +8,7 @@ returned status "ok" with Sharpe values for tickers that do not exist.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np

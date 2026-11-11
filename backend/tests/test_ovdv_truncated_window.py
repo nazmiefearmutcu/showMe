@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import math
 
-import pytest
 
 from showme.engine.functions.fx import _funcs as fx
 

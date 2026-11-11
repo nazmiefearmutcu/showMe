@@ -58,7 +58,6 @@ class _BrokenXsen:
 
 def test_finbert_failure_emits_no_neutral_reading(monkeypatch):
     import showme.finbert_analyzer as fb
-    import showme.x_analysis as xa
 
     monkeypatch.setattr(fb.FinBertAnalyzer, "instance", _BrokenFinbert.instance)
     res = _run(TSARFunction().execute(text=_TRANSCRIPT, models=["finbert"]))

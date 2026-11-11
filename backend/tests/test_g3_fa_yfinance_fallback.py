@@ -10,7 +10,6 @@ SEC and yfinance providers (no network).
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd

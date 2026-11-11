@@ -6,7 +6,6 @@ All network access is replaced by in-test fakes so the suite runs offline.
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime, timezone
 from typing import Any
 

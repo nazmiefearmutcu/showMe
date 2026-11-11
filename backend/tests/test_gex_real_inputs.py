@@ -12,7 +12,7 @@ Covers the honest-state contract for the GEX function:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -100,7 +100,7 @@ class _EmptyChainYf:
     async def fetch(self, request):  # noqa: ANN001
         if request.kind == DataKind.OPTIONS_CHAIN:
             if request.extra.get("expiry") is None:
-                return {"expiries": ["2026-07-17"]}
+                return {"expiries": [_future_day(120)]}
             return {"calls": pd.DataFrame(), "puts": pd.DataFrame()}
         return None
 
@@ -118,6 +118,11 @@ def test_empty_live_chain_is_provider_unavailable_not_synthetic_ok() -> None:
 # --------------------------------------------------------------------------- #
 # GEX#6 / GEX#3: payload discloses as_of, modes, assumptions and r / q
 # --------------------------------------------------------------------------- #
+def _future_day(days: int) -> str:
+    """An expiry `days` ahead of the run day (never in the past)."""
+    return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
 class _StampedChainYf:
     """Live chain whose option rows carry a last-trade stamp."""
 
@@ -128,7 +133,7 @@ class _StampedChainYf:
         if request.kind != DataKind.OPTIONS_CHAIN:
             return None
         if request.extra.get("expiry") is None:
-            return {"expiries": ["2026-11-09"]}
+            return {"expiries": [_future_day(7)]}
         calls = pd.DataFrame([
             {"strike": 100.0, "openInterest": 1000, "impliedVolatility": 0.3,
              "lastTradeDate": self._stamp},
@@ -143,12 +148,15 @@ class _StampedChainYf:
 
 
 def test_live_payload_discloses_as_of_mode_assumptions_and_rates() -> None:
-    fn = GEXFunction(deps=FunctionDeps(yfinance=_StampedChainYf("2026-11-06 20:59:00")))
+    # Dates are relative to the run day: fixed ones expired (2026-11-09) and
+    # turned this file red two days after it was written.
+    stamp_day = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
+    fn = GEXFunction(deps=FunctionDeps(yfinance=_StampedChainYf(f"{stamp_day} 20:59:00")))
     result = _run(fn.execute(symbol="SPY", spot=100.0, live_options=True))
     data = result.data
     assert data["status"] == "ok"
-    assert data["as_of"].startswith("2026-11-06T20:59")
-    # Sunday run against a Friday-stamped chain: must not claim live.
+    assert data["as_of"].startswith(f"{stamp_day}T20:59")
+    # A chain last stamped days ago: must not claim live.
     assert data["data_mode"] == "last_session_yfinance"
     assert data["iv_source"] == "market"
     assert data["dealer_assumption"] == "short_calls_long_puts"
@@ -174,16 +182,16 @@ def test_expiry_filter_selects_number_of_expiries() -> None:
             if request.kind != DataKind.OPTIONS_CHAIN:
                 return None
             if request.extra.get("expiry") is None:
-                return {"expiries": ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-13"]}
+                return {"expiries": [_future_day(7), _future_day(8), _future_day(9), _future_day(11)]}
             return {"calls": pd.DataFrame([{"strike": 100.0, "openInterest": 10,
                                             "impliedVolatility": 0.3}]),
                     "puts": pd.DataFrame()}
 
     fn = GEXFunction(deps=FunctionDeps(yfinance=_Many()))
     one = _run(fn.execute(symbol="SPY", spot=100.0, live_options=True, expiry_filter="next_1"))
-    assert one.data["expiries"] == ["2026-11-09"]
+    assert one.data["expiries"] == [_future_day(7)]
     three = _run(fn.execute(symbol="SPY", spot=100.0, live_options=True, expiry_filter="next_3"))
-    assert three.data["expiries"] == ["2026-11-09", "2026-11-10", "2026-11-11"]
+    assert three.data["expiries"] == [_future_day(7), _future_day(8), _future_day(9)]
 
 
 def test_unsupported_expiry_filter_is_input_error() -> None:
@@ -195,7 +203,7 @@ def test_unsupported_expiry_filter_is_input_error() -> None:
 
 
 def test_risk_free_and_dividend_inputs_are_used() -> None:
-    fn = GEXFunction(deps=FunctionDeps(yfinance=_StampedChainYf("2026-11-06 20:59:00")))
+    fn = GEXFunction(deps=FunctionDeps(yfinance=_StampedChainYf((datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d") + " 20:59:00")))
     base = _run(fn.execute(symbol="SPY", spot=100.0, live_options=True))
     alt = _run(fn.execute(symbol="SPY", spot=100.0, live_options=True,
                           risk_free=0.10, dividend_yield=0.0))
@@ -229,7 +237,7 @@ def test_handler_sign_convention_matches_manifest_text() -> None:
 
     load_seeds()
     entry = REGISTRY.get("GEX")
-    fn = GEXFunction(deps=FunctionDeps(yfinance=_StampedChainYf("2026-11-06 20:59:00")))
+    fn = GEXFunction(deps=FunctionDeps(yfinance=_StampedChainYf((datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d") + " 20:59:00")))
     data = _run(fn.execute(symbol="SPY", spot=100.0, live_options=True)).data
     # Dealers short calls -> negative call contribution; long puts -> positive.
     assert data["summary"]["call_gex_total"] < 0 < data["summary"]["put_gex_total"]

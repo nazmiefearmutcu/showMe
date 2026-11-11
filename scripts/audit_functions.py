@@ -160,6 +160,24 @@ def primary_assets(entry: dict[str, Any]) -> list[str | None]:
     return ["CRYPTO"]
 
 
+_REQUIRED_INPUTS: dict[str, dict[str, Any]] = {
+    "BBGT": {"order_type": "LIMIT", "tif": "DAY"},
+    "BRIEF": {"watchlist": ["AAPL", "MSFT", "NVDA"]},
+    "DINE": {"location": "New York"},
+    "FXFC": {"r_base": 0.02, "r_quote": 0.045},
+    "GEX": {"live_options": True},
+    "LANG": {"lang": "en"},
+    "PFA": {
+        "port_weights": {"Technology": 0.6, "Financials": 0.4},
+        "port_returns": {"Technology": 0.08, "Financials": 0.03},
+        "bench_weights": {"Technology": 0.5, "Financials": 0.5},
+        "bench_returns": {"Technology": 0.06, "Financials": 0.04},
+    },
+    "PORT_WHATIF": {"quantity": 10, "cost": 150.0},
+    "REBA": {"live_portfolio": True},
+}
+
+
 def params_for(entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
     code = str(entry.get("code", "")).upper()
     category = str(entry.get("category", "")).lower()
@@ -240,6 +258,9 @@ def params_for(entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
             params["query"] = "expenseRatio < 0.05"
         elif code == "CSRC":
             params["query"] = 'sector = "Energy"'
+        elif code == "SECF":
+            # SECF screens the security master; it has no marketCap column.
+            params["query"] = 'asset_class = "EQUITY"'
         else:
             params["query"] = "marketCap > 0"
     elif code == "FTS":
@@ -311,6 +332,11 @@ def params_for(entry: dict[str, Any], asset: str | None) -> dict[str, Any]:
                        "target": 230, "win_rate": 0.5})
     elif code in {"EMSX", "BBGT", "TSOX", "FXGO"}:
         params.update({"quantity": 1.0, "price": 100.0, "side": "BUY", "submit": True})
+    # Function-specific required inputs. Without them these functions answer
+    # with an honest needs-input state, which says nothing about their data.
+    extra = _REQUIRED_INPUTS.get(code)
+    if extra:
+        params.update(extra)
     return params
 
 

@@ -211,10 +211,18 @@ class _FlowConnection:
         finally:
             for t in tasks:
                 t.cancel()
-            # Retrieve cancellations AND any send-vs-close race the loops
-            # lost after our close(): swallowed here, never leaked.
-            await asyncio.gather(*tasks, return_exceptions=True)
-            await self._drop_session()
+            # The handler itself can be cancelled here (server shutdown, or the
+            # ASGI host tearing the connection task down). A cancelled await in
+            # this block used to skip _drop_session, leaving the hub session
+            # and its upstream feed alive with no client. The teardown runs
+            # shielded so the session is always released.
+            import anyio
+
+            with anyio.CancelScope(shield=True):
+                # Retrieve cancellations AND any send-vs-close race the loops
+                # lost after our close(): swallowed here, never leaked.
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await self._drop_session()
 
     async def _receive_loop(self) -> None:
         while True:

@@ -32,7 +32,7 @@ import pandas as pd
 import pytest
 
 from showme import server
-from showme.engine.core.base_data_source import DataKind, DataSourceError
+from showme.engine.core.base_data_source import DataSourceError
 from showme.engine.core.base_function import FunctionDeps
 from showme.engine.core.instrument import AssetClass, Instrument
 from showme.engine.core.quote import Quote

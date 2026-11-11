@@ -283,6 +283,7 @@ def calc_account(
     margin_type = info.get("margin_type", "reg_t")
     explicit = not info.get("inferred")
     rule = {**_rule_for(margin_type), **(info.get("overrides") or {})}
+    product_assumed: list[str] = []
     # Rule that sets buying power: the rule of the largest position by notional.
     bp_rule = rule
     if margin_type == "portfolio":
@@ -299,7 +300,16 @@ def calc_account(
             i, m = _position_margin(p, p_rule)
             ip += i
             mp += m
-            per_pos.append({**p, "initial_margin": i, "maintenance_margin": m})
+            row = {**p, "initial_margin": i, "maintenance_margin": m}
+            # MGN#3-RQ: a bare crypto pair carries no product marker, so it cannot
+            # be told spot from perpetual. It is margined as spot (the larger
+            # requirement) and the assumption is stated on the row, never silent.
+            if (str(p.get("asset_class") or "").upper() == "CRYPTO"
+                    and not str(p.get("contract_type") or "").strip()
+                    and not _is_crypto_perpetual(str(p.get("symbol") or ""), "")):
+                row["product_assumed"] = "spot"
+                product_assumed.append(str(p.get("symbol") or ""))
+            per_pos.append(row)
             notional = abs(float(p.get("quantity", 0) or 0)
                            * float(p.get("last", p.get("avg_cost", 0)) or 0))
             if notional > biggest:
@@ -331,6 +341,12 @@ def calc_account(
         "maintenance_cushion_pct": cushion * 100,
         "buying_power": buying_power,
         "positions": per_pos,
+        "product_assumed_spot": sorted(set(product_assumed)),
+        "warnings": ([
+            "No product marker (spot or perpetual) for " + ", ".join(sorted(set(product_assumed)))
+            + "; margined as spot at the spot rate. If a position is a perpetual, its "
+            "requirement is overstated: record contract_type=PERPETUAL on it."
+        ] if product_assumed else []),
     }
 
 

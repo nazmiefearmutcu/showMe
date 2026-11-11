@@ -164,7 +164,6 @@ _FIVE_DAY_CLOSES = [
 
 
 def test_fxgo_previous_close_is_prior_session_not_five_sessions_back(monkeypatch):
-    from showme.engine.functions.trade._funcs import FXGOFunction
 
     payload = _chart_payload(
         _FIVE_DAY_CLOSES,
@@ -300,7 +299,6 @@ def test_is_open_honours_nyse_half_day_early_close():
 def test_fxgo_previous_close_skips_null_latest_bar(monkeypatch):
     """Newest daily bar (2026-11-09) has no close yet; the quote printed on
     2026-11-09 00:30 UTC. The prior session is 2026-11-06, not 11-05."""
-    from showme.engine.functions.trade._funcs import FXGOFunction
 
     closes = [
         (2, 1.11569), (3, 1.11900), (4, 1.12100), (5, 1.12349), (6, 1.12283),

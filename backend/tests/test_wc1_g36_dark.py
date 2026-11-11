@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
 import pandas as pd
@@ -193,7 +193,7 @@ def _simulate_worker_dispatch(code: str, raw_params: dict[str, Any], finra: Any)
 
     params = _route_function_params(code, dict(raw_params))
     symbol = params.pop("symbol", None)
-    asset_class = params.pop("asset_class", None)
+    params.pop("asset_class", None)
     instrument = None
     if symbol:
         instrument = Instrument(symbol=str(symbol), asset_class=AssetClass.EQUITY)

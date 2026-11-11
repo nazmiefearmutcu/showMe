@@ -17,6 +17,8 @@ import os
 import shutil
 import tempfile
 
+import pytest
+
 _TEST_HOME = tempfile.mkdtemp(prefix="showme-test-home-")
 os.environ["SHOWME_HOME"] = _TEST_HOME
 os.environ.setdefault("SHOWME_DISABLE_BOTS", "1")
@@ -27,3 +29,23 @@ os.environ.setdefault("SHOWME_ALLOW_PLAINTEXT_VAULT", "1")
 
 def pytest_unconfigure(config):  # noqa: ARG001 - pytest hook signature
     shutil.rmtree(_TEST_HOME, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _clear_model_load_failure_latches():
+    """A failed FinBERT/Whisper load latches for the process lifetime (by design,
+    so production does not retry a 300 MB load per request). In the test process
+    one test that makes the load fail (network cut, patched transformers) must
+    not decide every later model test: clear only the failure latch, never a
+    loaded instance, before each test."""
+    import sys
+
+    for mod_name, cls_name in (("showme.finbert_analyzer", "FinBertAnalyzer"),
+                               ("showme.whisper_analyzer", "WhisperAnalyzer")):
+        mod = sys.modules.get(mod_name)
+        cls = getattr(mod, cls_name, None) if mod else None
+        if cls is not None and getattr(cls, "_load_failed", False):
+            cls._load_failed = False
+            if hasattr(cls, "_load_error"):
+                cls._load_error = None
+    yield

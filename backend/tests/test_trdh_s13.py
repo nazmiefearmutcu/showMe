@@ -10,7 +10,6 @@ deltas, plus a unified `value` that the UI uses for the primary countdown.
 from __future__ import annotations
 
 import sys
-import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 

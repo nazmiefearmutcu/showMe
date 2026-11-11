@@ -5,7 +5,6 @@ manifest declares resolves to a key the handler really emits.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 
 from showme.engine.functions.portfolio import tlh
 from showme.manifest.seeds import tlh_seed

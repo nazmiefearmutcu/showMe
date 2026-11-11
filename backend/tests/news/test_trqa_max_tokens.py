@@ -18,7 +18,6 @@ from typing import Any
 import pytest
 
 from showme.engine.core.instrument import AssetClass, Instrument
-from showme.engine.functions.news import trqa as trqa_mod
 from showme.engine.functions.news.trqa import TRQAFunction
 
 _TRANSCRIPT = (

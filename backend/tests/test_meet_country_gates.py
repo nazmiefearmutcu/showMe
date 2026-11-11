@@ -32,7 +32,6 @@ _BACKEND_DIR = _HERE.parents[1]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from showme.engine.core.base_function import FunctionDeps
 from showme.engine.functions.comm import meet as meet_mod
 from showme.engine.services import country_gates as cg
 

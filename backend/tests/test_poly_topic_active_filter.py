@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 
-import httpx
 
 import showme.providers._http as http_mod
 from showme.engine.core.base_function import FunctionDeps

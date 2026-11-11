@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from showme.engine.core.base_function import FunctionDeps
 from showme.engine.functions.portfolio.corr import CORRFunction
