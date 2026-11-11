@@ -38,6 +38,22 @@ _TRANSCRIPT = (
 _OK_STATUSES = {"ok", "empty", "modeled", "not_configured", "no_text"}
 
 
+def _finbert_state() -> dict:
+    """Diagnostics for a failed scoring pass (which analyzer answered, and why not)."""
+    import sys
+
+    from showme.finbert_analyzer import FinBertAnalyzer
+
+    inst = FinBertAnalyzer._instance
+    return {
+        "instance": type(inst).__name__ if inst is not None else None,
+        "pipe": type(getattr(inst, "_pipe", None)).__name__,
+        "load_failed": FinBertAnalyzer._load_failed,
+        "load_error": FinBertAnalyzer.load_error(),
+        "transformers": type(sys.modules.get("transformers")).__name__,
+    }
+
+
 @pytest.mark.asyncio
 async def test_tsar_pasted_text_scores_real_utterances():
     fn = TSARFunction()
@@ -47,7 +63,7 @@ async def test_tsar_pasted_text_scores_real_utterances():
     # Contract: the manifest output_contract.must_have keys are all present.
     for key in ("status", "summary", "speaker_rollups", "utterances"):
         assert key in data, f"missing must-have key {key!r}"
-    assert data["status"] in _OK_STATUSES
+    assert data["status"] in _OK_STATUSES, (data["status"], res.warnings, _finbert_state())
     assert isinstance(data.get("methodology"), str) and data["methodology"]
     assert isinstance(data.get("field_dictionary"), dict) and data["field_dictionary"]
 
