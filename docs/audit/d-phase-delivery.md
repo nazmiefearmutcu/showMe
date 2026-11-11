@@ -102,3 +102,24 @@ Awareness oturumunun sahip olduğu fonksiyonlar (TOP, NI, CN, NALRT, NSE, SOSC, 
 MEET, DVD, CACT, TRDH) yönlendirici politikasında `_LEGACY_PROBE_ROUTE_CODES` ile muaf
 tutuldu; o oturum birleştirmede kendi kodlarını politikaya alacağını ve kendi modüllerindeki
 hata metni taramasını yapacağını bildirdi.
+
+## v0.3.0 sonrası (2026-11-11, dal `fix/post-0.3.0-followups`)
+
+Yukarıdaki "kararsız test" ve "KIRMIZI" notlarının yerine geçer:
+
+- **flowmap WS oturum sızıntısı (gerçek hata).** Bağlantı görevi iptal edilince `run()`
+  içindeki `finally` bloğunun ilk `await`'i hata veriyor, `_drop_session` hiç çalışmıyordu:
+  hub oturumu ve üst akış istemcisiz açık kalıyordu. Temizlik artık korumalı kapsamda
+  çalışıyor. `test_disconnect_tears_feed_down` CPU yükü altında 4/6 düşüyordu, şimdi 0/6.
+  "Zamanlama kaynaklı kararsız test" tanısı yanlıştı.
+- **TSAR testleri.** Neden bellek baskısı değil, sıraya bağlı durumdu: başarısız bir FinBERT
+  yüklemesi süreç boyunca kilitleniyor (üretimde bilinçli), tam pakette önceki bir test bu
+  kilidi bırakıyordu. `conftest` her testten önce yalnızca hata kilidini temizliyor.
+  Yukarıdaki "sıraya bağlı bir sızıntı değil" ifadesi yanlıştı.
+- **Canlı strict denetim.** 10 "girdi gerekli" KIRMIZI'nın nedeni denetim aracının genel
+  isteğiydi. Araç artık her fonksiyona zorunlu girdisini gönderiyor. Önceki 13 KIRMIZI'nın
+  canlı yeniden koşusu: **0 KIRMIZI** (11 SARI, DARK ve DPF YEŞİL; SRSK'de negatif olasılık yok).
+- **MGN#2/#3.** Ürün işaretçisi olmayan kripto çifti hâlâ spot oranıyla teminatlandırılıyor
+  (büyük olan gereksinim), ama artık satırda `product_assumed=spot` ve MGN uyarısıyla
+  açıkça belirtiliyor.
+- **Lint.** Backend'de ruff temiz (55 kullanılmayan import, 3 tanımsız ad düzeltildi).
